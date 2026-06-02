@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Thai + Latin font stack ───────────────────────────────────────────────── */
+@layer base {
+  html { font-family: "Inter", "Sarabun", sans-serif; }
+  body { @apply bg-gray-50 text-gray-900; }
+
+  * { box-sizing: border-box; }
+
+  /* Smooth scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { @apply bg-gray-100; }
+  ::-webkit-scrollbar-thumb { @apply bg-gray-300 rounded-full; }
+}
+
+/* ── Print isolation ───────────────────────────────────────────────────────── */
+@media print {
+  /* Completely hide all non-print UI */
+  .no-print,
+  nav, aside, header, footer,
+  [data-radix-popper-content-wrapper] {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  body { background: white !important; }
+
+  /* Force colour rendering in print */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+  /* One schedule per A4 landscape page */
+  @page { size: A4 landscape; margin: 10mm; }
+
+  .print-page {
+    page-break-after: always;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    break-after: page;
+  }
+
+  .print-page:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+}
+
+/* ── DnD drag handle cursor ────────────────────────────────────────────────── */
+[data-draggable="true"] { cursor: grab; }
+[data-draggable="true"]:active { cursor: grabbing; }
+
+/* ── Utility animations ────────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fadeIn 0.15s ease-out; }

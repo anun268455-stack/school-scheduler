@@ -1,0 +1,42 @@
+
+> school-scheduler-ui@1.0.0 dev
+> vite
+
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m242[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
+[2m  [32m➜[39m  [1mNetwork[22m[2m: use [22m[1m--host[22m[2m to expose[22m
+[2m[32m  ➜[39m[22m[2m  press [22m[1mh + enter[22m[2m to show help[22m
+(node:27844) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///C:/Users/Admin/school-scheduler/frontend/postcss.config.js is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to \\?\C:\Users\Admin\school-scheduler\frontend\package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2m04:57:24[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/print/PrintView.tsx, /src/index.css[22m
+[2m04:57:34[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/print/PrintView.tsx, /src/index.css[22m
+[2m04:57:42[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/print/PrintView.tsx, /src/index.css[22m
+[2m05:01:42[22m [36m[1m[vite][22m[39m [32mpage reload [39m[2msrc/pages/TimetablePage.tsx[22m
+[2m05:01:46[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/layout/TopNavbar.tsx, /src/index.css[22m
+[2m05:01:50[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.tsx, /src/index.css[22m
+[2m05:01:56[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.tsx, /src/index.css, /src/pages/Dashboard.tsx, /src/components/layout/TopNavbar.tsx, /src/components/timetable/TimetableGrid.tsx, /src/components/solver/SolverWidget.tsx[22m
+[2m05:02:05[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m05:02:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m05:02:15[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m05:02:23[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/print/PrintView.tsx, /src/index.css[22m
+[2m05:02:54[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m05:02:59[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m05:03:03[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m05:27:19[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/timetable/SlotCell.tsx, /src/index.css[22m
+[2m05:28:26[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/timetable/TimetableGrid.tsx, /src/index.css[22m
+[2m05:31:58[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/index.css, /src/pages/Dashboard.tsx, /src/App.tsx, /src/components/layout/TopNavbar.tsx, /src/components/timetable/TimetableGrid.tsx, /src/components/solver/SolverWidget.tsx[22m
+[2m05:34:23[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m05:34:24[22m [36m[1m[vite][22m[39m [32m✨ new dependencies optimized: [33mxlsx[32m[39m
+[2m05:34:24[22m [36m[1m[vite][22m[39m [32m✨ optimized dependencies changed. reloading[39m
+[2m05:34:37[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.tsx, /src/index.css[22m
+[2m05:35:20[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/layout/TopNavbar.tsx, /src/index.css[22m
+[2m05:35:34[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.tsx, /src/index.css, /src/pages/Dashboard.tsx, /src/components/layout/TopNavbar.tsx, /src/components/timetable/TimetableGrid.tsx, /src/components/solver/SolverWidget.tsx[22m
+[2m05:35:43[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.tsx, /src/index.css, /src/pages/Dashboard.tsx, /src/components/layout/TopNavbar.tsx, /src/components/timetable/TimetableGrid.tsx, /src/components/solver/SolverWidget.tsx[22m
+[2m05:55:36[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m05:55:42[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
+[2m05:55:48[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/Dashboard.tsx, /src/index.css[22m
