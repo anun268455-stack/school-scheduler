@@ -32,8 +32,7 @@ jobs:
         env:
           # Replace YOUR_REPO_NAME with your actual GitHub repository name
           VITE_BASE_URL: /${{ github.event.repository.name }}/
-          # Replace with your Render.com backend URL after deployment
-          VITE_API_TARGET: ${{ secrets.VITE_API_URL }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

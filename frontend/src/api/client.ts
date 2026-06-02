@@ -4,7 +4,13 @@ import type {
   SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
 
-const api = axios.create({ baseURL: "/api", timeout: 180_000 });
+// In production (GitHub Pages), use the Render backend URL via env var
+// In development, use the Vite proxy at /api
+const BASE_URL = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : "/api";
+
+const api = axios.create({ baseURL: BASE_URL, timeout: 180_000 });
 
 // ── Periods ──────────────────────────────────────────────────────────────────
 export const fetchPeriods   = () => api.get<Period[]>("/periods/").then((r) => r.data);
