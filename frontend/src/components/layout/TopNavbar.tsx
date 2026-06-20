@@ -31,6 +31,10 @@ const CRUD_ITEMS = [
   { id: "requirements", icon: "📋", label: "การสอน/วิชา",    divider: true  },
   { id: "periods",      icon: "⏰", label: "คาบ & เวลา",     divider: false },
   { id: "locks",        icon: "🔒", label: "ล็อคคาบ (กลุ่ม)", divider: false },
+  { id: "departments", icon: "🏛", label: "กลุ่มสาระฯ",       divider: true  },
+  { id: "analytics",  icon: "📊", label: "วิเคราะห์ตาราง",   divider: false },
+  { id: "settings",   icon: "🏫", label: "ตั้งค่าโรงเรียน",  divider: false },
+  { id: "help",       icon: "📖", label: "คู่มือการใช้งาน", divider: true  },
 ];
 
 export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, currentPage }) => {

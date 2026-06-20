@@ -12,6 +12,7 @@ import { restrictToWindowEdges } from "@dnd-kit/modifiers";
 import clsx from "clsx";
 
 import { SlotCell } from "./SlotCell";
+import { ConflictModal, type PendingMove, type ConflictInfo } from "./ConflictModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
 import { DAYS, GRID_PERIODS, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
@@ -144,7 +145,8 @@ export const TimetableGrid: React.FC = () => {
     moveSlot, toggleLock, deleteSlot, preLockMode,
   } = useTimetableStore();
 
-  const [validAlert, setValidAlert] = useState<string | null>(null);
+  const [validAlert,   setValidAlert]   = useState<string | null>(null);
+  const [pendingMove,  setPendingMove]  = useState<PendingMove | null>(null);
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
@@ -188,10 +190,35 @@ export const TimetableGrid: React.FC = () => {
       setValidAlert(impact.reason);
       return;
     }
-    if (nd !== item.fromDay || np !== item.fromPeriod) {
+    if (nd === item.fromDay && np === item.fromPeriod) return;
+
+    // ── Detect conflicts before moving ──────────────────────────────────
+    const movingSlot = slots.find((s) => s.id === item.slotId);
+    if (!movingSlot) { moveSlot(item.slotId, nd, np); return; }
+
+    const targetSlots = slots.filter(
+      (s) => s.day === nd && s.period === np && s.id !== item.slotId
+    );
+
+    const conflicts: ConflictInfo[] = [];
+    for (const t of targetSlots) {
+      if (t.teacher_id === movingSlot.teacher_id && t.teacher_name) {
+        conflicts.push({ type: "teacher", name: t.teacher_name, slot: t });
+      }
+      if (t.group_id === movingSlot.group_id && t.group_name) {
+        conflicts.push({ type: "group", name: t.group_name, slot: t });
+      }
+      if (t.room_id && t.room_id === movingSlot.room_id && t.room_name) {
+        conflicts.push({ type: "room", name: t.room_name, slot: t });
+      }
+    }
+
+    if (conflicts.length > 0) {
+      setPendingMove({ slotId: item.slotId, newDay: nd, newPeriod: np, conflicts });
+    } else {
       moveSlot(item.slotId, nd, np);
     }
-  }, [endDrag, impactMap, moveSlot]);
+  }, [endDrag, impactMap, moveSlot, slots]);
 
   const activeSlots = useMemo(() => {
     if (!draggingSlot) return [];
@@ -212,7 +239,39 @@ export const TimetableGrid: React.FC = () => {
     );
   }
 
+  // ── Conflict resolution handlers ──────────────────────────────────────────
+  const handleSwap = useCallback(() => {
+    if (!pendingMove) return;
+    const movingSlot = slots.find((s) => s.id === pendingMove.slotId);
+    if (!movingSlot) { setPendingMove(null); return; }
+    // Move conflicting slot to original position, then move dragging slot to target
+    pendingMove.conflicts.forEach((c) => {
+      moveSlot(c.slot.id, movingSlot.day, movingSlot.period);
+    });
+    moveSlot(pendingMove.slotId, pendingMove.newDay, pendingMove.newPeriod);
+    setPendingMove(null);
+  }, [pendingMove, slots, moveSlot]);
+
+  const handleForce = useCallback(() => {
+    if (!pendingMove) return;
+    pendingMove.conflicts.forEach((c) => deleteSlot(c.slot.id));
+    moveSlot(pendingMove.slotId, pendingMove.newDay, pendingMove.newPeriod);
+    setPendingMove(null);
+  }, [pendingMove, moveSlot, deleteSlot]);
+
   return (
+    <>
+    {/* Conflict Resolution Modal */}
+    {pendingMove && (
+      <ConflictModal
+        pending={pendingMove}
+        draggingSlotInfo={slots.find((s) => s.id === pendingMove.slotId) ?? null}
+        onSwap={handleSwap}
+        onForceMove={handleForce}
+        onCancel={() => setPendingMove(null)}
+      />
+    )}
+
     <div className="w-full h-full flex flex-col overflow-hidden">
       {/* Validation alert */}
       {validAlert && (
@@ -365,6 +424,7 @@ export const TimetableGrid: React.FC = () => {
         )}
       </div>
     </div>
+    </>
   );
 };
 

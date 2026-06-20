@@ -12,7 +12,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ title }) => {
-  const { slots, groups, selectedGroupId, isSolving, solverError, runSolver } = useTimetableStore();
+  const { slots, groups, teachers, periods, schoolConfig, selectedGroupId, selectedTeacherId, isSolving, solverError, runSolver } = useTimetableStore();
   const [solverResult, setSolverResult] = useState<SolverResult | null>(null);
   const [showSolverPanel, setShowSolverPanel] = useState(false);
   const [timeLimitSec, setTimeLimitSec] = useState(120);
@@ -157,7 +157,11 @@ export const Header: React.FC<HeaderProps> = ({ title }) => {
           ref={printRef}
           slots={slots}
           groups={groups}
+          teachers={teachers}
+          periods={periods}
+          schoolConfig={schoolConfig}
           filterGroupId={selectedGroupId}
+          filterTeacherId={selectedTeacherId}
         />
       </div>
     </>

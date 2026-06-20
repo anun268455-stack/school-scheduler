@@ -2,7 +2,7 @@
 // Core domain types (v2 – period-aware, lock-aware, impact-aware)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type RoomType      = "physical" | "special" | "outdoor";
+export type RoomType      = "physical" | "special" | "outdoor" | "floating";
 export type SubjectType   = "common" | "parallel";
 export type SubjectWeight = "heavy" | "light";
 export type PeriodType    = "class" | "break" | "lunch" | "assembly" | "homeroom";
@@ -47,31 +47,52 @@ export interface Room {
   reserved_teacher_id: number | null;  // permanently reserved for a specific teacher
 }
 
+export interface GroupAdvanced {
+  prefer_morning?:     boolean; // ให้จัดวิชาหนักตอนเช้า
+  avoid_after_lunch?:  boolean; // หลีกเลี่ยงวิชาหนักหลังกินข้าว
+  max_slots_per_day?:  number;  // จำกัดคาบต่อวันของห้องนี้
+  note?:               string;  // หมายเหตุ
+}
+
 export interface StudentGroup {
-  id:        number;
-  name:      string;
-  parent_id: number | null;
-  level:     string | null;   // "M1" … "M6"
-  size:      number;
-  children:  StudentGroup[];
+  id:                number;
+  name:              string;
+  parent_id:         number | null;
+  level:             string | null;   // "M1" … "M6" | "ห้องเวียน"
+  size:              number;
+  homeroom_room_id:  number | null;   // ห้องประจำชั้น
+  advanced_settings?: GroupAdvanced;
+  children:          StudentGroup[];
+}
+
+export interface TeacherAdvanced {
+  ignore_consecutive_limit?: boolean;  // ไม่จำกัดคาบต่อเนื่อง
+  require_ground_floor?:     boolean;  // ต้องสอนชั้น 1 เท่านั้น (เหตุสุขภาพ)
+  days_off?:                 number[]; // วันที่ไม่สอน [0=จ, 1=อ, ... 4=ศ]
+  avoid_periods?:            number[]; // คาบที่หลีกเลี่ยง
+  note?:                     string;   // หมายเหตุ
 }
 
 export interface Teacher {
-  id:                  number;
-  name:                string;
-  fixed_room_id:       number | null;
-  outdoor_score:       number;
-  max_slots_per_day:   number;
-  max_outdoor_per_week:number;
+  id:                   number;
+  name:                 string;
+  fixed_room_id:        number | null;
+  department_id:        number | null;
+  outdoor_score:        number;
+  max_slots_per_day:    number;
+  max_outdoor_per_week: number;
+  advanced_settings?:   TeacherAdvanced;
 }
 
 export interface Subject {
-  id:       number;
-  code:     string;
-  name:     string;
-  type:     SubjectType;
-  duration: 1 | 2;
-  weight:   SubjectWeight;
+  id:            number;
+  code:          string;
+  name:          string;
+  type:          SubjectType;
+  duration:      1 | 2;
+  weight:        SubjectWeight;
+  department_id: number | null;
+  is_activity:   boolean;       // true = ชุมนุม/ลูกเสือ/กิจกรรม
 }
 
 export interface LessonRequirement {
@@ -140,6 +161,19 @@ export const GRID_PERIODS = Array.from(
 export const SCHEDULABLE_PERIOD_NUMS = GRID_PERIODS
   .filter((p) => p.type === "class")
   .map((p) => p.period_num);
+
+export interface Department {
+  id:   number;
+  name: string;   // "กลุ่มสาระคณิตศาสตร์", "กลุ่มสาระวิทยาศาสตร์", …
+}
+
+export interface SchoolConfig {
+  schoolName: string;   // ชื่อโรงเรียน
+  term:       string;   // "1" หรือ "2"
+  year:       string;   // "2568"
+  directorName: string; // ชื่อผู้อำนวยการ
+  logoUrl?:   string;
+}
 
 // Drag item payload
 export interface DragItem {

@@ -1,6 +1,6 @@
 import axios from "axios";
 import type {
-  Building, LessonRequirement, Period, Room,
+  Building, Department, LessonRequirement, Period, Room,
   SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
 
@@ -11,6 +11,12 @@ const BASE_URL = import.meta.env.VITE_API_URL
   : "/api";
 
 const api = axios.create({ baseURL: BASE_URL, timeout: 180_000 });
+
+// ── Departments ──────────────────────────────────────────────────────────────
+export const fetchDepartments  = () => api.get<Department[]>("/departments/").then((r) => r.data);
+export const createDepartment  = (d: Partial<Department>) => api.post<Department>("/departments/", d).then((r) => r.data);
+export const updateDepartment  = (id: number, d: Partial<Department>) => api.put<Department>(`/departments/${id}`, d).then((r) => r.data);
+export const deleteDepartment  = (id: number) => api.delete(`/departments/${id}`);
 
 // ── Periods ──────────────────────────────────────────────────────────────────
 export const fetchPeriods   = () => api.get<Period[]>("/periods/").then((r) => r.data);

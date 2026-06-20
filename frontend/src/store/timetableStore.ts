@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type {
-  Building, CellImpact, LessonRequirement, Period,
-  Room, SolverResult, StudentGroup, Subject,
+  Building, CellImpact, Department, LessonRequirement, Period,
+  Room, SchoolConfig, SolverResult, StudentGroup, Subject,
   Teacher, TimetableSlot, ViewMode,
 } from "../types";
 import { DEFAULT_PERIODS } from "../types";
@@ -10,6 +10,7 @@ import * as api from "../api/client";
 
 interface TimetableStore {
   // ── Master data ────────────────────────────────────────────────────────────
+  departments:  Department[];
   buildings:    Building[];
   rooms:        Room[];
   groups:       StudentGroup[];
@@ -27,6 +28,10 @@ interface TimetableStore {
   isLoading:         boolean;
   isSolving:         boolean;
   solverError:       string | null;
+
+  // ── School config ─────────────────────────────────────────────────────────
+  schoolConfig: SchoolConfig;
+  setSchoolConfig: (c: Partial<SchoolConfig>) => void;
 
   // ── Pre-lock mode ─────────────────────────────────────────────────────────
   preLockMode: boolean;         // when true, clicking a slot toggles is_locked
@@ -66,6 +71,7 @@ interface TimetableStore {
 }
 
 export const useTimetableStore = create<TimetableStore>((set, get) => ({
+  departments:       [],
   buildings:         [],
   rooms:             [],
   groups:            [],
@@ -86,6 +92,14 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   impactMap:         new Map(),
   tooltipText:       null,
 
+  schoolConfig: {
+    schoolName: "โรงเรียน",
+    term: "1",
+    year: "2568",
+    directorName: "",
+  },
+  setSchoolConfig: (c) => set((s) => ({ schoolConfig: { ...s.schoolConfig, ...c } })),
+
   setViewMode: (viewMode) => set({ viewMode, selectedGroupId: null, selectedTeacherId: null, selectedRoomId: null }),
   setSelectedGroupId:   (id) => set({ selectedGroupId: id,   selectedTeacherId: null, selectedRoomId: null }),
   setSelectedTeacherId: (id) => set({ selectedTeacherId: id, selectedGroupId: null,   selectedRoomId: null }),
@@ -95,8 +109,9 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   loadAll: async () => {
     set({ isLoading: true });
     try {
-      const [buildings, rooms, groups, teachers, subjects, requirements, slots, periods] =
+      const [departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods] =
         await Promise.all([
+          api.fetchDepartments().catch(() => []),
           api.fetchBuildings(),
           api.fetchRooms(),
           api.fetchGroups(),
@@ -106,7 +121,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
           api.fetchSlots(),
           api.fetchPeriods().catch(() => DEFAULT_PERIODS),
         ]);
-      set({ buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
+      set({ departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
     } finally {
       set({ isLoading: false });
     }

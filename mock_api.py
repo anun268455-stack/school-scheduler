@@ -27,6 +27,17 @@ PERIODS: list[dict[str, Any]] = [
     {"id":12, "period_num":9, "label":"โฮมรูม/กิจกรรม",     "start_time":"14:30","end_time":"15:00","type":"homeroom","applies_to":"all"},
 ]
 
+DEPARTMENTS: list[dict[str, Any]] = [
+    {"id":1,"name":"กลุ่มสาระคณิตศาสตร์"},
+    {"id":2,"name":"กลุ่มสาระวิทยาศาสตร์"},
+    {"id":3,"name":"กลุ่มสาระภาษาต่างประเทศ"},
+    {"id":4,"name":"กลุ่มสาระภาษาไทย"},
+    {"id":5,"name":"กลุ่มสาระสังคมศึกษา"},
+    {"id":6,"name":"กลุ่มสาระพลศึกษา"},
+    {"id":7,"name":"กลุ่มสาระการงานอาชีพ"},
+    {"id":8,"name":"กลุ่มสาระศิลปะ"},
+]
+
 BUILDINGS: list[dict[str, Any]] = [
     {"id":1,"name":"อาคาร 1 (หลัก)","floor_count":4},
     {"id":2,"name":"อาคาร 2 (วิทย์)","floor_count":3},
@@ -44,35 +55,37 @@ ROOMS: list[dict[str, Any]] = [
 ]
 
 GROUPS: list[dict[str, Any]] = [
-    {"id":1,"name":"ม.1/1","parent_id":None,"level":"M1","size":40,"children":[]},
-    {"id":2,"name":"ม.1/2","parent_id":None,"level":"M1","size":40,"children":[]},
-    {"id":3,"name":"ม.2/1","parent_id":None,"level":"M2","size":42,"children":[]},
-    {"id":4,"name":"ม.3/1","parent_id":None,"level":"M3","size":38,"children":[]},
-    {"id":5,"name":"ม.4/1","parent_id":None,"level":"M4","size":35,"children":[
-        {"id":6,"name":"ม.4/1 ก","parent_id":5,"level":"M4","size":12,"children":[]},
-        {"id":7,"name":"ม.4/1 ข","parent_id":5,"level":"M4","size":12,"children":[]},
-        {"id":8,"name":"ม.4/1 ค","parent_id":5,"level":"M4","size":11,"children":[]},
+    {"id":1,"name":"ม.1/1","parent_id":None,"level":"M1","size":40,"homeroom_room_id":None,"children":[]},
+    {"id":2,"name":"ม.1/2","parent_id":None,"level":"M1","size":40,"homeroom_room_id":None,"children":[]},
+    {"id":3,"name":"ม.2/1","parent_id":None,"level":"M2","size":42,"homeroom_room_id":None,"children":[]},
+    {"id":4,"name":"ม.3/1","parent_id":None,"level":"M3","size":38,"homeroom_room_id":None,"children":[]},
+    {"id":5,"name":"ม.4/1","parent_id":None,"level":"M4","size":35,"homeroom_room_id":None,"children":[
+        {"id":6,"name":"ม.4/1 ก","parent_id":5,"level":"M4","size":12,"homeroom_room_id":None,"children":[]},
+        {"id":7,"name":"ม.4/1 ข","parent_id":5,"level":"M4","size":12,"homeroom_room_id":None,"children":[]},
+        {"id":8,"name":"ม.4/1 ค","parent_id":5,"level":"M4","size":11,"homeroom_room_id":None,"children":[]},
     ]},
 ]
 
 TEACHERS: list[dict[str, Any]] = [
-    {"id":1,"name":"ครูสมชาย ใจดี",     "fixed_room_id":1,"outdoor_score":3,"max_slots_per_day":6,"max_outdoor_per_week":1},
-    {"id":2,"name":"ครูสมหญิง ขยัน",     "fixed_room_id":2,"outdoor_score":4,"max_slots_per_day":5,"max_outdoor_per_week":2},
-    {"id":3,"name":"ครูวิทยา ฉลาด",      "fixed_room_id":5,"outdoor_score":6,"max_slots_per_day":6,"max_outdoor_per_week":2},
-    {"id":4,"name":"ครูพลศึกษา แข็งแรง", "fixed_room_id":None,"outdoor_score":10,"max_slots_per_day":8,"max_outdoor_per_week":10},
-    {"id":5,"name":"ครูคอมพ์ เก่ง",      "fixed_room_id":6,"outdoor_score":2,"max_slots_per_day":6,"max_outdoor_per_week":0},
-    {"id":6,"name":"ครูภาษาไทย ดี",      "fixed_room_id":3,"outdoor_score":5,"max_slots_per_day":6,"max_outdoor_per_week":1},
+    {"id":1,"name":"ครูสมชาย ใจดี",     "fixed_room_id":1, "department_id":1,"outdoor_score":3, "max_slots_per_day":6,"max_outdoor_per_week":1},
+    {"id":2,"name":"ครูสมหญิง ขยัน",     "fixed_room_id":2, "department_id":3,"outdoor_score":4, "max_slots_per_day":5,"max_outdoor_per_week":2},
+    {"id":3,"name":"ครูวิทยา ฉลาด",      "fixed_room_id":5, "department_id":2,"outdoor_score":6, "max_slots_per_day":6,"max_outdoor_per_week":2},
+    {"id":4,"name":"ครูพลศึกษา แข็งแรง", "fixed_room_id":None,"department_id":6,"outdoor_score":10,"max_slots_per_day":8,"max_outdoor_per_week":10},
+    {"id":5,"name":"ครูคอมพ์ เก่ง",      "fixed_room_id":6, "department_id":7,"outdoor_score":2, "max_slots_per_day":6,"max_outdoor_per_week":0},
+    {"id":6,"name":"ครูภาษาไทย ดี",      "fixed_room_id":3, "department_id":4,"outdoor_score":5, "max_slots_per_day":6,"max_outdoor_per_week":1},
 ]
 
 SUBJECTS: list[dict[str, Any]] = [
-    {"id":1,"code":"MATH101","name":"คณิตศาสตร์", "type":"common",  "duration":1,"weight":"heavy"},
-    {"id":2,"code":"SCI101", "name":"วิทยาศาสตร์","type":"common",  "duration":1,"weight":"heavy"},
-    {"id":3,"code":"ENG101", "name":"ภาษาอังกฤษ", "type":"common",  "duration":1,"weight":"heavy"},
-    {"id":4,"code":"THAI101","name":"ภาษาไทย",     "type":"common",  "duration":1,"weight":"light"},
-    {"id":5,"code":"SOC101", "name":"สังคมศึกษา", "type":"common",  "duration":1,"weight":"light"},
-    {"id":6,"code":"PE101",  "name":"พลศึกษา",     "type":"parallel","duration":2,"weight":"light"},
-    {"id":7,"code":"COM101", "name":"คอมพิวเตอร์", "type":"parallel","duration":1,"weight":"light"},
-    {"id":8,"code":"ART101", "name":"ศิลปะ",        "type":"common",  "duration":1,"weight":"light"},
+    {"id":1,"code":"MATH101","name":"คณิตศาสตร์", "type":"common",  "duration":1,"weight":"heavy","department_id":1,"is_activity":False},
+    {"id":2,"code":"SCI101", "name":"วิทยาศาสตร์","type":"common",  "duration":1,"weight":"heavy","department_id":2,"is_activity":False},
+    {"id":3,"code":"ENG101", "name":"ภาษาอังกฤษ", "type":"common",  "duration":1,"weight":"heavy","department_id":3,"is_activity":False},
+    {"id":4,"code":"THAI101","name":"ภาษาไทย",     "type":"common",  "duration":1,"weight":"light","department_id":4,"is_activity":False},
+    {"id":5,"code":"SOC101", "name":"สังคมศึกษา", "type":"common",  "duration":1,"weight":"light","department_id":5,"is_activity":False},
+    {"id":6,"code":"PE101",  "name":"พลศึกษา",     "type":"parallel","duration":2,"weight":"light","department_id":6,"is_activity":False},
+    {"id":7,"code":"COM101", "name":"คอมพิวเตอร์", "type":"parallel","duration":1,"weight":"light","department_id":7,"is_activity":False},
+    {"id":8,"code":"ART101", "name":"ศิลปะ",        "type":"common",  "duration":1,"weight":"light","department_id":8,"is_activity":False},
+    {"id":9,"code":"ACT001", "name":"ชุมนุม",       "type":"common",  "duration":1,"weight":"light","department_id":None,"is_activity":True},
+    {"id":10,"code":"ACT002","name":"ลูกเสือ/ยุวกาชาด","type":"common","duration":1,"weight":"light","department_id":None,"is_activity":True},
 ]
 
 REQUIREMENTS: list[dict[str, Any]] = [
@@ -92,7 +105,8 @@ SLOTS: list[dict[str, Any]] = []
 _counters: dict[str, int] = {
     "period": max(p["id"] for p in PERIODS),
     "room": max(r["id"] for r in ROOMS),
-    "group": 8, "teacher": 6, "subject": 8,
+    "department": max(d["id"] for d in DEPARTMENTS),
+    "group": 8, "teacher": 6, "subject": 10,
     "requirement": max(r["id"] for r in REQUIREMENTS),
     "slot": 0,
 }
@@ -212,18 +226,36 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
 
     # ── Place parallel groups (all siblings share same day+period) ──
     for pgk, reqs in parallel.items():
-        already = sum(1 for s in SLOTS if s.get("parallel_group_key") == pgk)
-        needed  = max(0, reqs[0]["weekly_count"] - already)
-        cells   = list(all_cells)
+        # Use max weekly_count across all siblings (most conservative)
+        max_weekly = max(r["weekly_count"] for r in reqs)
+        already    = sum(1 for s in SLOTS if s.get("parallel_group_key") == pgk) // max(len(reqs), 1)
+        needed     = max(0, max_weekly - already)
+
+        # Detect same-teacher assignment (warn but still try)
+        teacher_ids = [r["teacher_id"] for r in reqs]
+        if len(set(teacher_ids)) < len(teacher_ids):
+            violations.append(
+                f"[{pgk}] ครูคนเดียวสอนหลายห้องพร้อมกันไม่ได้ "
+                f"กรุณาตั้งครูคนละคนสำหรับแต่ละห้อง"
+            )
+
+        cells  = list(all_cells)
         random.shuffle(cells)
-        placed  = 0
+        placed = 0
         for day, period in cells:
             if placed >= needed:
                 break
-            if any((r["teacher_id"], day, period) in teacher_busy or
-                   (r["group_id"],   day, period) in group_busy
-                   for r in reqs):
+            # Check ALL sibling teachers AND groups are free
+            conflict = False
+            for r in reqs:
+                if (r["teacher_id"], day, period) in teacher_busy:
+                    conflict = True; break
+                if (r["group_id"], day, period) in group_busy:
+                    conflict = True; break
+            if conflict:
                 continue
+
+            # Place all siblings at this (day, period)
             for req in reqs:
                 slot = make_slot(req, day, period)
                 SLOTS.append(slot)
@@ -231,6 +263,12 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
                 group_busy.add((req["group_id"],   day, period))
                 created += 1
             placed += 1
+
+        if placed < needed:
+            violations.append(
+                f"[{pgk}] วิชาคู่ขนานจัดได้ {placed}/{needed} คาบ "
+                f"(ห้อง: {', '.join(str(r['group_id']) for r in reqs)})"
+            )
 
     status = "FEASIBLE" if not violations else "INFEASIBLE"
     return {
@@ -334,6 +372,31 @@ def bulk_create_rooms(body: list[dict[str, Any]]):
         created.append(row)
     return created
 
+# ── Departments ──────────────────────────────────────────────────────────────
+@app.get("/api/departments/")
+def get_departments():
+    return DEPARTMENTS
+
+@app.post("/api/departments/")
+def create_department(body: dict[str, Any]):
+    body["id"] = _next("department")
+    DEPARTMENTS.append(body)
+    return body
+
+@app.put("/api/departments/{i}")
+def update_department(i: int, body: dict[str, Any]):
+    for d in DEPARTMENTS:
+        if d["id"] == i:
+            d.update(body)
+            return d
+    raise HTTPException(404)
+
+@app.delete("/api/departments/{i}")
+def del_department(i: int):
+    global DEPARTMENTS
+    DEPARTMENTS = [d for d in DEPARTMENTS if d["id"] != i]
+    return {}
+
 # ── Groups ────────────────────────────────────────────────────────────────────
 @app.get("/api/groups/")
 def get_groups():
@@ -343,6 +406,7 @@ def get_groups():
 def create_group(body: dict[str, Any]):
     body["id"] = _next("group")
     body.setdefault("children", [])
+    body.setdefault("homeroom_room_id", None)
     GROUPS.append(body)
     return body
 
