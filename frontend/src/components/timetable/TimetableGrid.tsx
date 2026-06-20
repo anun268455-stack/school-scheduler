@@ -226,25 +226,12 @@ export const TimetableGrid: React.FC = () => {
   }, [draggingSlot, slotGrid]);
 
   const handlePreLockClick = useCallback((slot: TimetableSlot) => toggleLock(slot.id), [toggleLock]);
-  const isDragActive = !!draggingSlot;
 
-  if (!selectedGroupId && !selectedTeacherId && !selectedRoomId) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3 py-20">
-        <span className="text-5xl">📅</span>
-        <p className="text-sm">
-          เลือก{viewMode === "group" ? "ห้องเรียน" : viewMode === "teacher" ? "ครู" : "ห้องสอน"}จาก toolbar ด้านบน
-        </p>
-      </div>
-    );
-  }
-
-  // ── Conflict resolution handlers ──────────────────────────────────────────
+  // ── Conflict resolution handlers (must be before early return to follow Rules of Hooks) ──
   const handleSwap = useCallback(() => {
     if (!pendingMove) return;
     const movingSlot = slots.find((s) => s.id === pendingMove.slotId);
     if (!movingSlot) { setPendingMove(null); return; }
-    // Move conflicting slot to original position, then move dragging slot to target
     pendingMove.conflicts.forEach((c) => {
       moveSlot(c.slot.id, movingSlot.day, movingSlot.period);
     });
@@ -258,6 +245,19 @@ export const TimetableGrid: React.FC = () => {
     moveSlot(pendingMove.slotId, pendingMove.newDay, pendingMove.newPeriod);
     setPendingMove(null);
   }, [pendingMove, moveSlot, deleteSlot]);
+
+  const isDragActive = !!draggingSlot;
+
+  if (!selectedGroupId && !selectedTeacherId && !selectedRoomId) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3 py-20">
+        <span className="text-5xl">📅</span>
+        <p className="text-sm">
+          เลือก{viewMode === "group" ? "ห้องเรียน" : viewMode === "teacher" ? "ครู" : "ห้องสอน"}จาก toolbar ด้านบน
+        </p>
+      </div>
+    );
+  }
 
   return (
     <>
