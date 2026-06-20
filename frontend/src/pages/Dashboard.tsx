@@ -95,25 +95,25 @@ const GroupsPanel: React.FC = () => {
   const [editForm, setEditForm] = useState<typeof form | null>(null);
 
   const handleCreate = async () => {
-    await api.createGroup({
+    const created = await api.createGroup({
       name: form.name, level: form.level || null,
       size: form.size,
       parent_id: form.parent_id ? Number(form.parent_id) : null,
       homeroom_room_id: form.homeroom_room_id ? Number(form.homeroom_room_id) : null,
     });
-    await reload();
+    useTimetableStore.setState((s) => ({ groups: [...s.groups, { ...created, children: created.children ?? [] }] }));
     setForm({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "" });
   };
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
-    await api.updateGroup(id, {
+    const updated = await api.updateGroup(id, {
       name: editForm.name, level: editForm.level || null,
       size: editForm.size,
       parent_id: editForm.parent_id ? Number(editForm.parent_id) : null,
       homeroom_room_id: editForm.homeroom_room_id ? Number(editForm.homeroom_room_id) : null,
     });
-    await reload();
+    useTimetableStore.setState((s) => ({ groups: s.groups.map((g) => g.id === id ? { ...g, ...updated } : g) }));
     setEditing(null); setEditForm(null);
   };
 
@@ -236,15 +236,15 @@ const TeachersPanel: React.FC = () => {
   });
 
   const handleCreate = async () => {
-    await api.createTeacher({ ...form, fixed_room_id: null, department_id: form.department_id ? Number(form.department_id) : null });
-    await reload();
+    const created = await api.createTeacher({ ...form, fixed_room_id: null, department_id: form.department_id ? Number(form.department_id) : null });
+    useTimetableStore.setState((s) => ({ teachers: [...s.teachers, created] }));
     setForm({ name: "", department_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   };
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
-    await api.updateTeacher(id, { ...editForm, department_id: editForm.department_id ? Number(editForm.department_id) : null });
-    await reload();
+    const updated = await api.updateTeacher(id, { ...editForm, department_id: editForm.department_id ? Number(editForm.department_id) : null });
+    useTimetableStore.setState((s) => ({ teachers: s.teachers.map((t) => t.id === id ? { ...t, ...updated } : t) }));
     setEditing(null); setEditForm(null);
   };
 
@@ -389,20 +389,20 @@ const SubjectsPanel: React.FC = () => {
   const [editForm, setEditForm] = useState<typeof form | null>(null);
 
   const handleCreate = async () => {
-    await api.createSubject({
+    const created = await api.createSubject({
       ...form,
       type:          form.type   as SubjectType,
       weight:        form.weight as SubjectWeight,
       duration:      Number(form.duration) as 1 | 2,
       department_id: form.department_id ? Number(form.department_id) : null,
     });
-    await reload();
+    useTimetableStore.setState((s) => ({ subjects: [...s.subjects, created] }));
     setForm({ code: "", name: "", type: "common", duration: 1, weight: "light", department_id: "", is_activity: false });
   };
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
-    await api.updateSubject(id, {
+    const updated = await api.updateSubject(id, {
       code: editForm.code, name: editForm.name,
       type: editForm.type as SubjectType,
       weight: editForm.weight as SubjectWeight,
@@ -410,7 +410,7 @@ const SubjectsPanel: React.FC = () => {
       department_id: editForm.department_id ? Number(editForm.department_id) : null,
       is_activity: editForm.is_activity,
     });
-    await reload();
+    useTimetableStore.setState((s) => ({ subjects: s.subjects.map((x) => x.id === id ? { ...x, ...updated } : x) }));
     setEditing(null); setEditForm(null);
   };
 
@@ -542,7 +542,7 @@ const RoomsPanel: React.FC = () => {
   const [editForm, setEditForm] = useState<typeof form | null>(null);
 
   const handleCreate = async () => {
-    await api.createRoom({
+    const created = await api.createRoom({
       ...form,
       type:        form.type as RoomType,
       building_id: form.building_id ? Number(form.building_id) : null,
@@ -551,20 +551,20 @@ const RoomsPanel: React.FC = () => {
       specialized_dept_id: null,
       reserved_teacher_id: null,
     });
-    await reload();
+    useTimetableStore.setState((s) => ({ rooms: [...s.rooms, created] }));
     setForm({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40 });
   };
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
-    await api.updateRoom(id, {
+    const updated = await api.updateRoom(id, {
       name: editForm.name,
       type: editForm.type as RoomType,
       building_id: editForm.building_id ? Number(editForm.building_id) : null,
       floor: Number(editForm.floor),
       capacity: Number(editForm.capacity),
     });
-    await reload();
+    useTimetableStore.setState((s) => ({ rooms: s.rooms.map((r) => r.id === id ? { ...r, ...updated } : r) }));
     setEditing(null); setEditForm(null);
   };
 
@@ -1108,15 +1108,15 @@ const DepartmentsPanel: React.FC = () => {
   const [editForm, setEditForm] = useState<{ name: string } | null>(null);
 
   const handleCreate = async () => {
-    await api.createDepartment({ name: form.name });
-    await reload();
+    const created = await api.createDepartment({ name: form.name });
+    useTimetableStore.setState((s) => ({ departments: [...s.departments, created] }));
     setForm({ name: "" });
   };
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
-    await api.updateDepartment(id, editForm);
-    await reload();
+    const updated = await api.updateDepartment(id, editForm);
+    useTimetableStore.setState((s) => ({ departments: s.departments.map((d) => d.id === id ? { ...d, ...updated } : d) }));
     setEditing(null); setEditForm(null);
   };
 

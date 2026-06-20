@@ -111,15 +111,15 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     try {
       const [departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods] =
         await Promise.all([
-          api.fetchDepartments().catch(() => []),
-          api.fetchBuildings(),
-          api.fetchRooms(),
-          api.fetchGroups(),
-          api.fetchTeachers(),
-          api.fetchSubjects(),
-          api.fetchRequirements(),
-          api.fetchSlots(),
-          api.fetchPeriods().catch(() => DEFAULT_PERIODS),
+          api.fetchDepartments().catch(() => get().departments),
+          api.fetchBuildings().catch(() => get().buildings),
+          api.fetchRooms().catch(() => get().rooms),
+          api.fetchGroups().catch(() => get().groups),
+          api.fetchTeachers().catch(() => get().teachers),
+          api.fetchSubjects().catch(() => get().subjects),
+          api.fetchRequirements().catch(() => get().requirements),
+          api.fetchSlots().catch(() => get().slots),
+          api.fetchPeriods().catch(() => get().periods.length ? get().periods : DEFAULT_PERIODS),
         ]);
       set({ departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
     } finally {
