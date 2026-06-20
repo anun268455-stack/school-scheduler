@@ -22,7 +22,7 @@ interface ColDef {
 
 const ENTITY_CONFIGS: Record<EntityType, { label: string; icon: string; cols: ColDef[] }> = {
   teachers: {
-    label: "ครู (Teachers)",
+    label: "ครู",
     icon: "👨‍🏫",
     cols: [
       { key: "name",                label: "ชื่อครู",             aliases: ["name","ชื่อ","ชื่อครู"],             required: true,  hint: "ครูสมชาย ใจดี" },
@@ -32,7 +32,7 @@ const ENTITY_CONFIGS: Record<EntityType, { label: string; icon: string; cols: Co
     ],
   },
   rooms: {
-    label: "ห้องสอน (Rooms)",
+    label: "ห้องสอน",
     icon: "🚪",
     cols: [
       { key: "name",        label: "ชื่อห้อง",   aliases: ["name","ชื่อ","ชื่อห้อง"],                                  required: true,  hint: "ห้อง 101" },
@@ -43,7 +43,7 @@ const ENTITY_CONFIGS: Record<EntityType, { label: string; icon: string; cols: Co
     ],
   },
   subjects: {
-    label: "วิชาเรียน (Subjects)",
+    label: "วิชาเรียน",
     icon: "📚",
     cols: [
       { key: "code",     label: "รหัสวิชา",  aliases: ["code","รหัส","รหัสวิชา"],                         required: true,  hint: "MATH101" },
@@ -54,7 +54,7 @@ const ENTITY_CONFIGS: Record<EntityType, { label: string; icon: string; cols: Co
     ],
   },
   groups: {
-    label: "ห้องเรียน (Groups)",
+    label: "ห้องเรียน",
     icon: "👥",
     cols: [
       { key: "name",  label: "ชื่อห้อง",    aliases: ["name","ชื่อ","ชื่อห้อง"],   required: true,  hint: "ม.1/1" },
@@ -193,7 +193,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
         <div className="flex items-center justify-between px-6 py-4 bg-blue-700 text-white shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-xl">📥</span>
-            <span className="font-bold text-base">นำเข้าข้อมูล (Import)</span>
+            <span className="font-bold text-base">นำเข้าข้อมูล</span>
           </div>
           <button onClick={onClose} className="text-blue-200 hover:text-white text-xl leading-none">✕</button>
         </div>

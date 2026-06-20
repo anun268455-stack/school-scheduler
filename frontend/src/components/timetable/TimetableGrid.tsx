@@ -83,7 +83,7 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
         <div className="absolute -top-8 left-0 z-50 bg-gray-900 text-white text-[10px] rounded px-2 py-1 whitespace-nowrap shadow-xl pointer-events-none">
           {impact.reason}
           {impact.cascades > 0 && impact.cascades !== Infinity && (
-            <span className="ml-1 text-yellow-300">({impact.cascades} swap)</span>
+            <span className="ml-1 text-yellow-300">({impact.cascades} สลับ)</span>
           )}
         </div>
       )}
@@ -301,7 +301,7 @@ export const TimetableGrid: React.FC = () => {
       {/* Pre-lock banner */}
       {preLockMode && (
         <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-900/40 border-b border-amber-700 text-amber-200 text-xs shrink-0">
-          🔒 <strong>Pre-Lock Mode:</strong> คลิกที่คาบเพื่อล็อก/ปลดล็อก
+          🔒 <strong>โหมดล็อก:</strong> คลิกที่คาบเพื่อล็อก/ปลดล็อก
         </div>
       )}
 

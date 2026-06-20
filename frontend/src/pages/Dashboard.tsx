@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Dashboard v4 – Full CRUD with inline edit for all entities + Periods + Bulk Lock + Import
  */
 import React, { useState } from "react";
@@ -55,6 +55,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </div>
   );
 }
+
+// ── Thai label helpers ────────────────────────────────────────────────────────
+const SUBJECT_TYPE_TH: Record<string, string> = { common: "ทั่วไป", parallel: "คู่ขนาน" };
+const SUBJECT_WEIGHT_TH: Record<string, string> = { heavy: "หนัก", light: "เบา" };
+const ROOM_TYPE_TH: Record<string, string> = { physical: "ห้องเรียนทั่วไป", special: "ห้องพิเศษ", outdoor: "กลางแจ้ง", floating: "ห้องเวียน" };
+const PERIOD_TYPE_TH: Record<string, string> = { class: "คาบเรียน", break: "พัก", lunch: "กินข้าว", assembly: "เคารพธง", homeroom: "โฮมรูม" };
+const APPLIES_TO_TH: Record<string, string> = { all: "ทุกระดับ", lower: "ม.1-3", upper: "ม.4-6" };
 
 const inputCls   = "w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none";
 const inlineCls  = "border rounded px-1 py-0.5 text-xs focus:ring-1 focus:ring-blue-500 outline-none w-full";
@@ -121,7 +128,7 @@ const GroupsPanel: React.FC = () => {
   const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : "–";
 
   return (
-    <Section title="ห้องเรียน (Groups)" action={<ImportButton entity="groups" />}>
+    <Section title="ห้องเรียน" action={<ImportButton entity="groups" />}>
       <div className="grid grid-cols-3 gap-2 mb-3">
         <Field label="ชื่อห้อง *">
           <input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ม.1/1" />
@@ -143,7 +150,7 @@ const GroupsPanel: React.FC = () => {
         <Field label="ห้องประจำชั้น (ห้องสอน)">
           <select className={inputCls} value={form.homeroom_room_id} onChange={(e) => setForm({ ...form, homeroom_room_id: e.target.value })}>
             <option value="">– ไม่ระบุ –</option>
-            {rooms.map((r) => <option key={r.id} value={r.id}>{r.name} ({r.type})</option>)}
+            {rooms.map((r) => <option key={r.id} value={r.id}>{r.name} ({ROOM_TYPE_TH[r.type] ?? r.type})</option>)}
           </select>
         </Field>
       </div>
@@ -257,7 +264,7 @@ const TeachersPanel: React.FC = () => {
   const deptName = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name ?? "–") : "–";
 
   return (
-    <Section title="ครูผู้สอน (Teachers)" action={<ImportButton entity="teachers" />}>
+    <Section title="ครูผู้สอน" action={<ImportButton entity="teachers" />}>
       <div className="grid grid-cols-3 gap-2 mb-3">
         <Field label="ชื่อครู *">
           <input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ครูสมชาย ใจดี" />
@@ -417,7 +424,7 @@ const SubjectsPanel: React.FC = () => {
   const deptName = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name?.replace("กลุ่มสาระ","") ?? String(id)) : "–";
 
   return (
-    <Section title="วิชาเรียน (Subjects)" action={<ImportButton entity="subjects" />}>
+    <Section title="วิชาเรียน" action={<ImportButton entity="subjects" />}>
       <div className="grid grid-cols-3 gap-2 mb-3">
         <Field label="รหัสวิชา *">
           <input className={inputCls} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="MATH101" />
@@ -433,8 +440,8 @@ const SubjectsPanel: React.FC = () => {
         </Field>
         <Field label="ประเภท">
           <select className={inputCls} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-            <option value="common">ทั่วไป (common)</option>
-            <option value="parallel">คู่ขนาน (parallel)</option>
+            <option value="common">ทั่วไป</option>
+            <option value="parallel">คู่ขนาน</option>
           </select>
         </Field>
         <Field label="จำนวนคาบ">
@@ -445,8 +452,8 @@ const SubjectsPanel: React.FC = () => {
         </Field>
         <Field label="น้ำหนัก">
           <select className={inputCls} value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })}>
-            <option value="light">เบา (light)</option>
-            <option value="heavy">หนัก (heavy)</option>
+            <option value="light">เบา</option>
+            <option value="heavy">หนัก</option>
           </select>
         </Field>
         <Field label="วิชากิจกรรม">
@@ -485,8 +492,8 @@ const SubjectsPanel: React.FC = () => {
                     </td>
                     <td className="px-2 py-1">
                       <select className={inlineCls} value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}>
-                        <option value="common">common</option>
-                        <option value="parallel">parallel</option>
+                        <option value="common">ทั่วไป</option>
+                        <option value="parallel">คู่ขนาน</option>
                       </select>
                     </td>
                     <td className="px-2 py-1">
@@ -513,9 +520,9 @@ const SubjectsPanel: React.FC = () => {
                       {s.is_activity && <span className="ml-1 px-1 py-0.5 bg-purple-100 text-purple-600 rounded text-[10px]">กิจกรรม</span>}
                     </td>
                     <td className="px-3 py-2 text-gray-500 text-xs">{deptName(s.department_id)}</td>
-                    <td className="px-3 py-2 text-gray-600">{s.type}</td>
+                    <td className="px-3 py-2 text-gray-600">{SUBJECT_TYPE_TH[s.type] ?? s.type}</td>
                     <td className="px-3 py-2 text-gray-600">{s.duration}</td>
-                    <td className="px-3 py-2 text-gray-600">{s.weight}</td>
+                    <td className="px-3 py-2 text-gray-600">{SUBJECT_WEIGHT_TH[s.weight ?? ""] ?? s.weight}</td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
                         <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, weight: s.weight, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false }); }} className={btnEdit}>แก้ไข</button>
@@ -569,7 +576,7 @@ const RoomsPanel: React.FC = () => {
   };
 
   return (
-    <Section title="ห้องสอน (Rooms)" action={<ImportButton entity="rooms" />}>
+    <Section title="ห้องสอน" action={<ImportButton entity="rooms" />}>
       <div className="grid grid-cols-3 gap-2 mb-3">
         <Field label="ชื่อห้อง *">
           <input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ห้อง 101" />
@@ -641,7 +648,7 @@ const RoomsPanel: React.FC = () => {
                 ) : (
                   <>
                     <td className="px-3 py-2 font-medium text-gray-800">{r.name}</td>
-                    <td className="px-3 py-2 text-gray-600">{r.type}</td>
+                    <td className="px-3 py-2 text-gray-600">{ROOM_TYPE_TH[r.type] ?? r.type}</td>
                     <td className="px-3 py-2 text-gray-500">{r.building_name ?? "–"}</td>
                     <td className="px-3 py-2 text-gray-600">{r.floor}</td>
                     <td className="px-3 py-2 text-gray-600">{r.capacity}</td>
@@ -692,7 +699,7 @@ const RequirementsPanel: React.FC = () => {
     <Section title="ข้อกำหนดคาบเรียน — ครูสอนวิชาอะไร ในห้องใด">
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-800">
         <strong>วิธีกำหนดการสอน:</strong> เลือกห้องเรียน → วิชา → ครูผู้สอน → จำนวนคาบ/สัปดาห์
-        <br/>ถ้าวิชาเดียวกันสอนหลายห้องพร้อมกัน (คู่ขนาน) ให้กรอก <strong>Parallel Key</strong> เดียวกัน เช่น "PE-M1-001"
+        <br/>ถ้าวิชาเดียวกันสอนหลายห้องพร้อมกัน (คู่ขนาน) ให้กรอก <strong>รหัสคู่ขนาน</strong> เดียวกัน เช่น "PE-M1-001"
       </div>
 
       <div className="grid grid-cols-3 gap-2 mb-3">
@@ -718,7 +725,7 @@ const RequirementsPanel: React.FC = () => {
           <input type="number" min={1} max={10} className={inputCls} value={form.weekly_count}
             onChange={(e) => setForm({ ...form, weekly_count: Number(e.target.value) })} />
         </Field>
-        <Field label="Parallel Key (ถ้าสอนคู่ขนาน)">
+        <Field label="รหัสคู่ขนาน (สำหรับวิชาที่สอนพร้อมกัน)">
           <input className={inputCls} value={form.parallel_group_key}
             onChange={(e) => setForm({ ...form, parallel_group_key: e.target.value })}
             placeholder="เช่น PE-M1-001" />
@@ -736,7 +743,7 @@ const RequirementsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ห้องเรียน","วิชา","ครูผู้สอน","คาบ/สัปดาห์","Parallel Key",""].map((h) => (
+              {["ห้องเรียน","วิชา","ครูผู้สอน","คาบ/สัปดาห์","รหัสคู่ขนาน",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
@@ -772,11 +779,11 @@ const RequirementsPanel: React.FC = () => {
 
 // ─── Periods Management ───────────────────────────────────────────────────────
 const PERIOD_TYPES: { v: PeriodType; label: string }[] = [
-  { v: "class",    label: "คาบเรียน (class)"      },
-  { v: "break",    label: "พัก (break)"            },
-  { v: "lunch",    label: "กินข้าว (lunch)"        },
-  { v: "assembly", label: "เคารพธง (assembly)"     },
-  { v: "homeroom", label: "โฮมรูม (homeroom)"      },
+  { v: "class",    label: "คาบเรียน"    },
+  { v: "break",    label: "พัก"         },
+  { v: "lunch",    label: "กินข้าว"    },
+  { v: "assembly", label: "เคารพธง"    },
+  { v: "homeroom", label: "โฮมรูม"     },
 ];
 
 const PeriodsPanel: React.FC = () => {
@@ -810,16 +817,16 @@ const PeriodsPanel: React.FC = () => {
   const sortedPeriods = [...periods].sort((a, b) => a.period_num - b.period_num || a.id - b.id);
 
   return (
-    <Section title="จัดการคาบเรียนและเวลา (Periods)">
+    <Section title="จัดการคาบเรียนและเวลา">
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-800">
         <strong>คำอธิบาย:</strong> กำหนดเวลาเริ่ม-สิ้นสุดของแต่ละคาบ และประเภทคาบ (เรียน/พัก/กินข้าว)
-        <br/>คาบที่เป็น <strong>break/lunch/assembly/homeroom</strong> จะแสดงเป็น "คาบว่าง" และ Solver จะไม่จัดวิชาทับ
+        <br/>คาบที่เป็น <strong>พัก/กินข้าว/เคารพธง/โฮมรูม</strong> จะแสดงเป็น "คาบว่าง" และระบบจะไม่จัดวิชาทับ
       </div>
 
       <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
         <p className="text-xs font-semibold text-gray-600 mb-3">➕ เพิ่มคาบใหม่</p>
         <div className="grid grid-cols-3 gap-2 mb-3">
-          <Field label="เลขคาบ (period_num)">
+          <Field label="เลขคาบ">
             <input type="number" min={0} className={inputCls} value={form.period_num}
               onChange={(e) => setForm({ ...form, period_num: Number(e.target.value) })} />
           </Field>
@@ -844,9 +851,9 @@ const PeriodsPanel: React.FC = () => {
           <Field label="ใช้กับ">
             <select className={inputCls} value={form.applies_to}
               onChange={(e) => setForm({ ...form, applies_to: e.target.value as "all"|"lower"|"upper" })}>
-              <option value="all">ทุกระดับ (all)</option>
-              <option value="lower">ม.1-3 (lower)</option>
-              <option value="upper">ม.4-6 (upper)</option>
+              <option value="all">ทุกระดับ</option>
+              <option value="lower">ม.1-3</option>
+              <option value="upper">ม.4-6</option>
             </select>
           </Field>
         </div>
@@ -878,7 +885,7 @@ const PeriodsPanel: React.FC = () => {
                     <td className="px-2 py-1">
                       <select className="border rounded px-1 py-0.5 text-xs" value={editForm.type}
                         onChange={(e) => setEditForm({ ...editForm, type: e.target.value as PeriodType })}>
-                        {PERIOD_TYPES.map((t) => <option key={t.v} value={t.v}>{t.v}</option>)}
+                        {PERIOD_TYPES.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
                       </select>
                     </td>
                     <td className="px-2 py-1">
@@ -892,9 +899,9 @@ const PeriodsPanel: React.FC = () => {
                     <td className="px-2 py-1">
                       <select className="border rounded px-1 py-0.5 text-xs" value={editForm.applies_to}
                         onChange={(e) => setEditForm({ ...editForm, applies_to: e.target.value as "all"|"lower"|"upper" })}>
-                        <option value="all">all</option>
-                        <option value="lower">lower</option>
-                        <option value="upper">upper</option>
+                        <option value="all">ทุกระดับ</option>
+                        <option value="lower">ม.1-3</option>
+                        <option value="upper">ม.4-6</option>
                       </select>
                     </td>
                     <td className="px-2 py-1 flex gap-1">
@@ -913,11 +920,11 @@ const PeriodsPanel: React.FC = () => {
                         : p.type === "break"  ? "bg-gray-100 text-gray-600"
                         : p.type === "lunch"  ? "bg-orange-100 text-orange-700"
                         : "bg-purple-100 text-purple-700",
-                      )}>{p.type}</span>
+                      )}>{PERIOD_TYPE_TH[p.type] ?? p.type}</span>
                     </td>
                     <td className="px-3 py-2 font-mono text-xs">{p.start_time}</td>
                     <td className="px-3 py-2 font-mono text-xs">{p.end_time}</td>
-                    <td className="px-3 py-2 text-xs text-gray-500">{p.applies_to}</td>
+                    <td className="px-3 py-2 text-xs text-gray-500">{APPLIES_TO_TH[p.applies_to] ?? p.applies_to}</td>
                     <td className="px-3 py-2 flex gap-1">
                       <button onClick={() => { setEditing(p.id); setEditForm({ period_num: p.period_num, label: p.label, start_time: p.start_time, end_time: p.end_time, type: p.type, applies_to: p.applies_to }); }}
                         className={btnEdit}>แก้ไข</button>
@@ -984,10 +991,10 @@ const BulkLockPanel: React.FC = () => {
   };
 
   return (
-    <Section title="ล็อคคาบเรียนแบบกลุ่ม (Bulk Lock / Unlock)">
+    <Section title="ล็อคคาบเรียนแบบกลุ่ม">
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-800">
         <strong>วิธีใช้:</strong> เลือกเงื่อนไขที่ต้องการ แล้วกด "ล็อก" หรือ "ปลดล็อก"
-        <br/>คาบที่ล็อกจะไม่ถูก Solver เปลี่ยนแปลง — เหมาะสำหรับวิชาที่กำหนดเวลาตายตัว เช่น คุณธรรม หรือ กิจกรรมชาติ
+        <br/>คาบที่ล็อกจะไม่ถูกระบบเปลี่ยนแปลง — เหมาะสำหรับวิชาที่กำหนดเวลาตายตัว เช่น คุณธรรม หรือ กิจกรรมชาติ
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -1121,7 +1128,7 @@ const DepartmentsPanel: React.FC = () => {
   };
 
   return (
-    <Section title="กลุ่มสาระการเรียนรู้ (Departments)">
+    <Section title="กลุ่มสาระการเรียนรู้">
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-800">
         กลุ่มสาระฯ ใช้จัดหมวดหมู่ครูและวิชา ช่วยให้ Analytics แสดงสถิติแยกตามหมวด
       </div>
@@ -1338,7 +1345,7 @@ const AnalyticsPanel: React.FC = () => {
 
           {slots.length === 0 && (
             <div className="text-center py-8 text-gray-400 text-sm border border-dashed border-gray-300 rounded-xl">
-              ยังไม่มีตาราง — กด Solver เพื่อสร้างตารางก่อน
+              ยังไม่มีตาราง — กด "สร้างตาราง" เพื่อสร้างตารางก่อน
             </div>
           )}
         </div>
@@ -1427,14 +1434,14 @@ const SettingsPanel: React.FC = () => {
 
 // ─── Help / User Manual Panel ────────────────────────────────────────────────
 const HELP_TOPICS = [
-  { icon: "🚀", title: "ขั้นตอนเริ่มต้นใช้งาน", content: ["1. ตั้งค่าโรงเรียน (⚙ → 🏫)","2. เพิ่มกลุ่มสาระฯ (⚙ → 🏛)","3. เพิ่มห้องสอน (⚙ → 🚪)","4. เพิ่มครูผู้สอน (⚙ → 👨‍🏫)","5. เพิ่มวิชาเรียน (⚙ → 📚)","6. เพิ่มห้องเรียน (⚙ → 👥)","7. กำหนด Requirements (⚙ → 📋)","8. รัน Solver (⚡)","9. ปรับแก้ด้วยการลากวาง","10. พิมพ์/PDF (🖨️/📥)"] },
-  { icon: "🗓️", title: "การดูตาราง (3 มุมมอง)", content: ["👥 ห้อง — ดูตารางเรียนของห้องที่เลือก","👨‍🏫 ครู — ดูตารางสอนของครูที่เลือก","🚪 ห้องสอน — ดูการใช้ห้องแต่ละห้อง","เลือกชื่อจาก Dropdown ที่ toolbar"] },
-  { icon: "🖱️", title: "การลากวางคาบ (Drag & Drop)", content: ["🟢 เขียว = ปลอดภัย","🟡 เหลือง = ผลกระทบปานกลาง","🔴 แดง = วางไม่ได้","⚡ Modal = เมื่อมีความขัดแย้ง","Path A (Swap) = สลับคาบ — แนะนำ","Path B (Force) = บังคับวาง คาบเดิมถูกลบ"] },
-  { icon: "🔒", title: "การล็อคคาบ", content: ["กด 🔓 Lock → คลิกคาบที่ต้องการล็อค","Solver ไม่เปลี่ยนคาบที่ล็อก","ล็อคทั้งหมด: 🔒 ทั้งหมด","ล็อคกลุ่ม: ⚙ → 🔒 ล็อคคาบ (กลุ่ม)"] },
-  { icon: "⚡", title: "Solver", content: ["กด ⚡ Solver → รัน Solver","ล็อคคาบสำคัญก่อนรัน","ถ้า 0 คาบ: ตรวจ Backend และ Requirements","หลังรัน ปรับด้วยลากวางได้"] },
+  { icon: "🚀", title: "ขั้นตอนเริ่มต้นใช้งาน", content: ["1. ตั้งค่าโรงเรียน (⚙ → 🏫)","2. เพิ่มกลุ่มสาระฯ (⚙ → 🏛)","3. เพิ่มห้องสอน (⚙ → 🚪)","4. เพิ่มครูผู้สอน (⚙ → 👨‍🏫)","5. เพิ่มวิชาเรียน (⚙ → 📚)","6. เพิ่มห้องเรียน (⚙ → 👥)","7. กำหนดการสอน/วิชา (⚙ → 📋)","8. สร้างตาราง (⚡)","9. ปรับแก้ด้วยการลากวาง","10. พิมพ์/PDF (🖨️/📥)"] },
+  { icon: "🗓️", title: "การดูตาราง (3 มุมมอง)", content: ["👥 ห้อง — ดูตารางเรียนของห้องที่เลือก","👨‍🏫 ครู — ดูตารางสอนของครูที่เลือก","🚪 ห้องสอน — ดูการใช้ห้องแต่ละห้อง","เลือกชื่อจากเมนูรายการด้านบน"] },
+  { icon: "🖱️", title: "การลากวางคาบ", content: ["🟢 เขียว = ปลอดภัย","🟡 เหลือง = ผลกระทบปานกลาง","🔴 แดง = วางไม่ได้","⚡ กรอบแจ้งเตือน = เมื่อมีความขัดแย้ง","สลับคาบ = สลับตำแหน่งกัน — แนะนำ","บังคับวาง = วางทับ คาบเดิมถูกลบ"] },
+  { icon: "🔒", title: "การล็อคคาบ", content: ["กด 🔓 โหมดล็อก → คลิกคาบที่ต้องการล็อค","ระบบจะไม่เปลี่ยนคาบที่ล็อก","ล็อคทั้งหมด: 🔒 ทั้งหมด","ล็อคกลุ่ม: ⚙ → 🔒 ล็อคคาบ (กลุ่ม)"] },
+  { icon: "⚡", title: "การสร้างตาราง", content: ["กด ⚡ สร้างตาราง → เริ่มคำนวณ","ล็อคคาบสำคัญก่อนรัน","ถ้า 0 คาบ: ตรวจเซิร์ฟเวอร์และการสอน/วิชา","หลังรัน ปรับด้วยลากวางได้"] },
   { icon: "⚙", title: "ตั้งค่าขั้นสูงครู", content: ["กด '⚙ ขั้นสูง' ข้างชื่อครู","ไม่จำกัดคาบต่อเนื่อง","ต้องสอนชั้น 1 (เหตุสุขภาพ)","กำหนดวันที่ไม่สอน"] },
-  { icon: "📊", title: "Analytics", content: ["⚙ → 📊 วิเคราะห์ตาราง","KPI: ครอบคลุม%, ครูล้า, ห้องขาดตาราง","ตารางภาระงานครู (สีแดง = เกิน)","แจ้งเตือนสอนต่อเนื่อง ≥4 คาบ"] },
-  { icon: "❓", title: "ปัญหาที่พบบ่อย", content: ["หน้าขาว → F5 หรือกด รีเฟรชหน้า","เข้าไม่ได้ → รัน python mock_api.py","ข้อมูลหาย → Backend ดับ ข้อมูลอยู่ใน RAM","Solver 0 คาบ → ตรวจ Requirements","ลากวางไม่ได้ → คาบถูกล็อค","หัวตารางว่าง → ตั้งค่าโรงเรียน"] },
+  { icon: "📊", title: "วิเคราะห์ตาราง", content: ["⚙ → 📊 วิเคราะห์ตาราง","KPI: ครอบคลุม%, ครูล้า, ห้องขาดตาราง","ตารางภาระงานครู (สีแดง = เกิน)","แจ้งเตือนสอนต่อเนื่อง ≥4 คาบ"] },
+  { icon: "❓", title: "ปัญหาที่พบบ่อย", content: ["หน้าขาว → F5 หรือกดรีเฟรชหน้า","เข้าไม่ได้ → รัน python mock_api.py","ข้อมูลหาย → เซิร์ฟเวอร์ดับ ข้อมูลอยู่ใน RAM","สร้างตารางได้ 0 คาบ → ตรวจการสอน/วิชา","ลากวางไม่ได้ → คาบถูกล็อค","หัวตารางว่าง → ตั้งค่าโรงเรียน"] },
 ];
 
 const HelpPanel: React.FC = () => {

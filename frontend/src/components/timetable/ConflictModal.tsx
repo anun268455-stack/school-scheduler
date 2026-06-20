@@ -89,7 +89,7 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
             <span className="text-xl mt-0.5">🔄</span>
             <div className="flex-1">
               <p className="text-sm font-bold text-blue-900 group-hover:text-blue-700">
-                Path A — สลับคาบ (Swap)
+                สลับคาบ
               </p>
               <p className="text-xs text-blue-600 mt-0.5">
                 ย้ายคาบที่ขัดแย้งมาอยู่ตำแหน่งเดิมของคาบที่กำลังลาก
@@ -108,7 +108,7 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
             <span className="text-xl mt-0.5">⚠️</span>
             <div className="flex-1">
               <p className="text-sm font-bold text-red-900 group-hover:text-red-700">
-                Path B — บังคับวาง (Force Override)
+                บังคับวาง
               </p>
               <p className="text-xs text-red-600 mt-0.5">
                 วางทับคาบเดิม — คาบที่ขัดแย้งจะถูก<strong>ลบออก</strong>จากตาราง

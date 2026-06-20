@@ -41,7 +41,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
       <div className="flex items-center justify-between px-4 py-3 bg-indigo-900/60 border-b border-indigo-800">
         <div className="flex items-center gap-2">
           <span className="text-lg">⚡</span>
-          <span className="font-bold text-sm">Auto-Schedule Solver</span>
+          <span className="font-bold text-sm">ระบบสร้างตารางอัตโนมัติ</span>
         </div>
         <button onClick={onClose} className="text-gray-400 hover:text-white text-lg leading-none">✕</button>
       </div>
@@ -140,9 +140,9 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
         <div className="border-t border-gray-700 pt-3 space-y-1.5 text-[10px] text-gray-500">
           <PipelineStep done={true}  label="1. ตรวจสอบข้อกำหนดคาบ"           />
           <PipelineStep done={true}  label="2. นำเข้าเงื่อนไขห้องที่กำหนดพิเศษ" />
-          <PipelineStep done={lockedSlots.length > 0} label={`3. Pre-lock ${lockedSlots.length} คาบ`} />
-          <PipelineStep done={isSolving || !!result}  label="4. รัน CP-SAT Solver"                    />
-          <PipelineStep done={!!result && !isSolving} label="5. บันทึกผลลัพธ์ลง DB"                   />
+          <PipelineStep done={lockedSlots.length > 0} label={`3. ล็อกคาบล่วงหน้า ${lockedSlots.length} คาบ`} />
+          <PipelineStep done={isSolving || !!result}  label="4. รันตัวแก้ปัญหา (CP-SAT)"                    />
+          <PipelineStep done={!!result && !isSolving} label="5. บันทึกผลลัพธ์"                   />
         </div>
       </div>
     </div>

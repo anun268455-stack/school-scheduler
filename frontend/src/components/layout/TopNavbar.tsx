@@ -171,7 +171,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
                 : "bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600",
             )}
           >
-            {preLockMode ? "🔒 Lock ON" : "🔓 Lock"}
+            {preLockMode ? "🔒 กำลังล็อก" : "🔓 โหมดล็อก"}
           </button>
           <button onClick={lockAll}   title="ล็อกทั้งหมด" className="px-2 py-1 text-[10px] bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-gray-300">🔒 ทั้งหมด</button>
           <button onClick={unlockAll} title="ปลดล็อกทั้งหมด" className="px-2 py-1 text-[10px] bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-gray-300">🔓 ปลด</button>
@@ -184,7 +184,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           onClick={() => { setShowSolver((v) => !v); setShowCrud(false); }}
           className="flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-semibold transition-colors"
         >
-          ⚡ Solver
+          ⚡ สร้างตาราง
         </button>
         {showSolver && (
           <div className="absolute right-0 top-full mt-1 z-50">
