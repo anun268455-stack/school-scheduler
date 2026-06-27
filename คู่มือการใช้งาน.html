@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>คู่มือการใช้งาน — ระบบจัดตารางเรียนตารางสอน</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Sarabun',sans-serif;background:#f8fafc;color:#1e293b;font-size:15px;line-height:1.7}
+  a{color:#2563eb;text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* Layout */
+  .container{max-width:960px;margin:0 auto;padding:32px 24px}
+
+  /* Header */
+  .hero{background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);color:white;padding:48px 32px;border-radius:16px;margin-bottom:40px;text-align:center}
+  .hero h1{font-size:28px;font-weight:700;margin-bottom:8px}
+  .hero p{font-size:15px;opacity:.85;max-width:580px;margin:0 auto}
+  .hero .version{display:inline-block;background:rgba(255,255,255,.15);border-radius:20px;padding:4px 14px;font-size:12px;margin-top:12px}
+
+  /* TOC */
+  .toc{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:24px 28px;margin-bottom:40px}
+  .toc h2{font-size:16px;font-weight:700;margin-bottom:16px;color:#1e293b;border-bottom:2px solid #e2e8f0;padding-bottom:8px}
+  .toc ol{padding-left:20px}
+  .toc li{margin:6px 0;font-size:14px}
+  .toc li a{color:#2563eb}
+  .toc .sub{padding-left:20px;margin-top:4px}
+  .toc .sub li{list-style:disc;font-size:13px;color:#64748b}
+  .toc .sub li a{color:#475569}
+
+  /* Sections */
+  .section{background:white;border-radius:12px;border:1px solid #e2e8f0;margin-bottom:32px;overflow:hidden}
+  .section-header{background:linear-gradient(90deg,#1e3a5f,#2563eb);color:white;padding:16px 24px;display:flex;align-items:center;gap:12px}
+  .section-header .num{background:rgba(255,255,255,.25);border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0}
+  .section-header h2{font-size:17px;font-weight:700}
+  .section-body{padding:24px 28px}
+
+  /* Subsections */
+  .subsection{margin-bottom:28px}
+  .subsection:last-child{margin-bottom:0}
+  .subsection h3{font-size:15px;font-weight:700;color:#1e293b;margin-bottom:12px;padding-left:12px;border-left:3px solid #2563eb}
+  .subsection h4{font-size:14px;font-weight:600;color:#334155;margin:12px 0 6px;padding-left:8px;border-left:2px solid #cbd5e1}
+
+  /* Steps */
+  .steps{counter-reset:step}
+  .step{display:flex;gap:14px;margin-bottom:14px;align-items:flex-start}
+  .step-num{background:#2563eb;color:white;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;margin-top:2px}
+  .step-body{flex:1}
+  .step-body strong{display:block;font-size:14px;color:#1e293b}
+  .step-body span{font-size:13px;color:#64748b}
+
+  /* Notes */
+  .note{border-radius:10px;padding:14px 16px;margin:14px 0;font-size:13.5px;display:flex;gap:10px;align-items:flex-start}
+  .note .icon{font-size:18px;flex-shrink:0;margin-top:1px}
+  .note-info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}
+  .note-warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
+  .note-danger{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}
+  .note-success{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534}
+  .note div{line-height:1.6}
+
+  /* Table */
+  .data-table{width:100%;border-collapse:collapse;font-size:13.5px;margin:14px 0}
+  .data-table th{background:#f1f5f9;border:1px solid #e2e8f0;padding:8px 12px;text-align:left;font-weight:600;color:#475569}
+  .data-table td{border:1px solid #e2e8f0;padding:8px 12px;color:#334155;vertical-align:top}
+  .data-table tr:nth-child(even) td{background:#f8fafc}
+
+  /* Badge */
+  .badge{display:inline-block;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600;margin:0 2px}
+  .badge-blue{background:#dbeafe;color:#1d4ed8}
+  .badge-green{background:#dcfce7;color:#15803d}
+  .badge-amber{background:#fef3c7;color:#b45309}
+  .badge-red{background:#fee2e2;color:#dc2626}
+  .badge-purple{background:#ede9fe;color:#7c3aed}
+  .badge-gray{background:#f1f5f9;color:#475569}
+
+  /* Code */
+  code{background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px;padding:1px 6px;font-size:12.5px;font-family:monospace;color:#334155}
+  .cmd{background:#1e293b;color:#e2e8f0;border-radius:8px;padding:10px 16px;font-family:monospace;font-size:13px;margin:10px 0;overflow-x:auto}
+  .cmd span{color:#86efac}
+
+  /* Grid layout */
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:14px 0}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin:14px 0}
+  .card{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px}
+  .card h4{font-size:13px;font-weight:700;margin-bottom:8px;color:#1e293b}
+  .card p{font-size:13px;color:#64748b;line-height:1.6}
+  .card .icon{font-size:24px;margin-bottom:8px;display:block}
+
+  /* Screenshot placeholder */
+  .screenshot{background:#f1f5f9;border:1px dashed #94a3b8;border-radius:8px;padding:20px;text-align:center;color:#94a3b8;font-size:13px;margin:14px 0}
+
+  /* Flow */
+  .flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0}
+  .flow-item{background:#dbeafe;color:#1d4ed8;border-radius:6px;padding:4px 10px;font-size:13px;font-weight:600}
+  .flow-arrow{color:#94a3b8;font-size:14px}
+
+  /* List */
+  ul.list,ol.list{padding-left:20px;margin:8px 0}
+  ul.list li,ol.list li{margin:6px 0;font-size:14px;color:#334155}
+  ul.list li::marker{color:#2563eb}
+
+  /* Footer */
+  .footer{text-align:center;color:#94a3b8;font-size:12px;padding:32px 0 16px;border-top:1px solid #e2e8f0;margin-top:40px}
+
+  /* Print */
+  @media print{
+    .toc{page-break-after:always}
+    .section{page-break-inside:avoid;border:1px solid #ccc}
+    body{background:white}
+  }
+
+  @media(max-width:640px){
+    .grid-2,.grid-3{grid-template-columns:1fr}
+    .hero{padding:32px 20px}
+    .hero h1{font-size:22px}
+    .section-body{padding:18px 16px}
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- HERO -->
+<div class="hero">
+  <h1>📐 คู่มือการใช้งาน<br>ระบบจัดตารางเรียนตารางสอน</h1>
+  <p>School Timetabling System — คู่มือฉบับสมบูรณ์สำหรับผู้ดูแลระบบและผู้ใช้งานทั่วไป</p>
+  <span class="version">ฉบับปรับปรุง มิถุนายน 2568</span>
+</div>
+
+<!-- TOC -->
+<div class="toc">
+  <h2>📋 สารบัญ</h2>
+  <ol>
+    <li><a href="#s1">ภาพรวมระบบ</a></li>
+    <li><a href="#s2">การเริ่มต้นใช้งาน</a>
+      <ul class="sub"><li><a href="#s2a">การเปิดโปรแกรม (เครื่องตัวเอง)</a></li><li><a href="#s2b">การเข้าใช้งานออนไลน์</a></li></ul>
+    </li>
+    <li><a href="#s3">ทำความรู้จักหน้าจอหลัก</a></li>
+    <li><a href="#s4">ขั้นตอนที่ 1 — ตั้งค่าข้อมูลพื้นฐาน</a>
+      <ul class="sub">
+        <li><a href="#s4a">กลุ่มสาระฯ (Departments)</a></li>
+        <li><a href="#s4b">ห้องสอน (Rooms)</a></li>
+        <li><a href="#s4c">ครูผู้สอน (Teachers)</a></li>
+        <li><a href="#s4d">วิชาเรียน (Subjects)</a></li>
+        <li><a href="#s4e">ห้องเรียน / ชั้นเรียน (Groups)</a></li>
+      </ul>
+    </li>
+    <li><a href="#s5">ขั้นตอนที่ 2 — กำหนดข้อกำหนดการสอน</a></li>
+    <li><a href="#s6">ขั้นตอนที่ 3 — จัดการคาบเรียนและเวลา</a></li>
+    <li><a href="#s7">ขั้นตอนที่ 4 — สร้างตารางอัตโนมัติ (Solver)</a></li>
+    <li><a href="#s8">การใช้งานตารางเรียน</a>
+      <ul class="sub">
+        <li><a href="#s8a">การดูตาราง (3 มุมมอง)</a></li>
+        <li><a href="#s8b">การลากวางคาบเรียน</a></li>
+        <li><a href="#s8c">หน้าต่างแก้ไขความขัดแย้ง</a></li>
+        <li><a href="#s8d">การล็อคและปลดล็อคคาบ</a></li>
+      </ul>
+    </li>
+    <li><a href="#s9">การล็อคคาบแบบกลุ่ม (Bulk Lock)</a></li>
+    <li><a href="#s10">การนำเข้าข้อมูลจาก Excel/CSV</a></li>
+    <li><a href="#s11">Analytics — วิเคราะห์และตรวจสอบตาราง</a></li>
+    <li><a href="#s12">การพิมพ์และส่งออก PDF</a></li>
+    <li><a href="#s13">การตั้งค่าโรงเรียน</a></li>
+    <li><a href="#s14">ขั้นตอนทำงานแนะนำ (Workflow)</a></li>
+    <li><a href="#s15">คำถามที่พบบ่อย (FAQ)</a></li>
+  </ol>
+</div>
+
+<!-- SECTION 1 -->
+<div class="section" id="s1">
+  <div class="section-header">
+    <div class="num">1</div>
+    <h2>ภาพรวมระบบ</h2>
+  </div>
+  <div class="section-body">
+    <div class="subsection">
+      <h3>ระบบนี้ทำอะไรได้บ้าง?</h3>
+      <div class="grid-3">
+        <div class="card"><span class="icon">🗓️</span><h4>สร้างตารางอัตโนมัติ</h4><p>ระบบ Solver จัดตารางให้โดยไม่มีครูหรือห้องซ้ำกัน</p></div>
+        <div class="card"><span class="icon">🖱️</span><h4>ลากวางปรับแก้</h4><p>ลากคาบเรียนไปวางที่อื่นได้ พร้อมแสดงผลกระทบแบบ Real-time</p></div>
+        <div class="card"><span class="icon">🔒</span><h4>ล็อคคาบสำคัญ</h4><p>ล็อคคาบที่กำหนดตายตัว Solver จะไม่เปลี่ยนแปลง</p></div>
+        <div class="card"><span class="icon">📊</span><h4>วิเคราะห์ตาราง</h4><p>ตรวจสอบภาระงานครู ความครอบคลุม และแจ้งเตือนปัญหา</p></div>
+        <div class="card"><span class="icon">🖨️</span><h4>พิมพ์ตารางสวยงาม</h4><p>ส่งออก PDF/พิมพ์ตามรูปแบบมาตรฐานของโรงเรียน</p></div>
+        <div class="card"><span class="icon">📥</span><h4>นำเข้าจาก Excel</h4><p>Import ข้อมูลครู วิชา ห้องเรียนจากไฟล์ Excel ได้เลย</p></div>
+      </div>
+    </div>
+
+    <div class="subsection">
+      <h3>เทคโนโลยีที่ใช้</h3>
+      <table class="data-table">
+        <tr><th>ส่วน</th><th>เทคโนโลยี</th><th>หมายเหตุ</th></tr>
+        <tr><td>หน้าเว็บ (Frontend)</td><td>React + TypeScript + Tailwind CSS</td><td>เปิดในเบราว์เซอร์</td></tr>
+        <tr><td>ระบบหลัง (Backend)</td><td>Python + FastAPI</td><td>รันบนเครื่องหรือ Render.com</td></tr>
+        <tr><td>Solver</td><td>Greedy Algorithm (Python)</td><td>จัดตารางอัตโนมัติ</td></tr>
+        <tr><td>การพิมพ์</td><td>jsPDF + html2canvas</td><td>ส่งออก PDF ได้ทันที</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 2 -->
+<div class="section" id="s2">
+  <div class="section-header">
+    <div class="num">2</div>
+    <h2>การเริ่มต้นใช้งาน</h2>
+  </div>
+  <div class="section-body">
+
+    <div class="subsection" id="s2a">
+      <h3>การเปิดโปรแกรม (เครื่องตัวเอง)</h3>
+      <div class="note note-info"><div class="icon">ℹ️</div><div>ต้องติดตั้ง <strong>Python 3.10+</strong> และ <strong>Node.js 18+</strong> ก่อนครั้งแรก</div></div>
+
+      <h4>ครั้งแรก (ติดตั้ง Dependencies)</h4>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>เปิด PowerShell หรือ Terminal</strong><span>กด Windows + R พิมพ์ powershell กด Enter</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>ไปยัง folder โปรแกรม</strong><span><div class="cmd">cd C:\Users\Admin\school-scheduler</div></span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>ติดตั้ง Python packages</strong><span><div class="cmd"><span>pip install fastapi uvicorn</span></div></span></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>ติดตั้ง Node packages (ทำครั้งเดียว)</strong><span><div class="cmd">cd frontend<br>npm install</div></span></div></div>
+      </div>
+
+      <h4>ทุกครั้งที่เปิดโปรแกรม (เปิด 2 หน้าต่าง)</h4>
+      <div class="grid-2">
+        <div class="card">
+          <h4>🖥️ หน้าต่าง 1 — Backend</h4>
+          <div class="cmd">cd C:\Users\Admin\school-scheduler<br><span>python mock_api.py</span></div>
+          <p style="font-size:12px;color:#64748b;margin-top:6px">รอจนเห็น <code>Uvicorn running on http://0.0.0.0:8000</code></p>
+        </div>
+        <div class="card">
+          <h4>🌐 หน้าต่าง 2 — Frontend</h4>
+          <div class="cmd">cd C:\Users\Admin\school-scheduler\frontend<br><span>npm run dev</span></div>
+          <p style="font-size:12px;color:#64748b;margin-top:6px">รอจนเห็น <code>Local: http://localhost:5173</code></p>
+        </div>
+      </div>
+      <div class="step"><div class="step-num">✓</div><div class="step-body"><strong>เปิดเบราว์เซอร์ไปที่</strong><span><code>http://localhost:5173</code></span></div></div>
+    </div>
+
+    <div class="subsection" id="s2b">
+      <h3>การเข้าใช้งานออนไลน์ (GitHub Pages)</h3>
+      <div class="note note-success"><div class="icon">🌐</div><div>ถ้า deploy แล้ว สามารถเข้าใช้งานได้จากทุกที่โดยไม่ต้องเปิด server</div></div>
+      <div class="step"><div class="step-num">1</div><div class="step-body"><strong>เปิดเบราว์เซอร์</strong><span>ไปที่ <code>https://[username].github.io/school-scheduler/</code></span></div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-body"><strong>ข้อมูลจะ reset เมื่อ Backend หยุดทำงาน</strong><span>Render.com แบบฟรีจะ sleep เมื่อไม่มีคนใช้ รอ ~30 วินาทีแรก</span></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 3 -->
+<div class="section" id="s3">
+  <div class="section-header">
+    <div class="num">3</div>
+    <h2>ทำความรู้จักหน้าจอหลัก</h2>
+  </div>
+  <div class="section-body">
+    <div class="subsection">
+      <h3>แถบเครื่องมือด้านบน (Top Toolbar)</h3>
+      <table class="data-table">
+        <tr><th>ปุ่ม / ส่วน</th><th>ตำแหน่ง</th><th>ความหมาย</th></tr>
+        <tr><td><span class="badge badge-blue">📐 ตารางเรียน</span></td><td>ซ้ายสุด</td><td>กดเพื่อกลับหน้าตาราง</td></tr>
+        <tr><td><span class="badge badge-gray">👥 ห้อง / 👨‍🏫 ครู / 🚪 ห้องสอน</span></td><td>ซ้าย</td><td>เปลี่ยนมุมมองตาราง (Group/Teacher/Room)</td></tr>
+        <tr><td><span class="badge badge-gray">Dropdown เลือกห้อง/ครู</span></td><td>ซ้าย-กลาง</td><td>เลือกว่าจะดูตารางของใคร</td></tr>
+        <tr><td><span class="badge badge-amber">🔒 Lock ON/OFF</span></td><td>กลาง</td><td>เปิด Pre-Lock Mode — คลิกคาบเพื่อล็อค</td></tr>
+        <tr><td><span class="badge badge-blue">⚡ Solver</span></td><td>ขวา</td><td>เปิดหน้าต่างสร้างตารางอัตโนมัติ</td></tr>
+        <tr><td><span class="badge badge-gray">⚙ จัดการ ▾</span></td><td>ขวา</td><td>เมนู Dropdown ไปหน้าจัดการข้อมูลต่างๆ</td></tr>
+        <tr><td><span class="badge badge-gray">🖨️ พิมพ์ / 📥 PDF</span></td><td>ขวาสุด</td><td>พิมพ์หรือส่งออกเป็น PDF</td></tr>
+      </table>
+    </div>
+
+    <div class="subsection">
+      <h3>เมนู ⚙ จัดการ — รายการทั้งหมด</h3>
+      <table class="data-table">
+        <tr><th>เมนู</th><th>ทำอะไร</th></tr>
+        <tr><td>👥 ห้องเรียน</td><td>เพิ่ม/แก้ไข/ลบชั้นเรียน (ม.1/1, ม.2/3 ฯลฯ)</td></tr>
+        <tr><td>👨‍🏫 ครู</td><td>จัดการข้อมูลครูผู้สอน</td></tr>
+        <tr><td>📚 วิชา</td><td>จัดการรายวิชา</td></tr>
+        <tr><td>🚪 ห้องสอน</td><td>จัดการห้องเรียน/ห้องปฏิบัติการ</td></tr>
+        <tr><td>📋 การสอน/วิชา</td><td>กำหนดว่าครูคนไหนสอนวิชาอะไร ห้องใด</td></tr>
+        <tr><td>⏰ คาบ &amp; เวลา</td><td>แก้ไขเวลาเริ่ม-สิ้นสุดของแต่ละคาบ</td></tr>
+        <tr><td>🔒 ล็อคคาบ (กลุ่ม)</td><td>ล็อค/ปลดล็อคหลายคาบพร้อมกัน</td></tr>
+        <tr><td>🏛 กลุ่มสาระฯ</td><td>จัดการกลุ่มสาระการเรียนรู้</td></tr>
+        <tr><td>📊 วิเคราะห์ตาราง</td><td>ดู Dashboard สถิติและแจ้งเตือนปัญหา</td></tr>
+        <tr><td>🏫 ตั้งค่าโรงเรียน</td><td>ตั้งชื่อโรงเรียน ภาคเรียน ปีการศึกษา</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 4 -->
+<div class="section" id="s4">
+  <div class="section-header">
+    <div class="num">4</div>
+    <h2>ขั้นตอนที่ 1 — ตั้งค่าข้อมูลพื้นฐาน</h2>
+  </div>
+  <div class="section-body">
+    <div class="note note-warn"><div class="icon">⚠️</div><div><strong>ต้องทำตามลำดับ!</strong> กลุ่มสาระฯ → ห้องสอน → ครู → วิชา → ห้องเรียน<br>เพราะข้อมูลหลังพึ่งพาข้อมูลก่อน</div></div>
+
+    <div class="subsection" id="s4a">
+      <h3>4.1 กลุ่มสาระฯ (Departments)</h3>
+      <p style="margin-bottom:10px;font-size:14px;color:#475569">ใช้จัดหมวดหมู่ครูและวิชา ช่วยให้ Analytics แสดงสถิติแยกตามหมวด</p>
+      <div class="flow">
+        <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+        <div class="flow-item">🏛 กลุ่มสาระฯ</div>
+      </div>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>พิมพ์ชื่อกลุ่มสาระฯ</strong><span>เช่น "กลุ่มสาระคณิตศาสตร์", "กลุ่มสาระวิทยาศาสตร์"</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>กด "+ เพิ่มกลุ่มสาระฯ"</strong><span>ข้อมูลจะปรากฏในตารางด้านล่างทันที</span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>แก้ไขได้ภายหลัง</strong><span>กดปุ่ม "แก้ไข" ด้านขวาของแต่ละรายการ</span></div></div>
+      </div>
+    </div>
+
+    <div class="subsection" id="s4b">
+      <h3>4.2 ห้องสอน (Rooms)</h3>
+      <div class="flow">
+        <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+        <div class="flow-item">🚪 ห้องสอน</div>
+      </div>
+      <table class="data-table">
+        <tr><th>ฟิลด์</th><th>ความหมาย</th><th>ตัวอย่าง</th></tr>
+        <tr><td>ชื่อห้อง *</td><td>ชื่อห้อง</td><td>ห้อง 101, ห้องวิทย์ 1</td></tr>
+        <tr><td>ประเภท</td><td>ลักษณะของห้อง</td><td>ทั่วไป / พิเศษ / กลางแจ้ง / ห้องเวียน</td></tr>
+        <tr><td>อาคาร</td><td>อาคารที่ตั้ง</td><td>อาคาร 1 (หลัก)</td></tr>
+        <tr><td>ชั้น</td><td>ชั้นที่ตั้ง</td><td>1, 2, 3</td></tr>
+        <tr><td>ความจุ</td><td>จำนวนคนสูงสุด</td><td>40</td></tr>
+      </table>
+      <div class="note note-info"><div class="icon">ℹ️</div><div><strong>ประเภทห้อง:</strong><br>
+      • <strong>ทั่วไป</strong> — ห้องเรียนปกติ<br>
+      • <strong>พิเศษ</strong> — ห้องแล็บ, ห้องคอม ใช้ได้เฉพาะวิชาที่กำหนด<br>
+      • <strong>กลางแจ้ง</strong> — สนามกีฬา, ลาน ใช้กับพลศึกษา<br>
+      • <strong>ห้องเวียน</strong> — ห้องที่นักเรียนเดินมาหา ไม่ใช่ห้องประจำ
+      </div></div>
+    </div>
+
+    <div class="subsection" id="s4c">
+      <h3>4.3 ครูผู้สอน (Teachers)</h3>
+      <div class="flow">
+        <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+        <div class="flow-item">👨‍🏫 ครู</div>
+      </div>
+      <table class="data-table">
+        <tr><th>ฟิลด์</th><th>ความหมาย</th><th>ค่าแนะนำ</th></tr>
+        <tr><td>ชื่อครู *</td><td>ชื่อ-นามสกุล</td><td>ครูสมชาย ใจดี</td></tr>
+        <tr><td>กลุ่มสาระฯ</td><td>หมวดที่สังกัด</td><td>เลือกจากรายการ</td></tr>
+        <tr><td>คะแนนกลางแจ้ง (0-10)</td><td>ความเหมาะสมสอนกลางแจ้ง</td><td>พลศึกษา = 10, อื่นๆ = 3-5</td></tr>
+        <tr><td>สอนสูงสุด/วัน</td><td>คาบสูงสุดต่อวัน</td><td>5-6 คาบ</td></tr>
+        <tr><td>กลางแจ้งสูงสุด/สัปดาห์</td><td>จำกัดคาบกลางแจ้ง</td><td>0-2 คาบ</td></tr>
+      </table>
+      <div class="note note-warn"><div class="icon">💡</div><div>ค่าเหล่านี้มีผลต่อ Solver — ครูที่ตั้ง "สอนสูงสุด/วัน = 4" จะไม่ถูกจัดมากกว่า 4 คาบต่อวัน</div></div>
+    </div>
+
+    <div class="subsection" id="s4d">
+      <h3>4.4 วิชาเรียน (Subjects)</h3>
+      <div class="flow">
+        <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+        <div class="flow-item">📚 วิชา</div>
+      </div>
+      <table class="data-table">
+        <tr><th>ฟิลด์</th><th>ความหมาย</th><th>ตัวอย่าง</th></tr>
+        <tr><td>รหัสวิชา *</td><td>รหัสสั้นๆ</td><td>MATH101, SCI201</td></tr>
+        <tr><td>ชื่อวิชา *</td><td>ชื่อเต็ม</td><td>คณิตศาสตร์, ฟิสิกส์</td></tr>
+        <tr><td>ประเภท</td><td>ทั่วไป หรือ คู่ขนาน</td><td>ดูด้านล่าง</td></tr>
+        <tr><td>จำนวนคาบ</td><td>1 หรือ 2 คาบต่อครั้ง</td><td>พลศึกษา = 2 คาบ</td></tr>
+        <tr><td>น้ำหนัก</td><td>เบา/หนัก (แสดงสีในตาราง)</td><td>คณิต/วิทย์ = หนัก</td></tr>
+        <tr><td>กลุ่มสาระฯ</td><td>หมวดที่สังกัด</td><td>เลือกจากรายการ</td></tr>
+        <tr><td>วิชากิจกรรม</td><td>tick ถ้าเป็นชุมนุม/ลูกเสือ</td><td>ชุมนุม, ลูกเสือ</td></tr>
+      </table>
+      <div class="note note-info"><div class="icon">ℹ️</div><div>
+        <strong>ประเภทวิชา:</strong><br>
+        • <strong>ทั่วไป (common)</strong> — สอนแต่ละห้องแยกกัน ต่างเวลากันก็ได้<br>
+        • <strong>คู่ขนาน (parallel)</strong> — หลายห้องเรียนพร้อมกัน เช่น พลศึกษา ม.1 ทุกห้อง
+      </div></div>
+    </div>
+
+    <div class="subsection" id="s4e">
+      <h3>4.5 ห้องเรียน / ชั้นเรียน (Groups)</h3>
+      <div class="flow">
+        <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+        <div class="flow-item">👥 ห้องเรียน</div>
+      </div>
+      <table class="data-table">
+        <tr><th>ฟิลด์</th><th>ความหมาย</th><th>ตัวอย่าง</th></tr>
+        <tr><td>ชื่อห้อง *</td><td>ชื่อชั้นเรียน</td><td>ม.1/1, ม.4/2 ก</td></tr>
+        <tr><td>ระดับ</td><td>ชั้นปี</td><td>M1, M2 … M6, ห้องเวียน</td></tr>
+        <tr><td>จำนวนนักเรียน</td><td>จำนวนในห้อง</td><td>40</td></tr>
+        <tr><td>ห้องแม่ (Parent)</td><td>ถ้าเป็นห้องย่อย เช่น ม.4/1 ก</td><td>เลือก ม.4/1</td></tr>
+        <tr><td>ห้องประจำชั้น</td><td>ห้องสอนที่เป็นห้อง Homeroom</td><td>ห้อง 101</td></tr>
+      </table>
+      <div class="note note-info"><div class="icon">💡</div><div>
+        <strong>ห้องเวียน</strong> คือห้องที่นักเรียนไม่มีห้องประจำ เช่น ห้องวิชาเลือก<br>
+        <strong>ห้องแม่-ลูก</strong> ใช้สำหรับกลุ่มย่อย เช่น ม.4/1 มีกลุ่ม ก ข ค ที่เรียนคู่ขนานกัน
+      </div></div>
+    </div>
+
+    <div class="subsection">
+      <h3>วิธีนำเข้าข้อมูลจาก Excel (แทนการกรอกทีละรายการ)</h3>
+      <p style="font-size:14px;color:#475569;margin-bottom:10px">ในแต่ละหน้า จะมีปุ่ม <span class="badge badge-green">📥 นำเข้าจาก Excel/CSV</span> ที่มุมขวาบน</p>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>กดปุ่ม "📥 นำเข้าจาก Excel/CSV"</strong><span>จะเปิดหน้าต่าง Import</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>เลือกประเภทข้อมูล</strong><span>Teachers / Rooms / Subjects / Groups</span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>ลากหรือเลือกไฟล์ .xlsx หรือ .csv</strong><span>ระบบจะอ่านหัวคอลัมน์และจับคู่ให้อัตโนมัติ</span></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>ตรวจสอบ Preview และกด "นำเข้า"</strong><span>ถ้าคอลัมน์ไม่ตรงให้ปรับ Mapping ด้วยตัวเอง</span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 5 -->
+<div class="section" id="s5">
+  <div class="section-header">
+    <div class="num">5</div>
+    <h2>ขั้นตอนที่ 2 — กำหนดข้อกำหนดการสอน (Requirements)</h2>
+  </div>
+  <div class="section-body">
+    <div class="note note-info"><div class="icon">📋</div><div>"Requirements" คือการบอกระบบว่า <strong>"ครูคนไหน สอนวิชาอะไร ให้ห้องใด จำนวนกี่คาบ/สัปดาห์"</strong> — ต้องกำหนดก่อน Solver ถึงจะสร้างตารางได้</div></div>
+    <div class="flow">
+      <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+      <div class="flow-item">📋 การสอน/วิชา</div>
+    </div>
+
+    <div class="subsection">
+      <h3>การเพิ่มข้อกำหนดทีละรายการ</h3>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>เลือกห้องเรียน</strong><span>เช่น ม.1/1</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>เลือกวิชา</strong><span>เช่น คณิตศาสตร์ (MATH101)</span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>เลือกครูผู้สอน</strong><span>เช่น ครูสมชาย ใจดี</span></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>กรอกจำนวนคาบ/สัปดาห์</strong><span>เช่น 3 คาบ (ทั่วไปคือ 1-5 คาบ)</span></div></div>
+        <div class="step"><div class="step-num">5</div><div class="step-body"><strong>Parallel Key (ถ้าสอนหลายห้องพร้อมกัน)</strong><span>ดูหัวข้อถัดไป</span></div></div>
+        <div class="step"><div class="step-num">6</div><div class="step-body"><strong>กด "+ เพิ่มข้อกำหนด"</strong></div></div>
+      </div>
+    </div>
+
+    <div class="subsection">
+      <h3>Parallel Key — สอนหลายห้องพร้อมกัน</h3>
+      <div class="note note-warn"><div class="icon">⚡</div><div>
+        ใช้เมื่อครูสอนวิชาเดียวกันให้หลายห้องในเวลาเดียวกัน เช่น พลศึกษา ม.1 ทุกห้อง<br>
+        <strong>วิธีทำ:</strong> กรอก Parallel Key เดียวกันในทุกห้อง เช่น <code>PE-M1-001</code>
+      </div></div>
+      <table class="data-table">
+        <tr><th>ห้อง</th><th>วิชา</th><th>ครู</th><th>คาบ/อาทิตย์</th><th>Parallel Key</th></tr>
+        <tr><td>ม.1/1</td><td>พลศึกษา</td><td>ครูพลศึกษา</td><td>2</td><td><code>PE-M1-001</code></td></tr>
+        <tr><td>ม.1/2</td><td>พลศึกษา</td><td>ครูพลศึกษา</td><td>2</td><td><code>PE-M1-001</code></td></tr>
+        <tr><td>ม.1/3</td><td>พลศึกษา</td><td>ครูพลศึกษา</td><td>2</td><td><code>PE-M1-001</code></td></tr>
+      </table>
+      <p style="font-size:13px;color:#475569;margin-top:8px">ผลลัพธ์: ทั้ง 3 ห้องจะได้ตารางพลศึกษาในวัน/คาบเดียวกันทุกครั้ง</p>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 6 -->
+<div class="section" id="s6">
+  <div class="section-header">
+    <div class="num">6</div>
+    <h2>ขั้นตอนที่ 3 — จัดการคาบเรียนและเวลา (Periods)</h2>
+  </div>
+  <div class="section-body">
+    <div class="flow">
+      <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+      <div class="flow-item">⏰ คาบ &amp; เวลา</div>
+    </div>
+    <p style="margin:12px 0;font-size:14px;color:#475569">กำหนดว่าแต่ละคาบเริ่มและสิ้นสุดเมื่อใด และเป็นคาบประเภทใด</p>
+
+    <table class="data-table">
+      <tr><th>ประเภทคาบ</th><th>ความหมาย</th><th>ผลต่อ Solver</th></tr>
+      <tr><td><span class="badge badge-blue">class</span></td><td>คาบเรียนปกติ</td><td>Solver จะจัดวิชาลงคาบนี้</td></tr>
+      <tr><td><span class="badge badge-gray">break</span></td><td>คาบพัก</td><td>ไม่จัดวิชา แสดงเป็นสีเทาในตาราง</td></tr>
+      <tr><td><span class="badge badge-amber">lunch</span></td><td>คาบกินข้าว</td><td>ไม่จัดวิชา</td></tr>
+      <tr><td><span class="badge badge-purple">assembly</span></td><td>เคารพธง/โฮมรูม</td><td>ไม่จัดวิชา</td></tr>
+      <tr><td><span class="badge badge-purple">homeroom</span></td><td>โฮมรูมตอนเย็น</td><td>ไม่จัดวิชา</td></tr>
+    </table>
+
+    <div class="note note-warn"><div class="icon">⚠️</div><div>
+      ระบบมาพร้อมคาบตัวอย่างแล้ว ถ้าตรงกับตารางโรงเรียน <strong>ไม่ต้องแก้ไข</strong><br>
+      ถ้าเวลาต่างออกไป ให้กด "แก้ไข" ด้านขวาของแต่ละคาบ
+    </div></div>
+
+    <div class="subsection">
+      <h3>การเพิ่มคาบใหม่</h3>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>กรอกเลขคาบ (period_num)</strong><span>ตัวเลขไม่ซ้ำกัน เช่น 1, 2, 3...</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>ชื่อคาบ</strong><span>เช่น "คาบ 1", "พักกลางวัน"</span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>เลือกประเภท</strong><span>class / break / lunch / assembly / homeroom</span></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>กรอกเวลาเริ่ม-สิ้นสุด</strong><span>รูปแบบ HH:MM เช่น 08:30</span></div></div>
+        <div class="step"><div class="step-num">5</div><div class="step-body"><strong>ใช้กับ</strong><span>all = ทุกระดับ, lower = ม.1-3, upper = ม.4-6</span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 7 -->
+<div class="section" id="s7">
+  <div class="section-header">
+    <div class="num">7</div>
+    <h2>ขั้นตอนที่ 4 — สร้างตารางอัตโนมัติ (Solver)</h2>
+  </div>
+  <div class="section-body">
+    <div class="note note-success"><div class="icon">✅</div><div>ถ้ากรอกข้อมูลครบ (ครู + วิชา + ห้องเรียน + Requirements) Solver จะสร้างตารางสมบูรณ์ให้อัตโนมัติ</div></div>
+
+    <div class="subsection">
+      <h3>วิธีรัน Solver</h3>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>กด "⚡ Solver" ใน Toolbar</strong><span>หน้าต่าง Solver จะเปิดขึ้น</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>ตั้งเวลา (ไม่บังคับ)</strong><span>ค่าเริ่มต้น 120 วินาที เพียงพอสำหรับส่วนใหญ่</span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>กด "▶ รัน Solver"</strong><span>ระบบจะทำงาน 10-120 วินาที</span></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>ดูผลลัพธ์</strong><span>จำนวนคาบที่สร้าง, เวลาที่ใช้, และการละเมิด (ถ้ามี)</span></div></div>
+      </div>
+    </div>
+
+    <div class="subsection">
+      <h3>ผลลัพธ์ที่เป็นไปได้</h3>
+      <table class="data-table">
+        <tr><th>สถานะ</th><th>ความหมาย</th><th>วิธีแก้</th></tr>
+        <tr><td><span class="badge badge-green">OPTIMAL / FEASIBLE</span></td><td>สร้างตารางสำเร็จ</td><td>—</td></tr>
+        <tr><td><span class="badge badge-amber">สร้างได้บางส่วน</span></td><td>Requirements บางรายการจัดไม่ได้</td><td>ดู violations และปรับ requirements</td></tr>
+        <tr><td><span class="badge badge-red">0 คาบ</span></td><td>ไม่มี Requirements หรือ Backend ไม่ทำงาน</td><td>ตรวจสอบข้อมูลและ server</td></tr>
+      </table>
+    </div>
+
+    <div class="subsection">
+      <h3>การใช้ Pre-Lock ก่อนรัน Solver</h3>
+      <div class="note note-warn"><div class="icon">🔒</div><div>
+        ถ้ามีคาบที่ต้องการกำหนดเวลาตายตัว (เช่น คาบเคารพธง, ชุมนุม, คาบพิเศษ) ให้ <strong>ล็อคก่อนรัน Solver</strong><br>
+        Solver จะไม่ย้ายคาบที่ล็อคไว้
+      </div></div>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>กดปุ่ม "🔓 Lock" ใน Toolbar</strong><span>ปุ่มจะเปลี่ยนเป็น "🔒 Lock ON" สีเหลือง</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>คลิกที่คาบที่ต้องการล็อค</strong><span>คาบที่ล็อคจะแสดงไอคอน 🔒</span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>กด Lock อีกครั้งเพื่อออกจาก Mode</strong></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>รัน Solver</strong><span>คาบที่ล็อคจะคงอยู่เดิม</span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 8 -->
+<div class="section" id="s8">
+  <div class="section-header">
+    <div class="num">8</div>
+    <h2>การใช้งานตารางเรียน</h2>
+  </div>
+  <div class="section-body">
+
+    <div class="subsection" id="s8a">
+      <h3>8.1 การดูตาราง (3 มุมมอง)</h3>
+      <table class="data-table">
+        <tr><th>มุมมอง</th><th>ปุ่ม</th><th>แสดงอะไร</th><th>เหมาะกับ</th></tr>
+        <tr><td>ตารางห้องเรียน</td><td><span class="badge badge-blue">👥 ห้อง</span></td><td>ตารางเรียนของห้องที่เลือก</td><td>นักเรียน, ผู้บริหาร</td></tr>
+        <tr><td>ตารางครู</td><td><span class="badge badge-blue">👨‍🏫 ครู</span></td><td>ตารางสอนของครูที่เลือก</td><td>ครู, ฝ่ายบุคคล</td></tr>
+        <tr><td>ตารางห้องสอน</td><td><span class="badge badge-blue">🚪 ห้องสอน</span></td><td>การใช้ห้องแต่ละห้อง</td><td>ฝ่ายอาคาร, ผู้บริหาร</td></tr>
+      </table>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>กดปุ่มมุมมองที่ต้องการ</strong><span>เช่น กด "👨‍🏫 ครู"</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>เลือกชื่อครู/ห้อง จาก Dropdown</strong><span>ตารางจะแสดงทันที</span></div></div>
+      </div>
+    </div>
+
+    <div class="subsection">
+      <h3>การอ่านสีและสัญลักษณ์ในตาราง</h3>
+      <table class="data-table">
+        <tr><th>สี / สัญลักษณ์</th><th>ความหมาย</th></tr>
+        <tr><td><span class="badge" style="background:#fef3c7;color:#92400e">สีเหลืองอ่อน ☀</span></td><td>วิชากลางแจ้ง (พลศึกษา, สนาม)</td></tr>
+        <tr><td><span class="badge" style="background:#eef2ff;color:#4338ca">สีน้ำเงินอ่อน</span></td><td>วิชาหนัก (คณิต, วิทย์)</td></tr>
+        <tr><td><span class="badge" style="background:#ecfdf5;color:#065f46">สีเขียวอ่อน</span></td><td>คาบคู่ขนาน (หลายห้องพร้อมกัน)</td></tr>
+        <tr><td><span class="badge badge-gray">🔒</span></td><td>คาบที่ถูกล็อค</td></tr>
+        <tr><td><span class="badge badge-blue">2×</span></td><td>คาบคู่ (Double Period)</td></tr>
+        <tr><td><span style="background:#e5e7eb;color:#6b7280;padding:2px 8px;border-radius:4px;font-size:12px">เทา/ลายเส้น</span></td><td>คาบพัก/กินข้าว (ไม่จัดวิชา)</td></tr>
+      </table>
+    </div>
+
+    <div class="subsection" id="s8b">
+      <h3>8.2 การลากวางคาบเรียน (Drag &amp; Drop)</h3>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>คลิกค้างที่คาบที่ต้องการย้าย</strong><span>เคอร์เซอร์จะเปลี่ยนเป็นรูปมือ</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>ลากไปยังช่องที่ต้องการ</strong><span>จะเห็นสีแสดงผลกระทบ</span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>วางเมาส์</strong><span>คาบจะย้ายทันที หรือเปิด Modal ถ้ามีความขัดแย้ง</span></div></div>
+      </div>
+
+      <h4>ความหมายของสีแสดงผลกระทบ</h4>
+      <table class="data-table">
+        <tr><th>สี</th><th>ความหมาย</th><th>ทำได้ไหม</th></tr>
+        <tr><td><span class="badge badge-green">🟢 เขียว</span></td><td>ปลอดภัย ไม่มีผลกระทบหรือน้อยมาก</td><td>วางได้เลย</td></tr>
+        <tr><td><span class="badge badge-amber">🟡 เหลือง</span></td><td>ต้องสลับ 2-4 คาบ มีผลกระทบปานกลาง</td><td>วางได้แต่ควรระวัง</td></tr>
+        <tr><td><span class="badge badge-red">🔴 แดง</span></td><td>ไม่สามารถวางได้ (ห้ามตามกฎหลัก)</td><td>วางไม่ได้</td></tr>
+        <tr><td><span class="badge badge-gray">⚫ เทา</span></td><td>คาบปัจจุบัน (เดิม)</td><td>—</td></tr>
+      </table>
+    </div>
+
+    <div class="subsection" id="s8c">
+      <h3>8.3 หน้าต่างแก้ไขความขัดแย้ง (Conflict Resolution Modal)</h3>
+      <div class="note note-info"><div class="icon">⚡</div><div>จะปรากฏเมื่อลากคาบไปวางในช่องที่มีครู/ห้องซ้ำกัน</div></div>
+      <table class="data-table">
+        <tr><th>ตัวเลือก</th><th>ความหมาย</th><th>ใช้เมื่อไหร่</th></tr>
+        <tr><td><span class="badge badge-green">🔄 Path A — สลับคาบ (Swap)</span></td><td>ย้ายคาบที่ขัดแย้งมาอยู่ตำแหน่งเดิมของคาบที่กำลังลาก</td><td>ต้องการสลับสองคาบ</td></tr>
+        <tr><td><span class="badge badge-red">⚠️ Path B — บังคับวาง (Force)</span></td><td>วางทับ คาบเดิมจะถูกลบออกจากตาราง</td><td>แน่ใจว่าต้องการลบคาบเดิม</td></tr>
+        <tr><td><span class="badge badge-gray">ยกเลิก</span></td><td>ยกเลิกการย้าย</td><td>ไม่ต้องการทำอะไร</td></tr>
+      </table>
+    </div>
+
+    <div class="subsection" id="s8d">
+      <h3>8.4 การล็อคและปลดล็อคคาบ</h3>
+      <div class="grid-2">
+        <div class="card">
+          <h4>🔒 ล็อคทีละคาบ</h4>
+          <ol class="list">
+            <li>กด "🔓 Lock" ใน Toolbar → ปุ่มเปลี่ยนเป็นสีเหลือง</li>
+            <li>คลิกคาบที่ต้องการล็อค</li>
+            <li>กด "🔒 Lock ON" อีกครั้งเพื่อออก</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h4>🔒🔒 ล็อคทั้งหมดพร้อมกัน</h4>
+          <ol class="list">
+            <li>กด "🔒 ทั้งหมด" ใน Toolbar</li>
+            <li>คาบทุกคาบจะถูกล็อคทันที</li>
+            <li>กด "🔓 ปลด" เพื่อปลดล็อคทั้งหมด</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 9 -->
+<div class="section" id="s9">
+  <div class="section-header">
+    <div class="num">9</div>
+    <h2>การล็อคคาบแบบกลุ่ม (Bulk Lock)</h2>
+  </div>
+  <div class="section-body">
+    <div class="note note-info"><div class="icon">💡</div><div>ใช้เมื่อต้องการล็อคคาบหลายคาบพร้อมกัน โดยกรองตามเงื่อนไข เช่น ล็อคทุกคาบวันจันทร์คาบ 1 ของ ม.1 ทั้งหมด</div></div>
+    <div class="flow">
+      <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+      <div class="flow-item">🔒 ล็อคคาบ (กลุ่ม)</div>
+    </div>
+    <div class="steps">
+      <div class="step"><div class="step-num">1</div><div class="step-body"><strong>กรอกเงื่อนไขกรอง</strong><span>ระดับชั้น / วัน / คาบ / วิชา — เลือกได้หลายเงื่อนไข</span></div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-body"><strong>ดู Preview</strong><span>ระบบแสดงจำนวนคาบที่ตรงเงื่อนไข พร้อมรายละเอียด</span></div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-body"><strong>กด "🔒 ล็อก" หรือ "🔓 ปลดล็อก"</strong><span>ระบบจะดำเนินการกับคาบที่ตรงเงื่อนไขทั้งหมด</span></div></div>
+    </div>
+    <div class="note note-warn"><div class="icon">💡</div><div>
+      <strong>ตัวอย่างการใช้งาน:</strong><br>
+      • ล็อควิชา "ชุมนุม" ทุกวันพฤหัส คาบ 8 ของทุกระดับ<br>
+      • ล็อควิชา "ลูกเสือ" วันพุธ คาบ 7-8 ของ ม.1-3<br>
+      • ล็อคทุกคาบของ ม.6 ที่กำหนดแล้ว ก่อนรัน Solver ใหม่
+    </div></div>
+  </div>
+</div>
+
+<!-- SECTION 10 -->
+<div class="section" id="s10">
+  <div class="section-header">
+    <div class="num">10</div>
+    <h2>การนำเข้าข้อมูลจาก Excel/CSV</h2>
+  </div>
+  <div class="section-body">
+    <div class="subsection">
+      <h3>รูปแบบไฟล์ที่รองรับ</h3>
+      <ul class="list">
+        <li><strong>.xlsx</strong> — Microsoft Excel 2007 ขึ้นไป</li>
+        <li><strong>.xls</strong> — Excel รุ่นเก่า</li>
+        <li><strong>.csv</strong> — ไฟล์ข้อความคั่นด้วยคอมมา</li>
+      </ul>
+    </div>
+
+    <div class="subsection">
+      <h3>รูปแบบหัวคอลัมน์ที่รองรับ</h3>
+      <table class="data-table">
+        <tr><th>ประเภท</th><th>คอลัมน์ที่ต้องมี</th><th>คอลัมน์ไทยที่รองรับ</th></tr>
+        <tr><td>ครู (Teachers)</td><td>name</td><td>ชื่อ, ชื่อครู, ชื่อ-สกุล</td></tr>
+        <tr><td>ห้องสอน (Rooms)</td><td>name</td><td>ชื่อห้อง, ห้อง</td></tr>
+        <tr><td>วิชา (Subjects)</td><td>code, name</td><td>รหัส, ชื่อวิชา</td></tr>
+        <tr><td>ห้องเรียน (Groups)</td><td>name</td><td>ห้อง, ชั้น</td></tr>
+      </table>
+    </div>
+
+    <div class="subsection">
+      <h3>วิธีสร้างไฟล์ Excel สำหรับนำเข้าครู</h3>
+      <table class="data-table">
+        <tr><th>name</th><th>outdoor_score</th><th>max_slots_per_day</th></tr>
+        <tr><td>ครูสมชาย ใจดี</td><td>3</td><td>6</td></tr>
+        <tr><td>ครูสมหญิง ขยัน</td><td>5</td><td>5</td></tr>
+      </table>
+      <p style="font-size:13px;color:#64748b;margin-top:8px">บันทึกเป็น .xlsx แล้วนำเข้าในหน้า "ครูผู้สอน"</p>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 11 -->
+<div class="section" id="s11">
+  <div class="section-header">
+    <div class="num">11</div>
+    <h2>Analytics — วิเคราะห์และตรวจสอบตาราง</h2>
+  </div>
+  <div class="section-body">
+    <div class="flow">
+      <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+      <div class="flow-item">📊 วิเคราะห์ตาราง</div>
+    </div>
+
+    <div class="subsection">
+      <h3>KPI Cards (การ์ดสรุปภาพรวม)</h3>
+      <table class="data-table">
+        <tr><th>การ์ด</th><th>ความหมาย</th><th>ค่าดี</th></tr>
+        <tr><td>📋 คาบทั้งหมด</td><td>จำนวนคาบที่จัดแล้ว vs ทั้งหมด</td><td>ใกล้เคียงกัน</td></tr>
+        <tr><td>✅ ความครอบคลุม</td><td>% ของ Requirements ที่จัดตารางแล้ว</td><td>&gt; 90%</td></tr>
+        <tr><td>⚠️ ครูที่ล้า</td><td>ครูที่สอนต่อเนื่อง &gt;3 คาบ หรือเกินโควตา</td><td>0</td></tr>
+        <tr><td>🌿 ห้องไม่มีตาราง</td><td>ห้องเรียนที่ยังไม่มีคาบใดเลย</td><td>0</td></tr>
+      </table>
+    </div>
+
+    <div class="subsection">
+      <h3>ตารางภาระงานครู</h3>
+      <p style="font-size:14px;color:#475569;margin-bottom:8px">แสดงสถิติต่อครูแต่ละคน สีแดง = เกินเกณฑ์</p>
+      <table class="data-table">
+        <tr><th>คอลัมน์</th><th>ความหมาย</th><th>เตือนเมื่อ</th></tr>
+        <tr><td>รวม</td><td>คาบทั้งหมดในสัปดาห์</td><td>—</td></tr>
+        <tr><td>สูงสุด/วัน</td><td>วันที่สอนมากสุด (เทียบกับโควตา)</td><td>&gt; max_slots_per_day</td></tr>
+        <tr><td>ต่อเนื่อง</td><td>คาบต่อเนื่องสูงสุดในวันเดียว</td><td>&gt;= 4 คาบ</td></tr>
+        <tr><td>กลางแจ้ง</td><td>คาบกลางแจ้ง (เทียบกับโควตา)</td><td>&gt; max_outdoor_per_week</td></tr>
+      </table>
+    </div>
+
+    <div class="subsection">
+      <h3>สัดส่วนคาบแยกกลุ่มสาระฯ</h3>
+      <p style="font-size:14px;color:#475569">แผนภูมิ Progress Bar แสดงว่าแต่ละกลุ่มสาระฯ มีกี่คาบในตาราง</p>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 12 -->
+<div class="section" id="s12">
+  <div class="section-header">
+    <div class="num">12</div>
+    <h2>การพิมพ์และส่งออก PDF</h2>
+  </div>
+  <div class="section-body">
+    <div class="note note-info"><div class="icon">🖨️</div><div>ตารางที่พิมพ์ออกมาจะตรงตามรูปแบบมาตรฐาน — มีหัว ชื่อโรงเรียน ภาคเรียน และลายเซ็น</div></div>
+
+    <div class="subsection">
+      <h3>การพิมพ์</h3>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>เลือกมุมมองที่ต้องการพิมพ์</strong><span>เลือกห้องหรือครูจาก Dropdown</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>กด "🖨️ พิมพ์"</strong><span>หน้าต่างพิมพ์ของเบราว์เซอร์จะเปิดขึ้น</span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>เลือก "A4 แนวนอน" (Landscape)</strong><span>กระดาษ A4 แนวนอน ขอบ 8-10mm</span></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><strong>กด "พิมพ์" หรือ "Save as PDF"</strong></div></div>
+      </div>
+    </div>
+
+    <div class="subsection">
+      <h3>การส่งออก PDF โดยตรง</h3>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><strong>กด "📥 PDF"</strong><span>ระบบจะสร้างไฟล์ PDF อัตโนมัติ</span></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><strong>รอสักครู่</strong><span>ปุ่มจะแสดง "⏳..." ขณะสร้าง</span></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><strong>ไฟล์จะ Download อัตโนมัติ</strong><span>ชื่อไฟล์: <code>timetable-2568-06-03.pdf</code></span></div></div>
+      </div>
+    </div>
+
+    <div class="subsection">
+      <h3>รูปแบบหัวตารางที่พิมพ์ออกมา</h3>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;font-family:serif;font-size:13px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+          <div style="width:40px;height:40px;border:1px solid #ccc;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px">🏫</div>
+          <div>
+            <div style="font-weight:700;font-size:14px">ตารางเรียน 001  ห้อง ม.1/1</div>
+            <div style="font-size:12px">ภาคเรียนที่ 1/2568  โรงเรียนราชวินิต นนทบุรี</div>
+          </div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <tr>
+            <th style="border:1px solid #000;padding:3px 6px">คาบที่</th>
+            <th style="border:1px solid #000;padding:3px 6px">1</th>
+            <th style="border:1px solid #000;padding:3px 6px">2</th>
+            <th style="border:1px solid #000;padding:3px 6px;background:#e5e7eb">พัก</th>
+            <th style="border:1px solid #000;padding:3px 6px">3</th>
+          </tr>
+          <tr>
+            <th style="border:1px solid #000;padding:3px 6px">เวลา</th>
+            <td style="border:1px solid #000;padding:3px 6px;text-align:center">08:30–09:20</td>
+            <td style="border:1px solid #000;padding:3px 6px;text-align:center">09:20–10:10</td>
+            <td style="border:1px solid #000;padding:3px 6px;background:#f3f4f6;text-align:center">10:10–10:20</td>
+            <td style="border:1px solid #000;padding:3px 6px;text-align:center">10:20–11:10</td>
+          </tr>
+          <tr>
+            <td style="border:1px solid #000;padding:3px 6px;font-weight:700;text-align:center">จันทร์</td>
+            <td style="border:1px solid #000;padding:3px 6px;text-align:center;font-size:10px"><div style="font-weight:700">MATH101</div><div>ครูสมชาย</div><div style="color:#666">ห้อง 101</div></td>
+            <td style="border:1px solid #000;padding:3px 6px"></td>
+            <td style="border:1px solid #000;padding:3px 6px;background:#f3f4f6"></td>
+            <td style="border:1px solid #000;padding:3px 6px"></td>
+          </tr>
+        </table>
+        <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:11px">
+          <div>ลงชื่อ........................รองผู้อำนวยการกลุ่มบริหารวิชาการ</div>
+          <div>ลงชื่อ........................ผู้อำนวยการโรงเรียน</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 13 -->
+<div class="section" id="s13">
+  <div class="section-header">
+    <div class="num">13</div>
+    <h2>การตั้งค่าโรงเรียน</h2>
+  </div>
+  <div class="section-body">
+    <div class="flow">
+      <div class="flow-item">⚙ จัดการ</div><div class="flow-arrow">→</div>
+      <div class="flow-item">🏫 ตั้งค่าโรงเรียน</div>
+    </div>
+    <table class="data-table">
+      <tr><th>ฟิลด์</th><th>ความหมาย</th><th>ตัวอย่าง</th></tr>
+      <tr><td>ชื่อโรงเรียน</td><td>แสดงในหัวตารางพิมพ์</td><td>โรงเรียนราชวินิต นนทบุรี</td></tr>
+      <tr><td>ชื่อผู้อำนวยการ</td><td>แสดงในส่วนลายเซ็นล่าง</td><td>นายสมชาย ใจดี</td></tr>
+      <tr><td>ภาคเรียนที่</td><td>1 หรือ 2</td><td>1</td></tr>
+      <tr><td>ปีการศึกษา</td><td>ปี พ.ศ.</td><td>2568</td></tr>
+    </table>
+    <div class="note note-warn"><div class="icon">💡</div><div>ต้องกด "บันทึกการตั้งค่า" ทุกครั้งหลังแก้ไข ข้อมูลนี้จะใช้ทุกครั้งที่พิมพ์ตาราง</div></div>
+  </div>
+</div>
+
+<!-- SECTION 14 -->
+<div class="section" id="s14">
+  <div class="section-header">
+    <div class="num">14</div>
+    <h2>ขั้นตอนทำงานแนะนำ (Workflow สมบูรณ์)</h2>
+  </div>
+  <div class="section-body">
+    <div class="note note-success"><div class="icon">🎯</div><div>ทำตามขั้นตอนนี้จะได้ตารางสมบูรณ์ในการใช้งานครั้งแรก</div></div>
+
+    <div class="steps" style="counter-reset:none">
+      <div class="step"><div class="step-num">1</div><div class="step-body"><strong>ตั้งค่าโรงเรียน</strong><span>⚙ → 🏫 ตั้งค่าโรงเรียน — กรอกชื่อโรงเรียน, ปีการศึกษา</span></div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-body"><strong>เพิ่มกลุ่มสาระฯ</strong><span>⚙ → 🏛 กลุ่มสาระฯ — เพิ่มทั้ง 8 กลุ่มสาระ</span></div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-body"><strong>เพิ่มอาคารและห้องสอน</strong><span>⚙ → 🚪 ห้องสอน — เพิ่มทุกห้องพร้อมประเภท</span></div></div>
+      <div class="step"><div class="step-num">4</div><div class="step-body"><strong>เพิ่มครูผู้สอน</strong><span>⚙ → 👨‍🏫 ครู — เพิ่มครูทุกคนพร้อมกลุ่มสาระฯ</span></div></div>
+      <div class="step"><div class="step-num">5</div><div class="step-body"><strong>เพิ่มวิชาเรียน</strong><span>⚙ → 📚 วิชา — เพิ่มทุกวิชา ระบุประเภทและน้ำหนักให้ถูกต้อง</span></div></div>
+      <div class="step"><div class="step-num">6</div><div class="step-body"><strong>เพิ่มห้องเรียน</strong><span>⚙ → 👥 ห้องเรียน — เพิ่มทุกชั้นเรียน ระบุระดับชั้น</span></div></div>
+      <div class="step"><div class="step-num">7</div><div class="step-body"><strong>กำหนดเวลาคาบ (ถ้าแตกต่างจากค่าเริ่มต้น)</strong><span>⚙ → ⏰ คาบ &amp; เวลา</span></div></div>
+      <div class="step"><div class="step-num">8</div><div class="step-body"><strong>กำหนด Requirements ทั้งหมด</strong><span>⚙ → 📋 การสอน/วิชา — กำหนดทุกคู่ ครู+วิชา+ห้อง</span></div></div>
+      <div class="step"><div class="step-num">9</div><div class="step-body"><strong>รัน Solver ครั้งแรก</strong><span>⚡ Solver → รัน Solver — ดูผลลัพธ์</span></div></div>
+      <div class="step"><div class="step-num">10</div><div class="step-body"><strong>ตรวจสอบด้วย Analytics</strong><span>⚙ → 📊 วิเคราะห์ตาราง — แก้ไขปัญหาที่พบ</span></div></div>
+      <div class="step"><div class="step-num">11</div><div class="step-body"><strong>ปรับแก้ด้วยการลากวาง</strong><span>ลากคาบที่ไม่เหมาะสมไปวางตำแหน่งใหม่</span></div></div>
+      <div class="step"><div class="step-num">12</div><div class="step-body"><strong>ล็อคตารางที่พอใจแล้ว</strong><span>🔒 ทั้งหมด — ล็อคทุกคาบ</span></div></div>
+      <div class="step"><div class="step-num">13</div><div class="step-body"><strong>พิมพ์หรือส่งออก PDF</strong><span>🖨️ พิมพ์ / 📥 PDF</span></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 15 -->
+<div class="section" id="s15">
+  <div class="section-header">
+    <div class="num">15</div>
+    <h2>คำถามที่พบบ่อย (FAQ)</h2>
+  </div>
+  <div class="section-body">
+
+    <div class="subsection">
+      <h3>❓ Solver รันแล้วได้ 0 คาบ ทำอย่างไร?</h3>
+      <ul class="list">
+        <li>ตรวจสอบว่า Backend รันอยู่ (เปิด PowerShell แล้วรัน <code>python mock_api.py</code>)</li>
+        <li>ตรวจสอบว่ามี Requirements อย่างน้อย 1 รายการ</li>
+        <li>ตรวจสอบว่ามีคาบ type=class อย่างน้อย 1 คาบใน Periods</li>
+      </ul>
+    </div>
+
+    <div class="subsection">
+      <h3>❓ ข้อมูลหายหมดเมื่อเปิดโปรแกรมใหม่?</h3>
+      <ul class="list">
+        <li>ระบบปัจจุบันใช้ RAM จัดเก็บ ข้อมูลจะหายเมื่อ Backend หยุดทำงาน</li>
+        <li>ถ้าต้องการเก็บข้อมูลถาวร ต้องเพิ่มฐานข้อมูล (SQLite/PostgreSQL) — แจ้งทีมพัฒนา</li>
+      </ul>
+    </div>
+
+    <div class="subsection">
+      <h3>❓ ลากวางคาบไม่ได้ ทำอย่างไร?</h3>
+      <ul class="list">
+        <li>ตรวจสอบว่าคาบนั้นไม่ได้ถูก "ล็อค" (มีไอคอน 🔒)</li>
+        <li>ช่องปลายทางที่แสดงสีแดง 🔴 = วางไม่ได้ ต้องเลือกช่องอื่น</li>
+        <li>ถ้าต้องการย้ายคาบที่ล็อค ต้องปลดล็อคก่อน</li>
+      </ul>
+    </div>
+
+    <div class="subsection">
+      <h3>❓ ตารางพิมพ์ออกมาหัวข้อว่าง ทำอย่างไร?</h3>
+      <ul class="list">
+        <li>ไปที่ ⚙ จัดการ → 🏫 ตั้งค่าโรงเรียน</li>
+        <li>กรอกชื่อโรงเรียน ภาคเรียน ปีการศึกษา</li>
+        <li>กด "บันทึกการตั้งค่า" แล้วลองพิมพ์ใหม่</li>
+      </ul>
+    </div>
+
+    <div class="subsection">
+      <h3>❓ วิชาคู่ขนานจัดตารางไม่ตรงกัน ทำอย่างไร?</h3>
+      <ul class="list">
+        <li>ตรวจสอบว่า Requirements ของทุกห้องที่เรียนพร้อมกัน มี <strong>Parallel Key เดียวกัน</strong></li>
+        <li>ตัวอย่าง: พลศึกษา ม.1/1, ม.1/2, ม.1/3 ต้องมี Parallel Key = <code>PE-M1-001</code> ทุกรายการ</li>
+      </ul>
+    </div>
+
+    <div class="subsection">
+      <h3>❓ เพิ่มข้อมูลแล้วไม่ปรากฏในตาราง ทำอย่างไร?</h3>
+      <ul class="list">
+        <li>ต้องรัน Solver ใหม่หลังเพิ่ม Requirements</li>
+        <li>Solver ไม่ได้รันอัตโนมัติ ต้องกด ⚡ Solver ทุกครั้งที่แก้ไข Requirements</li>
+      </ul>
+    </div>
+
+    <div class="subsection">
+      <h3>❓ เว็บออนไลน์เปิดแล้วช้ามาก?</h3>
+      <ul class="list">
+        <li>Render.com แบบฟรีจะ sleep เมื่อไม่มีคนใช้ รอ 30-60 วินาที ระบบจะ wake up เอง</li>
+        <li>ครั้งแรกของวันอาจช้า ครั้งต่อไปเร็วขึ้น</li>
+      </ul>
+    </div>
+
+    <div class="subsection">
+      <h3>❓ ต้องการ Deploy ขึ้นออนไลน์ใหม่หลังแก้โค้ด ทำอย่างไร?</h3>
+      <div class="cmd"><span>git add .</span><br><span>git commit -m "อธิบายการแก้ไข"</span><br><span>git push</span></div>
+      <p style="font-size:13px;color:#475569;margin-top:6px">GitHub Actions จะ Build และ Deploy ให้อัตโนมัติใน 3-5 นาที</p>
+    </div>
+  </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  <p>📐 ระบบจัดตารางเรียนตารางสอน — คู่มือฉบับสมบูรณ์</p>
+  <p style="margin-top:4px">พัฒนาด้วย React + FastAPI | สร้างด้วย Claude Code</p>
+</div>
+
+</div>
+</body>
+</html>

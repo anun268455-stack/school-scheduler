@@ -96,7 +96,6 @@ const GROUP_LEVELS = ["M1","M2","M3","M4","M5","M6","ห้องเวียน
 
 const GroupsPanel: React.FC = () => {
   const { groups, rooms } = useTimetableStore();
-  const reload = useReload();
   const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
@@ -213,7 +212,7 @@ const GroupsPanel: React.FC = () => {
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
                         <button onClick={() => { setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "" }); }} className={btnEdit}>แก้ไข</button>
-                        <button onClick={async () => { await api.deleteGroup(g.id); await reload(); }} className={btnDanger}>ลบ</button>
+                        <button onClick={async () => { await api.deleteGroup(g.id); useTimetableStore.setState((s) => ({ groups: s.groups.filter((x) => x.id !== g.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
                   </>
@@ -233,7 +232,6 @@ const DAYS_TH = ["จันทร์","อังคาร","พุธ","พฤ�
 // ─── Teachers ────────────────────────────────────────────────────────────────
 const TeachersPanel: React.FC = () => {
   const { teachers, departments } = useTimetableStore();
-  const reload = useReload();
   const [form, setForm] = useState({ name: "", department_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   const [editing, setEditing] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
@@ -256,8 +254,8 @@ const TeachersPanel: React.FC = () => {
   };
 
   const handleSaveAdv = async (id: number) => {
-    await api.updateTeacher(id, { advanced_settings: advForm });
-    await reload();
+    const updated = await api.updateTeacher(id, { advanced_settings: advForm });
+    useTimetableStore.setState((s) => ({ teachers: s.teachers.map((t) => t.id === id ? { ...t, ...updated } : t) }));
     setAdvOpen(null);
   };
 
@@ -335,7 +333,7 @@ const TeachersPanel: React.FC = () => {
                         <div className="flex gap-1 flex-wrap">
                           <button onClick={() => { setEditing(t.id); setEditForm({ name: t.name, department_id: t.department_id ? String(t.department_id) : "", outdoor_score: t.outdoor_score, max_slots_per_day: t.max_slots_per_day, max_outdoor_per_week: t.max_outdoor_per_week }); }} className={btnEdit}>แก้ไข</button>
                           <button onClick={() => { setAdvOpen(advOpen === t.id ? null : t.id); setAdvForm({ ignore_consecutive_limit: t.advanced_settings?.ignore_consecutive_limit ?? false, require_ground_floor: t.advanced_settings?.require_ground_floor ?? false, days_off: t.advanced_settings?.days_off ?? [], note: t.advanced_settings?.note ?? "" }); }} className="px-2 py-1 text-xs bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 border border-indigo-200">⚙ ขั้นสูง</button>
-                          <button onClick={async () => { await api.deleteTeacher(t.id); await reload(); }} className={btnDanger}>ลบ</button>
+                          <button onClick={async () => { await api.deleteTeacher(t.id); useTimetableStore.setState((s) => ({ teachers: s.teachers.filter((x) => x.id !== t.id) })); }} className={btnDanger}>ลบ</button>
                         </div>
                       </td>
                     </>
@@ -390,7 +388,6 @@ const TeachersPanel: React.FC = () => {
 // ─── Subjects ────────────────────────────────────────────────────────────────
 const SubjectsPanel: React.FC = () => {
   const { subjects, departments } = useTimetableStore();
-  const reload = useReload();
   const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, weight: "light", department_id: "", is_activity: false });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
@@ -526,7 +523,7 @@ const SubjectsPanel: React.FC = () => {
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
                         <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, weight: s.weight, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false }); }} className={btnEdit}>แก้ไข</button>
-                        <button onClick={async () => { await api.deleteSubject(s.id); await reload(); }} className={btnDanger}>ลบ</button>
+                        <button onClick={async () => { await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
                   </>
@@ -543,7 +540,6 @@ const SubjectsPanel: React.FC = () => {
 // ─── Rooms ───────────────────────────────────────────────────────────────────
 const RoomsPanel: React.FC = () => {
   const { rooms, buildings } = useTimetableStore();
-  const reload = useReload();
   const [form, setForm]     = useState({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40 });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
@@ -655,7 +651,7 @@ const RoomsPanel: React.FC = () => {
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
                         <button onClick={() => { setEditing(r.id); setEditForm({ name: r.name, type: r.type, building_id: r.building_id ? String(r.building_id) : "", floor: r.floor, capacity: r.capacity }); }} className={btnEdit}>แก้ไข</button>
-                        <button onClick={async () => { await api.deleteRoom(r.id); await reload(); }} className={btnDanger}>ลบ</button>
+                        <button onClick={async () => { await api.deleteRoom(r.id); useTimetableStore.setState((s) => ({ rooms: s.rooms.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
                   </>
@@ -672,20 +668,19 @@ const RoomsPanel: React.FC = () => {
 // ─── Requirements (Teacher-Subject-Group Assignments) ─────────────────────────
 const RequirementsPanel: React.FC = () => {
   const { requirements, groups, teachers, subjects } = useTimetableStore();
-  const reload = useReload();
   const [form, setForm] = useState({
     group_id: "", subject_id: "", teacher_id: "", weekly_count: 1, parallel_group_key: "",
   });
 
   const handleCreate = async () => {
-    await api.createRequirement({
+    const created = await api.createRequirement({
       group_id:   Number(form.group_id),
       subject_id: Number(form.subject_id),
       teacher_id: Number(form.teacher_id),
       weekly_count: Number(form.weekly_count),
       parallel_group_key: form.parallel_group_key || null,
     });
-    await reload();
+    useTimetableStore.setState((s) => ({ requirements: [...s.requirements, created] }));
     setForm({ group_id: "", subject_id: "", teacher_id: "", weekly_count: 1, parallel_group_key: "" });
   };
 
@@ -766,7 +761,7 @@ const RequirementsPanel: React.FC = () => {
                   ) : "–"}
                 </td>
                 <td className="px-3 py-2">
-                  <button onClick={async () => { await api.deleteRequirement(r.id); await reload(); }} className={btnDanger}>ลบ</button>
+                  <button onClick={async () => { await api.deleteRequirement(r.id); useTimetableStore.setState((s) => ({ requirements: s.requirements.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
                 </td>
               </tr>
             ))}
@@ -788,7 +783,6 @@ const PERIOD_TYPES: { v: PeriodType; label: string }[] = [
 
 const PeriodsPanel: React.FC = () => {
   const { periods } = useTimetableStore();
-  const reload = useReload();
   const [form, setForm] = useState({
     period_num: 0,
     label: "",
@@ -801,15 +795,15 @@ const PeriodsPanel: React.FC = () => {
   const [editForm, setEditForm] = useState<typeof form | null>(null);
 
   const handleCreate = async () => {
-    await api.createPeriod(form);
-    await reload();
+    const created = await api.createPeriod(form);
+    useTimetableStore.setState((s) => ({ periods: [...s.periods, created] }));
     setForm({ period_num: form.period_num + 1, label: "", start_time: form.end_time, end_time: "09:00", type: "class", applies_to: "all" });
   };
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
-    await api.updatePeriod(id, editForm);
-    await reload();
+    const updated = await api.updatePeriod(id, editForm);
+    useTimetableStore.setState((s) => ({ periods: s.periods.map((p) => p.id === id ? { ...p, ...updated } : p) }));
     setEditing(null);
     setEditForm(null);
   };
@@ -928,7 +922,7 @@ const PeriodsPanel: React.FC = () => {
                     <td className="px-3 py-2 flex gap-1">
                       <button onClick={() => { setEditing(p.id); setEditForm({ period_num: p.period_num, label: p.label, start_time: p.start_time, end_time: p.end_time, type: p.type, applies_to: p.applies_to }); }}
                         className={btnEdit}>แก้ไข</button>
-                      <button onClick={async () => { await api.deletePeriod(p.id); await reload(); }} className={btnDanger}>ลบ</button>
+                      <button onClick={async () => { await api.deletePeriod(p.id); useTimetableStore.setState((s) => ({ periods: s.periods.filter((x) => x.id !== p.id) })); }} className={btnDanger}>ลบ</button>
                     </td>
                   </>
                 )}
@@ -1109,7 +1103,6 @@ const BulkLockPanel: React.FC = () => {
 // ─── Departments Panel ────────────────────────────────────────────────────────
 const DepartmentsPanel: React.FC = () => {
   const { departments } = useTimetableStore();
-  const reload = useReload();
   const [form, setForm]     = useState({ name: "" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<{ name: string } | null>(null);
@@ -1173,7 +1166,7 @@ const DepartmentsPanel: React.FC = () => {
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
                         <button onClick={() => { setEditing(d.id); setEditForm({ name: d.name }); }} className={btnEdit}>แก้ไข</button>
-                        <button onClick={async () => { await api.deleteDepartment(d.id); await reload(); }} className={btnDanger}>ลบ</button>
+                        <button onClick={async () => { await api.deleteDepartment(d.id); useTimetableStore.setState((s) => ({ departments: s.departments.filter((x) => x.id !== d.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
                   </>

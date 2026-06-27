@@ -73,6 +73,7 @@ TEACHERS: list[dict[str, Any]] = [
     {"id":4,"name":"ครูพลศึกษา แข็งแรง", "fixed_room_id":None,"department_id":6,"outdoor_score":10,"max_slots_per_day":8,"max_outdoor_per_week":10},
     {"id":5,"name":"ครูคอมพ์ เก่ง",      "fixed_room_id":6, "department_id":7,"outdoor_score":2, "max_slots_per_day":6,"max_outdoor_per_week":0},
     {"id":6,"name":"ครูภาษาไทย ดี",      "fixed_room_id":3, "department_id":4,"outdoor_score":5, "max_slots_per_day":6,"max_outdoor_per_week":1},
+    {"id":7,"name":"ครูพลศึกษา มั่นคง",  "fixed_room_id":None,"department_id":6,"outdoor_score":9,"max_slots_per_day":8,"max_outdoor_per_week":10},
 ]
 
 SUBJECTS: list[dict[str, Any]] = [
@@ -94,7 +95,7 @@ REQUIREMENTS: list[dict[str, Any]] = [
     {"id":3,"group_id":1,"subject_id":3,"teacher_id":2,"weekly_count":3,"parallel_group_key":None},
     {"id":4,"group_id":1,"subject_id":4,"teacher_id":6,"weekly_count":2,"parallel_group_key":None},
     {"id":5,"group_id":1,"subject_id":6,"teacher_id":4,"weekly_count":2,"parallel_group_key":"PE-M1-001"},
-    {"id":6,"group_id":2,"subject_id":6,"teacher_id":4,"weekly_count":2,"parallel_group_key":"PE-M1-001"},
+    {"id":6,"group_id":2,"subject_id":6,"teacher_id":7,"weekly_count":2,"parallel_group_key":"PE-M1-001"},
     {"id":7,"group_id":1,"subject_id":7,"teacher_id":5,"weekly_count":1,"parallel_group_key":None},
     {"id":8,"group_id":1,"subject_id":8,"teacher_id":6,"weekly_count":1,"parallel_group_key":None},
 ]
@@ -106,7 +107,7 @@ _counters: dict[str, int] = {
     "period": max(p["id"] for p in PERIODS),
     "room": max(r["id"] for r in ROOMS),
     "department": max(d["id"] for d in DEPARTMENTS),
-    "group": 8, "teacher": 6, "subject": 10,
+    "group": 8, "teacher": 7, "subject": 10,
     "requirement": max(r["id"] for r in REQUIREMENTS),
     "slot": 0,
 }

@@ -4,8 +4,6 @@
 import React, { useState } from "react";
 import clsx from "clsx";
 import { useReactToPrint } from "react-to-print";
-import jsPDF from "jspdf";
-import html2canvas from "html2canvas";
 
 import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
@@ -77,6 +75,10 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     if (!printRef.current) return;
     setIsExporting(true);
     try {
+      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+        import("jspdf"),
+        import("html2canvas"),
+      ]);
       const pages = printRef.current.querySelectorAll<HTMLElement>(".print-page");
       const pdf   = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
       for (let i = 0; i < pages.length; i++) {

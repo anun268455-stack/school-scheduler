@@ -159,7 +159,7 @@ export const TimetableGrid: React.FC = () => {
     if (selectedTeacherId != null) return slots.filter((s) => s.teacher_id === selectedTeacherId);
     if (selectedRoomId    != null) return slots.filter((s) => s.room_id    === selectedRoomId);
     return [];
-  }, [slots, selectedGroupId, selectedTeacherId, selectedRoomId, viewMode]);
+  }, [slots, selectedGroupId, selectedTeacherId, selectedRoomId]);
 
   // Grid lookup map: "day-period" → TimetableSlot[]
   const slotGrid = useMemo(() => {
