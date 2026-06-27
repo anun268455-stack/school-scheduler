@@ -50,7 +50,6 @@ const ENTITY_CONFIGS: Record<EntityType, { label: string; icon: string; cols: Co
       { key: "name",     label: "ชื่อวิชา",   aliases: ["name","ชื่อ","ชื่อวิชา"],                         required: true,  hint: "คณิตศาสตร์" },
       { key: "type",     label: "ประเภท",    aliases: ["type","ประเภท"],                                    required: false, hint: "common / parallel" },
       { key: "duration", label: "จำนวนคาบ", aliases: ["duration","คาบ","จำนวนคาบ"],                      required: false, hint: "1 หรือ 2" },
-      { key: "weight",   label: "น้ำหนัก",   aliases: ["weight","น้ำหนัก"],                                required: false, hint: "heavy / light" },
     ],
   },
   groups: {

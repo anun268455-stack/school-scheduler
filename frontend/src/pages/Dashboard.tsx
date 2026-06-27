@@ -4,14 +4,15 @@
 import React, { useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
-import type { SubjectType, SubjectWeight, RoomType, PeriodType } from "../types";
+import type { SubjectType, RoomType, PeriodType } from "../types";
 import { DAYS } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
+import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal";
 
 export type DashPage =
   | "groups" | "teachers" | "subjects" | "rooms"
-  | "requirements" | "periods" | "locks" | "settings"
+  | "requirements" | "electives" | "periods" | "locks" | "settings"
   | "departments" | "analytics" | "help";
 
 export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
@@ -21,6 +22,7 @@ export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
     subjects:     <SubjectsPanel />,
     rooms:        <RoomsPanel />,
     requirements: <RequirementsPanel />,
+    electives:    <ElectivesPanel />,
     periods:      <PeriodsPanel />,
     locks:        <BulkLockPanel />,
     settings:     <SettingsPanel />,
@@ -58,7 +60,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 // ── Thai label helpers ────────────────────────────────────────────────────────
 const SUBJECT_TYPE_TH: Record<string, string> = { common: "ทั่วไป", parallel: "คู่ขนาน" };
-const SUBJECT_WEIGHT_TH: Record<string, string> = { heavy: "หนัก", light: "เบา" };
 const ROOM_TYPE_TH: Record<string, string> = { physical: "ห้องเรียนทั่วไป", special: "ห้องพิเศษ", outdoor: "กลางแจ้ง", floating: "ห้องเวียน" };
 const PERIOD_TYPE_TH: Record<string, string> = { class: "คาบเรียน", break: "พัก", lunch: "กินข้าว", assembly: "เคารพธง", homeroom: "โฮมรูม" };
 const APPLIES_TO_TH: Record<string, string> = { all: "ทุกระดับ", lower: "ม.1-3", upper: "ม.4-6" };
@@ -388,7 +389,7 @@ const TeachersPanel: React.FC = () => {
 // ─── Subjects ────────────────────────────────────────────────────────────────
 const SubjectsPanel: React.FC = () => {
   const { subjects, departments } = useTimetableStore();
-  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, weight: "light", department_id: "", is_activity: false });
+  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
 
@@ -396,12 +397,11 @@ const SubjectsPanel: React.FC = () => {
     const created = await api.createSubject({
       ...form,
       type:          form.type   as SubjectType,
-      weight:        form.weight as SubjectWeight,
       duration:      Number(form.duration) as 1 | 2,
       department_id: form.department_id ? Number(form.department_id) : null,
     });
     useTimetableStore.setState((s) => ({ subjects: [...s.subjects, created] }));
-    setForm({ code: "", name: "", type: "common", duration: 1, weight: "light", department_id: "", is_activity: false });
+    setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false });
   };
 
   const handleUpdate = async (id: number) => {
@@ -409,7 +409,6 @@ const SubjectsPanel: React.FC = () => {
     const updated = await api.updateSubject(id, {
       code: editForm.code, name: editForm.name,
       type: editForm.type as SubjectType,
-      weight: editForm.weight as SubjectWeight,
       duration: Number(editForm.duration) as 1 | 2,
       department_id: editForm.department_id ? Number(editForm.department_id) : null,
       is_activity: editForm.is_activity,
@@ -447,12 +446,6 @@ const SubjectsPanel: React.FC = () => {
             <option value={2}>2 คาบ (คาบคู่)</option>
           </select>
         </Field>
-        <Field label="น้ำหนัก">
-          <select className={inputCls} value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })}>
-            <option value="light">เบา</option>
-            <option value="heavy">หนัก</option>
-          </select>
-        </Field>
         <Field label="วิชากิจกรรม">
           <label className="flex items-center gap-2 mt-1.5 cursor-pointer">
             <input type="checkbox" checked={form.is_activity} onChange={(e) => setForm({ ...form, is_activity: e.target.checked })} className="w-4 h-4" />
@@ -466,7 +459,7 @@ const SubjectsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","ประเภท","คาบ","น้ำหนัก",""].map((h) => (
+              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","ประเภท","คาบ",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
@@ -519,10 +512,9 @@ const SubjectsPanel: React.FC = () => {
                     <td className="px-3 py-2 text-gray-500 text-xs">{deptName(s.department_id)}</td>
                     <td className="px-3 py-2 text-gray-600">{SUBJECT_TYPE_TH[s.type] ?? s.type}</td>
                     <td className="px-3 py-2 text-gray-600">{s.duration}</td>
-                    <td className="px-3 py-2 text-gray-600">{SUBJECT_WEIGHT_TH[s.weight ?? ""] ?? s.weight}</td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
-                        <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, weight: s.weight, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false }); }} className={btnEdit}>แก้ไข</button>
+                        <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
@@ -768,6 +760,163 @@ const RequirementsPanel: React.FC = () => {
           </tbody>
         </table>
       </div>
+    </Section>
+  );
+};
+
+// ─── Electives (วิชาเสรี) ───────────────────────────────────────────────────────
+const ElectivesPanel: React.FC = () => {
+  const { slots, groups, teachers, subjects, periods } = useTimetableStore();
+  const [form, setForm] = useState({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "" });
+  const [managing, setManaging]   = useState<number | null>(null);
+  const [copyingId, setCopyingId] = useState<number | null>(null);
+  const [copyTargets, setCopyTargets] = useState<number[]>([]);
+
+  const flat = groups.flatMap((g) => [g, ...(g.children ?? [])]);
+  const classPeriods = [...new Map(periods.filter((p) => p.type === "class").map((p) => [p.period_num, p])).values()]
+    .sort((a, b) => a.period_num - b.period_num);
+
+  const electiveSlots = slots.filter((s) => s.is_elective);
+  const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
+
+  const handleCreate = async () => {
+    const created = await api.createElectiveSlot({
+      group_id: Number(form.group_id),
+      day: Number(form.day),
+      period: Number(form.period),
+      subject_id: Number(form.subject_id),
+      teacher_id: Number(form.teacher_id),
+      label: form.label || undefined,
+    });
+    useTimetableStore.setState((s) => ({ slots: [...s.slots, created] }));
+    setForm({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "" });
+  };
+
+  const handleDelete = async (id: number) => {
+    await api.deleteSlot(id);
+    useTimetableStore.setState((s) => ({ slots: s.slots.filter((x) => x.id !== id) }));
+  };
+
+  const handleCopy = async (id: number) => {
+    if (copyTargets.length === 0) return;
+    const created = await api.copyElectiveSlot(id, copyTargets);
+    useTimetableStore.setState((s) => ({ slots: [...s.slots, ...created] }));
+    setCopyingId(null);
+    setCopyTargets([]);
+  };
+
+  const managingSlot = managing != null ? slots.find((s) => s.id === managing) ?? null : null;
+
+  return (
+    <Section title="วิชาเสรี — คาบล็อกที่เลือกวิชา/ครูได้หลายตัวเลือก">
+      <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 mb-4 text-xs text-purple-800">
+        <strong>วิธีใช้:</strong> สร้างคาบของห้องเรียนหนึ่งห้อง ระบุวิชา+ครูเริ่มต้น (วงแรก) จากนั้นกด "🎓 จัดการวง" เพื่อเพิ่มตัวเลือกอื่น (เช่น ดนตรี/ศิลปะ/หุ่นยนต์) แล้วสลับวงที่ใช้ได้ตลอดเวลาจากในตารางเรียน
+        <br/>คาบนี้จะถูกล็อกเสมอ — ตัวสร้างตารางอัตโนมัติจะไม่จัดวิชาอื่นทับ
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mb-3">
+        <Field label="ห้องเรียน *">
+          <select className={inputCls} value={form.group_id} onChange={(e) => setForm({ ...form, group_id: e.target.value })}>
+            <option value="">เลือกห้อง</option>
+            {flat.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+        </Field>
+        <Field label="วัน *">
+          <select className={inputCls} value={form.day} onChange={(e) => setForm({ ...form, day: e.target.value })}>
+            {DAYS.map((d, i) => <option key={i} value={i}>{d}</option>)}
+          </select>
+        </Field>
+        <Field label="คาบ *">
+          <select className={inputCls} value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })}>
+            <option value="">เลือกคาบ</option>
+            {classPeriods.map((p) => <option key={p.period_num} value={p.period_num}>{p.label}</option>)}
+          </select>
+        </Field>
+        <Field label="วิชา (วงแรก) *">
+          <select className={inputCls} value={form.subject_id} onChange={(e) => setForm({ ...form, subject_id: e.target.value })}>
+            <option value="">เลือกวิชา</option>
+            {subjects.map((s) => <option key={s.id} value={s.id}>{s.code} – {s.name}</option>)}
+          </select>
+        </Field>
+        <Field label="ครูผู้สอน (วงแรก) *">
+          <select className={inputCls} value={form.teacher_id} onChange={(e) => setForm({ ...form, teacher_id: e.target.value })}>
+            <option value="">เลือกครู</option>
+            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+        <Field label="ชื่อวง">
+          <input className={inputCls} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="เช่น วงดนตรี" />
+        </Field>
+      </div>
+      <button
+        onClick={handleCreate}
+        disabled={!form.group_id || !form.period || !form.subject_id || !form.teacher_id}
+        className={btnPrimary}
+      >
+        + สร้างวิชาเสรี
+      </button>
+
+      <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              {["ห้องเรียน","วัน","คาบ","วงที่ใช้อยู่","จำนวนวง",""].map((h) => (
+                <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {electiveSlots.length === 0 && (
+              <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีวิชาเสรี</td></tr>
+            )}
+            {electiveSlots.map((s) => (
+              <React.Fragment key={s.id}>
+                <tr className="hover:bg-purple-50/30">
+                  <td className="px-3 py-2 font-medium text-purple-700">{gName(s.group_id)}</td>
+                  <td className="px-3 py-2 text-gray-600">{DAYS[s.day]}</td>
+                  <td className="px-3 py-2 text-gray-600">{s.period}</td>
+                  <td className="px-3 py-2 text-gray-700">{s.subject_code ?? s.subject_name} · {s.teacher_name}</td>
+                  <td className="px-3 py-2 text-center text-gray-500">{s.elective_options?.length ?? 1}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex gap-1 flex-wrap">
+                      <button onClick={() => setManaging(s.id)} className="px-2 py-1 text-xs bg-purple-50 text-purple-600 rounded hover:bg-purple-100 border border-purple-200">🎓 จัดการวง</button>
+                      <button onClick={() => { setCopyingId(s.id); setCopyTargets([]); }} className={btnEdit}>📋 คัดลอก</button>
+                      <button onClick={() => handleDelete(s.id)} className={btnDanger}>ลบ</button>
+                    </div>
+                  </td>
+                </tr>
+                {copyingId === s.id && (
+                  <tr className="bg-gray-50">
+                    <td colSpan={6} className="px-3 py-3">
+                      <p className="text-xs font-semibold text-gray-600 mb-2">คัดลอกวิชาเสรีนี้ (พร้อมทุกวง) ไปยังห้องเรียนอื่น — เวลาเดิม ({DAYS[s.day]} คาบ {s.period}):</p>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {flat.filter((g) => g.id !== s.group_id).map((g) => (
+                          <label key={g.id} className="flex items-center gap-1 text-xs bg-white border border-gray-200 rounded px-2 py-1 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={copyTargets.includes(g.id)}
+                              onChange={(e) => setCopyTargets(e.target.checked ? [...copyTargets, g.id] : copyTargets.filter((id) => id !== g.id))}
+                            />
+                            {g.name}
+                          </label>
+                        ))}
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => handleCopy(s.id)} disabled={copyTargets.length === 0} className={btnSave}>คัดลอก ({copyTargets.length})</button>
+                        <button onClick={() => { setCopyingId(null); setCopyTargets([]); }} className={btnCancel}>ยกเลิก</button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {managingSlot && (
+        <ElectiveOptionModal slot={managingSlot} onClose={() => setManaging(null)} />
+      )}
     </Section>
   );
 };

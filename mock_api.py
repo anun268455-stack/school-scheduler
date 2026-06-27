@@ -77,16 +77,16 @@ TEACHERS: list[dict[str, Any]] = [
 ]
 
 SUBJECTS: list[dict[str, Any]] = [
-    {"id":1,"code":"MATH101","name":"คณิตศาสตร์", "type":"common",  "duration":1,"weight":"heavy","department_id":1,"is_activity":False},
-    {"id":2,"code":"SCI101", "name":"วิทยาศาสตร์","type":"common",  "duration":1,"weight":"heavy","department_id":2,"is_activity":False},
-    {"id":3,"code":"ENG101", "name":"ภาษาอังกฤษ", "type":"common",  "duration":1,"weight":"heavy","department_id":3,"is_activity":False},
-    {"id":4,"code":"THAI101","name":"ภาษาไทย",     "type":"common",  "duration":1,"weight":"light","department_id":4,"is_activity":False},
-    {"id":5,"code":"SOC101", "name":"สังคมศึกษา", "type":"common",  "duration":1,"weight":"light","department_id":5,"is_activity":False},
-    {"id":6,"code":"PE101",  "name":"พลศึกษา",     "type":"parallel","duration":2,"weight":"light","department_id":6,"is_activity":False},
-    {"id":7,"code":"COM101", "name":"คอมพิวเตอร์", "type":"parallel","duration":1,"weight":"light","department_id":7,"is_activity":False},
-    {"id":8,"code":"ART101", "name":"ศิลปะ",        "type":"common",  "duration":1,"weight":"light","department_id":8,"is_activity":False},
-    {"id":9,"code":"ACT001", "name":"ชุมนุม",       "type":"common",  "duration":1,"weight":"light","department_id":None,"is_activity":True},
-    {"id":10,"code":"ACT002","name":"ลูกเสือ/ยุวกาชาด","type":"common","duration":1,"weight":"light","department_id":None,"is_activity":True},
+    {"id":1,"code":"MATH101","name":"คณิตศาสตร์", "type":"common",  "duration":1,"department_id":1,"is_activity":False},
+    {"id":2,"code":"SCI101", "name":"วิทยาศาสตร์","type":"common",  "duration":1,"department_id":2,"is_activity":False},
+    {"id":3,"code":"ENG101", "name":"ภาษาอังกฤษ", "type":"common",  "duration":1,"department_id":3,"is_activity":False},
+    {"id":4,"code":"THAI101","name":"ภาษาไทย",     "type":"common",  "duration":1,"department_id":4,"is_activity":False},
+    {"id":5,"code":"SOC101", "name":"สังคมศึกษา", "type":"common",  "duration":1,"department_id":5,"is_activity":False},
+    {"id":6,"code":"PE101",  "name":"พลศึกษา",     "type":"parallel","duration":2,"department_id":6,"is_activity":False},
+    {"id":7,"code":"COM101", "name":"คอมพิวเตอร์", "type":"parallel","duration":1,"department_id":7,"is_activity":False},
+    {"id":8,"code":"ART101", "name":"ศิลปะ",        "type":"common",  "duration":1,"department_id":8,"is_activity":False},
+    {"id":9,"code":"ACT001", "name":"ชุมนุม",       "type":"common",  "duration":1,"department_id":None,"is_activity":True},
+    {"id":10,"code":"ACT002","name":"ลูกเสือ/ยุวกาชาด","type":"common","duration":1,"department_id":None,"is_activity":True},
 ]
 
 REQUIREMENTS: list[dict[str, Any]] = [
@@ -110,6 +110,7 @@ _counters: dict[str, int] = {
     "group": 8, "teacher": 7, "subject": 10,
     "requirement": max(r["id"] for r in REQUIREMENTS),
     "slot": 0,
+    "elective_option": 0,
 }
 def _next(key: str) -> int:
     _counters[key] += 1
@@ -122,9 +123,10 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     clear      = body.get("clear_existing", True)
     locked_ids = set(body.get("locked_slot_ids", []))
 
-    # Keep only locked slots when clearing
+    # Keep only locked slots when clearing — elective slots always survive,
+    # regardless of is_locked, so the solver never double-books their teacher/room.
     if clear:
-        SLOTS = [s for s in SLOTS if s["id"] in locked_ids or s.get("is_locked")]
+        SLOTS = [s for s in SLOTS if s["id"] in locked_ids or s.get("is_locked") or s.get("is_elective")]
 
     # Build occupation sets
     teacher_busy: set[tuple] = set()
@@ -180,7 +182,6 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
             "room_type":    rtype,
             "subject_name": subj.get("name"),
             "subject_code": subj.get("code"),
-            "subject_weight": subj.get("weight"),
         }
         if rid:
             room_busy.add((rid, day, period))
@@ -506,7 +507,6 @@ def bulk_create_subjects(body: list[dict[str, Any]]):
         row["id"] = _next("subject")
         row.setdefault("type", "common")
         row.setdefault("duration", 1)
-        row.setdefault("weight", "light")
         SUBJECTS.append(row)
         created.append(row)
     return created
@@ -547,6 +547,124 @@ def create_slot(body: dict[str, Any]):
     SLOTS.append(body)
     return body
 
+def _enrich_slot(s: dict[str, Any]) -> dict[str, Any]:
+    """Re-derive display fields (name/type lookups) from current id fields."""
+    t_map = {t["id"]: t for t in TEACHERS}
+    g_map = {g["id"]: g for g in _flat_groups()}
+    s_map = {sub["id"]: sub for sub in SUBJECTS}
+    r_map = {r["id"]: r for r in ROOMS}
+    teacher = t_map.get(s.get("teacher_id"), {})
+    group   = g_map.get(s.get("group_id"), {})
+    subj    = s_map.get(s.get("subject_id"), {})
+    room    = r_map.get(s.get("room_id")) if s.get("room_id") else None
+    s["teacher_name"] = teacher.get("name")
+    s["group_name"]   = group.get("name")
+    s["subject_name"] = subj.get("name")
+    s["subject_code"] = subj.get("code")
+    s["room_name"]    = room.get("name") if room else None
+    s["room_type"]    = room.get("type") if room else None
+    return s
+
+# ── Elective Slots (วิชาเสรี) ────────────────────────────────────────────────
+# An elective slot is a TimetableSlot pinned to one classroom/day/period with
+# is_elective=True. It carries a catalog of "elective_options" (each a
+# subject+teacher+label choice) plus a "selected_option_id" pointing at the
+# option currently shown on the timetable. Always treated as occupied by the
+# solver, regardless of is_locked.
+
+def _apply_selected_option(s: dict[str, Any]) -> dict[str, Any]:
+    opt = next((o for o in s.get("elective_options", []) if o["id"] == s.get("selected_option_id")), None)
+    if opt:
+        s["subject_id"] = opt["subject_id"]
+        s["teacher_id"] = opt["teacher_id"]
+    return _enrich_slot(s)
+
+@app.post("/api/timetable/elective-slots")
+def create_elective_slot(body: dict[str, Any]):
+    option = {
+        "id": _next("elective_option"),
+        "subject_id": body["subject_id"],
+        "teacher_id": body["teacher_id"],
+        "label": body.get("label") or "วงที่ 1",
+    }
+    slot = {
+        "id": _next("slot"),
+        "day": body["day"], "period": body["period"],
+        "group_id": body["group_id"],
+        "room_id": body.get("room_id"),
+        "is_double_start": False,
+        "parallel_group_key": None,
+        "is_locked": True,
+        "is_elective": True,
+        "elective_options": [option],
+        "selected_option_id": option["id"],
+        "subject_id": option["subject_id"],
+        "teacher_id": option["teacher_id"],
+    }
+    SLOTS.append(slot)
+    return _apply_selected_option(slot)
+
+@app.post("/api/timetable/elective-slots/{slot_id}/options")
+def add_elective_option(slot_id: int, body: dict[str, Any]):
+    slot = next((s for s in SLOTS if s["id"] == slot_id and s.get("is_elective")), None)
+    if not slot:
+        raise HTTPException(404, "Elective slot not found")
+    option = {
+        "id": _next("elective_option"),
+        "subject_id": body["subject_id"],
+        "teacher_id": body["teacher_id"],
+        "label": body.get("label") or f"วงที่ {len(slot['elective_options']) + 1}",
+    }
+    slot["elective_options"].append(option)
+    return _enrich_slot(slot)
+
+@app.delete("/api/timetable/elective-slots/{slot_id}/options/{option_id}")
+def delete_elective_option(slot_id: int, option_id: int):
+    slot = next((s for s in SLOTS if s["id"] == slot_id and s.get("is_elective")), None)
+    if not slot:
+        raise HTTPException(404, "Elective slot not found")
+    if len(slot["elective_options"]) <= 1:
+        raise HTTPException(400, "ต้องมีอย่างน้อย 1 วงเสมอ")
+    slot["elective_options"] = [o for o in slot["elective_options"] if o["id"] != option_id]
+    if slot["selected_option_id"] == option_id:
+        slot["selected_option_id"] = slot["elective_options"][0]["id"]
+    return _apply_selected_option(slot)
+
+@app.patch("/api/timetable/elective-slots/{slot_id}/select")
+def select_elective_option(slot_id: int, body: dict[str, Any]):
+    slot = next((s for s in SLOTS if s["id"] == slot_id and s.get("is_elective")), None)
+    if not slot:
+        raise HTTPException(404, "Elective slot not found")
+    option_id = body["option_id"]
+    if not any(o["id"] == option_id for o in slot["elective_options"]):
+        raise HTTPException(404, "Option not found")
+    slot["selected_option_id"] = option_id
+    return _apply_selected_option(slot)
+
+@app.post("/api/timetable/elective-slots/{slot_id}/copy")
+def copy_elective_slot(slot_id: int, body: dict[str, Any]):
+    src = next((s for s in SLOTS if s["id"] == slot_id and s.get("is_elective")), None)
+    if not src:
+        raise HTTPException(404, "Elective slot not found")
+    created = []
+    for target_group_id in body.get("target_group_ids", []):
+        id_map: dict[int, int] = {}
+        new_options = []
+        for o in src["elective_options"]:
+            new_id = _next("elective_option")
+            id_map[o["id"]] = new_id
+            new_options.append({**o, "id": new_id})
+        new_slot = {
+            **src,
+            "id": _next("slot"),
+            "group_id": target_group_id,
+            "elective_options": new_options,
+            "selected_option_id": id_map[src["selected_option_id"]],
+        }
+        SLOTS.append(new_slot)
+        created.append(_apply_selected_option(new_slot))
+    return created
+
 @app.patch("/api/timetable/slots/{slot_id}")
 def patch_slot(slot_id: int, body: dict[str, Any]):
     for s in SLOTS:
@@ -559,7 +677,7 @@ def patch_slot(slot_id: int, body: dict[str, Any]):
                             and sib["day"] == old_day and sib["period"] == old_period):
                         sib.update({k: v for k, v in body.items() if k in ("day", "period")})
             s.update(body)
-            return s
+            return _enrich_slot(s)
     return {}
 
 @app.delete("/api/timetable/slots/{slot_id}")

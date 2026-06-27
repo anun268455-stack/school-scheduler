@@ -12,7 +12,7 @@ import type { DashPage } from "./pages/Dashboard";
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 
 type Page = "timetable" | DashPage;
-const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","requirements","periods","locks","settings","departments","analytics","help"];
+const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","requirements","electives","periods","locks","settings","departments","analytics","help"];
 
 export default function App() {
   const [page, setPage] = useState<Page>("timetable");

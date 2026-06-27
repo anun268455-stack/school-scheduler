@@ -8,19 +8,21 @@ interface SlotCellProps {
   isOver?:     boolean;
   onLock?:     (id: number) => void;
   onDelete?:   (id: number) => void;
+  onSwapRoom?: (slot: TimetableSlot) => void;
+  onOpenElective?: (slot: TimetableSlot) => void;
   compact?:    boolean;
 }
 
 function slotColors(s: TimetableSlot): string {
+  if (s.is_elective)            return "bg-purple-50 border-purple-300 text-purple-900";
   if (s.is_locked)              return "bg-slate-700 border-slate-500 text-slate-100";
   if (s.room_type === "outdoor") return "bg-amber-50  border-amber-400  text-amber-900";
-  if (s.subject_weight === "heavy") return "bg-indigo-50 border-indigo-300 text-indigo-900";
   if (s.parallel_group_key)     return "bg-emerald-50 border-emerald-300 text-emerald-900";
   return "bg-white border-gray-200 text-gray-800";
 }
 
 export const SlotCell: React.FC<SlotCellProps> = ({
-  slots, isDragging, isOver, onLock, onDelete, compact,
+  slots, isDragging, isOver, onLock, onDelete, onSwapRoom, onOpenElective, compact,
 }) => {
   if (!slots.length) return null;
 
@@ -39,12 +41,12 @@ export const SlotCell: React.FC<SlotCellProps> = ({
         <div className="flex flex-col h-full">
           {slots.map((s, i) => (
             <div key={s.id} className={clsx("flex-1 overflow-hidden", i > 0 && "border-t border-gray-200")}>
-              <Layer slot={s} compact onLock={onLock} onDelete={onDelete} />
+              <Layer slot={s} compact onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
             </div>
           ))}
         </div>
       ) : (
-        <Layer slot={slots[0]} onLock={onLock} onDelete={onDelete} compact={compact} />
+        <Layer slot={slots[0]} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} compact={compact} />
       )}
     </div>
   );
@@ -55,9 +57,11 @@ interface LayerProps {
   compact?:  boolean;
   onLock?:   (id: number) => void;
   onDelete?: (id: number) => void;
+  onSwapRoom?: (slot: TimetableSlot) => void;
+  onOpenElective?: (slot: TimetableSlot) => void;
 }
 
-const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete }) => (
+const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRoom, onOpenElective }) => (
   <div
     className={clsx(
       "relative flex flex-col h-full p-1 group border-0 overflow-hidden",
@@ -75,8 +79,8 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete }) => (
       {slot.room_type === "outdoor" && (
         <span className="shrink-0 inline-block bg-amber-400 text-amber-900 text-[7px] px-0.5 rounded-sm leading-tight">☀</span>
       )}
-      {slot.subject_weight === "heavy" && (
-        <span className="shrink-0 inline-block bg-indigo-200 text-indigo-800 text-[7px] px-0.5 rounded-sm leading-tight">●</span>
+      {slot.is_elective && (
+        <span className="shrink-0 inline-block bg-purple-500 text-white text-[7px] px-0.5 rounded-sm leading-tight">🎓</span>
       )}
     </div>
 
@@ -120,6 +124,24 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete }) => (
 
     {/* ── Hover action buttons ───────────────────────────────────── */}
     <div className="absolute top-0.5 right-0.5 hidden group-hover:flex gap-0.5 z-10">
+      {slot.is_elective && onOpenElective && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onOpenElective(slot); }}
+          className="bg-white/90 text-[8px] px-0.5 py-0.5 rounded shadow hover:bg-gray-100 leading-none"
+          title="เลือกวงเสรี"
+        >
+          🎓
+        </button>
+      )}
+      {onSwapRoom && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onSwapRoom(slot); }}
+          className="bg-white/90 text-[8px] px-0.5 py-0.5 rounded shadow hover:bg-gray-100 leading-none"
+          title="สลับห้อง"
+        >
+          🔁
+        </button>
+      )}
       {onLock && (
         <button
           onClick={(e) => { e.stopPropagation(); onLock(slot.id); }}

@@ -13,6 +13,8 @@ import clsx from "clsx";
 
 import { SlotCell } from "./SlotCell";
 import { ConflictModal, type PendingMove, type ConflictInfo } from "./ConflictModal";
+import { RoomSwapModal } from "./RoomSwapModal";
+import { ElectiveOptionModal } from "./ElectiveOptionModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
 import { DAYS, GRID_PERIODS, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
@@ -31,13 +33,15 @@ interface DroppableCellProps {
   impact: CellImpact | null;
   onLock:   (id: number) => void;
   onDelete: (id: number) => void;
+  onSwapRoom: (slot: TimetableSlot) => void;
+  onOpenElective: (slot: TimetableSlot) => void;
   preLockMode: boolean;
   onPreLockClick: (slot: TimetableSlot) => void;
   isDragging: boolean;
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
-  day, period, slots, impact, onLock, onDelete, preLockMode, onPreLockClick, isDragging,
+  day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective, preLockMode, onPreLockClick, isDragging,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: `cell-${day}-${period}`,
@@ -91,10 +95,10 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
       {slots.length > 0 ? (
         preLockMode ? (
           <div className="w-full h-full cursor-pointer" onClick={() => onPreLockClick(slots[0])}>
-            <SlotCell slots={slots} onLock={onLock} onDelete={onDelete} />
+            <SlotCell slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
           </div>
         ) : (
-          <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} />
+          <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
         )
       ) : null}
     </div>
@@ -108,7 +112,9 @@ const DraggableWrapper: React.FC<{
   slots:    TimetableSlot[];
   onLock:   (id: number) => void;
   onDelete: (id: number) => void;
-}> = ({ slots, onLock, onDelete }) => {
+  onSwapRoom: (slot: TimetableSlot) => void;
+  onOpenElective: (slot: TimetableSlot) => void;
+}> = ({ slots, onLock, onDelete, onSwapRoom, onOpenElective }) => {
   const primary  = slots[0];
   const isLocked = slots.some((s) => s.is_locked);
 
@@ -130,7 +136,7 @@ const DraggableWrapper: React.FC<{
       {...attributes}
       className={clsx("w-full h-full", isLocked ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing")}
     >
-      <SlotCell slots={slots} isDragging={isDragging} onLock={onLock} onDelete={onDelete} />
+      <SlotCell slots={slots} isDragging={isDragging} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
     </div>
   );
 };
@@ -140,13 +146,16 @@ const DraggableWrapper: React.FC<{
 // ─────────────────────────────────────────────────────────────────────────────
 export const TimetableGrid: React.FC = () => {
   const {
-    slots, selectedGroupId, selectedTeacherId, selectedRoomId, viewMode,
+    slots, rooms, selectedGroupId, selectedTeacherId, selectedRoomId, viewMode,
     impactMap, draggingSlot, startDrag, endDrag,
-    moveSlot, toggleLock, deleteSlot, preLockMode,
+    moveSlot, swapRoom, toggleLock, deleteSlot, preLockMode,
   } = useTimetableStore();
 
   const [validAlert,   setValidAlert]   = useState<string | null>(null);
   const [pendingMove,  setPendingMove]  = useState<PendingMove | null>(null);
+  const [roomSwapSlot, setRoomSwapSlot] = useState<TimetableSlot | null>(null);
+  const [electiveSlotId, setElectiveSlotId] = useState<number | null>(null);
+  const electiveSlot = electiveSlotId != null ? slots.find((s) => s.id === electiveSlotId) ?? null : null;
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
@@ -226,6 +235,8 @@ export const TimetableGrid: React.FC = () => {
   }, [draggingSlot, slotGrid]);
 
   const handlePreLockClick = useCallback((slot: TimetableSlot) => toggleLock(slot.id), [toggleLock]);
+  const handleSwapRoomClick = useCallback((slot: TimetableSlot) => setRoomSwapSlot(slot), []);
+  const handleOpenElective  = useCallback((slot: TimetableSlot) => setElectiveSlotId(slot.id), []);
 
   // ── Conflict resolution handlers (must be before early return to follow Rules of Hooks) ──
   const handleSwap = useCallback(() => {
@@ -269,6 +280,25 @@ export const TimetableGrid: React.FC = () => {
         onSwap={handleSwap}
         onForceMove={handleForce}
         onCancel={() => setPendingMove(null)}
+      />
+    )}
+
+    {/* Room Swap Modal */}
+    {roomSwapSlot && (
+      <RoomSwapModal
+        slot={roomSwapSlot}
+        rooms={rooms}
+        slots={slots}
+        onSelect={(roomId) => { swapRoom(roomSwapSlot.id, roomId); setRoomSwapSlot(null); }}
+        onClose={() => setRoomSwapSlot(null)}
+      />
+    )}
+
+    {/* Elective Option Modal */}
+    {electiveSlot && (
+      <ElectiveOptionModal
+        slot={electiveSlot}
+        onClose={() => setElectiveSlotId(null)}
       />
     )}
 
@@ -386,6 +416,8 @@ export const TimetableGrid: React.FC = () => {
                             impact={impact}
                             onLock={toggleLock}
                             onDelete={deleteSlot}
+                            onSwapRoom={handleSwapRoomClick}
+                            onOpenElective={handleOpenElective}
                             preLockMode={preLockMode}
                             onPreLockClick={handlePreLockClick}
                             isDragging={isDragActive}
@@ -413,7 +445,6 @@ export const TimetableGrid: React.FC = () => {
       {/* Footer legend */}
       <div className="shrink-0 flex flex-wrap gap-3 px-4 py-2 border-t border-gray-200 bg-white text-[10px] text-gray-500">
         <LegendDot color="bg-amber-400"   label="☀ กลางแจ้ง" />
-        <LegendDot color="bg-indigo-300"  label="● วิชาหนัก" />
         <LegendDot color="bg-emerald-300" label="↔ คู่ขนาน" />
         <LegendDot color="bg-slate-500"   label="🔒 ล็อก" />
         <span className="flex items-center gap-1">

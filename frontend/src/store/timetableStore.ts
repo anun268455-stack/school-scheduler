@@ -56,6 +56,7 @@ interface TimetableStore {
   endDrag:   () => void;
 
   moveSlot:    (slotId: number, newDay: number, newPeriod: number) => Promise<void>;
+  swapRoom:    (slotId: number, newRoomId: number) => Promise<void>;
   toggleLock:  (slotId: number) => Promise<void>;
   deleteSlot:  (slotId: number) => Promise<void>;
   lockAll:     () => Promise<void>;
@@ -164,6 +165,24 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     set({ slots: patchSlots(slots) });
     try {
       await api.updateSlot(slotId, { day: newDay, period: newPeriod });
+    } catch {
+      set({ slots }); // revert
+    }
+  },
+
+  swapRoom: async (slotId, newRoomId) => {
+    const { slots, rooms } = get();
+    const slot = slots.find((s) => s.id === slotId);
+    const room = rooms.find((r) => r.id === newRoomId);
+    if (!slot || !room) return;
+
+    set({
+      slots: slots.map((s) => (s.id === slotId
+        ? { ...s, room_id: newRoomId, room_name: room.name, room_type: room.type }
+        : s)),
+    });
+    try {
+      await api.updateSlot(slotId, { room_id: newRoomId });
     } catch {
       set({ slots }); // revert
     }

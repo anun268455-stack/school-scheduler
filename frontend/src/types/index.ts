@@ -4,7 +4,6 @@
 
 export type RoomType      = "physical" | "special" | "outdoor" | "floating";
 export type SubjectType   = "common" | "parallel";
-export type SubjectWeight = "heavy" | "light";
 export type PeriodType    = "class" | "break" | "lunch" | "assembly" | "homeroom";
 export type SolverStatus  = "OPTIMAL" | "FEASIBLE" | "INFEASIBLE" | "UNKNOWN";
 export type ViewMode      = "group" | "teacher" | "room";
@@ -90,7 +89,6 @@ export interface Subject {
   name:          string;
   type:          SubjectType;
   duration:      1 | 2;
-  weight:        SubjectWeight;
   department_id: number | null;
   is_activity:   boolean;       // true = ชุมนุม/ลูกเสือ/กิจกรรม
 }
@@ -104,6 +102,13 @@ export interface LessonRequirement {
   parallel_group_key: string | null;
 }
 
+export interface ElectiveOption {
+  id:         number;
+  subject_id: number;
+  teacher_id: number;
+  label:      string;
+}
+
 export interface TimetableSlot {
   id:                 number;
   day:                number;     // 0=Mon … 4=Fri
@@ -115,6 +120,10 @@ export interface TimetableSlot {
   is_double_start:    boolean;
   parallel_group_key: string | null;
   is_locked:          boolean;    // pre-lock flag
+  // วิชาเสรี — pinned slot with a swappable catalog of subject+teacher choices
+  is_elective?:        boolean;
+  elective_options?:   ElectiveOption[];
+  selected_option_id?: number | null;
   // Enriched
   teacher_name:   string | null;
   group_name:     string | null;
@@ -122,7 +131,6 @@ export interface TimetableSlot {
   room_type:      RoomType | null;
   subject_name:   string | null;
   subject_code:   string | null;
-  subject_weight: SubjectWeight | null;
 }
 
 export interface SolverResult {

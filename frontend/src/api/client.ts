@@ -71,6 +71,24 @@ export const updateSlot = (id: number, d: Partial<TimetableSlot>) =>
 export const deleteSlot  = (id: number) => api.delete(`/timetable/slots/${id}`);
 export const clearSlots  = () => api.delete("/timetable/slots");
 
+// ── Elective Slots (วิชาเสรี) ────────────────────────────────────────────────
+export const createElectiveSlot = (d: {
+  group_id: number; day: number; period: number;
+  subject_id: number; teacher_id: number; label?: string; room_id?: number | null;
+}) => api.post<TimetableSlot>("/timetable/elective-slots", d).then((r) => r.data);
+
+export const addElectiveOption = (slotId: number, d: { subject_id: number; teacher_id: number; label?: string }) =>
+  api.post<TimetableSlot>(`/timetable/elective-slots/${slotId}/options`, d).then((r) => r.data);
+
+export const deleteElectiveOption = (slotId: number, optionId: number) =>
+  api.delete<TimetableSlot>(`/timetable/elective-slots/${slotId}/options/${optionId}`).then((r) => r.data);
+
+export const selectElectiveOption = (slotId: number, optionId: number) =>
+  api.patch<TimetableSlot>(`/timetable/elective-slots/${slotId}/select`, { option_id: optionId }).then((r) => r.data);
+
+export const copyElectiveSlot = (slotId: number, targetGroupIds: number[]) =>
+  api.post<TimetableSlot[]>(`/timetable/elective-slots/${slotId}/copy`, { target_group_ids: targetGroupIds }).then((r) => r.data);
+
 // Bulk lock/unlock slots by filter
 export const bulkLockSlots = (params: {
   is_locked: boolean;
