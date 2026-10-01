@@ -17,11 +17,13 @@ export const LevelActivityPanel: React.FC = () => {
   const { groups, subjects, teachers, slots, periods, loadSlots } = useTimetableStore();
 
   const [form, setForm] = useState({
-    level: "", day: "0", period: "", subject_id: "", teacher_id: "",
+    level: "", day: "0", period: "", subject_id: "",
+    // "homeroom" | "none" | a teacher id as a string
+    teacher_choice: "homeroom",
     room_mode: "homeroom" as "homeroom" | "none",
   });
   const [busy, setBusy]       = useState(false);
-  const [result, setResult]   = useState<{ created: number; skipped: { group: string; reason: string }[] } | null>(null);
+  const [result, setResult]   = useState<{ created: number; skipped: { group: string; reason: string }[]; warnings: string[] } | null>(null);
   const [error, setError]     = useState<string | null>(null);
 
   // Levels that actually have classrooms, in order.
@@ -61,21 +63,28 @@ export const LevelActivityPanel: React.FC = () => {
     return [...m.values()].sort((a, b) => a.level.localeCompare(b.level) || a.day - b.day || a.period - b.period);
   }, [slots]);
 
+  const missingHomeroom = useMemo(
+    () => targetClasses.filter((g) => !g.homeroom_teacher_id),
+    [targetClasses],
+  );
+
   const canCreate = !!form.level && form.period !== "" && !!form.subject_id && !busy;
 
   const handleCreate = async () => {
     setBusy(true); setError(null); setResult(null);
     try {
+      const choice = form.teacher_choice;
       const res = await api.createLevelActivity({
         level: form.level,
         day: Number(form.day),
         period: Number(form.period),
         subject_id: Number(form.subject_id),
-        teacher_id: form.teacher_id ? Number(form.teacher_id) : null,
+        teacher_mode: choice === "homeroom" ? "homeroom" : choice === "none" ? "none" : "single",
+        teacher_id: choice !== "homeroom" && choice !== "none" ? Number(choice) : null,
         room_mode: form.room_mode,
       });
       await loadSlots();
-      setResult({ created: res.created.length, skipped: res.skipped });
+      setResult({ created: res.created.length, skipped: res.skipped, warnings: res.warnings ?? [] });
     } catch {
       setError("สร้างคาบกิจกรรมไม่สำเร็จ กรุณาลองใหม่");
     } finally {
@@ -131,10 +140,14 @@ export const LevelActivityPanel: React.FC = () => {
             {subjects.map((s) => <option key={s.id} value={s.id}>{s.code} – {s.name}</option>)}
           </select>
         </Field>
-        <Field label="ครูผู้ดูแล (ไม่บังคับ)">
-          <select className={inputCls} value={form.teacher_id} onChange={(e) => setForm({ ...form, teacher_id: e.target.value })}>
-            <option value="">– ไม่ระบุครู –</option>
-            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        <Field label="ครูผู้ดูแล">
+          <select className={inputCls} value={form.teacher_choice}
+            onChange={(e) => setForm({ ...form, teacher_choice: e.target.value })}>
+            <option value="homeroom">👩‍🏫 ครูประจำชั้นของแต่ละห้อง</option>
+            <option value="none">– ไม่ระบุครู –</option>
+            <optgroup label="ครูคนเดียวดูแลทุกห้อง">
+              {teachers.map((t) => <option key={t.id} value={String(t.id)}>{t.name}</option>)}
+            </optgroup>
           </select>
         </Field>
         <Field label="ห้องที่ใช้">
@@ -152,9 +165,21 @@ export const LevelActivityPanel: React.FC = () => {
           <span className="text-gray-700">{targetClasses.map((g) => g.name).join(", ") || "– ไม่พบห้องในระดับนี้ –"}</span>
         </p>
       )}
-      {form.teacher_id === "" && (
+      {form.teacher_choice === "homeroom" && form.level && (
+        missingHomeroom.length > 0 ? (
+          <p className="text-xs text-amber-600 mb-2">
+            ⚠️ ยังไม่ได้ตั้งครูประจำชั้น: {missingHomeroom.map((g) => g.name).join(", ")} —
+            ห้องเหล่านี้จะได้คาบกิจกรรมแต่ไม่มีครู (ตั้งได้ที่หน้า "ห้องเรียน")
+          </p>
+        ) : (
+          <p className="text-xs text-gray-400 mb-2">
+            💡 ครูประจำชั้นของแต่ละห้องจะได้คาบนี้ลงในตารางสอนของตัวเองด้วย
+          </p>
+        )
+      )}
+      {form.teacher_choice === "none" && (
         <p className="text-xs text-gray-400 mb-2">
-          💡 ไม่ระบุครู = ครูทุกคนยังว่างในคาบนั้น เหมาะกับกิจกรรมที่ครูประจำชั้นดูแลกันเอง
+          💡 ไม่ระบุครู = ครูทุกคนยังว่างในคาบนั้น นักเรียนได้คาบกิจกรรมอย่างเดียว
         </p>
       )}
 
@@ -167,6 +192,11 @@ export const LevelActivityPanel: React.FC = () => {
       {result && (
         <div className="mt-3 bg-green-50 border border-green-200 rounded-lg p-3 text-xs text-green-800">
           ✅ สร้างแล้ว {result.created} ห้อง
+          {result.warnings.length > 0 && (
+            <div className="mt-1 text-amber-700 space-y-0.5">
+              {result.warnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
+            </div>
+          )}
           {result.skipped.length > 0 && (
             <div className="mt-1 text-amber-700">
               ⚠️ ข้าม {result.skipped.length} ห้องที่มีคาบอยู่แล้ว:{" "}

@@ -102,11 +102,14 @@ export const bulkLockSlots = (params: {
 
 // ── Level-wide activity periods (คาบกิจกรรมประจำระดับชั้น) ───────────────────
 export const createLevelActivity = (d: {
-  level: string; day: number; period: number;
-  subject_id: number; teacher_id?: number | null; room_mode?: "homeroom" | "none";
+  level: string; day: number; period: number; subject_id: number;
+  teacher_mode?: "homeroom" | "single" | "none";
+  teacher_id?: number | null;
+  room_mode?: "homeroom" | "none";
 }) => api.post<{
   created: TimetableSlot[];
   skipped: { group: string; reason: string }[];
+  warnings: string[];
   activity_key: string;
 }>("/timetable/level-activity", d).then((r) => r.data);
 

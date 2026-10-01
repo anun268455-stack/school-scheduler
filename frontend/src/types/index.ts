@@ -60,6 +60,7 @@ export interface StudentGroup {
   level:             string | null;   // "M1" … "M6" | "ห้องเวียน"
   size:              number;
   homeroom_room_id:  number | null;   // ห้องประจำชั้น
+  homeroom_teacher_id: number | null; // ครูประจำชั้น
   advanced_settings?: GroupAdvanced;
   children:          StudentGroup[];
 }

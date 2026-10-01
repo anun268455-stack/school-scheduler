@@ -911,6 +911,7 @@ def create_group(body: dict[str, Any]):
     body["id"] = _next("group")
     body.setdefault("children", [])
     body.setdefault("homeroom_room_id", None)
+    body.setdefault("homeroom_teacher_id", None)
     GROUPS.append(body)
     return body
 
@@ -935,6 +936,8 @@ def bulk_create_groups(body: list[dict[str, Any]]):
         row["id"] = _next("group")
         row.setdefault("children", [])
         row.setdefault("parent_id", None)
+        row.setdefault("homeroom_room_id", None)
+        row.setdefault("homeroom_teacher_id", None)
         GROUPS.append(row)
         created.append(row)
     return created
@@ -1156,9 +1159,15 @@ def create_level_activity(body: dict[str, Any]):
     day        = int(body["day"])
     period     = int(body["period"])
     subject_id = int(body["subject_id"])
-    teacher_id = body.get("teacher_id")
-    teacher_id = int(teacher_id) if teacher_id not in (None, "") else None
     room_mode  = body.get("room_mode", "homeroom")   # "homeroom" | "none"
+    # teacher_mode: "homeroom" → each class is supervised by its own ครูประจำชั้น
+    #               "single"   → one named teacher for every class
+    #               "none"     → no teacher assigned
+    teacher_mode = body.get("teacher_mode", "none")
+    teacher_id   = body.get("teacher_id")
+    teacher_id   = int(teacher_id) if teacher_id not in (None, "") else None
+    if teacher_id is not None and teacher_mode == "none":
+        teacher_mode = "single"
 
     # Whole-class activity → target top-level classes of that level, never the
     # subgroups (ก/ข/ค), so the parent and its children can't double-book.
@@ -1167,8 +1176,9 @@ def create_level_activity(body: dict[str, Any]):
     if not targets:
         raise HTTPException(400, f"ไม่พบห้องเรียนในระดับ {level}")
 
+    t_names = {t["id"]: t["name"] for t in TEACHERS}
     key = f"ACT-{level}-{day}-{period}"
-    created, skipped = [], []
+    created, skipped, warnings = [], [], []
     for g in targets:
         # Skip classrooms that already have something in this cell.
         clash = next((s for s in SLOTS
@@ -1178,11 +1188,31 @@ def create_level_activity(body: dict[str, Any]):
             skipped.append({"group": g["name"],
                             "reason": clash.get("subject_code") or "มีคาบอยู่แล้ว"})
             continue
+
+        # Work out who supervises this particular class.
+        if teacher_mode == "homeroom":
+            slot_teacher = g.get("homeroom_teacher_id")
+            if slot_teacher is None:
+                warnings.append(f"{g['name']}: ยังไม่ได้ตั้งครูประจำชั้น (สร้างคาบให้แล้วแต่ไม่มีครู)")
+        elif teacher_mode == "single":
+            slot_teacher = teacher_id
+        else:
+            slot_teacher = None
+
+        # A teacher can't supervise while teaching elsewhere at the same time.
+        if slot_teacher is not None and any(
+                s["day"] == day and s["period"] == period and s.get("teacher_id") == slot_teacher
+                for s in SLOTS):
+            warnings.append(
+                f"{g['name']}: ครู {t_names.get(slot_teacher, slot_teacher)} ติดสอนคาบนี้อยู่ "
+                f"จึงสร้างคาบให้โดยไม่ใส่ครู")
+            slot_teacher = None
+
         slot = {
             "id": _next("slot"),
             "day": day, "period": period,
             "group_id": g["id"],
-            "teacher_id": teacher_id,
+            "teacher_id": slot_teacher,
             "subject_id": subject_id,
             "room_id": g.get("homeroom_room_id") if room_mode == "homeroom" else None,
             "is_double_start": False,
@@ -1194,7 +1224,7 @@ def create_level_activity(body: dict[str, Any]):
         }
         SLOTS.append(slot)
         created.append(_enrich_slot(slot))
-    return {"created": created, "skipped": skipped, "activity_key": key}
+    return {"created": created, "skipped": skipped, "warnings": warnings, "activity_key": key}
 
 
 @app.delete("/api/timetable/level-activity/{activity_key}")

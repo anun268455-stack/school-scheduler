@@ -51,15 +51,33 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
   const [busy, setBusy]   = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Teachers of the subject's own department float to the top of every picker.
-  const sortedTeachers = useMemo(() => {
-    const dep = subject.department_id;
-    return [...teachers].sort((a, b) => {
-      const am = dep && a.department_id === dep ? 0 : 1;
-      const bm = dep && b.department_id === dep ? 0 : 1;
-      return am - bm || a.name.localeCompare(b.name);
-    });
-  }, [teachers, subject.department_id]);
+  // Only teachers of the subject's own กลุ่มสาระ are offered — a social-studies
+  // subject lists social-studies teachers. "แสดงครูทุกคน" lifts the filter for
+  // the cases where someone teaches outside their department.
+  const [showAllTeachers, setShowAllTeachers] = useState(false);
+  const dept = subject.department_id;
+  const deptTeachers = useMemo(
+    () => (dept ? teachers.filter((t) => t.department_id === dept) : []),
+    [teachers, dept],
+  );
+  // No department on the subject, or nobody in it → fall back to everyone.
+  const filterActive = !!dept && deptTeachers.length > 0 && !showAllTeachers;
+  const baseTeachers = useMemo(
+    () => [...(filterActive ? deptTeachers : teachers)].sort((a, b) => a.name.localeCompare(b.name)),
+    [filterActive, deptTeachers, teachers],
+  );
+
+  /**
+   * Options for one row. A teacher already assigned but outside the filter is
+   * still listed, so opening the dialog never silently drops an assignment.
+   */
+  const optionsFor = (currentId: string) => {
+    if (!currentId) return baseTeachers;
+    const id = Number(currentId);
+    if (baseTeachers.some((t) => t.id === id)) return baseTeachers;
+    const extra = teachers.find((t) => t.id === id);
+    return extra ? [extra, ...baseTeachers] : baseTeachers;
+  };
 
   const classesInLevel = useMemo(
     () => flat.filter((g) => (g.level ?? "") === level),
@@ -152,6 +170,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
   };
 
   const deptName = departments.find((d) => d.id === subject.department_id)?.name;
+  const deptLabel = deptName ?? "กลุ่มสาระนี้";
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
@@ -232,13 +251,32 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
           {/* ── Right: teacher per class ──────────────────────────────────── */}
           <div className="col-span-3 flex flex-col min-h-0">
             <div className="px-4 pt-3 pb-2 shrink-0 border-b border-gray-100">
-              <p className="text-xs font-semibold text-gray-500 mb-1.5">3. กำหนดครูผู้สอนของแต่ละห้อง</p>
+              <div className="flex items-center gap-2 mb-1.5">
+                <p className="text-xs font-semibold text-gray-500">3. กำหนดครูผู้สอนของแต่ละห้อง</p>
+                {!!dept && deptTeachers.length > 0 && (
+                  <label className="ml-auto flex items-center gap-1 text-[11px] text-gray-500 cursor-pointer">
+                    <input type="checkbox" className="w-3 h-3 accent-blue-600"
+                      checked={showAllTeachers} onChange={(e) => setShowAllTeachers(e.target.checked)} />
+                    แสดงครูทุกคน
+                  </label>
+                )}
+              </div>
+              {filterActive && (
+                <p className="text-[11px] text-blue-600 mb-1.5">
+                  แสดงเฉพาะครู{deptLabel} ({deptTeachers.length} คน)
+                </p>
+              )}
+              {!!dept && deptTeachers.length === 0 && (
+                <p className="text-[11px] text-amber-600 mb-1.5">
+                  ยังไม่มีครูใน{deptLabel} — แสดงครูทุกคนแทน
+                </p>
+              )}
               <div className="flex items-end gap-2">
                 <div className="flex-1 min-w-0">
                   <label className="block text-[11px] text-gray-500 mb-0.5">ตั้งครูหลัก (ใส่ให้ทุกห้องรวดเดียว)</label>
                   <select className={inputCls} value={defaultTeacher} onChange={(e) => setDefaultTeacher(e.target.value)}>
                     <option value="">– เลือกครู –</option>
-                    {sortedTeachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    {optionsFor(defaultTeacher).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                 </div>
                 <div style={{ width: 78 }}>
@@ -268,7 +306,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
                     onChange={(e) => setRow(r.groupId, { teacherId: e.target.value })}
                   >
                     <option value="">– เลือกครู –</option>
-                    {sortedTeachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    {optionsFor(r.teacherId).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                   <input
                     type="number" min={1} max={20} style={{ width: 58 }} className={inputCls}

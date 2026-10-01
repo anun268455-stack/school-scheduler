@@ -99,8 +99,8 @@ function ImportButton({ entity }: { entity: "teachers"|"rooms"|"subjects"|"group
 const GROUP_LEVELS = ["M1","M2","M3","M4","M5","M6","ห้องเวียน"];
 
 const GroupsPanel: React.FC = () => {
-  const { groups, rooms } = useTimetableStore();
-  const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "" });
+  const { groups, rooms, teachers } = useTimetableStore();
+  const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
 
@@ -110,9 +110,10 @@ const GroupsPanel: React.FC = () => {
       size: form.size,
       parent_id: form.parent_id ? Number(form.parent_id) : null,
       homeroom_room_id: form.homeroom_room_id ? Number(form.homeroom_room_id) : null,
+      homeroom_teacher_id: form.homeroom_teacher_id ? Number(form.homeroom_teacher_id) : null,
     });
     useTimetableStore.setState((s) => ({ groups: [...s.groups, { ...created, children: created.children ?? [] }] }));
-    setForm({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "" });
+    setForm({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "" });
   };
 
   const handleUpdate = async (id: number) => {
@@ -122,6 +123,7 @@ const GroupsPanel: React.FC = () => {
       size: editForm.size,
       parent_id: editForm.parent_id ? Number(editForm.parent_id) : null,
       homeroom_room_id: editForm.homeroom_room_id ? Number(editForm.homeroom_room_id) : null,
+      homeroom_teacher_id: editForm.homeroom_teacher_id ? Number(editForm.homeroom_teacher_id) : null,
     });
     useTimetableStore.setState((s) => ({ groups: s.groups.map((g) => g.id === id ? { ...g, ...updated } : g) }));
     setEditing(null); setEditForm(null);
@@ -129,6 +131,7 @@ const GroupsPanel: React.FC = () => {
 
   const flat = groups.flatMap((g) => [g, ...(g.children ?? [])]);
   const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : "–";
+  const hrTeacherName = (id: number | null | undefined) => id ? (teachers.find((t) => t.id === id)?.name ?? "–") : null;
 
   return (
     <Section title="ห้องเรียน" action={<ImportButton entity="groups" />}>
@@ -156,6 +159,15 @@ const GroupsPanel: React.FC = () => {
             {rooms.map((r) => <option key={r.id} value={r.id}>{r.name} ({ROOM_TYPE_TH[r.type] ?? r.type})</option>)}
           </select>
         </Field>
+        <Field label="👩‍🏫 ครูประจำชั้น">
+          <select className={inputCls} value={form.homeroom_teacher_id} onChange={(e) => setForm({ ...form, homeroom_teacher_id: e.target.value })}>
+            <option value="">– ไม่ระบุ –</option>
+            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+      </div>
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
+        💡 <strong>ครูประจำชั้น</strong> ใช้ตอนสร้าง "คาบกิจกรรมประจำระดับ" (เช่น สาธารณประโยชน์) — เลือกโหมดครูประจำชั้น แล้วแต่ละห้องจะได้ครูของตัวเองลงตารางสอนอัตโนมัติ
       </div>
       <button onClick={handleCreate} disabled={!form.name} className={btnPrimary}>+ เพิ่มห้องเรียน</button>
 
@@ -163,14 +175,14 @@ const GroupsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ชื่อห้อง","ระดับ","จำนวน","ห้องแม่","ห้องประจำชั้น",""].map((h) => (
+              {["ชื่อห้อง","ระดับ","จำนวน","ห้องแม่","ห้องประจำชั้น","👩‍🏫 ครูประจำชั้น",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {flat.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {flat.map((g) => (
               <tr key={g.id} className={clsx("hover:bg-gray-50", g.level === "ห้องเวียน" && "bg-purple-50/40")}>
@@ -196,6 +208,12 @@ const GroupsPanel: React.FC = () => {
                       </select>
                     </td>
                     <td className="px-2 py-1">
+                      <select className={inlineCls} value={editForm.homeroom_teacher_id} onChange={(e) => setEditForm({ ...editForm, homeroom_teacher_id: e.target.value })}>
+                        <option value="">– ไม่ระบุ –</option>
+                        {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-2 py-1">
                       <div className="flex gap-1">
                         <button onClick={() => handleUpdate(g.id)} className={btnSave}>บันทึก</button>
                         <button onClick={() => { setEditing(null); setEditForm(null); }} className={btnCancel}>ยกเลิก</button>
@@ -213,9 +231,14 @@ const GroupsPanel: React.FC = () => {
                     <td className="px-3 py-2 text-gray-600">{g.size}</td>
                     <td className="px-3 py-2 text-gray-500">{g.parent_id ? flat.find((p) => p.id === g.parent_id)?.name ?? "–" : "–"}</td>
                     <td className="px-3 py-2 text-gray-500">{roomName(g.homeroom_room_id)}</td>
+                    <td className="px-3 py-2 text-xs">
+                      {hrTeacherName(g.homeroom_teacher_id)
+                        ? <span className="bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded">👩‍🏫 {hrTeacherName(g.homeroom_teacher_id)}</span>
+                        : <span className="text-gray-400">–</span>}
+                    </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
-                        <button onClick={() => { setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "" }); }} className={btnEdit}>แก้ไข</button>
+                        <button onClick={() => { setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "", homeroom_teacher_id: g.homeroom_teacher_id ? String(g.homeroom_teacher_id) : "" }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteGroup(g.id); useTimetableStore.setState((s) => ({ groups: s.groups.filter((x) => x.id !== g.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
