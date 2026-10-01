@@ -133,8 +133,13 @@ function hardConflictAt(
       s.period === period &&
       !ignoreIds.has(s.id) &&
       s.id !== slot.id &&
-      (s.teacher_id === slot.teacher_id || ctx.shares(s.group_id, slot.group_id)),
+      (sameTeacher(s.teacher_id, slot.teacher_id) || ctx.shares(s.group_id, slot.group_id)),
   );
+}
+
+/** Two lessons clash on teacher only when both name the same real teacher. */
+function sameTeacher(a: number | null, b: number | null): boolean {
+  return a != null && b != null && a === b;
 }
 
 function mkStep(
@@ -190,11 +195,11 @@ export function planRoutes(
 
   // Classify blockers
   const teacherOrGroupBlockers = atTarget.filter(
-    (s) => s.teacher_id === moving.teacher_id || shares(s.group_id, moving.group_id),
+    (s) => sameTeacher(s.teacher_id, moving.teacher_id) || shares(s.group_id, moving.group_id),
   );
   const roomOnlyBlockers = atTarget.filter(
     (s) =>
-      s.teacher_id !== moving.teacher_id &&
+      !sameTeacher(s.teacher_id, moving.teacher_id) &&
       !shares(s.group_id, moving.group_id) &&
       moving.room_id != null &&
       s.room_id === moving.room_id,

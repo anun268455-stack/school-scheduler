@@ -113,7 +113,7 @@ export interface TimetableSlot {
   id:                 number;
   day:                number;     // 0=Mon … 4=Fri
   period:             number;     // period_num (0-based)
-  teacher_id:         number;
+  teacher_id:         number | null;   // null = คาบกิจกรรมที่ไม่มีครูเจาะจง
   group_id:           number;
   room_id:            number | null;
   subject_id:         number;
@@ -123,6 +123,10 @@ export interface TimetableSlot {
   // the second period is flagged is_double_cont.
   double_group_key?:  string | null;
   is_double_cont?:    boolean;
+  // คาบกิจกรรมประจำระดับชั้น (เช่น สาธารณประโยชน์ ม.5 คาบ 7)
+  is_activity_block?: boolean;
+  activity_key?:      string | null;   // ใช้ลบทั้งระดับพร้อมกัน
+  activity_level?:    string | null;
   is_locked:          boolean;    // pre-lock flag
   // วิชาเสรี — pinned slot with a swappable catalog of subject+teacher choices
   is_elective?:        boolean;

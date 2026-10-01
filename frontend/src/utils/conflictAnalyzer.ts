@@ -63,7 +63,10 @@ export function analyzeDropTarget(
   }
 
   // ── Teacher already teaching at target → droppable, offers routes ─────────
-  const teacherBlock = atTarget.find((s) => s.teacher_id === drag.teacher_id);
+  // (null teacher = activity period with no assigned teacher — never a clash)
+  const teacherBlock = drag.teacher_id == null
+    ? undefined
+    : atTarget.find((s) => s.teacher_id != null && s.teacher_id === drag.teacher_id);
   if (teacherBlock) {
     return mk("red", 1, `🔁 ครู "${drag.teacher_name}" สอนอยู่ — วางเพื่อเลือกเส้นทางแทนที่`);
   }

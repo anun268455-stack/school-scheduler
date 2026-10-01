@@ -100,6 +100,20 @@ export const bulkLockSlots = (params: {
   filters: { group_level?: string; day?: number; period?: number; subject_id?: number };
 }) => api.post<{ affected: number }>("/timetable/slots/bulk-lock", params).then((r) => r.data);
 
+// ── Level-wide activity periods (คาบกิจกรรมประจำระดับชั้น) ───────────────────
+export const createLevelActivity = (d: {
+  level: string; day: number; period: number;
+  subject_id: number; teacher_id?: number | null; room_mode?: "homeroom" | "none";
+}) => api.post<{
+  created: TimetableSlot[];
+  skipped: { group: string; reason: string }[];
+  activity_key: string;
+}>("/timetable/level-activity", d).then((r) => r.data);
+
+export const deleteLevelActivity = (activityKey: string) =>
+  api.delete<{ removed: number }>(`/timetable/level-activity/${encodeURIComponent(activityKey)}`)
+    .then((r) => r.data);
+
 // ── Live collaboration ───────────────────────────────────────────────────────
 /** Tiny poll: returns the server's data revision so we can detect other people's edits. */
 export const fetchStateVersion = () =>

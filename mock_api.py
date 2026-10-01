@@ -177,7 +177,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     group_busy:   set[tuple] = set()
     room_busy:    set[tuple] = set()
     for s in SLOTS:
-        teacher_busy.add((s["teacher_id"], s["day"], s["period"]))
+        # Activity periods (สาธารณประโยชน์ ฯลฯ) may have no assigned teacher.
+        if s.get("teacher_id") is not None:
+            teacher_busy.add((s["teacher_id"], s["day"], s["period"]))
         group_busy.add((s["group_id"],   s["day"], s["period"]))
         if s.get("room_id"):
             room_busy.add((s["room_id"], s["day"], s["period"]))
@@ -539,7 +541,8 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     busy_group   = set()   # (gid, d, p)  — exact group only; hierarchy added below
     busy_room    = set()   # (rid, d, p)
     for s in SLOTS:
-        busy_teacher.add((s["teacher_id"], s["day"], s["period"]))
+        if s.get("teacher_id") is not None:
+            busy_teacher.add((s["teacher_id"], s["day"], s["period"]))
         busy_group.add((s["group_id"], s["day"], s["period"]))
         if s.get("room_id"):
             busy_room.add((s["room_id"], s["day"], s["period"]))
@@ -1141,6 +1144,68 @@ def _sync_doubles(slot: dict[str, Any]) -> None:
         s["selected_option_id"] = slot["selected_option_id"]
         _apply_selected_option(s)
 
+# ── Level-wide activity periods (คาบกิจกรรมประจำระดับชั้น) ───────────────────
+# e.g. "สาธารณประโยชน์ของ ม.5 ทุกห้อง อยู่คาบ 7 วันพุธ".
+# One call pins the same activity onto every classroom of a level. The slots are
+# locked, so the auto-scheduler treats them as immovable and never books over them.
+# A teacher is optional — many activity periods have no single subject teacher.
+
+@app.post("/api/timetable/level-activity")
+def create_level_activity(body: dict[str, Any]):
+    level      = body["level"]
+    day        = int(body["day"])
+    period     = int(body["period"])
+    subject_id = int(body["subject_id"])
+    teacher_id = body.get("teacher_id")
+    teacher_id = int(teacher_id) if teacher_id not in (None, "") else None
+    room_mode  = body.get("room_mode", "homeroom")   # "homeroom" | "none"
+
+    # Whole-class activity → target top-level classes of that level, never the
+    # subgroups (ก/ข/ค), so the parent and its children can't double-book.
+    targets = [g for g in _flat_groups()
+               if g.get("level") == level and not g.get("parent_id")]
+    if not targets:
+        raise HTTPException(400, f"ไม่พบห้องเรียนในระดับ {level}")
+
+    key = f"ACT-{level}-{day}-{period}"
+    created, skipped = [], []
+    for g in targets:
+        # Skip classrooms that already have something in this cell.
+        clash = next((s for s in SLOTS
+                      if s["day"] == day and s["period"] == period
+                      and s["group_id"] == g["id"]), None)
+        if clash:
+            skipped.append({"group": g["name"],
+                            "reason": clash.get("subject_code") or "มีคาบอยู่แล้ว"})
+            continue
+        slot = {
+            "id": _next("slot"),
+            "day": day, "period": period,
+            "group_id": g["id"],
+            "teacher_id": teacher_id,
+            "subject_id": subject_id,
+            "room_id": g.get("homeroom_room_id") if room_mode == "homeroom" else None,
+            "is_double_start": False,
+            "parallel_group_key": None,
+            "is_locked": True,
+            "is_activity_block": True,
+            "activity_key": key,
+            "activity_level": level,
+        }
+        SLOTS.append(slot)
+        created.append(_enrich_slot(slot))
+    return {"created": created, "skipped": skipped, "activity_key": key}
+
+
+@app.delete("/api/timetable/level-activity/{activity_key}")
+def delete_level_activity(activity_key: str):
+    """Remove every slot belonging to one level-wide activity."""
+    global SLOTS
+    before = len(SLOTS)
+    SLOTS = [s for s in SLOTS if s.get("activity_key") != activity_key]
+    return {"removed": before - len(SLOTS)}
+
+
 @app.post("/api/timetable/elective-slots")
 def create_elective_slot(body: dict[str, Any]):
     is_double = bool(body.get("is_double"))
@@ -1346,7 +1411,8 @@ def analyze_conflict(slot_id: int, target_day: int, target_period: int):
                  if s["day"] == target_day and s["period"] == target_period and s["id"] != slot_id]
     if any(s["group_id"]   == slot["group_id"]   for s in at_target):
         return {"level": "red",   "cascades": 0, "reason": "ห้องซ้อนกัน"}
-    if any(s["teacher_id"] == slot["teacher_id"] for s in at_target):
+    if slot.get("teacher_id") is not None and any(
+            s.get("teacher_id") == slot["teacher_id"] for s in at_target):
         return {"level": "red",   "cascades": 0, "reason": "ครูสอนอยู่แล้ว"}
     if any(s.get("is_locked") for s in at_target):
         return {"level": "red",   "cascades": 0, "reason": "มีคาบล็อก"}

@@ -9,10 +9,12 @@ import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
 import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal";
+import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
+import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
 
 export type DashPage =
   | "groups" | "teachers" | "subjects" | "rooms"
-  | "requirements" | "electives" | "periods" | "locks" | "settings"
+  | "requirements" | "electives" | "activities" | "periods" | "locks" | "settings"
   | "departments" | "analytics" | "help";
 
 export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
@@ -23,6 +25,7 @@ export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
     rooms:        <RoomsPanel />,
     requirements: <RequirementsPanel />,
     electives:    <ElectivesPanel />,
+    activities:   <LevelActivityPanel />,
     periods:      <PeriodsPanel />,
     locks:        <BulkLockPanel />,
     settings:     <SettingsPanel />,
@@ -415,10 +418,16 @@ const TeachersPanel: React.FC = () => {
 
 // ─── Subjects ────────────────────────────────────────────────────────────────
 const SubjectsPanel: React.FC = () => {
-  const { subjects, departments } = useTimetableStore();
+  const { subjects, departments, requirements } = useTimetableStore();
   const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
+  const [assigning, setAssigning] = useState<number | null>(null);
+
+  // How many classes each subject is already assigned to.
+  const classCount = (subjectId: number) =>
+    requirements.filter((r) => r.subject_id === subjectId).length;
+  const assigningSubject = assigning != null ? subjects.find((s) => s.id === assigning) ?? null : null;
 
   const handleCreate = async () => {
     const created = await api.createSubject({
@@ -541,6 +550,16 @@ const SubjectsPanel: React.FC = () => {
                     <td className="px-3 py-2 text-gray-600">{s.duration}</td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
+                        <button
+                          onClick={() => setAssigning(s.id)}
+                          className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 whitespace-nowrap"
+                          title="เลือกห้องเรียนที่เรียนวิชานี้ และกำหนดครูของแต่ละห้อง"
+                        >
+                          🧑‍🏫 จัดห้อง/ครู
+                          {classCount(s.id) > 0 && (
+                            <span className="ml-1 text-[10px] bg-blue-600 text-white px-1 rounded-full">{classCount(s.id)}</span>
+                          )}
+                        </button>
                         <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
@@ -552,6 +571,10 @@ const SubjectsPanel: React.FC = () => {
           </tbody>
         </table>
       </div>
+
+      {assigningSubject && (
+        <SubjectAssignModal subject={assigningSubject} onClose={() => setAssigning(null)} />
+      )}
     </Section>
   );
 };
