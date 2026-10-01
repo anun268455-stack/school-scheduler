@@ -12,6 +12,26 @@ from collections import defaultdict
 app = FastAPI(title="School Scheduler Mock API v3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# ── Live collaboration: data revision counter ─────────────────────────────────
+# Every successful write bumps REVISION. Clients poll /api/state/version (a tiny
+# response) and reload only when the number changed, so two people editing at the
+# same time see each other's work without refreshing the page.
+REVISION = {"n": 0}
+
+
+@app.middleware("http")
+async def _bump_revision(request, call_next):
+    response = await call_next(request)
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and response.status_code < 400:
+        REVISION["n"] += 1
+    return response
+
+
+@app.get("/api/state/version")
+def state_version():
+    """Tiny polling endpoint — lets clients detect other people's edits."""
+    return {"revision": REVISION["n"], "slots": len(SLOTS)}
+
 # ── Data ───────────────────────────────────────────────────────────────────────
 PERIODS: list[dict[str, Any]] = [
     {"id":1,  "period_num":0, "label":"เคารพธงชาติ/โฮมรูม", "start_time":"07:50","end_time":"08:30","type":"assembly","applies_to":"all"},
@@ -1044,9 +1064,20 @@ def get_slots(group_id: int | None = None, teacher_id: int | None = None,
 
 @app.post("/api/timetable/slots")
 def create_slot(body: dict[str, Any]):
-    body["id"] = _next("slot")
-    SLOTS.append(body)
-    return body
+    """Add one lesson to a specific cell (used by 'click an empty cell to add')."""
+    slot = {
+        "id": _next("slot"),
+        "day": int(body["day"]), "period": int(body["period"]),
+        "group_id": int(body["group_id"]),
+        "teacher_id": int(body["teacher_id"]),
+        "subject_id": int(body["subject_id"]),
+        "room_id": body.get("room_id"),
+        "is_double_start": bool(body.get("is_double_start", False)),
+        "parallel_group_key": body.get("parallel_group_key"),
+        "is_locked": bool(body.get("is_locked", False)),
+    }
+    SLOTS.append(slot)
+    return _enrich_slot(slot)
 
 def _enrich_slot(s: dict[str, Any]) -> dict[str, Any]:
     """Re-derive display fields (name/type lookups) from current id fields."""

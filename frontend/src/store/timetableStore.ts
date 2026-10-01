@@ -9,6 +9,35 @@ import { buildImpactMap } from "../utils/conflictAnalyzer";
 import { buildSharesStudents } from "../utils/groupHierarchy";
 import * as api from "../api/client";
 
+// ── Live-sync internals ───────────────────────────────────────────────────────
+/** How often to ask the server "did anything change?" (tiny request). */
+const POLL_MS = 3500;
+let pollTimer: number | null = null;
+
+/**
+ * Reload every collection without flipping `isLoading`, so another person's edit
+ * refreshes the table in place instead of flashing a loading spinner.
+ */
+async function quietRefresh(
+  set: (partial: Partial<TimetableStore>) => void,
+  get: () => TimetableStore,
+): Promise<void> {
+  const cur = get();
+  const [departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods] =
+    await Promise.all([
+      api.fetchDepartments().catch(() => cur.departments),
+      api.fetchBuildings().catch(() => cur.buildings),
+      api.fetchRooms().catch(() => cur.rooms),
+      api.fetchGroups().catch(() => cur.groups),
+      api.fetchTeachers().catch(() => cur.teachers),
+      api.fetchSubjects().catch(() => cur.subjects),
+      api.fetchRequirements().catch(() => cur.requirements),
+      api.fetchSlots().catch(() => cur.slots),
+      api.fetchPeriods().catch(() => cur.periods),
+    ]);
+  set({ departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
+}
+
 // One reversible change to a slot, used by the undo stack.
 interface SlotPatch {
   slotId:  number;
@@ -49,6 +78,20 @@ interface TimetableStore {
   draggingSlot:  TimetableSlot | null;
   impactMap:     Map<string, CellImpact>;   // key = "day-period"
   tooltipText:   string | null;
+
+  // ── Live collaboration (two people editing at once) ───────────────────────
+  liveSync:      boolean;                   // polling on/off
+  lastRevision:  number;                    // last server revision we rendered
+  lastSyncedAt:  number | null;             // epoch ms of last successful poll
+  syncState:     "connecting" | "live" | "offline";
+  remoteUpdates: number;                    // how many times someone else's edit arrived
+  setLiveSync:   (on: boolean) => void;
+  startLiveSync: () => void;
+  stopLiveSync:  () => void;
+  addLesson: (d: {
+    group_id: number; day: number; period: number;
+    subject_id: number; teacher_id: number; room_id?: number | null;
+  }) => Promise<void>;
 
   // ── Actions ───────────────────────────────────────────────────────────────
   setViewMode:          (m: ViewMode) => void;
@@ -105,6 +148,11 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   impactMap:         new Map(),
   undoStack:         [],
   tooltipText:       null,
+  liveSync:          true,
+  lastRevision:      -1,
+  lastSyncedAt:      null,
+  syncState:         "connecting",
+  remoteUpdates:     0,
 
   schoolConfig: {
     schoolName: "โรงเรียน",
@@ -144,6 +192,49 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   loadSlots: async () => {
     const slots = await api.fetchSlots();
     set({ slots });
+  },
+
+  // ── Live collaboration ────────────────────────────────────────────────────
+  setLiveSync: (on) => {
+    set({ liveSync: on });
+    if (on) get().startLiveSync();
+    else get().stopLiveSync();
+  },
+
+  stopLiveSync: () => {
+    if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+  },
+
+  startLiveSync: () => {
+    get().stopLiveSync();
+    const tick = async () => {
+      const st = get();
+      // Never yank data out from under an interaction in progress.
+      if (!st.liveSync) return;
+      if (st.draggingSlot || st.isSolving || st.isLoading) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      try {
+        const { revision } = await api.fetchStateVersion();
+        const prev = get().lastRevision;
+        set({ syncState: "live", lastSyncedAt: Date.now() });
+        if (revision === prev) return;
+        if (prev === -1) { set({ lastRevision: revision }); return; }  // first poll: just record
+        // Someone (possibly us) changed the data — pull a fresh copy quietly,
+        // without flipping isLoading so the table doesn't flash a spinner.
+        await quietRefresh(set, get);
+        set({ lastRevision: revision, remoteUpdates: get().remoteUpdates + 1 });
+      } catch {
+        set({ syncState: "offline" });
+      }
+    };
+    void tick();
+    pollTimer = setInterval(tick, POLL_MS) as unknown as number;
+  },
+
+  // Add a single lesson to one cell (used by "click an empty cell to add").
+  addLesson: async (d) => {
+    const created = await api.createSlot(d);
+    set((s) => ({ slots: [...s.slots, created] }));
   },
 
   // ── DnD ─────────────────────────────────────────────────────────────────

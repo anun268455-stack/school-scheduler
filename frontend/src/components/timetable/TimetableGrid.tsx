@@ -15,6 +15,7 @@ import { SlotCell } from "./SlotCell";
 import { SwapRouteModal } from "./SwapRouteModal";
 import { RoomSwapModal } from "./RoomSwapModal";
 import { ElectiveOptionModal } from "./ElectiveOptionModal";
+import { AddLessonModal } from "./AddLessonModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
 import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
@@ -40,10 +41,12 @@ interface DroppableCellProps {
   preLockMode: boolean;
   onPreLockClick: (slot: TimetableSlot) => void;
   isDragging: boolean;
+  onAddLesson?: (day: number, period: number) => void;
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
   day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective, preLockMode, onPreLockClick, isDragging,
+  onAddLesson,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: `cell-${day}-${period}`,
@@ -104,7 +107,18 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
         ) : (
           <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
         )
-      ) : null}
+      ) : (
+        /* Empty cell — click to add a lesson here */
+        onAddLesson && !isDragging && !preLockMode ? (
+          <button
+            onClick={() => onAddLesson(day, period)}
+            className="group/add w-full h-full flex items-center justify-center text-gray-300 hover:text-emerald-600 hover:bg-emerald-50/60 transition-colors"
+            title="คลิกเพื่อเพิ่มคาบเรียน"
+          >
+            <span className="text-base opacity-0 group-hover/add:opacity-100 transition-opacity">＋</span>
+          </button>
+        ) : null
+      )}
     </div>
   );
 };
@@ -162,6 +176,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     { moving: TimetableSlot; target: { day: number; period: number }; routes: SwapRoute[] } | null
   >(null);
   const [roomSwapSlot, setRoomSwapSlot] = useState<TimetableSlot | null>(null);
+  const [addCell, setAddCell] = useState<{ day: number; period: number } | null>(null);
   const [electiveSlotId, setElectiveSlotId] = useState<number | null>(null);
   const electiveSlot = electiveSlotId != null ? slots.find((s) => s.id === electiveSlotId) ?? null : null;
 
@@ -243,6 +258,9 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   const handlePreLockClick = useCallback((slot: TimetableSlot) => toggleLock(slot.id), [toggleLock]);
   const handleSwapRoomClick = useCallback((slot: TimetableSlot) => setRoomSwapSlot(slot), []);
   const handleOpenElective  = useCallback((slot: TimetableSlot) => setElectiveSlotId(slot.id), []);
+
+  // Adding a lesson needs a class to add it to, so it's offered in group view only.
+  const handleAddLesson = useCallback((d: number, p: number) => setAddCell({ day: d, period: p }), []);
 
   const handleApplyRoute = useCallback((route: SwapRoute) => {
     applySwapRoute(route);
@@ -385,6 +403,16 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         slots={slots}
         onSelect={(roomId) => { swapRoom(roomSwapSlot.id, roomId); setRoomSwapSlot(null); }}
         onClose={() => setRoomSwapSlot(null)}
+      />
+    )}
+
+    {/* Add-lesson Modal (click an empty cell) */}
+    {addCell && selectedGroupId != null && (
+      <AddLessonModal
+        groupId={selectedGroupId}
+        day={addCell.day}
+        period={addCell.period}
+        onClose={() => setAddCell(null)}
       />
     )}
 
@@ -531,6 +559,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                             preLockMode={preLockMode}
                             onPreLockClick={handlePreLockClick}
                             isDragging={isDragActive}
+                            onAddLesson={selectedGroupId != null ? handleAddLesson : undefined}
                           />
                         </div>
                       </td>

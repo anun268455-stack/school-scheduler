@@ -45,6 +45,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     selectedRoomId, setSelectedRoomId,
     preLockMode, setPreLockMode,
     slots, lockAll, unlockAll,
+    liveSync, setLiveSync, syncState, remoteUpdates,
   } = useTimetableStore();
 
   const [showSolver,  setShowSolver]  = useState(false);
@@ -153,6 +154,35 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {/* Live-sync indicator — shows that two people can edit at once */}
+      <div className="flex items-center px-3 border-r border-gray-700 shrink-0">
+        <button
+          onClick={() => setLiveSync(!liveSync)}
+          title={
+            !liveSync ? "ซิงค์อัตโนมัติปิดอยู่ — คลิกเพื่อเปิด"
+            : syncState === "offline" ? "ต่อเซิร์ฟเวอร์ไม่ได้ — กำลังลองใหม่"
+            : "ซิงค์อัตโนมัติเปิดอยู่ — เห็นการแก้ไขของคนอื่นโดยไม่ต้องรีเฟรช"
+          }
+          className={clsx(
+            "flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-medium border transition-colors",
+            !liveSync        ? "bg-gray-800 border-gray-600 text-gray-400 hover:text-gray-200"
+            : syncState === "offline" ? "bg-red-900/40 border-red-700 text-red-300"
+            : "bg-emerald-900/40 border-emerald-700 text-emerald-300",
+          )}
+        >
+          <span className={clsx(
+            "inline-block w-1.5 h-1.5 rounded-full",
+            !liveSync ? "bg-gray-500"
+            : syncState === "offline" ? "bg-red-400"
+            : "bg-emerald-400 animate-pulse",
+          )} />
+          {!liveSync ? "ซิงค์ปิด" : syncState === "offline" ? "ออฟไลน์" : "ซิงค์สด"}
+          {liveSync && syncState === "live" && remoteUpdates > 0 && (
+            <span className="text-emerald-400/70">·{remoteUpdates}</span>
+          )}
+        </button>
+      </div>
 
       {/* Lock Counter */}
       {currentPage === "timetable" && totalSlots > 0 && (

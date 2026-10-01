@@ -18,11 +18,17 @@ export default function App() {
   const [page, setPage] = useState<Page>("timetable");
   const {
     loadAll, slots, groups, teachers, periods, schoolConfig,
-    selectedGroupId, selectedTeacherId,
+    selectedGroupId, selectedTeacherId, startLiveSync, stopLiveSync,
   } = useTimetableStore();
   const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // Keep the page in step with anyone else editing at the same time.
+  useEffect(() => {
+    startLiveSync();
+    return () => stopLiveSync();
+  }, [startLiveSync, stopLiveSync]);
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">

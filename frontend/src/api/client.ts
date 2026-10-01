@@ -100,6 +100,11 @@ export const bulkLockSlots = (params: {
   filters: { group_level?: string; day?: number; period?: number; subject_id?: number };
 }) => api.post<{ affected: number }>("/timetable/slots/bulk-lock", params).then((r) => r.data);
 
+// ── Live collaboration ───────────────────────────────────────────────────────
+/** Tiny poll: returns the server's data revision so we can detect other people's edits. */
+export const fetchStateVersion = () =>
+  api.get<{ revision: number; slots: number }>("/state/version", { timeout: 8000 }).then((r) => r.data);
+
 // ── Solver ───────────────────────────────────────────────────────────────────
 export const runSolver = (p: {
   clear_existing?: boolean;
