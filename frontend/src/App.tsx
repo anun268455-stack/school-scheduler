@@ -36,7 +36,7 @@ export default function App() {
         <ErrorBoundary>
           {page === "timetable" && (
             <div className="flex-1 overflow-hidden flex flex-col">
-              <TimetableGrid />
+              <TimetableGrid onNav={(p) => setPage(p as Page)} />
             </div>
           )}
           {(DASH_PAGES as string[]).includes(page) && (

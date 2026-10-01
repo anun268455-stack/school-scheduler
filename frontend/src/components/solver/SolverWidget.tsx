@@ -12,7 +12,6 @@ interface Props { onClose: () => void }
 export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   const { slots, isSolving, solverError, runSolver, groups, teachers, subjects } = useTimetableStore();
 
-  const [timeLimitSec, setTimeLimitSec]   = useState(120);
   const [clearExisting, setClearExisting] = useState(true);
   const [result, setResult]               = useState<SolverResult | null>(null);
 
@@ -21,7 +20,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
 
   const handleSolve = async () => {
     try {
-      const r = await runSolver(timeLimitSec);
+      const r = await runSolver();
       setResult(r);
     } catch {
       /* error stored in store.solverError */
@@ -58,18 +57,13 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
           <StatRow icon="📚" label="วิชาเรียน"   value={subjects.length} color="text-green-400" />
         </div>
 
-        {/* ── Solver Params ────────────────────────────────────────────────── */}
+        {/* ── Engine note ─────────────────────────────────────────────────── */}
         <div className="space-y-2">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">พารามิเตอร์</p>
-
-          <div className="flex items-center justify-between gap-3">
-            <label className="text-xs text-gray-300">เวลาสูงสุด (วินาที)</label>
-            <input
-              type="number" min={10} max={600} step={10}
-              value={timeLimitSec}
-              onChange={(e) => setTimeLimitSec(Number(e.target.value))}
-              className="w-20 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white text-right focus:ring-1 focus:ring-indigo-500 outline-none"
-            />
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">ตัวจัดตาราง</p>
+          <div className="bg-indigo-900/30 border border-indigo-700/50 rounded p-2 text-[11px] text-indigo-200/90 leading-relaxed">
+            ใช้ <strong>CP-SAT (OR-Tools)</strong> หาคำตอบที่ดีที่สุด — จัดครบทุกเงื่อนไข
+            และ<strong>ลดการเดินของนักเรียน/ครู</strong> (อยู่ห้องประจำให้มากที่สุด)
+            ถ้าเซิร์ฟเวอร์ยังไม่มี OR-Tools จะสลับไปใช้ตัวสำรอง (heuristic เร็ว) อัตโนมัติ
           </div>
 
           <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-300">
@@ -79,7 +73,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
               onChange={(e) => setClearExisting(e.target.checked)}
               className="w-3.5 h-3.5 accent-indigo-500"
             />
-            ล้างคาบเดิมก่อนคำนวณใหม่ (ยกเว้นล็อก)
+            ล้างคาบเดิมก่อนคำนวณใหม่ (ยกเว้นคาบที่ล็อก)
           </label>
         </div>
 
@@ -94,19 +88,25 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
         {result && !isSolving && (
           <div className={clsx("rounded-lg border p-3 text-xs space-y-1", STATUS_STYLES[result.status] ?? STATUS_STYLES.UNKNOWN)}>
             <div className="font-bold text-sm mb-2">
-              {result.status === "OPTIMAL"   ? "✅ คำตอบที่เหมาะสมที่สุด" :
-               result.status === "FEASIBLE"  ? "⚠️ คำตอบที่เป็นไปได้"    :
-               result.status === "INFEASIBLE"? "❌ ไม่สามารถหาคำตอบได้"   :
-                                               "❓ ไม่ทราบสถานะ"}
+              {result.status === "OPTIMAL"    ? "✅ ตารางที่ดีที่สุด (เดินน้อยสุด)" :
+               result.status === "FEASIBLE"   ? "✅ จัดตารางสำเร็จ (ครบทุกเงื่อนไข)" :
+               result.status === "INFEASIBLE" ? "❌ จัดไม่ครบ — มีข้อกำหนดที่ลงไม่ได้" :
+                                                "❓ ไม่ทราบสถานะ"}
             </div>
-            <ResultRow label="คาบที่สร้าง"   value={`${result.slots_created} คาบ`}         />
-            <ResultRow label="เวลาคำนวณ"    value={`${result.solve_time_seconds.toFixed(2)} วิ`} />
-            {result.objective_value != null && (
-              <ResultRow label="ค่าปรับรวม" value={result.objective_value.toFixed(0)} />
+            <ResultRow label="คาบที่จัดได้" value={`${result.slots_created} คาบ`} />
+            <ResultRow label="เวลาที่ใช้"  value={`${result.solve_time_seconds.toFixed(1)} วิ`} />
+            <ResultRow label="ตัวจัดตาราง" value={
+              result.engine === "cp-sat" ? "CP-SAT (ดีที่สุด)" :
+              result.engine === "greedy-fallback" ? "สำรอง (heuristic)" :
+              "heuristic"} />
+            {result.status === "OPTIMAL" && result.objective_value != null && (
+              <ResultRow label="คะแนนการเดิน" value={`${result.objective_value.toFixed(0)} (ยิ่งต่ำยิ่งดี)`} />
             )}
             {result.violations.length > 0 && (
               <div className="mt-2 text-red-300 text-[10px] space-y-0.5">
+                <div className="font-semibold">สิ่งที่จัดไม่ได้:</div>
                 {result.violations.map((v, i) => <div key={i}>• {v}</div>)}
+                <div className="mt-1 text-amber-300/80">แนวทางแก้: ลดคาบ/สัปดาห์ เพิ่มครูหรือห้อง หรือปลดล็อกบางคาบ แล้วกดใหม่</div>
               </div>
             )}
           </div>
@@ -129,20 +129,19 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
               </svg>
-              กำลังคำนวณ ({timeLimitSec} วิ สูงสุด)…
+              กำลังจัดตาราง…
             </span>
           ) : (
-            "🚀 เริ่มคำนวณตาราง"
+            "🚀 เริ่มจัดตารางอัตโนมัติ"
           )}
         </button>
 
         {/* ── Pipeline Steps ─────────────────────────────────────────────────── */}
         <div className="border-t border-gray-700 pt-3 space-y-1.5 text-[10px] text-gray-500">
-          <PipelineStep done={true}  label="1. ตรวจสอบข้อกำหนดคาบ"           />
-          <PipelineStep done={true}  label="2. นำเข้าเงื่อนไขห้องที่กำหนดพิเศษ" />
-          <PipelineStep done={lockedSlots.length > 0} label={`3. ล็อกคาบล่วงหน้า ${lockedSlots.length} คาบ`} />
-          <PipelineStep done={isSolving || !!result}  label="4. รันตัวแก้ปัญหา (CP-SAT)"                    />
-          <PipelineStep done={!!result && !isSolving} label="5. บันทึกผลลัพธ์"                   />
+          <PipelineStep done={!!result || isSolving} label="1. อ่านข้อกำหนดคาบ + เงื่อนไขห้อง" />
+          <PipelineStep done={lockedSlots.length > 0} label={`2. กันคาบที่ล็อกไว้ ${lockedSlots.length} คาบ`} />
+          <PipelineStep done={isSolving || !!result} label="3. หาคำตอบ (CP-SAT / สำรอง) กันชนครู/ห้อง/นักเรียน" />
+          <PipelineStep done={!!result && !isSolving} label="4. บันทึกผลลัพธ์" />
         </div>
       </div>
     </div>

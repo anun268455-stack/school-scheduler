@@ -8,6 +8,7 @@
  *   🔴 Red    – hard-constraint violation or >4-swap cascade
  */
 import type { TimetableSlot, CellImpact, ImpactLevel, Period } from "../types";
+import { strictShares, type SharesStudents } from "./groupHierarchy";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Single-cell analysis
@@ -18,6 +19,7 @@ export function analyzeDropTarget(
   targetPeriod:  number,
   allSlots:      TimetableSlot[],   // entire DB snapshot (all groups/teachers)
   gridPeriods:   Period[],
+  sharesStudents: SharesStudents = strictShares,
 ): CellImpact {
   // ── Same position ──────────────────────────────────────────────────────────
   if (drag.day === targetDay && drag.period === targetPeriod) {
@@ -35,13 +37,22 @@ export function analyzeDropTarget(
     (s) => s.day === targetDay && s.period === targetPeriod && s.id !== drag.id,
   );
 
-  // ── HARD: Same group already booked there ─────────────────────────────────
-  const groupBlock = atTarget.find((s) => s.group_id === drag.group_id);
-  if (groupBlock) {
-    return mk("red", Infinity, `❌ ห้อง "${groupBlock.group_name}" มีคาบอยู่แล้ว`);
+  // ── Locked / elective slots at target can't be swapped away ───────────────
+  const lockedBlock = atTarget.find((s) => s.is_locked || s.is_elective);
+  if (lockedBlock) {
+    return mk("red", Infinity, `🔒 มีคาบที่ล็อก/วิชาเสรีอยู่ที่นี่ (วางเพื่อบังคับแทนที่)`);
   }
 
-  // ── HARD: Parallel sibling conflict ───────────────────────────────────────
+  // ── Same group (or a parent/child sharing students) already booked ────────
+  const groupBlock = atTarget.find((s) => sharesStudents(s.group_id, drag.group_id));
+  if (groupBlock) {
+    const label = groupBlock.group_id === drag.group_id
+      ? `🔁 ห้อง "${groupBlock.group_name}" มีคาบอยู่ — วางเพื่อเลือกเส้นทางแทนที่`
+      : `🔁 "${groupBlock.group_name}" ใช้นักเรียนกลุ่มเดียวกัน (ห้องย่อย) — วางเพื่อเลือกเส้นทาง`;
+    return mk("red", 1, label);
+  }
+
+  // ── Parallel sibling conflict → still a hard block ────────────────────────
   if (drag.parallel_group_key) {
     const parallelConflict = atTarget.find(
       (s) => s.parallel_group_key === drag.parallel_group_key,
@@ -51,16 +62,10 @@ export function analyzeDropTarget(
     }
   }
 
-  // ── HARD: Teacher already teaching at target ───────────────────────────────
+  // ── Teacher already teaching at target → droppable, offers routes ─────────
   const teacherBlock = atTarget.find((s) => s.teacher_id === drag.teacher_id);
   if (teacherBlock) {
-    return mk("red", Infinity, `❌ ครู "${drag.teacher_name}" สอนที่อื่นอยู่แล้ว`);
-  }
-
-  // ── HARD: Locked slots at target can't be moved ───────────────────────────
-  const lockedBlock = atTarget.find((s) => s.is_locked);
-  if (lockedBlock) {
-    return mk("red", Infinity, `🔒 มีคาบที่ล็อกอยู่ที่ตำแหน่งนี้`);
+    return mk("red", 1, `🔁 ครู "${drag.teacher_name}" สอนอยู่ — วางเพื่อเลือกเส้นทางแทนที่`);
   }
 
   // ── Empty target ──────────────────────────────────────────────────────────
@@ -94,12 +99,13 @@ export function buildImpactMap(
   allSlots:     TimetableSlot[],
   gridPeriods:  Period[],
   numDays:      number = 5,
+  sharesStudents: SharesStudents = strictShares,
 ): Map<string, CellImpact> {
   const map = new Map<string, CellImpact>();
   const periodNums = gridPeriods.map((p) => p.period_num);
   for (let d = 0; d < numDays; d++) {
     for (const p of periodNums) {
-      map.set(`${d}-${p}`, analyzeDropTarget(drag, d, p, allSlots, gridPeriods));
+      map.set(`${d}-${p}`, analyzeDropTarget(drag, d, p, allSlots, gridPeriods, sharesStudents));
     }
   }
   return map;

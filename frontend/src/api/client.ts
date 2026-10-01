@@ -59,6 +59,10 @@ export const fetchRequirements = (groupId?: number) =>
   api.get<LessonRequirement[]>("/timetable/requirements", { params: { group_id: groupId } }).then((r) => r.data);
 export const createRequirement = (d: Partial<LessonRequirement>) =>
   api.post<LessonRequirement>("/timetable/requirements", d).then((r) => r.data);
+export const updateRequirement = (id: number, d: Partial<LessonRequirement>) =>
+  api.put<LessonRequirement>(`/timetable/requirements/${id}`, d).then((r) => r.data);
+export const bulkCreateRequirements = (rows: Partial<LessonRequirement>[]) =>
+  api.post<LessonRequirement[]>("/timetable/requirements/bulk", rows).then((r) => r.data);
 export const deleteRequirement = (id: number) => api.delete(`/timetable/requirements/${id}`);
 
 // ── Timetable Slots ──────────────────────────────────────────────────────────
@@ -75,6 +79,7 @@ export const clearSlots  = () => api.delete("/timetable/slots");
 export const createElectiveSlot = (d: {
   group_id: number; day: number; period: number;
   subject_id: number; teacher_id: number; label?: string; room_id?: number | null;
+  is_double?: boolean;
 }) => api.post<TimetableSlot>("/timetable/elective-slots", d).then((r) => r.data);
 
 export const addElectiveOption = (slotId: number, d: { subject_id: number; teacher_id: number; label?: string }) =>

@@ -5,7 +5,7 @@ import React, { useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
 import type { SubjectType, RoomType, PeriodType } from "../types";
-import { DAYS } from "../types";
+import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
 import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal";
@@ -232,8 +232,8 @@ const DAYS_TH = ["จันทร์","อังคาร","พุธ","พฤ�
 
 // ─── Teachers ────────────────────────────────────────────────────────────────
 const TeachersPanel: React.FC = () => {
-  const { teachers, departments } = useTimetableStore();
-  const [form, setForm] = useState({ name: "", department_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
+  const { teachers, departments, rooms } = useTimetableStore();
+  const [form, setForm] = useState({ name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   const [editing, setEditing] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [advOpen, setAdvOpen] = useState<number | null>(null);  // id of teacher with open adv settings
@@ -242,17 +242,27 @@ const TeachersPanel: React.FC = () => {
   });
 
   const handleCreate = async () => {
-    const created = await api.createTeacher({ ...form, fixed_room_id: null, department_id: form.department_id ? Number(form.department_id) : null });
+    const created = await api.createTeacher({
+      ...form,
+      department_id: form.department_id ? Number(form.department_id) : null,
+      fixed_room_id: form.fixed_room_id ? Number(form.fixed_room_id) : null,
+    });
     useTimetableStore.setState((s) => ({ teachers: [...s.teachers, created] }));
-    setForm({ name: "", department_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
+    setForm({ name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   };
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
-    const updated = await api.updateTeacher(id, { ...editForm, department_id: editForm.department_id ? Number(editForm.department_id) : null });
+    const updated = await api.updateTeacher(id, {
+      ...editForm,
+      department_id: editForm.department_id ? Number(editForm.department_id) : null,
+      fixed_room_id: editForm.fixed_room_id ? Number(editForm.fixed_room_id) : null,
+    });
     useTimetableStore.setState((s) => ({ teachers: s.teachers.map((t) => t.id === id ? { ...t, ...updated } : t) }));
     setEditing(null); setEditForm(null);
   };
+
+  const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : "–";
 
   const handleSaveAdv = async (id: number) => {
     const updated = await api.updateTeacher(id, { advanced_settings: advForm });
@@ -274,6 +284,12 @@ const TeachersPanel: React.FC = () => {
             {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         </Field>
+        <Field label="🏠 ห้องประจำครู">
+          <select className={inputCls} value={form.fixed_room_id} onChange={(e) => setForm({ ...form, fixed_room_id: e.target.value })}>
+            <option value="">– ไม่มี (ใช้ห้องว่างอัตโนมัติ) –</option>
+            {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </Field>
         <Field label="คะแนนกลางแจ้ง (0-10)">
           <input type="number" min={0} max={10} className={inputCls} value={form.outdoor_score} onChange={(e) => setForm({ ...form, outdoor_score: Number(e.target.value) })} />
         </Field>
@@ -290,14 +306,14 @@ const TeachersPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ชื่อครู","กลุ่มสาระฯ","กลางแจ้ง","สอน/วัน",""].map((h) => (
+              {["ชื่อครู","กลุ่มสาระฯ","🏠 ห้องประจำ","กลางแจ้ง","สอน/วัน",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {teachers.length === 0 && (
-              <tr><td colSpan={5} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {teachers.map((t) => (
               <React.Fragment key={t.id}>
@@ -309,6 +325,12 @@ const TeachersPanel: React.FC = () => {
                         <select className={inlineCls} value={editForm.department_id} onChange={(e) => setEditForm({ ...editForm, department_id: e.target.value })}>
                           <option value="">–</option>
                           {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                        </select>
+                      </td>
+                      <td className="px-2 py-1">
+                        <select className={inlineCls} value={editForm.fixed_room_id} onChange={(e) => setEditForm({ ...editForm, fixed_room_id: e.target.value })}>
+                          <option value="">– ไม่มี –</option>
+                          {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                         </select>
                       </td>
                       <td className="px-2 py-1"><input type="number" min={0} max={10} className={inlineCls} style={{ width: 55 }} value={editForm.outdoor_score} onChange={(e) => setEditForm({ ...editForm, outdoor_score: Number(e.target.value) })} /></td>
@@ -328,11 +350,16 @@ const TeachersPanel: React.FC = () => {
                         {(t.advanced_settings?.days_off ?? []).length > 0 && <span className="ml-1 text-xs bg-orange-100 text-orange-600 px-1 rounded">วันหยุด</span>}
                       </td>
                       <td className="px-3 py-2 text-gray-500 text-xs truncate max-w-[140px]">{deptName(t.department_id)}</td>
+                      <td className="px-3 py-2 text-xs">
+                        {t.fixed_room_id
+                          ? <span className="bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded">🏠 {roomName(t.fixed_room_id)}</span>
+                          : <span className="text-gray-400">–</span>}
+                      </td>
                       <td className="px-3 py-2 text-gray-600">{t.outdoor_score}</td>
                       <td className="px-3 py-2 text-gray-600">{t.max_slots_per_day}</td>
                       <td className="px-3 py-2">
                         <div className="flex gap-1 flex-wrap">
-                          <button onClick={() => { setEditing(t.id); setEditForm({ name: t.name, department_id: t.department_id ? String(t.department_id) : "", outdoor_score: t.outdoor_score, max_slots_per_day: t.max_slots_per_day, max_outdoor_per_week: t.max_outdoor_per_week }); }} className={btnEdit}>แก้ไข</button>
+                          <button onClick={() => { setEditing(t.id); setEditForm({ name: t.name, department_id: t.department_id ? String(t.department_id) : "", fixed_room_id: t.fixed_room_id ? String(t.fixed_room_id) : "", outdoor_score: t.outdoor_score, max_slots_per_day: t.max_slots_per_day, max_outdoor_per_week: t.max_outdoor_per_week }); }} className={btnEdit}>แก้ไข</button>
                           <button onClick={() => { setAdvOpen(advOpen === t.id ? null : t.id); setAdvForm({ ignore_consecutive_limit: t.advanced_settings?.ignore_consecutive_limit ?? false, require_ground_floor: t.advanced_settings?.require_ground_floor ?? false, days_off: t.advanced_settings?.days_off ?? [], note: t.advanced_settings?.note ?? "" }); }} className="px-2 py-1 text-xs bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 border border-indigo-200">⚙ ขั้นสูง</button>
                           <button onClick={async () => { await api.deleteTeacher(t.id); useTimetableStore.setState((s) => ({ teachers: s.teachers.filter((x) => x.id !== t.id) })); }} className={btnDanger}>ลบ</button>
                         </div>
@@ -343,7 +370,7 @@ const TeachersPanel: React.FC = () => {
                 {/* Advanced settings row */}
                 {advOpen === t.id && (
                   <tr>
-                    <td colSpan={5} className="bg-indigo-50/60 border-b border-indigo-100 px-4 py-3">
+                    <td colSpan={6} className="bg-indigo-50/60 border-b border-indigo-100 px-4 py-3">
                       <p className="text-xs font-bold text-indigo-700 mb-2">⚙ ตั้งค่าขั้นสูง — {t.name}</p>
                       <div className="grid grid-cols-2 gap-3 text-xs">
                         <label className="flex items-center gap-2 cursor-pointer">
@@ -531,10 +558,13 @@ const SubjectsPanel: React.FC = () => {
 
 // ─── Rooms ───────────────────────────────────────────────────────────────────
 const RoomsPanel: React.FC = () => {
-  const { rooms, buildings } = useTimetableStore();
-  const [form, setForm]     = useState({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40 });
+  const { rooms, buildings, teachers, departments } = useTimetableStore();
+  const [form, setForm]     = useState({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40, reserved_teacher_id: "", specialized_dept_id: "" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
+
+  const teacherName = (id: number | null | undefined) => id ? (teachers.find((t) => t.id === id)?.name ?? "–") : null;
+  const deptName    = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name ?? "–") : null;
 
   const handleCreate = async () => {
     const created = await api.createRoom({
@@ -543,11 +573,11 @@ const RoomsPanel: React.FC = () => {
       building_id: form.building_id ? Number(form.building_id) : null,
       floor:       Number(form.floor),
       capacity:    Number(form.capacity),
-      specialized_dept_id: null,
-      reserved_teacher_id: null,
+      specialized_dept_id: form.specialized_dept_id ? Number(form.specialized_dept_id) : null,
+      reserved_teacher_id: form.reserved_teacher_id ? Number(form.reserved_teacher_id) : null,
     });
     useTimetableStore.setState((s) => ({ rooms: [...s.rooms, created] }));
-    setForm({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40 });
+    setForm({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40, reserved_teacher_id: "", specialized_dept_id: "" });
   };
 
   const handleUpdate = async (id: number) => {
@@ -558,6 +588,8 @@ const RoomsPanel: React.FC = () => {
       building_id: editForm.building_id ? Number(editForm.building_id) : null,
       floor: Number(editForm.floor),
       capacity: Number(editForm.capacity),
+      specialized_dept_id: editForm.specialized_dept_id ? Number(editForm.specialized_dept_id) : null,
+      reserved_teacher_id: editForm.reserved_teacher_id ? Number(editForm.reserved_teacher_id) : null,
     });
     useTimetableStore.setState((s) => ({ rooms: s.rooms.map((r) => r.id === id ? { ...r, ...updated } : r) }));
     setEditing(null); setEditForm(null);
@@ -589,6 +621,21 @@ const RoomsPanel: React.FC = () => {
         <Field label="ความจุ (คน)">
           <input type="number" min={1} className={inputCls} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: Number(e.target.value) })} />
         </Field>
+        <Field label="🏠 จองให้ครูประจำ">
+          <select className={inputCls} value={form.reserved_teacher_id} onChange={(e) => setForm({ ...form, reserved_teacher_id: e.target.value })}>
+            <option value="">– ห้องรวม (ใครใช้ก็ได้) –</option>
+            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+        <Field label="🧪 ห้องเฉพาะกลุ่มสาระ">
+          <select className={inputCls} value={form.specialized_dept_id} onChange={(e) => setForm({ ...form, specialized_dept_id: e.target.value })}>
+            <option value="">– ไม่จำกัด –</option>
+            {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Field>
+      </div>
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800 leading-relaxed">
+        💡 <strong>ห้องประจำครู</strong> ตั้งได้ 2 ทาง: ที่นี่เลือก "จองให้ครูประจำ" หรือไปที่หน้า <strong>ครูผู้สอน</strong> แล้วเลือก "🏠 ห้องประจำครู" — ระบบจะพยายามจัดครูให้สอนในห้องของตัวเองก่อนเสมอ และจะไม่เอาห้องที่จองไว้ไปให้ครูคนอื่น
       </div>
       <button onClick={handleCreate} disabled={!form.name} className={btnPrimary}>+ เพิ่มห้อง</button>
 
@@ -596,14 +643,14 @@ const RoomsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ชื่อ","ประเภท","อาคาร","ชั้น","ความจุ",""].map((h) => (
+              {["ชื่อ","ประเภท","อาคาร","ชั้น","ความจุ","🏠 จอง/เฉพาะ",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {rooms.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {rooms.map((r) => (
               <tr key={r.id} className="hover:bg-gray-50">
@@ -627,6 +674,18 @@ const RoomsPanel: React.FC = () => {
                     <td className="px-2 py-1"><input type="number" className={inlineCls} style={{ width: 60 }} value={editForm.floor} onChange={(e) => setEditForm({ ...editForm, floor: Number(e.target.value) })} /></td>
                     <td className="px-2 py-1"><input type="number" className={inlineCls} style={{ width: 70 }} value={editForm.capacity} onChange={(e) => setEditForm({ ...editForm, capacity: Number(e.target.value) })} /></td>
                     <td className="px-2 py-1">
+                      <div className="flex flex-col gap-1" style={{ minWidth: 130 }}>
+                        <select className={inlineCls} value={editForm.reserved_teacher_id} onChange={(e) => setEditForm({ ...editForm, reserved_teacher_id: e.target.value })}>
+                          <option value="">🏠 ห้องรวม</option>
+                          {teachers.map((t) => <option key={t.id} value={t.id}>🏠 {t.name}</option>)}
+                        </select>
+                        <select className={inlineCls} value={editForm.specialized_dept_id} onChange={(e) => setEditForm({ ...editForm, specialized_dept_id: e.target.value })}>
+                          <option value="">🧪 ไม่จำกัด</option>
+                          {departments.map((d) => <option key={d.id} value={d.id}>🧪 {d.name}</option>)}
+                        </select>
+                      </div>
+                    </td>
+                    <td className="px-2 py-1">
                       <div className="flex gap-1">
                         <button onClick={() => handleUpdate(r.id)} className={btnSave}>บันทึก</button>
                         <button onClick={() => { setEditing(null); setEditForm(null); }} className={btnCancel}>ยกเลิก</button>
@@ -640,9 +699,20 @@ const RoomsPanel: React.FC = () => {
                     <td className="px-3 py-2 text-gray-500">{r.building_name ?? "–"}</td>
                     <td className="px-3 py-2 text-gray-600">{r.floor}</td>
                     <td className="px-3 py-2 text-gray-600">{r.capacity}</td>
+                    <td className="px-3 py-2 text-xs">
+                      <div className="flex flex-col gap-0.5">
+                        {teacherName(r.reserved_teacher_id) && (
+                          <span className="bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded w-fit">🏠 {teacherName(r.reserved_teacher_id)}</span>
+                        )}
+                        {deptName(r.specialized_dept_id) && (
+                          <span className="bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded w-fit">🧪 {deptName(r.specialized_dept_id)}</span>
+                        )}
+                        {!r.reserved_teacher_id && !r.specialized_dept_id && <span className="text-gray-400">ห้องรวม</span>}
+                      </div>
+                    </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
-                        <button onClick={() => { setEditing(r.id); setEditForm({ name: r.name, type: r.type, building_id: r.building_id ? String(r.building_id) : "", floor: r.floor, capacity: r.capacity }); }} className={btnEdit}>แก้ไข</button>
+                        <button onClick={() => { setEditing(r.id); setEditForm({ name: r.name, type: r.type, building_id: r.building_id ? String(r.building_id) : "", floor: r.floor, capacity: r.capacity, reserved_teacher_id: r.reserved_teacher_id ? String(r.reserved_teacher_id) : "", specialized_dept_id: r.specialized_dept_id ? String(r.specialized_dept_id) : "" }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteRoom(r.id); useTimetableStore.setState((s) => ({ rooms: s.rooms.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
@@ -659,10 +729,12 @@ const RoomsPanel: React.FC = () => {
 
 // ─── Requirements (Teacher-Subject-Group Assignments) ─────────────────────────
 const RequirementsPanel: React.FC = () => {
-  const { requirements, groups, teachers, subjects } = useTimetableStore();
+  const { requirements, groups, teachers, subjects, periods } = useTimetableStore();
   const [form, setForm] = useState({
     group_id: "", subject_id: "", teacher_id: "", weekly_count: 1, parallel_group_key: "",
   });
+  const [editing, setEditing]   = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<typeof form | null>(null);
 
   const handleCreate = async () => {
     const created = await api.createRequirement({
@@ -676,18 +748,69 @@ const RequirementsPanel: React.FC = () => {
     setForm({ group_id: "", subject_id: "", teacher_id: "", weekly_count: 1, parallel_group_key: "" });
   };
 
+  const handleUpdate = async (id: number) => {
+    if (!editForm) return;
+    const updated = await api.updateRequirement(id, {
+      group_id:   Number(editForm.group_id),
+      subject_id: Number(editForm.subject_id),
+      teacher_id: Number(editForm.teacher_id),
+      weekly_count: Number(editForm.weekly_count),
+      parallel_group_key: editForm.parallel_group_key || null,
+    });
+    useTimetableStore.setState((s) => ({ requirements: s.requirements.map((r) => r.id === id ? { ...r, ...updated } : r) }));
+    setEditing(null); setEditForm(null);
+  };
+
   const gName = (id: number) => groups.flatMap((g) => [g,...(g.children??[])]).find((g) => g.id === id)?.name ?? String(id);
   const tName = (id: number) => teachers.find((t) => t.id === id)?.name ?? String(id);
   const sCode = (id: number) => subjects.find((s) => s.id === id)?.code ?? String(id);
 
   const flat = groups.flatMap((g) => [g, ...(g.children ?? [])]);
 
+  // ── Capacity check: warn if a group needs more periods than exist ──────────
+  const classPeriodCount = new Set(periods.filter((p) => p.type === "class").map((p) => p.period_num)).size;
+  const weekCapacity = classPeriodCount * 5;   // 5 school days
+  const groupLoad = new Map<number, number>();
+  for (const r of requirements) {
+    groupLoad.set(r.group_id, (groupLoad.get(r.group_id) ?? 0) + (r.weekly_count || 0));
+  }
+  const overbooked = [...groupLoad.entries()]
+    .filter(([, load]) => load > weekCapacity)
+    .map(([gid, load]) => ({ name: gName(gid), load }));
+
+  // Teacher over-load (soft): teacher total weekly count vs their max_slots_per_day*5
+  const teacherLoad = new Map<number, number>();
+  for (const r of requirements) teacherLoad.set(r.teacher_id, (teacherLoad.get(r.teacher_id) ?? 0) + (r.weekly_count || 0));
+  const teacherOver = teachers
+    .map((t) => ({ t, load: teacherLoad.get(t.id) ?? 0, cap: (t.max_slots_per_day || 6) * 5 }))
+    .filter((x) => x.load > x.cap)
+    .map((x) => ({ name: x.t.name, load: x.load, cap: x.cap }));
+
+  const existingParallelKeys = [...new Set(requirements.map((r) => r.parallel_group_key).filter(Boolean))] as string[];
+
   return (
     <Section title="ข้อกำหนดคาบเรียน — ครูสอนวิชาอะไร ในห้องใด">
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-800">
         <strong>วิธีกำหนดการสอน:</strong> เลือกห้องเรียน → วิชา → ครูผู้สอน → จำนวนคาบ/สัปดาห์
-        <br/>ถ้าวิชาเดียวกันสอนหลายห้องพร้อมกัน (คู่ขนาน) ให้กรอก <strong>รหัสคู่ขนาน</strong> เดียวกัน เช่น "PE-M1-001"
+        <br/>ถ้าวิชาเดียวกันสอนหลายห้องพร้อมกัน (คู่ขนาน) ให้ใช้ <strong>รหัสคู่ขนาน</strong> เดียวกัน — เลือกจากรายการที่มี หรือพิมพ์รหัสใหม่
+        <br/>💡 มีข้อกำหนดจำนวนมาก? ใช้ปุ่ม <strong>"นำเข้า"</strong> ด้านบน แล้วเลือก "ข้อกำหนดคาบ" เพื่อนำเข้าจาก Excel ทีเดียว
       </div>
+
+      {(overbooked.length > 0 || teacherOver.length > 0) && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-xs text-red-800 space-y-1">
+          <p className="font-semibold">⚠️ ตรวจพบปัญหาก่อนจัดตาราง (แก้ก่อนกดสร้างจะได้ไม่ INFEASIBLE):</p>
+          {overbooked.map((o) => (
+            <p key={o.name}>• ห้อง <strong>{o.name}</strong> ต้องการ {o.load} คาบ/สัปดาห์ แต่มีช่องเรียนแค่ {weekCapacity} คาบ — ต้องลดลง {o.load - weekCapacity} คาบ</p>
+          ))}
+          {teacherOver.map((t) => (
+            <p key={t.name}>• ครู <strong>{t.name}</strong> ถูกกำหนดให้สอน {t.load} คาบ/สัปดาห์ เกินเพดาน {t.cap} คาบ</p>
+          ))}
+        </div>
+      )}
+
+      <datalist id="parallel-keys">
+        {existingParallelKeys.map((k) => <option key={k} value={k} />)}
+      </datalist>
 
       <div className="grid grid-cols-3 gap-2 mb-3">
         <Field label="ห้องเรียน *">
@@ -713,7 +836,7 @@ const RequirementsPanel: React.FC = () => {
             onChange={(e) => setForm({ ...form, weekly_count: Number(e.target.value) })} />
         </Field>
         <Field label="รหัสคู่ขนาน (สำหรับวิชาที่สอนพร้อมกัน)">
-          <input className={inputCls} value={form.parallel_group_key}
+          <input className={inputCls} list="parallel-keys" value={form.parallel_group_key}
             onChange={(e) => setForm({ ...form, parallel_group_key: e.target.value })}
             placeholder="เช่น PE-M1-001" />
         </Field>
@@ -740,22 +863,53 @@ const RequirementsPanel: React.FC = () => {
               <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อกำหนด</td></tr>
             )}
             {requirements.map((r) => (
-              <tr key={r.id} className="hover:bg-gray-50">
-                <td className="px-3 py-2 font-medium text-blue-700">{gName(r.group_id)}</td>
-                <td className="px-3 py-2">{sCode(r.subject_id)}</td>
-                <td className="px-3 py-2 text-gray-600">{tName(r.teacher_id)}</td>
-                <td className="px-3 py-2 text-center">{r.weekly_count}</td>
-                <td className="px-3 py-2">
-                  {r.parallel_group_key ? (
-                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs font-mono">
-                      {r.parallel_group_key}
-                    </span>
-                  ) : "–"}
-                </td>
-                <td className="px-3 py-2">
-                  <button onClick={async () => { await api.deleteRequirement(r.id); useTimetableStore.setState((s) => ({ requirements: s.requirements.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
-                </td>
-              </tr>
+              editing === r.id && editForm ? (
+                <tr key={r.id} className="bg-yellow-50">
+                  <td className="px-2 py-1">
+                    <select className={inlineCls} value={editForm.group_id} onChange={(e) => setEditForm({ ...editForm, group_id: e.target.value })}>
+                      {flat.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-2 py-1">
+                    <select className={inlineCls} value={editForm.subject_id} onChange={(e) => setEditForm({ ...editForm, subject_id: e.target.value })}>
+                      {subjects.map((s) => <option key={s.id} value={s.id}>{s.code}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-2 py-1">
+                    <select className={inlineCls} value={editForm.teacher_id} onChange={(e) => setEditForm({ ...editForm, teacher_id: e.target.value })}>
+                      {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-2 py-1"><input type="number" min={1} max={20} className={inlineCls} style={{ width: 55 }} value={editForm.weekly_count} onChange={(e) => setEditForm({ ...editForm, weekly_count: Number(e.target.value) })} /></td>
+                  <td className="px-2 py-1"><input className={inlineCls} list="parallel-keys" style={{ width: 100 }} value={editForm.parallel_group_key} onChange={(e) => setEditForm({ ...editForm, parallel_group_key: e.target.value })} /></td>
+                  <td className="px-2 py-1">
+                    <div className="flex gap-1">
+                      <button onClick={() => handleUpdate(r.id)} className={btnSave}>บันทึก</button>
+                      <button onClick={() => { setEditing(null); setEditForm(null); }} className={btnCancel}>ยกเลิก</button>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                <tr key={r.id} className="hover:bg-gray-50">
+                  <td className="px-3 py-2 font-medium text-blue-700">{gName(r.group_id)}</td>
+                  <td className="px-3 py-2">{sCode(r.subject_id)}</td>
+                  <td className="px-3 py-2 text-gray-600">{tName(r.teacher_id)}</td>
+                  <td className="px-3 py-2 text-center">{r.weekly_count}</td>
+                  <td className="px-3 py-2">
+                    {r.parallel_group_key ? (
+                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs font-mono">
+                        {r.parallel_group_key}
+                      </span>
+                    ) : "–"}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex gap-1">
+                      <button onClick={() => { setEditing(r.id); setEditForm({ group_id: String(r.group_id), subject_id: String(r.subject_id), teacher_id: String(r.teacher_id), weekly_count: r.weekly_count, parallel_group_key: r.parallel_group_key ?? "" }); }} className={btnEdit}>แก้ไข</button>
+                      <button onClick={async () => { await api.deleteRequirement(r.id); useTimetableStore.setState((s) => ({ requirements: s.requirements.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
+                    </div>
+                  </td>
+                </tr>
+              )
             ))}
           </tbody>
         </table>
@@ -766,8 +920,8 @@ const RequirementsPanel: React.FC = () => {
 
 // ─── Electives (วิชาเสรี) ───────────────────────────────────────────────────────
 const ElectivesPanel: React.FC = () => {
-  const { slots, groups, teachers, subjects, periods } = useTimetableStore();
-  const [form, setForm] = useState({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "" });
+  const { slots, groups, teachers, subjects, periods, rooms, loadSlots } = useTimetableStore();
+  const [form, setForm] = useState({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "", room_id: "", is_double: false });
   const [managing, setManaging]   = useState<number | null>(null);
   const [copyingId, setCopyingId] = useState<number | null>(null);
   const [copyTargets, setCopyTargets] = useState<number[]>([]);
@@ -776,31 +930,53 @@ const ElectivesPanel: React.FC = () => {
   const classPeriods = [...new Map(periods.filter((p) => p.type === "class").map((p) => [p.period_num, p])).values()]
     .sort((a, b) => a.period_num - b.period_num);
 
-  const electiveSlots = slots.filter((s) => s.is_elective);
+  // Only "start"/single slots make a row — the continuation half is hidden.
+  const electiveSlots = slots.filter((s) => s.is_elective && !s.is_double_cont);
   const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
 
+  // Show "คาบ 3 + คาบ 4" for a double, or the single label otherwise.
+  const periodRange = (s: typeof slots[number]) => {
+    if (s.double_group_key) {
+      const partner = slots.find((x) => x.double_group_key === s.double_group_key && x.id !== s.id);
+      if (partner) {
+        const [a, b] = [s.period, partner.period].sort((x, y) => x - y);
+        return `${periodLabel(a, periods)} + ${periodLabel(b, periods)}`;
+      }
+    }
+    return periodLabel(s.period, periods);
+  };
+
+  // The period dropdown: a double needs a following class period to exist.
+  const periodOptions = form.is_double ? classPeriods.slice(0, -1) : classPeriods;
+
+  const chosenTeacher = teachers.find((t) => t.id === Number(form.teacher_id));
+  const suggestedRoomId = chosenTeacher?.fixed_room_id ?? null;
+
   const handleCreate = async () => {
-    const created = await api.createElectiveSlot({
+    await api.createElectiveSlot({
       group_id: Number(form.group_id),
       day: Number(form.day),
       period: Number(form.period),
       subject_id: Number(form.subject_id),
       teacher_id: Number(form.teacher_id),
       label: form.label || undefined,
+      room_id: form.room_id ? Number(form.room_id) : suggestedRoomId,
+      is_double: form.is_double,
     });
-    useTimetableStore.setState((s) => ({ slots: [...s.slots, created] }));
-    setForm({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "" });
+    // Reload so double-period electives pull in both linked halves.
+    await loadSlots();
+    setForm({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "", room_id: "", is_double: false });
   };
 
   const handleDelete = async (id: number) => {
     await api.deleteSlot(id);
-    useTimetableStore.setState((s) => ({ slots: s.slots.filter((x) => x.id !== id) }));
+    await loadSlots();   // backend removes both halves of a double — resync
   };
 
   const handleCopy = async (id: number) => {
     if (copyTargets.length === 0) return;
-    const created = await api.copyElectiveSlot(id, copyTargets);
-    useTimetableStore.setState((s) => ({ slots: [...s.slots, ...created] }));
+    await api.copyElectiveSlot(id, copyTargets);
+    await loadSlots();
     setCopyingId(null);
     setCopyTargets([]);
   };
@@ -809,9 +985,10 @@ const ElectivesPanel: React.FC = () => {
 
   return (
     <Section title="วิชาเสรี — คาบล็อกที่เลือกวิชา/ครูได้หลายตัวเลือก">
-      <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 mb-4 text-xs text-purple-800">
-        <strong>วิธีใช้:</strong> สร้างคาบของห้องเรียนหนึ่งห้อง ระบุวิชา+ครูเริ่มต้น (วงแรก) จากนั้นกด "🎓 จัดการวง" เพื่อเพิ่มตัวเลือกอื่น (เช่น ดนตรี/ศิลปะ/หุ่นยนต์) แล้วสลับวงที่ใช้ได้ตลอดเวลาจากในตารางเรียน
-        <br/>คาบนี้จะถูกล็อกเสมอ — ตัวสร้างตารางอัตโนมัติจะไม่จัดวิชาอื่นทับ
+      <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 mb-4 text-xs text-purple-800 leading-relaxed">
+        <strong>วิชาเสรีคืออะไร?</strong> คือคาบที่นักเรียนห้องเดียวกันเลือกเรียนได้หลายอย่าง (เช่น บางคนเรียนดนตรี บางคนเรียนศิลปะ) ในเวลาเดียวกัน
+        <br/><strong>วิธีใช้:</strong> 1) สร้างคาบของห้องเรียน + ใส่ "วงแรก" (วิชา+ครู+ห้อง)  2) กด <span className="bg-white border border-purple-200 rounded px-1">🎓 จัดการวง</span> เพื่อเพิ่มวงอื่น  3) สลับวงที่ใช้ได้ตลอดจากในตาราง
+        <br/>📌 คาบนี้จะถูก<strong>ล็อกอัตโนมัติ</strong> — ตัวจัดตารางจะไม่วางวิชาอื่นทับ
       </div>
 
       <div className="grid grid-cols-3 gap-2 mb-3">
@@ -829,7 +1006,7 @@ const ElectivesPanel: React.FC = () => {
         <Field label="คาบ *">
           <select className={inputCls} value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })}>
             <option value="">เลือกคาบ</option>
-            {classPeriods.map((p) => <option key={p.period_num} value={p.period_num}>{p.label}</option>)}
+            {periodOptions.map((p) => <option key={p.period_num} value={p.period_num}>{p.label} ({p.start_time}–{p.end_time})</option>)}
           </select>
         </Field>
         <Field label="วิชา (วงแรก) *">
@@ -844,10 +1021,34 @@ const ElectivesPanel: React.FC = () => {
             {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
         </Field>
+        <Field label="ห้องสอน">
+          <select className={inputCls} value={form.room_id} onChange={(e) => setForm({ ...form, room_id: e.target.value })}>
+            <option value="">{suggestedRoomId ? `🏠 ห้องประจำครู (${rooms.find((r) => r.id === suggestedRoomId)?.name ?? "-"})` : "– เลือกห้อง –"}</option>
+            {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </Field>
         <Field label="ชื่อวง">
           <input className={inputCls} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="เช่น วงดนตรี" />
         </Field>
       </div>
+
+      {/* คาบคู่ toggle */}
+      <label className="flex items-center gap-2 mb-3 text-sm text-gray-700 cursor-pointer w-fit bg-purple-50 border border-purple-200 rounded-lg px-3 py-2">
+        <input
+          type="checkbox"
+          className="w-4 h-4 accent-purple-600"
+          checked={form.is_double}
+          onChange={(e) => {
+            const on = e.target.checked;
+            // If turning on a double but the chosen period is the last class period,
+            // clear it — a double needs a following period.
+            const lastNum = classPeriods[classPeriods.length - 1]?.period_num;
+            const invalid = on && form.period !== "" && Number(form.period) === lastNum;
+            setForm({ ...form, is_double: on, period: invalid ? "" : form.period });
+          }}
+        />
+        <span>🔗 <strong>คาบคู่</strong> — จองต่อเนื่อง 2 คาบติดกัน (เช่น คาบ 3 + คาบ 4)</span>
+      </label>
       <button
         onClick={handleCreate}
         disabled={!form.group_id || !form.period || !form.subject_id || !form.teacher_id}
@@ -860,22 +1061,28 @@ const ElectivesPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ห้องเรียน","วัน","คาบ","วงที่ใช้อยู่","จำนวนวง",""].map((h) => (
+              {["ห้องเรียน","วัน","คาบ","วงที่ใช้อยู่","ห้องสอน","จำนวนวง",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {electiveSlots.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีวิชาเสรี</td></tr>
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีวิชาเสรี</td></tr>
             )}
             {electiveSlots.map((s) => (
               <React.Fragment key={s.id}>
                 <tr className="hover:bg-purple-50/30">
                   <td className="px-3 py-2 font-medium text-purple-700">{gName(s.group_id)}</td>
                   <td className="px-3 py-2 text-gray-600">{DAYS[s.day]}</td>
-                  <td className="px-3 py-2 text-gray-600">{s.period}</td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {periodRange(s)}
+                    {s.double_group_key && (
+                      <span className="ml-1 text-[10px] bg-purple-100 text-purple-700 border border-purple-200 px-1 py-0.5 rounded">🔗 คาบคู่</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-gray-700">{s.subject_code ?? s.subject_name} · {s.teacher_name}</td>
+                  <td className="px-3 py-2 text-gray-600">{s.room_name ?? <span className="text-gray-400">–</span>}</td>
                   <td className="px-3 py-2 text-center text-gray-500">{s.elective_options?.length ?? 1}</td>
                   <td className="px-3 py-2">
                     <div className="flex gap-1 flex-wrap">
@@ -887,8 +1094,8 @@ const ElectivesPanel: React.FC = () => {
                 </tr>
                 {copyingId === s.id && (
                   <tr className="bg-gray-50">
-                    <td colSpan={6} className="px-3 py-3">
-                      <p className="text-xs font-semibold text-gray-600 mb-2">คัดลอกวิชาเสรีนี้ (พร้อมทุกวง) ไปยังห้องเรียนอื่น — เวลาเดิม ({DAYS[s.day]} คาบ {s.period}):</p>
+                    <td colSpan={7} className="px-3 py-3">
+                      <p className="text-xs font-semibold text-gray-600 mb-2">คัดลอกวิชาเสรีนี้ (พร้อมทุกวง) ไปยังห้องเรียนอื่น — เวลาเดิม ({DAYS[s.day]} {periodRange(s)}):</p>
                       <div className="flex flex-wrap gap-2 mb-2">
                         {flat.filter((g) => g.id !== s.group_id).map((g) => (
                           <label key={g.id} className="flex items-center gap-1 text-xs bg-white border border-gray-200 rounded px-2 py-1 cursor-pointer">
@@ -1229,7 +1436,7 @@ const BulkLockPanel: React.FC = () => {
                     <td className="px-3 py-1.5">{s.subject_code}</td>
                     <td className="px-3 py-1.5 text-gray-500">{s.teacher_name}</td>
                     <td className="px-3 py-1.5">{DAYS[s.day]}</td>
-                    <td className="px-3 py-1.5">{s.period}</td>
+                    <td className="px-3 py-1.5">{periodLabel(s.period, periods)}</td>
                     <td className="px-3 py-1.5">
                       <span className={clsx(
                         "px-1.5 py-0.5 rounded text-[10px] font-bold",

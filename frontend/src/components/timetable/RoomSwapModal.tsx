@@ -4,7 +4,7 @@
  */
 import React, { useMemo } from "react";
 import clsx from "clsx";
-import { DAYS } from "../../types";
+import { DAYS, periodLabel } from "../../types";
 import type { Room, TimetableSlot } from "../../types";
 
 const ROOM_TYPE_TH: Record<string, string> = {
@@ -51,7 +51,7 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
           <div className="flex-1 min-w-0">
             <h2 className="text-white font-bold text-base leading-tight truncate">สลับห้อง — {slot.subject_code ?? slot.subject_name}</h2>
             <p className="text-blue-100 text-xs mt-0.5">
-              {dayName} คาบที่ {slot.period} · {slot.group_name} · {slot.teacher_name}
+              {dayName} {periodLabel(slot.period)} · {slot.group_name} · {slot.teacher_name}
             </p>
           </div>
           <button onClick={onClose} className="text-blue-200 hover:text-white text-lg leading-none shrink-0">✕</button>

@@ -6,6 +6,7 @@
 import React, { forwardRef } from "react";
 import type { Period, SchoolConfig, StudentGroup, Teacher, TimetableSlot } from "../../types";
 import { DAYS } from "../../types";
+import { buildSharesStudents } from "../../utils/groupHierarchy";
 
 interface PrintViewProps {
   slots:         TimetableSlot[];
@@ -277,13 +278,17 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
       });
     } else {
       // ── Group view: one page per group ─────────────────────────────────
+      // Subgroup schools: a printed sheet must include the group's own lessons
+      // AND its student-sharing relatives (parent whole-class lessons, and for a
+      // parent, its subgroups' split lessons). Siblings are excluded.
+      const shares = buildSharesStudents(groups);
       const flat = groups.flatMap((g) => [g, ...(g.children ?? [])]);
       const groupsToRender = filterGroupId != null
         ? flat.filter((g) => g.id === filterGroupId)
-        : groups; // top-level only for batch
+        : flat; // every class + subgroup gets its own complete sheet
 
       groupsToRender.forEach((group, idx) => {
-        const groupSlots = slots.filter((s) => s.group_id === group.id);
+        const groupSlots = slots.filter((s) => shares(s.group_id, group.id));
         const grid = buildGrid(groupSlots);
         pages.push(
           <TimetablePage

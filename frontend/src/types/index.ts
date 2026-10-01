@@ -119,6 +119,10 @@ export interface TimetableSlot {
   subject_id:         number;
   is_double_start:    boolean;
   parallel_group_key: string | null;
+  // คาบคู่ (double period) — two linked elective slots share a double_group_key;
+  // the second period is flagged is_double_cont.
+  double_group_key?:  string | null;
+  is_double_cont?:    boolean;
   is_locked:          boolean;    // pre-lock flag
   // วิชาเสรี — pinned slot with a swappable catalog of subject+teacher choices
   is_elective?:        boolean;
@@ -139,6 +143,7 @@ export interface SolverResult {
   solve_time_seconds:  number;
   objective_value:     number | null;
   violations:          string[];
+  engine?:             string;   // "cp-sat" | "greedy" | "greedy-fallback"
 }
 
 // ── Schedule constants ───────────────────────────────────────────────────────
@@ -169,6 +174,24 @@ export const GRID_PERIODS = Array.from(
 export const SCHEDULABLE_PERIOD_NUMS = GRID_PERIODS
   .filter((p) => p.type === "class")
   .map((p) => p.period_num);
+
+/**
+ * Friendly label for a period_num, e.g. 7 → "คาบ 6".
+ * Prefer passing the live `periods` from the store; falls back to defaults.
+ * NOTE: period_num is a 0-based internal index with gaps for break/lunch, so it
+ * must never be shown to users directly — always run it through this helper.
+ */
+export function periodLabel(periodNum: number, periods: Period[] = GRID_PERIODS): string {
+  const p = periods.find((x) => x.period_num === periodNum && x.type === "class")
+    ?? periods.find((x) => x.period_num === periodNum);
+  return p?.label ?? `คาบ ${periodNum}`;
+}
+
+export function periodTime(periodNum: number, periods: Period[] = GRID_PERIODS): string {
+  const p = periods.find((x) => x.period_num === periodNum && x.type === "class")
+    ?? periods.find((x) => x.period_num === periodNum);
+  return p ? `${p.start_time}–${p.end_time}` : "";
+}
 
 export interface Department {
   id:   number;

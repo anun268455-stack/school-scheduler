@@ -8,9 +8,11 @@ import React, { useRef, useState, useCallback } from "react";
 import * as XLSX from "xlsx";
 import clsx from "clsx";
 import * as api from "../../api/client";
+import { useTimetableStore } from "../../store/timetableStore";
+import { flattenGroups } from "../../utils/groupHierarchy";
 
 // ── Entity definitions ────────────────────────────────────────────────────────
-type EntityType = "teachers" | "rooms" | "subjects" | "groups";
+type EntityType = "teachers" | "rooms" | "subjects" | "groups" | "requirements";
 
 interface ColDef {
   key:       string;    // field name in the API payload
@@ -18,17 +20,26 @@ interface ColDef {
   aliases:   string[];  // column header synonyms (lower-case)
   required:  boolean;
   hint?:     string;    // shown as placeholder / help
+  resolve?:  "room" | "teacher" | "department" | "group" | "subject"; // name → id lookup
 }
 
-const ENTITY_CONFIGS: Record<EntityType, { label: string; icon: string; cols: ColDef[] }> = {
+interface EntityCfg { label: string; icon: string; cols: ColDef[]; sample: Record<string, string | number>[]; }
+
+const ENTITY_CONFIGS: Record<EntityType, EntityCfg> = {
   teachers: {
     label: "ครู",
     icon: "👨‍🏫",
     cols: [
       { key: "name",                label: "ชื่อครู",             aliases: ["name","ชื่อ","ชื่อครู"],             required: true,  hint: "ครูสมชาย ใจดี" },
+      { key: "department_id",       label: "กลุ่มสาระ",           aliases: ["department","กลุ่มสาระ","สาระ"],      required: false, hint: "ชื่อกลุ่มสาระ เช่น คณิตศาสตร์", resolve: "department" },
+      { key: "fixed_room_id",       label: "ห้องประจำครู",        aliases: ["fixed_room","ห้องประจำ","ห้อง"],       required: false, hint: "ชื่อห้อง เช่น ห้อง 101", resolve: "room" },
       { key: "outdoor_score",       label: "คะแนนกลางแจ้ง (0-10)",aliases: ["outdoor_score","outdoor","กลางแจ้ง"], required: false, hint: "5" },
       { key: "max_slots_per_day",   label: "สอนสูงสุด/วัน",        aliases: ["max_slots_per_day","max_slots","สูงสุด"],required: false,hint: "6" },
       { key: "max_outdoor_per_week",label: "กลางแจ้งสูงสุด/สัปดาห์",aliases: ["max_outdoor_per_week","max_outdoor"], required: false, hint: "2" },
+    ],
+    sample: [
+      { name: "ครูสมชาย ใจดี", department_id: "คณิตศาสตร์", fixed_room_id: "ห้อง 101", outdoor_score: 3, max_slots_per_day: 6, max_outdoor_per_week: 1 },
+      { name: "ครูพลศึกษา แข็งแรง", department_id: "พลศึกษา", fixed_room_id: "", outdoor_score: 10, max_slots_per_day: 8, max_outdoor_per_week: 10 },
     ],
   },
   rooms: {
@@ -40,6 +51,13 @@ const ENTITY_CONFIGS: Record<EntityType, { label: string; icon: string; cols: Co
       { key: "floor",       label: "ชั้น",        aliases: ["floor","ชั้น"],                                              required: false, hint: "1" },
       { key: "capacity",    label: "ความจุ (คน)", aliases: ["capacity","จำนวน","ความจุ"],                                 required: false, hint: "40" },
       { key: "building_id", label: "รหัสอาคาร",  aliases: ["building_id","building","อาคาร","รหัสอาคาร"],              required: false, hint: "1" },
+      { key: "reserved_teacher_id", label: "จองให้ครู",  aliases: ["reserved_teacher","จองให้ครู","ครูประจำ"],       required: false, hint: "ชื่อครู (เว้นว่าง = ห้องรวม)", resolve: "teacher" },
+      { key: "specialized_dept_id", label: "ห้องเฉพาะกลุ่มสาระ", aliases: ["specialized_dept","ห้องเฉพาะ","เฉพาะ"], required: false, hint: "ชื่อกลุ่มสาระ (เว้นว่าง = ไม่จำกัด)", resolve: "department" },
+    ],
+    sample: [
+      { name: "ห้อง 101", type: "physical", floor: 1, capacity: 40, building_id: 1, reserved_teacher_id: "", specialized_dept_id: "" },
+      { name: "ห้องคอมพิวเตอร์", type: "special", floor: 2, capacity: 30, building_id: 2, reserved_teacher_id: "ครูคอมพ์ เก่ง", specialized_dept_id: "" },
+      { name: "สนามกีฬา", type: "outdoor", floor: 1, capacity: 120, building_id: "", reserved_teacher_id: "", specialized_dept_id: "" },
     ],
   },
   subjects: {
@@ -49,16 +67,43 @@ const ENTITY_CONFIGS: Record<EntityType, { label: string; icon: string; cols: Co
       { key: "code",     label: "รหัสวิชา",  aliases: ["code","รหัส","รหัสวิชา"],                         required: true,  hint: "MATH101" },
       { key: "name",     label: "ชื่อวิชา",   aliases: ["name","ชื่อ","ชื่อวิชา"],                         required: true,  hint: "คณิตศาสตร์" },
       { key: "type",     label: "ประเภท",    aliases: ["type","ประเภท"],                                    required: false, hint: "common / parallel" },
-      { key: "duration", label: "จำนวนคาบ", aliases: ["duration","คาบ","จำนวนคาบ"],                      required: false, hint: "1 หรือ 2" },
+      { key: "duration", label: "จำนวนคาบ", aliases: ["duration","คาบ","จำนวนคาบ"],                      required: false, hint: "1 หรือ 2 (คาบคู่)" },
+    ],
+    sample: [
+      { code: "MATH101", name: "คณิตศาสตร์", type: "common", duration: 1 },
+      { code: "PE101", name: "พลศึกษา", type: "parallel", duration: 2 },
     ],
   },
   groups: {
     label: "ห้องเรียน",
     icon: "👥",
     cols: [
-      { key: "name",  label: "ชื่อห้อง",    aliases: ["name","ชื่อ","ชื่อห้อง"],   required: true,  hint: "ม.1/1" },
+      { key: "name",  label: "ชื่อห้อง",    aliases: ["name","ชื่อ","ชื่อห้อง"],   required: true,  hint: "ม.4/6 หรือ ม.4/6ก" },
       { key: "level", label: "ระดับชั้น",   aliases: ["level","ระดับ","ชั้น"],      required: false, hint: "M1 … M6" },
       { key: "size",  label: "จำนวนนักเรียน",aliases: ["size","จำนวน","นักเรียน"], required: false, hint: "40" },
+      { key: "parent_id", label: "ห้องแม่ (ถ้าเป็นห้องย่อย)", aliases: ["parent","ห้องแม่","แม่"], required: false, hint: "ชื่อห้องแม่ เช่น ม.4/6 (เว้นว่าง = ห้องปกติ)", resolve: "group" },
+      { key: "homeroom_room_id", label: "ห้องประจำชั้น", aliases: ["homeroom","ห้องประจำชั้น","ห้องเพชร"], required: false, hint: "ชื่อห้อง เช่น ห้อง 202", resolve: "room" },
+    ],
+    sample: [
+      { name: "ม.4/6", level: "M4", size: 35, parent_id: "", homeroom_room_id: "ห้อง 202" },
+      { name: "ม.4/6ก", level: "M4", size: 12, parent_id: "ม.4/6", homeroom_room_id: "" },
+      { name: "ม.4/6ข", level: "M4", size: 12, parent_id: "ม.4/6", homeroom_room_id: "" },
+      { name: "ม.4/6ค", level: "M4", size: 11, parent_id: "ม.4/6", homeroom_room_id: "" },
+    ],
+  },
+  requirements: {
+    label: "ข้อกำหนดคาบ",
+    icon: "📋",
+    cols: [
+      { key: "group_id",   label: "ห้องเรียน", aliases: ["group","ห้องเรียน","ห้อง"],  required: true,  hint: "ชื่อห้อง เช่น ม.4/6", resolve: "group" },
+      { key: "subject_id", label: "วิชา",      aliases: ["subject","วิชา","รหัสวิชา","code"], required: true, hint: "รหัสหรือชื่อวิชา เช่น MATH101", resolve: "subject" },
+      { key: "teacher_id", label: "ครูผู้สอน", aliases: ["teacher","ครู","ครูผู้สอน"], required: true,  hint: "ชื่อครู", resolve: "teacher" },
+      { key: "weekly_count", label: "คาบ/สัปดาห์", aliases: ["weekly_count","คาบ","จำนวน","สัปดาห์"], required: false, hint: "3" },
+      { key: "parallel_group_key", label: "รหัสคู่ขนาน", aliases: ["parallel","คู่ขนาน","รหัสคู่ขนาน"], required: false, hint: "ว่างได้ (เช่น PE-M1)" },
+    ],
+    sample: [
+      { group_id: "ม.4/6", subject_id: "MATH101", teacher_id: "ครูสมชาย ใจดี", weekly_count: 3, parallel_group_key: "" },
+      { group_id: "ม.4/6ก", subject_id: "COM101", teacher_id: "ครูคอมพ์ เก่ง", weekly_count: 2, parallel_group_key: "" },
     ],
   },
 };
@@ -95,18 +140,35 @@ function autoMap(headers: string[], cols: ColDef[]): Record<string, string> {
   return mapping;
 }
 
-// Convert raw row to typed payload
-function mapRow(row: Record<string, string>, mapping: Record<string, string>): Record<string, unknown> {
+// Convert raw row to typed payload. Resolve columns (name→id) keep their raw
+// string here and are converted in a later pass.
+const NUMERIC_KEYS = ["floor","capacity","outdoor_score","max_slots_per_day","max_outdoor_per_week","building_id","size","duration","weekly_count"];
+function mapRow(row: Record<string, string>, mapping: Record<string, string>, cols: ColDef[]): Record<string, unknown> {
+  const resolveKeys = new Set(cols.filter((c) => c.resolve).map((c) => c.key));
   const out: Record<string, unknown> = {};
   for (const [key, header] of Object.entries(mapping)) {
     let val: unknown = row[header] ?? "";
-    if (["floor","capacity","outdoor_score","max_slots_per_day","max_outdoor_per_week","building_id","size","duration"].includes(key)) {
+    if (NUMERIC_KEYS.includes(key)) {
       const n = Number(val);
       val = isNaN(n) ? undefined : n;
+    } else if (resolveKeys.has(key)) {
+      val = String(val ?? "").trim();   // keep the name for later resolution
     }
     out[key] = val;
   }
   return out;
+}
+
+// Build a template workbook (headers + example rows) and trigger a download.
+function downloadTemplate(entity: EntityType) {
+  const cfg = ENTITY_CONFIGS[entity];
+  const headers = cfg.cols.map((c) => c.label);
+  const body = cfg.sample.map((s) => cfg.cols.map((c) => s[c.key] ?? ""));
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...body]);
+  ws["!cols"] = cfg.cols.map((c) => ({ wch: Math.max(c.label.length + 2, 14) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, cfg.label);
+  XLSX.writeFile(wb, `template_${entity}.xlsx`);
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -158,7 +220,35 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
   const handleImport = async () => {
     setStatus("importing");
     try {
-      const payload = rows.map((r) => mapRow(r, mapping));
+      // Lookup maps for name → id resolution (ห้องประจำ, กลุ่มสาระ, ห้องแม่ ฯลฯ).
+      const st = useTimetableStore.getState();
+      const norm = (s: unknown) => String(s ?? "").trim().replace(/\s+/g, "");
+      const roomByName = new Map(st.rooms.map((r) => [norm(r.name), r.id]));
+      const teacherByName = new Map(st.teachers.map((t) => [norm(t.name), t.id]));
+      const deptByName = new Map(st.departments.map((d) => [norm(d.name), d.id]));
+      const groupByName = new Map(flattenGroups(st.groups).map((g) => [norm(g.name), g.id]));
+      // Subjects resolve by code first, then name.
+      const subjectByKey = new Map<string, number>();
+      for (const s of st.subjects) {
+        subjectByKey.set(norm(s.code), s.id);
+        subjectByKey.set(norm(s.name), s.id);
+      }
+      const resolver: Record<NonNullable<ColDef["resolve"]>, Map<string, number>> = {
+        room: roomByName, teacher: teacherByName, department: deptByName, group: groupByName, subject: subjectByKey,
+      };
+      const resolveCols = cfg.cols.filter((c) => c.resolve);
+
+      const payload = rows.map((r) => {
+        const obj = mapRow(r, mapping, cfg.cols);
+        for (const col of resolveCols) {
+          const raw = obj[col.key];
+          if (raw === undefined || raw === "" || raw === null) { obj[col.key] = null; continue; }
+          const id = resolver[col.resolve!].get(norm(raw));
+          obj[col.key] = id ?? null;  // unknown name → null rather than crash
+        }
+        return obj;
+      });
+
       let count = 0;
       if (entity === "teachers") {
         const res = await api.bulkCreateTeachers(payload as Parameters<typeof api.bulkCreateTeachers>[0]);
@@ -169,9 +259,30 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
       } else if (entity === "subjects") {
         const res = await api.bulkCreateSubjects(payload as Parameters<typeof api.bulkCreateSubjects>[0]);
         count = res.length;
+      } else if (entity === "requirements") {
+        const res = await api.bulkCreateRequirements(payload as Parameters<typeof api.bulkCreateRequirements>[0]);
+        count = res.length;
       } else if (entity === "groups") {
+        // Capture raw parent names so we can link subgroups whose parent is in
+        // the SAME file (created in the same batch).
+        const parentCol = cfg.cols.find((c) => c.resolve === "group");
+        const parentHeader = parentCol ? mapping[parentCol.key] : undefined;
+        const parentNames = rows.map((r) => (parentHeader ? norm(r[parentHeader]) : ""));
+
         const res = await api.bulkCreateGroups(payload as Parameters<typeof api.bulkCreateGroups>[0]);
         count = res.length;
+
+        // Pass 2: link any still-unlinked subgroup to a parent that now exists.
+        const fresh = flattenGroups(await api.fetchGroups());
+        const freshByName = new Map(fresh.map((g) => [norm(g.name), g.id]));
+        for (let i = 0; i < res.length; i++) {
+          const needsLink = (payload[i] as { parent_id?: number | null }).parent_id == null && parentNames[i];
+          if (!needsLink) continue;
+          const pid = freshByName.get(parentNames[i]);
+          if (pid && pid !== res[i].id) {
+            await api.updateGroup(res[i].id, { parent_id: pid });
+          }
+        }
       }
       setImported(count);
       setStatus("done");
@@ -223,7 +334,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
 
           {/* Column format hint */}
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
-            <p className="text-xs font-semibold text-gray-600 mb-1.5">รูปแบบคอลัมน์ที่รองรับ ({cfg.label})</p>
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-xs font-semibold text-gray-600">รูปแบบคอลัมน์ที่รองรับ ({cfg.label})</p>
+              <button
+                onClick={() => downloadTemplate(entity)}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                ⬇ ดาวน์โหลดไฟล์ตัวอย่าง (.xlsx)
+              </button>
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {cfg.cols.map((c) => (
                 <span key={c.key} className={clsx(
@@ -238,7 +357,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
                 </span>
               ))}
             </div>
-            <p className="text-[10px] text-gray-400 mt-1.5">* จำเป็น | ระบบจะจับคู่คอลัมน์อัตโนมัติ รองรับทั้งภาษาไทยและอังกฤษ</p>
+            <p className="text-[10px] text-gray-400 mt-1.5">* จำเป็น | ระบบจับคู่คอลัมน์อัตโนมัติ รองรับไทย/อังกฤษ | ช่องที่เป็นชื่อ (ห้องประจำ, กลุ่มสาระ, ห้องแม่) พิมพ์ "ชื่อ" ได้เลย ระบบจะแปลงให้</p>
+            {entity === "groups" && (
+              <p className="text-[10px] text-purple-500 mt-1">💡 ห้องย่อย (เช่น ม.4/6ก) ให้ใส่ชื่อ "ห้องแม่" = ม.4/6 — จะอยู่ไฟล์เดียวกันก็ได้ ระบบเชื่อมให้อัตโนมัติ</p>
+            )}
           </div>
 
           {/* File upload */}

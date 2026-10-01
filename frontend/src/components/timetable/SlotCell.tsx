@@ -82,6 +82,11 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       {slot.is_elective && (
         <span className="shrink-0 inline-block bg-purple-500 text-white text-[7px] px-0.5 rounded-sm leading-tight">🎓</span>
       )}
+      {slot.double_group_key && (
+        <span className="shrink-0 inline-block bg-purple-300 text-purple-900 text-[7px] px-0.5 rounded-sm leading-tight" title="คาบคู่ (2 คาบติดกัน)">
+          🔗{slot.is_double_cont ? "ต่อ" : "คู่"}
+        </span>
+      )}
     </div>
 
     {/* ── Subject code (single truncated line) ──────────────────── */}
@@ -102,6 +107,15 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       >
         {slot.teacher_name}
       </div>
+      {compact && slot.group_name && (
+        <div
+          className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"
+          style={{ fontSize: "8px" }}
+          title={slot.group_name ?? undefined}
+        >
+          {slot.group_name}
+        </div>
+      )}
       {!compact && (
         <>
           <div

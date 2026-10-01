@@ -6,7 +6,7 @@ import React, { useState } from "react";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
-import { DAYS } from "../../types";
+import { DAYS, periodLabel } from "../../types";
 import type { TimetableSlot } from "../../types";
 
 interface ElectiveOptionModalProps {
@@ -15,7 +15,7 @@ interface ElectiveOptionModalProps {
 }
 
 export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, onClose }) => {
-  const { subjects, teachers } = useTimetableStore();
+  const { subjects, teachers, loadSlots } = useTimetableStore();
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ subject_id: "", teacher_id: "", label: "" });
   const [busy, setBusy] = useState(false);
@@ -26,12 +26,16 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
   const patchSlot = (updated: TimetableSlot) =>
     useTimetableStore.setState((s) => ({ slots: s.slots.map((x) => x.id === slot.id ? updated : x) }));
 
+  // For double-period electives, re-sync both linked halves from the backend.
+  const syncIfDouble = async () => { if (slot.double_group_key) await loadSlots(); };
+
   const handleSelect = async (optionId: number) => {
     if (optionId === slot.selected_option_id) return;
     setBusy(true);
     try {
       const updated = await api.selectElectiveOption(slot.id, optionId);
       patchSlot(updated);
+      await syncIfDouble();
     } finally {
       setBusy(false);
     }
@@ -43,6 +47,7 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
     try {
       const updated = await api.deleteElectiveOption(slot.id, optionId);
       patchSlot(updated);
+      await syncIfDouble();
     } finally {
       setBusy(false);
     }
@@ -58,6 +63,7 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
         label: form.label || undefined,
       });
       patchSlot(updated);
+      await syncIfDouble();
       setForm({ subject_id: "", teacher_id: "", label: "" });
       setAdding(false);
     } finally {
@@ -74,7 +80,7 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
           <span className="text-2xl">🎓</span>
           <div className="flex-1 min-w-0">
             <h2 className="text-white font-bold text-base leading-tight truncate">วิชาเสรี — {slot.group_name}</h2>
-            <p className="text-purple-100 text-xs mt-0.5">{dayName} คาบที่ {slot.period}</p>
+            <p className="text-purple-100 text-xs mt-0.5">{dayName} {periodLabel(slot.period)}{slot.room_name ? ` · ห้อง ${slot.room_name}` : ""}</p>
           </div>
           <button onClick={onClose} className="text-purple-200 hover:text-white text-lg leading-none shrink-0">✕</button>
         </div>

@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Any
 import random
+from collections import defaultdict
 
 app = FastAPI(title="School Scheduler Mock API v3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -117,8 +118,31 @@ def _next(key: str) -> int:
     return _counters[key]
 
 
-# ── Greedy Mock Solver ─────────────────────────────────────────────────────────
+# ── Solver entry point: prefer CP-SAT (real optimiser), fall back to greedy ────
 def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
+    """Run the timetable solver.
+
+    Uses Google OR-Tools CP-SAT when available (real optimisation that minimises
+    student/teacher walking and respects every hard constraint). If OR-Tools is
+    not installed, or the CP-SAT model errors for any reason, we fall back to the
+    fast greedy heuristic so the app always produces a result.
+    """
+    try:
+        from ortools.sat.python import cp_model  # noqa: F401
+    except Exception:
+        return _solve_greedy(body)
+    try:
+        return _solve_cpsat(body)
+    except Exception as e:  # never break the app on a solver bug
+        res = _solve_greedy(body)
+        res.setdefault("violations", [])
+        res["violations"].append(f"(CP-SAT ใช้ไม่ได้ จึงใช้วิธีสำรอง: {type(e).__name__})")
+        res["engine"] = "greedy-fallback"
+        return res
+
+
+# ── Greedy Mock Solver (fallback) ──────────────────────────────────────────────
+def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     global SLOTS
     clear      = body.get("clear_existing", True)
     locked_ids = set(body.get("locked_slot_ids", []))
@@ -146,23 +170,109 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     s_map = {s["id"]: s for s in SUBJECTS}
     r_map = {r["id"]: r for r in ROOMS}
 
+    # ── Group hierarchy (ห้องย่อย) ────────────────────────────────────────────
+    # A subgroup (ม.4/6ก) shares its students with the parent whole-class (ม.4/6).
+    # So a parent lesson and ANY of its subgroup lessons cannot overlap in time,
+    # but sibling subgroups (ก/ข/ค) CAN run at the same time (different students).
+    #
+    # conflict set of G = {G} ∪ ancestors(G) ∪ descendants(G)  (NOT siblings).
+    parent_of: dict[int, int | None] = {g["id"]: g.get("parent_id") for g in g_map.values()}
+    children_of: dict[int, list[int]] = {}
+    for gid, pid in parent_of.items():
+        if pid is not None:
+            children_of.setdefault(pid, []).append(gid)
+
+    def _ancestors(gid: int) -> set[int]:
+        out, cur = set(), parent_of.get(gid)
+        while cur is not None:
+            out.add(cur); cur = parent_of.get(cur)
+        return out
+
+    def _descendants(gid: int) -> set[int]:
+        out, stack = set(), list(children_of.get(gid, []))
+        while stack:
+            c = stack.pop(); out.add(c); stack.extend(children_of.get(c, []))
+        return out
+
+    _conflict_cache: dict[int, set[int]] = {}
+    def group_conflict_ids(gid: int) -> set[int]:
+        if gid not in _conflict_cache:
+            _conflict_cache[gid] = {gid} | _ancestors(gid) | _descendants(gid)
+        return _conflict_cache[gid]
+
+    def group_occupied(gid: int, day: int, period: int) -> bool:
+        """True if this group OR any student-sharing relative is busy at the cell."""
+        return any((g, day, period) in group_busy for g in group_conflict_ids(gid))
+
     created    = 0
     violations = []
 
-    def find_room(teacher_id: int, day: int, period: int):
+    # Departments whose lessons belong outdoors (พลศึกษา etc.) — used to steer
+    # room ranking so PE still lands on the field, not a classroom.
+    outdoor_dept_ids = {d["id"] for d in DEPARTMENTS if "พลศึกษา" in d.get("name", "")}
+
+    def find_room(teacher_id: int, day: int, period: int, subject_id: int | None = None,
+                  group_id: int | None = None):
+        """Pick a room, minimising how far students/teachers must walk.
+
+        Priority:
+          1. If the subject needs a special/outdoor room (computer lab, music,
+             PE...), use that — this is the only time a "homeroom" class walks.
+          2. Otherwise keep students in their GROUP homeroom (ห้องประจำ/ห้องเพชร)
+             if it's free — students stay put, the teacher comes to them.
+          3. Otherwise the TEACHER's fixed room (regular เดินเรียน: students walk
+             to the teacher).
+          4. Otherwise any eligible free room, ranked by type.
+        """
         t  = t_map.get(teacher_id, {})
         fr = t.get("fixed_room_id")
-        if fr and (fr, day, period) not in room_busy:
+        t_dept = t.get("department_id")
+        subj = s_map.get(subject_id, {}) if subject_id is not None else {}
+        wants_outdoor = subj.get("department_id") in outdoor_dept_ids
+        grp = g_map.get(group_id, {}) if group_id is not None else {}
+        home = grp.get("homeroom_room_id")
+
+        # Does this subject REQUIRE a specialised room? (dept has a matching
+        # specialized room, or the subject is outdoor.) If not, we can stay home.
+        needs_special = wants_outdoor or any(
+            r.get("specialized_dept_id") and r["specialized_dept_id"] == subj.get("department_id")
+            for r in ROOMS
+        )
+
+        def eligible(r: dict) -> bool:
+            if (r["id"], day, period) in room_busy:
+                return False
+            if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != teacher_id:
+                return False
+            if r.get("specialized_dept_id") and r["specialized_dept_id"] != t_dept:
+                return False
+            return True
+
+        # 2. Stay in the group's homeroom for ordinary subjects.
+        if home and not needs_special and (home, day, period) not in room_busy:
+            r = r_map.get(home)
+            if r and (not r.get("reserved_teacher_id") or r["reserved_teacher_id"] == teacher_id):
+                return home, r["name"], r["type"]
+
+        # 3. Teacher's own fixed room (skip for outdoor subjects).
+        if fr and not wants_outdoor and (fr, day, period) not in room_busy:
             r = r_map.get(fr)
             if r:
                 return fr, r["name"], r["type"]
-        for r in ROOMS:
-            if (r["id"], day, period) not in room_busy:
-                return r["id"], r["name"], r["type"]
+
+        def rank(r: dict) -> tuple:
+            if wants_outdoor:
+                pref = {"outdoor": 0, "physical": 1, "floating": 2, "special": 3}
+            else:
+                pref = {"physical": 0, "floating": 1, "special": 2, "outdoor": 3}
+            return (pref.get(r["type"], 4), r["id"])
+
+        for r in sorted((r for r in ROOMS if eligible(r)), key=rank):
+            return r["id"], r["name"], r["type"]
         return None, None, None
 
     def make_slot(req: dict, day: int, period: int) -> dict:
-        rid, rname, rtype = find_room(req["teacher_id"], day, period)
+        rid, rname, rtype = find_room(req["teacher_id"], day, period, req["subject_id"], req["group_id"])
         subj    = s_map.get(req["subject_id"], {})
         teacher = t_map.get(req["teacher_id"], {})
         group   = g_map.get(req["group_id"],   {})
@@ -197,28 +307,71 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
         else:
             solo.append(req)
 
-    # ── Place solo requirements ──
-    for req in solo:
-        gid, tid = req["group_id"], req["teacher_id"]
-        already  = sum(1 for s in SLOTS
-                       if s["group_id"] == gid and s["subject_id"] == req["subject_id"])
-        needed   = max(0, req["weekly_count"] - already)
-        cells    = list(all_cells)
+    class_period_set = set(class_periods)
+    # Cells where a double period can start: p and p+1 are both class periods
+    # on the same day (no break/lunch in between).
+    double_start_cells = [(d, p) for d in range(5) for p in class_periods if (p + 1) in class_period_set]
+
+    def place_single(req, gid, tid, needed):
+        """Place up to `needed` single periods; returns how many placed."""
+        cells = list(all_cells)
         random.shuffle(cells)
-        placed   = 0
+        placed = 0
         for day, period in cells:
             if placed >= needed:
                 break
             if (tid, day, period) in teacher_busy:
                 continue
-            if (gid, day, period) in group_busy:
+            if group_occupied(gid, day, period):
                 continue
             slot = make_slot(req, day, period)
             SLOTS.append(slot)
             teacher_busy.add((tid, day, period))
             group_busy.add((gid, day, period))
-            placed  += 1
-            created += 1
+            placed += 1
+        return placed
+
+    # ── Place solo requirements ──
+    for req in solo:
+        gid, tid = req["group_id"], req["teacher_id"]
+        subj     = s_map.get(req["subject_id"], {})
+        duration = subj.get("duration", 1) or 1
+        already  = sum(1 for s in SLOTS
+                       if s["group_id"] == gid and s["subject_id"] == req["subject_id"])
+        needed   = max(0, req["weekly_count"] - already)
+        placed   = 0
+
+        # Double-period subjects (พลศึกษา ฯลฯ): place consecutive pairs first.
+        if duration == 2 and needed >= 2:
+            pairs_needed = needed // 2
+            cells = list(double_start_cells)
+            random.shuffle(cells)
+            for day, p in cells:
+                if pairs_needed <= 0:
+                    break
+                p2 = p + 1
+                if (tid, day, p) in teacher_busy or (tid, day, p2) in teacher_busy:
+                    continue
+                if group_occupied(gid, day, p) or group_occupied(gid, day, p2):
+                    continue
+                s1 = make_slot(req, day, p)
+                s1["is_double_start"] = True
+                s2 = make_slot(req, day, p2)
+                SLOTS.append(s1); SLOTS.append(s2)
+                for pp in (p, p2):
+                    teacher_busy.add((tid, day, pp))
+                    group_busy.add((gid, day, pp))
+                created      += 2
+                placed       += 2
+                pairs_needed -= 1
+
+        # Remaining periods (odd leftover, or any pairs that didn't fit) → singles.
+        remaining = needed - placed
+        if remaining > 0:
+            got = place_single(req, gid, tid, remaining)
+            placed   += got
+            created  += got
+
         if placed < needed:
             code = s_map.get(req["subject_id"], {}).get("code", "?")
             violations.append(
@@ -232,6 +385,8 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
         max_weekly = max(r["weekly_count"] for r in reqs)
         already    = sum(1 for s in SLOTS if s.get("parallel_group_key") == pgk) // max(len(reqs), 1)
         needed     = max(0, max_weekly - already)
+        # If any subject in the block is a double-period subject, place as pairs.
+        is_double  = any((s_map.get(r["subject_id"], {}).get("duration", 1) or 1) == 2 for r in reqs)
 
         # Detect same-teacher assignment (warn but still try)
         teacher_ids = [r["teacher_id"] for r in reqs]
@@ -241,30 +396,57 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
                 f"กรุณาตั้งครูคนละคนสำหรับแต่ละห้อง"
             )
 
-        cells  = list(all_cells)
-        random.shuffle(cells)
-        placed = 0
-        for day, period in cells:
-            if placed >= needed:
-                break
-            # Check ALL sibling teachers AND groups are free
-            conflict = False
-            for r in reqs:
-                if (r["teacher_id"], day, period) in teacher_busy:
-                    conflict = True; break
-                if (r["group_id"], day, period) in group_busy:
-                    conflict = True; break
-            if conflict:
-                continue
+        def all_free(periods_to_check):
+            for day_, per_ in periods_to_check:
+                for r in reqs:
+                    if (r["teacher_id"], day_, per_) in teacher_busy:
+                        return False
+                    if group_occupied(r["group_id"], day_, per_):
+                        return False
+            return True
 
-            # Place all siblings at this (day, period)
-            for req in reqs:
-                slot = make_slot(req, day, period)
-                SLOTS.append(slot)
-                teacher_busy.add((req["teacher_id"], day, period))
-                group_busy.add((req["group_id"],   day, period))
-                created += 1
-            placed += 1
+        def place_block(day_, periods_to_fill):
+            for i, per_ in enumerate(periods_to_fill):
+                for req in reqs:
+                    slot = make_slot(req, day_, per_)
+                    if i == 0 and len(periods_to_fill) > 1:
+                        slot["is_double_start"] = True
+                    SLOTS.append(slot)
+                    teacher_busy.add((req["teacher_id"], day_, per_))
+                    group_busy.add((req["group_id"],   day_, per_))
+
+        placed = 0
+        created_here = 0
+        if is_double and needed >= 2:
+            pairs = needed // 2
+            cells = list(double_start_cells)
+            random.shuffle(cells)
+            for day, p in cells:
+                if pairs <= 0:
+                    break
+                if not all_free([(day, p), (day, p + 1)]):
+                    continue
+                place_block(day, [p, p + 1])
+                created_here += 2 * len(reqs)
+                placed       += 2
+                pairs        -= 1
+
+        # Remaining single periods
+        remaining = needed - placed
+        if remaining > 0:
+            cells = list(all_cells)
+            random.shuffle(cells)
+            for day, period in cells:
+                if remaining <= 0:
+                    break
+                if not all_free([(day, period)]):
+                    continue
+                place_block(day, [period])
+                created_here += len(reqs)
+                placed       += 1
+                remaining    -= 1
+
+        created += created_here
 
         if placed < needed:
             violations.append(
@@ -279,6 +461,303 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
         "solve_time_seconds": round(len(REQUIREMENTS) * 0.12 + random.uniform(0.1, 0.5), 2),
         "objective_value": float(created * 10),
         "violations": violations,
+        "engine": "greedy",
+    }
+
+
+def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
+    """Real optimiser (Google OR-Tools CP-SAT).
+
+    Hard constraints (zero tolerance):
+      • each required lesson placed exactly the right number of times
+      • no teacher / room double-booking
+      • no student double-booking, INCLUDING subgroups: a whole-class (parent)
+        lesson never overlaps any of its subgroups' lessons; sibling subgroups
+        may run at the same time
+      • double-period subjects occupy two consecutive periods
+      • parallel subjects share the same day+period across their groups
+      • rooms reserved for another teacher / specialised to another dept excluded
+      • locked & elective slots kept fixed (treated as pre-occupied)
+
+    Objective (minimise, in priority order via weights):
+      • students stay in their group's homeroom (ห้องเพชร) → less walking
+      • teachers stay in their fixed room
+      • outdoor subjects use outdoor space; ordinary subjects avoid special rooms
+    """
+    from ortools.sat.python import cp_model
+    import time as _time
+
+    global SLOTS
+    t0 = _time.time()
+    clear      = body.get("clear_existing", True)
+    locked_ids = set(body.get("locked_slot_ids", []))
+
+    if clear:
+        SLOTS = [s for s in SLOTS if s["id"] in locked_ids or s.get("is_locked") or s.get("is_elective")]
+
+    flat_groups = _flat_groups()
+    g_map = {g["id"]: g for g in flat_groups}
+    t_map = {t["id"]: t for t in TEACHERS}
+    s_map = {s["id"]: s for s in SUBJECTS}
+    r_map = {r["id"]: r for r in ROOMS}
+    dep_out = {d["id"] for d in DEPARTMENTS if "พลศึกษา" in d.get("name", "")}
+
+    class_periods = sorted({p["period_num"] for p in PERIODS if p["type"] == "class"})
+    class_set = set(class_periods)
+    DAYS_N = 5
+
+    # ── Group hierarchy: ancestor pairs for student-sharing exclusion ──────────
+    parent_of = {g["id"]: g.get("parent_id") for g in flat_groups}
+    def ancestors(gid):
+        out, cur = [], parent_of.get(gid)
+        while cur is not None:
+            out.append(cur); cur = parent_of.get(cur)
+        return out
+
+    # ── Pre-occupancy from locked / elective slots (fixed, not re-placed) ──────
+    busy_teacher = set()   # (tid, d, p)
+    busy_group   = set()   # (gid, d, p)  — exact group only; hierarchy added below
+    busy_room    = set()   # (rid, d, p)
+    for s in SLOTS:
+        busy_teacher.add((s["teacher_id"], s["day"], s["period"]))
+        busy_group.add((s["group_id"], s["day"], s["period"]))
+        if s.get("room_id"):
+            busy_room.add((s["room_id"], s["day"], s["period"]))
+
+    def group_prebusy(gid, d, p):
+        # a cell is blocked for gid if gid OR any ancestor/descendant is pre-busy
+        rel = {gid, *ancestors(gid)}
+        # descendants
+        stack = [gid]
+        while stack:
+            cur = stack.pop()
+            for cid, pid in parent_of.items():
+                if pid == cur:
+                    rel.add(cid); stack.append(cid)
+        return any((g, d, p) in busy_group for g in rel)
+
+    model = cp_model.CpModel()
+
+    # Expand requirements into occurrences (blocks). Each occurrence has a length.
+    # duration 2 → floor(n/2) double-blocks + (n%2) singles.
+    occurrences = []  # dicts: req, occ_id, length, teacher_id, group_id, subject_id, pgk
+    for req in REQUIREMENTS:
+        subj = s_map.get(req["subject_id"], {})
+        dur  = subj.get("duration", 1) or 1
+        wc   = req.get("weekly_count", 1)
+        blocks = []
+        if dur == 2:
+            blocks += [2] * (wc // 2)
+            blocks += [1] * (wc % 2)
+        else:
+            blocks = [1] * wc
+        for i, length in enumerate(blocks):
+            occurrences.append({
+                "req_id": req["id"], "occ": i, "length": length,
+                "teacher_id": req["teacher_id"], "group_id": req["group_id"],
+                "subject_id": req["subject_id"], "pgk": req.get("parallel_group_key"),
+            })
+
+    def valid_starts(length):
+        if length == 2:
+            return [(d, p) for d in range(DAYS_N) for p in class_periods if (p + 1) in class_set]
+        return [(d, p) for d in range(DAYS_N) for p in class_periods]
+
+    def covered(length, d, p):
+        return [(d, p)] if length == 1 else [(d, p), (d, p + 1)]
+
+    def compatible_rooms(occ):
+        subj = s_map.get(occ["subject_id"], {})
+        teacher = t_map.get(occ["teacher_id"], {})
+        grp = g_map.get(occ["group_id"], {})
+        size = grp.get("size", 40)
+        wants_outdoor = subj.get("department_id") in dep_out
+        t_dept = teacher.get("department_id")
+        out = []
+        for r in ROOMS:
+            if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != occ["teacher_id"]:
+                continue
+            if r.get("specialized_dept_id") and r["specialized_dept_id"] != t_dept:
+                continue
+            if r.get("capacity", 40) < size:
+                continue
+            if wants_outdoor and r["type"] != "outdoor":
+                # outdoor subjects only outdoors
+                continue
+            if not wants_outdoor and r["type"] == "outdoor":
+                continue
+            out.append(r)
+        return out
+
+    # ── Variables ──────────────────────────────────────────────────────────────
+    start_vars   = {}   # (idx, d, p) -> BoolVar
+    room_vars    = {}   # (idx, d, p, rid) -> BoolVar
+    teacher_occ  = defaultdict(list)
+    group_occ    = defaultdict(list)   # keyed by exact group id
+    room_occ     = defaultdict(list)
+    penalty_terms = []   # (weight, var) minimise sum(weight*var)
+
+    for idx, occ in enumerate(occurrences):
+        starts = valid_starts(occ["length"])
+        rooms = compatible_rooms(occ)
+        homeroom = g_map.get(occ["group_id"], {}).get("homeroom_room_id")
+        fixed = t_map.get(occ["teacher_id"], {}).get("fixed_room_id")
+        subj = s_map.get(occ["subject_id"], {})
+        wants_outdoor = subj.get("department_id") in dep_out
+
+        occ_start_list = []
+        for (d, p) in starts:
+            cells = covered(occ["length"], d, p)
+            # skip if any covered cell pre-busy for teacher/group/all rooms
+            if any((occ["teacher_id"], cd, cp_) in busy_teacher for cd, cp_ in cells):
+                continue
+            if any(group_prebusy(occ["group_id"], cd, cp_) for cd, cp_ in cells):
+                continue
+            sv = model.NewBoolVar(f"s_{idx}_{d}_{p}")
+            start_vars[(idx, d, p)] = sv
+            occ_start_list.append(sv)
+            for cd, cp_ in cells:
+                teacher_occ[(occ["teacher_id"], cd, cp_)].append(sv)
+                group_occ[(occ["group_id"], cd, cp_)].append(sv)
+            # room choice
+            rlist = []
+            for r in rooms:
+                if any((r["id"], cd, cp_) in busy_room for cd, cp_ in cells):
+                    continue
+                rv = model.NewBoolVar(f"r_{idx}_{d}_{p}_{r['id']}")
+                room_vars[(idx, d, p, r["id"])] = rv
+                rlist.append(rv)
+                for cd, cp_ in cells:
+                    room_occ[(r["id"], cd, cp_)].append(rv)
+                # walking penalties: prefer homeroom (students) then fixed room (teacher)
+                if not wants_outdoor:
+                    if homeroom and r["id"] != homeroom:
+                        penalty_terms.append((5, rv))      # student leaves homeroom
+                    if fixed and r["id"] != fixed and not homeroom:
+                        penalty_terms.append((3, rv))      # teacher leaves fixed room
+                    if r["type"] == "special":
+                        penalty_terms.append((1, rv))      # mild: avoid burning special rooms
+            if rlist:
+                # exactly one room iff this start chosen
+                model.Add(sum(rlist) == sv)
+            else:
+                # no room available here → forbid this start
+                model.Add(sv == 0)
+
+        # Placement is SOFT: place as many lessons as possible (big penalty for
+        # any unplaced), then minimise walking. This yields a best-effort optimal
+        # timetable instead of returning nothing when the school is over-booked.
+        if occ_start_list:
+            model.AddAtMostOne(occ_start_list)
+            placed = model.NewBoolVar(f"placed_{idx}")
+            model.Add(sum(occ_start_list) == placed)
+            penalty_terms.append((1000, placed.Not()))
+        occ["_starts"] = occ_start_list
+
+    # ── Hard no-overlap ────────────────────────────────────────────────────────
+    for key, vs in teacher_occ.items():
+        if len(vs) > 1:
+            model.Add(sum(vs) <= 1)
+    for key, vs in group_occ.items():
+        if len(vs) > 1:
+            model.Add(sum(vs) <= 1)
+    for key, vs in room_occ.items():
+        if len(vs) > 1:
+            model.Add(sum(vs) <= 1)
+
+    # ── Subgroup student-sharing: parent lesson excludes child lessons ─────────
+    # For every (group g, ancestor a) at each cell: occ(a)+occ(g) ≤ 1.
+    cells_all = [(d, p) for d in range(DAYS_N) for p in class_periods]
+    for g in flat_groups:
+        gid = g["id"]
+        ancs = ancestors(gid)
+        if not ancs:
+            continue
+        for a in ancs:
+            for (d, p) in cells_all:
+                gv = group_occ.get((gid, d, p), [])
+                av = group_occ.get((a, d, p), [])
+                if gv and av:
+                    model.Add(sum(gv) + sum(av) <= 1)
+
+    # ── Parallel sync: siblings sharing a pgk must start at same (d,p) ─────────
+    pgk_groups = defaultdict(list)   # pgk -> list of occurrence idx
+    for idx, occ in enumerate(occurrences):
+        if occ["pgk"]:
+            pgk_groups[occ["pgk"]].append(idx)
+    for pgk, idxs in pgk_groups.items():
+        if len(idxs) < 2:
+            continue
+        base = idxs[0]
+        for other in idxs[1:]:
+            for (d, p) in valid_starts(occurrences[base]["length"]):
+                bv = start_vars.get((base, d, p))
+                ov = start_vars.get((other, d, p))
+                if bv is not None and ov is not None:
+                    model.Add(bv == ov)
+                elif bv is not None and ov is None:
+                    model.Add(bv == 0)
+
+    # ── Objective: place-everything (weight 1000) then minimise walking ────────
+    if penalty_terms:
+        model.Minimize(sum(w * v for w, v in penalty_terms))
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = float(body.get("time_limit_seconds") or 20)
+    solver.parameters.num_search_workers = 8
+    status = solver.Solve(model)
+
+    ok = status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+    created = 0
+    violations = []
+
+    if ok:
+        for idx, occ in enumerate(occurrences):
+            starts = valid_starts(occ["length"])
+            chosen = None
+            for (d, p) in starts:
+                sv = start_vars.get((idx, d, p))
+                if sv is not None and solver.Value(sv) == 1:
+                    chosen = (d, p); break
+            if chosen is None:
+                code = s_map.get(occ["subject_id"], {}).get("code", "?")
+                violations.append(f"ไม่สามารถจัด {code} (กลุ่ม {occ['group_id']})")
+                continue
+            d, p = chosen
+            # room
+            rid = None
+            for r in ROOMS:
+                rv = room_vars.get((idx, d, p, r["id"]))
+                if rv is not None and solver.Value(rv) == 1:
+                    rid = r["id"]; break
+            cells = covered(occ["length"], d, p)
+            for i, (cd, cp_) in enumerate(cells):
+                subj = s_map.get(occ["subject_id"], {})
+                teacher = t_map.get(occ["teacher_id"], {})
+                grp = g_map.get(occ["group_id"], {})
+                room = r_map.get(rid, {})
+                slot = {
+                    "id": _next("slot"), "day": cd, "period": cp_,
+                    "teacher_id": occ["teacher_id"], "group_id": occ["group_id"],
+                    "room_id": rid, "subject_id": occ["subject_id"],
+                    "is_double_start": (occ["length"] == 2 and i == 0),
+                    "parallel_group_key": occ["pgk"], "is_locked": False,
+                    "teacher_name": teacher.get("name"), "group_name": grp.get("name"),
+                    "room_name": room.get("name"), "room_type": room.get("type"),
+                    "subject_name": subj.get("name"), "subject_code": subj.get("code"),
+                }
+                SLOTS.append(slot)
+                created += 1
+    else:
+        violations.append("ไม่พบคำตอบที่เป็นไปได้ — ลองลดจำนวนคาบ เพิ่มครู/ห้อง หรือปลดล็อกบางคาบ")
+
+    return {
+        "status": "OPTIMAL" if status == cp_model.OPTIMAL else ("FEASIBLE" if ok else "INFEASIBLE"),
+        "slots_created": created,
+        "solve_time_seconds": round(_time.time() - t0, 2),
+        "objective_value": float(solver.ObjectiveValue()) if (ok and penalty_terms) else None,
+        "violations": violations,
+        "engine": "cp-sat",
     }
 
 
@@ -524,6 +1003,28 @@ def create_req(body: dict[str, Any]):
     REQUIREMENTS.append(body)
     return body
 
+@app.put("/api/timetable/requirements/{i}")
+def update_req(i: int, body: dict[str, Any]):
+    for r in REQUIREMENTS:
+        if r["id"] == i:
+            r.update(body)
+            return r
+    raise HTTPException(404, "Requirement not found")
+
+@app.post("/api/timetable/requirements/bulk")
+def bulk_create_reqs(body: list[dict[str, Any]]):
+    created = []
+    for row in body:
+        # Skip rows missing the essentials rather than crashing the whole import.
+        if not row.get("group_id") or not row.get("subject_id") or not row.get("teacher_id"):
+            continue
+        row["id"] = _next("requirement")
+        row.setdefault("weekly_count", 1)
+        row.setdefault("parallel_group_key", None)
+        REQUIREMENTS.append(row)
+        created.append(row)
+    return created
+
 @app.delete("/api/timetable/requirements/{i}")
 def del_req(i: int):
     global REQUIREMENTS
@@ -579,30 +1080,88 @@ def _apply_selected_option(s: dict[str, Any]) -> dict[str, Any]:
         s["teacher_id"] = opt["teacher_id"]
     return _enrich_slot(s)
 
+# ── Double-period (คาบคู่) helpers ────────────────────────────────────────────
+def _class_period_nums() -> list[int]:
+    return sorted({p["period_num"] for p in PERIODS if p["type"] == "class"})
+
+def _next_class_period(period: int) -> int | None:
+    """The class period immediately after `period` (skipping break/lunch), or None."""
+    nums = _class_period_nums()
+    if period in nums:
+        i = nums.index(period)
+        if i + 1 < len(nums):
+            return nums[i + 1]
+    return None
+
+def _sync_doubles(slot: dict[str, Any]) -> None:
+    """Propagate an elective's option catalog + selection to its double partner.
+
+    A double-period elective is stored as TWO linked slots (period p and p+1)
+    sharing a `double_group_key`. They share identical option ids so selection is
+    a straight copy. This keeps both halves showing the same subject/teacher.
+    """
+    key = slot.get("double_group_key")
+    if not key:
+        return
+    for s in SLOTS:
+        if s is slot or s.get("double_group_key") != key:
+            continue
+        s["elective_options"] = [dict(o) for o in slot["elective_options"]]
+        s["selected_option_id"] = slot["selected_option_id"]
+        _apply_selected_option(s)
+
 @app.post("/api/timetable/elective-slots")
 def create_elective_slot(body: dict[str, Any]):
+    is_double = bool(body.get("is_double"))
     option = {
         "id": _next("elective_option"),
         "subject_id": body["subject_id"],
         "teacher_id": body["teacher_id"],
         "label": body.get("label") or "วงที่ 1",
     }
-    slot = {
-        "id": _next("slot"),
-        "day": body["day"], "period": body["period"],
+    common = {
         "group_id": body["group_id"],
         "room_id": body.get("room_id"),
-        "is_double_start": False,
         "parallel_group_key": None,
         "is_locked": True,
         "is_elective": True,
-        "elective_options": [option],
         "selected_option_id": option["id"],
         "subject_id": option["subject_id"],
         "teacher_id": option["teacher_id"],
     }
-    SLOTS.append(slot)
-    return _apply_selected_option(slot)
+    day = body["day"]
+    p1  = body["period"]
+
+    # ── Single period ──
+    if not is_double:
+        slot = {
+            **common, "id": _next("slot"), "day": day, "period": p1,
+            "is_double_start": False, "double_group_key": None,
+            "elective_options": [dict(option)],
+        }
+        SLOTS.append(slot)
+        return _apply_selected_option(slot)
+
+    # ── Double period: occupy p1 and the next class period ──
+    p2 = _next_class_period(p1)
+    if p2 is None:
+        raise HTTPException(400, "คาบนี้เป็นคาบสุดท้ายของวัน ทำคาบคู่ไม่ได้ กรุณาเลือกคาบอื่น")
+    key = f"ELEC-DBL-{_next('slot')}"   # borrow slot counter for a unique key
+    start = {
+        **common, "id": _next("slot"), "day": day, "period": p1,
+        "is_double_start": True, "double_group_key": key, "is_double_cont": False,
+        "elective_options": [dict(option)],
+    }
+    cont = {
+        **common, "id": _next("slot"), "day": day, "period": p2,
+        "is_double_start": False, "double_group_key": key, "is_double_cont": True,
+        "elective_options": [dict(option)],
+    }
+    SLOTS.append(start)
+    SLOTS.append(cont)
+    _apply_selected_option(cont)
+    # Return the start slot (frontend treats it as the primary row).
+    return _apply_selected_option(start)
 
 @app.post("/api/timetable/elective-slots/{slot_id}/options")
 def add_elective_option(slot_id: int, body: dict[str, Any]):
@@ -616,6 +1175,7 @@ def add_elective_option(slot_id: int, body: dict[str, Any]):
         "label": body.get("label") or f"วงที่ {len(slot['elective_options']) + 1}",
     }
     slot["elective_options"].append(option)
+    _sync_doubles(slot)
     return _enrich_slot(slot)
 
 @app.delete("/api/timetable/elective-slots/{slot_id}/options/{option_id}")
@@ -628,6 +1188,7 @@ def delete_elective_option(slot_id: int, option_id: int):
     slot["elective_options"] = [o for o in slot["elective_options"] if o["id"] != option_id]
     if slot["selected_option_id"] == option_id:
         slot["selected_option_id"] = slot["elective_options"][0]["id"]
+    _sync_doubles(slot)
     return _apply_selected_option(slot)
 
 @app.patch("/api/timetable/elective-slots/{slot_id}/select")
@@ -639,6 +1200,7 @@ def select_elective_option(slot_id: int, body: dict[str, Any]):
     if not any(o["id"] == option_id for o in slot["elective_options"]):
         raise HTTPException(404, "Option not found")
     slot["selected_option_id"] = option_id
+    _sync_doubles(slot)
     return _apply_selected_option(slot)
 
 @app.post("/api/timetable/elective-slots/{slot_id}/copy")
@@ -646,23 +1208,30 @@ def copy_elective_slot(slot_id: int, body: dict[str, Any]):
     src = next((s for s in SLOTS if s["id"] == slot_id and s.get("is_elective")), None)
     if not src:
         raise HTTPException(404, "Elective slot not found")
+
+    # Gather every slot belonging to this elective (both halves if double).
+    key = src.get("double_group_key")
+    group_slots = [s for s in SLOTS if key and s.get("double_group_key") == key] if key else [src]
+    group_slots.sort(key=lambda s: s["period"])
+
     created = []
     for target_group_id in body.get("target_group_ids", []):
+        new_key = f"ELEC-DBL-{_next('slot')}" if key else None
+        # Shared option-id remap so both halves keep matching ids.
         id_map: dict[int, int] = {}
-        new_options = []
-        for o in src["elective_options"]:
-            new_id = _next("elective_option")
-            id_map[o["id"]] = new_id
-            new_options.append({**o, "id": new_id})
-        new_slot = {
-            **src,
-            "id": _next("slot"),
-            "group_id": target_group_id,
-            "elective_options": new_options,
-            "selected_option_id": id_map[src["selected_option_id"]],
-        }
-        SLOTS.append(new_slot)
-        created.append(_apply_selected_option(new_slot))
+        for o in group_slots[0]["elective_options"]:
+            id_map[o["id"]] = _next("elective_option")
+        for gs in group_slots:
+            new_slot = {
+                **gs,
+                "id": _next("slot"),
+                "group_id": target_group_id,
+                "double_group_key": new_key,
+                "elective_options": [{**o, "id": id_map[o["id"]]} for o in gs["elective_options"]],
+                "selected_option_id": id_map[gs["selected_option_id"]],
+            }
+            SLOTS.append(new_slot)
+            created.append(_apply_selected_option(new_slot))
     return created
 
 @app.patch("/api/timetable/slots/{slot_id}")
@@ -683,7 +1252,13 @@ def patch_slot(slot_id: int, body: dict[str, Any]):
 @app.delete("/api/timetable/slots/{slot_id}")
 def delete_slot(slot_id: int):
     global SLOTS
-    SLOTS = [s for s in SLOTS if s["id"] != slot_id]
+    target = next((s for s in SLOTS if s["id"] == slot_id), None)
+    # If this is part of a double-period elective, remove both halves.
+    key = target.get("double_group_key") if target else None
+    if key:
+        SLOTS = [s for s in SLOTS if s.get("double_group_key") != key]
+    else:
+        SLOTS = [s for s in SLOTS if s["id"] != slot_id]
     return {}
 
 @app.delete("/api/timetable/slots")

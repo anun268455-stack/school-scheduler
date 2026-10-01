@@ -12,11 +12,13 @@ import { restrictToWindowEdges } from "@dnd-kit/modifiers";
 import clsx from "clsx";
 
 import { SlotCell } from "./SlotCell";
-import { ConflictModal, type PendingMove, type ConflictInfo } from "./ConflictModal";
+import { SwapRouteModal } from "./SwapRouteModal";
 import { RoomSwapModal } from "./RoomSwapModal";
 import { ElectiveOptionModal } from "./ElectiveOptionModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
+import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
+import { buildSharesStudents } from "../../utils/groupHierarchy";
 import { DAYS, GRID_PERIODS, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
@@ -46,7 +48,9 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
   const { setNodeRef, isOver } = useDroppable({
     id: `cell-${day}-${period}`,
     data: { day, period },
-    disabled: impact?.level === "fixed" || impact?.level === "red",
+    // Only truly un-droppable cells (break/lunch/homeroom) are disabled.
+    // "red" (occupied) cells stay droppable so we can offer replacement routes.
+    disabled: impact?.level === "fixed",
   });
 
   const periodDef = GRID_PERIODS.find((p) => p.period_num === period);
@@ -144,15 +148,19 @@ const DraggableWrapper: React.FC<{
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Grid
 // ─────────────────────────────────────────────────────────────────────────────
-export const TimetableGrid: React.FC = () => {
+interface TimetableGridProps { onNav?: (page: string) => void }
+
+export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   const {
-    slots, rooms, selectedGroupId, selectedTeacherId, selectedRoomId, viewMode,
-    impactMap, draggingSlot, startDrag, endDrag,
-    moveSlot, swapRoom, toggleLock, deleteSlot, preLockMode,
+    slots, rooms, teachers, periods, groups, subjects, requirements, selectedGroupId, selectedTeacherId, selectedRoomId, viewMode,
+    impactMap, draggingSlot, startDrag, endDrag, setSelectedGroupId,
+    moveSlot, swapRoom, toggleLock, deleteSlot, applySwapRoute, preLockMode, undo, undoStack,
   } = useTimetableStore();
 
   const [validAlert,   setValidAlert]   = useState<string | null>(null);
-  const [pendingMove,  setPendingMove]  = useState<PendingMove | null>(null);
+  const [routePlan,    setRoutePlan]    = useState<
+    { moving: TimetableSlot; target: { day: number; period: number }; routes: SwapRoute[] } | null
+  >(null);
   const [roomSwapSlot, setRoomSwapSlot] = useState<TimetableSlot | null>(null);
   const [electiveSlotId, setElectiveSlotId] = useState<number | null>(null);
   const electiveSlot = electiveSlotId != null ? slots.find((s) => s.id === electiveSlotId) ?? null : null;
@@ -162,13 +170,18 @@ export const TimetableGrid: React.FC = () => {
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 8 } }),
   );
 
+  // For subgroup schools: viewing a group shows its own slots PLUS student-
+  // sharing relatives (whole-class lessons of the parent, and — when viewing a
+  // parent — the split lessons of its subgroups). Siblings are NOT merged.
+  const shares = useMemo(() => buildSharesStudents(groups), [groups]);
+
   // Filtered slots for current view
   const viewSlots = useMemo(() => {
-    if (selectedGroupId   != null) return slots.filter((s) => s.group_id   === selectedGroupId);
+    if (selectedGroupId   != null) return slots.filter((s) => shares(s.group_id, selectedGroupId));
     if (selectedTeacherId != null) return slots.filter((s) => s.teacher_id === selectedTeacherId);
     if (selectedRoomId    != null) return slots.filter((s) => s.room_id    === selectedRoomId);
     return [];
-  }, [slots, selectedGroupId, selectedTeacherId, selectedRoomId]);
+  }, [slots, shares, selectedGroupId, selectedTeacherId, selectedRoomId]);
 
   // Grid lookup map: "day-period" → TimetableSlot[]
   const slotGrid = useMemo(() => {
@@ -195,39 +208,32 @@ export const TimetableGrid: React.FC = () => {
     const item   = active.data.current as DragItem;
     const { day: nd, period: np } = over.data.current as { day: number; period: number };
     const impact = impactMap.get(`${nd}-${np}`);
-    if (impact?.level === "red" || impact?.level === "fixed") {
+    if (impact?.level === "fixed") {
       setValidAlert(impact.reason);
       return;
     }
     if (nd === item.fromDay && np === item.fromPeriod) return;
 
-    // ── Detect conflicts before moving ──────────────────────────────────
     const movingSlot = slots.find((s) => s.id === item.slotId);
     if (!movingSlot) { moveSlot(item.slotId, nd, np); return; }
 
-    const targetSlots = slots.filter(
-      (s) => s.day === nd && s.period === np && s.id !== item.slotId
-    );
-
-    const conflicts: ConflictInfo[] = [];
-    for (const t of targetSlots) {
-      if (t.teacher_id === movingSlot.teacher_id && t.teacher_name) {
-        conflicts.push({ type: "teacher", name: t.teacher_name, slot: t });
-      }
-      if (t.group_id === movingSlot.group_id && t.group_name) {
-        conflicts.push({ type: "group", name: t.group_name, slot: t });
-      }
-      if (t.room_id && t.room_id === movingSlot.room_id && t.room_name) {
-        conflicts.push({ type: "room", name: t.room_name, slot: t });
-      }
-    }
-
-    if (conflicts.length > 0) {
-      setPendingMove({ slotId: item.slotId, newDay: nd, newPeriod: np, conflicts });
-    } else {
+    // Parallel groups (ก/ข/ค) still use the simple sibling-aware move so the
+    // whole set stays together — route planning is per single slot.
+    if (movingSlot.parallel_group_key) {
       moveSlot(item.slotId, nd, np);
+      return;
     }
-  }, [endDrag, impactMap, moveSlot, slots]);
+
+    // Compute concrete replacement routes for this drop.
+    const routes = planRoutes(movingSlot, nd, np, slots, rooms, teachers, periods, groups);
+
+    // If the only route is a clean direct placement, just do it — no modal.
+    if (routes.length === 1 && routes[0].kind === "direct" && routes[0].feasible) {
+      applySwapRoute(routes[0]);
+      return;
+    }
+    setRoutePlan({ moving: movingSlot, target: { day: nd, period: np }, routes });
+  }, [endDrag, impactMap, moveSlot, applySwapRoute, slots, rooms, teachers, periods, groups]);
 
   const activeSlots = useMemo(() => {
     if (!draggingSlot) return [];
@@ -238,48 +244,136 @@ export const TimetableGrid: React.FC = () => {
   const handleSwapRoomClick = useCallback((slot: TimetableSlot) => setRoomSwapSlot(slot), []);
   const handleOpenElective  = useCallback((slot: TimetableSlot) => setElectiveSlotId(slot.id), []);
 
-  // ── Conflict resolution handlers (must be before early return to follow Rules of Hooks) ──
-  const handleSwap = useCallback(() => {
-    if (!pendingMove) return;
-    const movingSlot = slots.find((s) => s.id === pendingMove.slotId);
-    if (!movingSlot) { setPendingMove(null); return; }
-    pendingMove.conflicts.forEach((c) => {
-      moveSlot(c.slot.id, movingSlot.day, movingSlot.period);
-    });
-    moveSlot(pendingMove.slotId, pendingMove.newDay, pendingMove.newPeriod);
-    setPendingMove(null);
-  }, [pendingMove, slots, moveSlot]);
-
-  const handleForce = useCallback(() => {
-    if (!pendingMove) return;
-    pendingMove.conflicts.forEach((c) => deleteSlot(c.slot.id));
-    moveSlot(pendingMove.slotId, pendingMove.newDay, pendingMove.newPeriod);
-    setPendingMove(null);
-  }, [pendingMove, moveSlot, deleteSlot]);
+  const handleApplyRoute = useCallback((route: SwapRoute) => {
+    applySwapRoute(route);
+    setRoutePlan(null);
+  }, [applySwapRoute]);
 
   const isDragActive = !!draggingSlot;
 
+  // Keyboard shortcut: Ctrl/Cmd+Z to undo the last change.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && undoStack.length > 0) {
+        e.preventDefault();
+        undo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, undoStack.length]);
+
   if (!selectedGroupId && !selectedTeacherId && !selectedRoomId) {
+    const flatGroups = groups.flatMap((g) => [g, ...(g.children ?? [])]);
+    const steps = [
+      { key: "groups",       icon: "👥", label: "เพิ่มห้องเรียน",   done: groups.length > 0,       count: groups.length },
+      { key: "teachers",     icon: "👨‍🏫", label: "เพิ่มครูผู้สอน",  done: teachers.length > 0,     count: teachers.length },
+      { key: "subjects",     icon: "📚", label: "เพิ่มวิชา",        done: subjects.length > 0,     count: subjects.length },
+      { key: "rooms",        icon: "🚪", label: "เพิ่มห้องสอน",     done: rooms.length > 0,        count: rooms.length },
+      { key: "requirements", icon: "📋", label: "กำหนดว่าใครสอนอะไร", done: requirements.length > 0, count: requirements.length },
+    ];
+    const allReady = steps.every((s) => s.done);
+    const hasTimetable = slots.length > 0;
+
+    // Fresh project → show the setup checklist.
+    if (!allReady || !hasTimetable) {
+      return (
+        <div className="flex-1 overflow-y-auto flex items-start justify-center py-10 px-4">
+          <div className="w-full max-w-lg">
+            <div className="text-center mb-6">
+              <span className="text-4xl">🗓️</span>
+              <h2 className="text-lg font-bold text-gray-800 mt-2">เริ่มสร้างตารางเรียน</h2>
+              <p className="text-sm text-gray-500 mt-1">ทำตามขั้นตอนนี้ให้ครบ แล้วกดสร้างตารางอัตโนมัติ</p>
+            </div>
+
+            <div className="space-y-2">
+              {steps.map((s, i) => (
+                <button
+                  key={s.key}
+                  onClick={() => onNav?.(s.key)}
+                  className={clsx(
+                    "w-full flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition-all hover:shadow-sm",
+                    s.done ? "border-green-200 bg-green-50/50" : "border-gray-200 bg-white hover:border-indigo-300",
+                  )}
+                >
+                  <span className={clsx(
+                    "shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold",
+                    s.done ? "bg-green-500 text-white" : "bg-gray-100 text-gray-400",
+                  )}>
+                    {s.done ? "✓" : i + 1}
+                  </span>
+                  <span className="text-xl">{s.icon}</span>
+                  <span className="flex-1">
+                    <span className="text-sm font-medium text-gray-800">{s.label}</span>
+                    {s.done && <span className="text-xs text-green-600 ml-2">({s.count})</span>}
+                  </span>
+                  <span className="text-gray-300 text-lg">›</span>
+                </button>
+              ))}
+
+              {/* Import shortcut */}
+              <button
+                onClick={() => onNav?.("groups")}
+                className="w-full flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50/50 px-4 py-2.5 text-left hover:shadow-sm"
+              >
+                <span className="text-xl">📥</span>
+                <span className="flex-1 text-sm text-blue-800">มีข้อมูลใน Excel อยู่แล้ว? ใช้ปุ่ม "นำเข้า" ด้านบนเพื่อกรอกทีเดียว</span>
+              </button>
+            </div>
+
+            {/* Final step */}
+            <div className={clsx(
+              "mt-4 rounded-xl border-2 px-4 py-3 text-center",
+              allReady ? "border-indigo-300 bg-indigo-50" : "border-dashed border-gray-200 bg-gray-50",
+            )}>
+              {allReady ? (
+                <p className="text-sm text-indigo-800 font-medium">
+                  ✅ ข้อมูลครบแล้ว! กดปุ่ม <strong>⚡ สร้างตาราง</strong> ที่ toolbar ด้านบนได้เลย
+                </p>
+              ) : (
+                <p className="text-sm text-gray-400">กรอกให้ครบทุกขั้นก่อน แล้วปุ่มสร้างตารางจะพร้อมใช้งาน</p>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Data + timetable exist → quick-pick which schedule to view.
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3 py-20">
-        <span className="text-5xl">📅</span>
-        <p className="text-sm">
-          เลือก{viewMode === "group" ? "ห้องเรียน" : viewMode === "teacher" ? "ครู" : "ห้องสอน"}จาก toolbar ด้านบน
+      <div className="flex-1 overflow-y-auto flex flex-col items-center justify-center py-16 px-4 gap-4">
+        <span className="text-4xl">📅</span>
+        <p className="text-sm text-gray-500">
+          เลือก{viewMode === "group" ? "ห้องเรียน" : viewMode === "teacher" ? "ครู" : "ห้องสอน"}เพื่อดูตาราง
         </p>
+        {viewMode === "group" && flatGroups.length > 0 && (
+          <div className="flex flex-wrap gap-2 justify-center max-w-xl">
+            {flatGroups.slice(0, 24).map((g) => (
+              <button
+                key={g.id}
+                onClick={() => setSelectedGroupId(g.id)}
+                className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 bg-white hover:border-indigo-400 hover:bg-indigo-50 text-gray-700"
+              >
+                {g.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
 
   return (
     <>
-    {/* Conflict Resolution Modal */}
-    {pendingMove && (
-      <ConflictModal
-        pending={pendingMove}
-        draggingSlotInfo={slots.find((s) => s.id === pendingMove.slotId) ?? null}
-        onSwap={handleSwap}
-        onForceMove={handleForce}
-        onCancel={() => setPendingMove(null)}
+    {/* Replacement-route Modal (เส้นทางการแทนที่) */}
+    {routePlan && (
+      <SwapRouteModal
+        moving={routePlan.moving}
+        target={routePlan.target}
+        routes={routePlan.routes}
+        periods={periods}
+        onApply={handleApplyRoute}
+        onCancel={() => setRoutePlan(null)}
       />
     )}
 
@@ -303,6 +397,22 @@ export const TimetableGrid: React.FC = () => {
     )}
 
     <div className="w-full h-full flex flex-col overflow-hidden">
+      {/* Undo bar */}
+      {undoStack.length > 0 && (
+        <div className="flex items-center gap-2 px-4 py-1.5 bg-slate-50 border-b border-slate-200 text-xs shrink-0">
+          <button
+            onClick={() => undo()}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white border border-slate-300 text-slate-700 font-medium hover:bg-slate-100"
+            title="ย้อนกลับ (Ctrl+Z)"
+          >
+            ↩ ย้อนกลับ
+          </button>
+          <span className="text-slate-400">
+            {undoStack[undoStack.length - 1].label} · ย้อนได้ {undoStack.length} ขั้น (Ctrl+Z)
+          </span>
+        </div>
+      )}
+
       {/* Validation alert */}
       {validAlert && (
         <div className="flex items-center gap-2 px-4 py-2 bg-red-50 border-b border-red-200 text-red-700 text-sm shrink-0">

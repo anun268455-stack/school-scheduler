@@ -6,7 +6,16 @@ import type {
 } from "../types";
 import { DEFAULT_PERIODS } from "../types";
 import { buildImpactMap } from "../utils/conflictAnalyzer";
+import { buildSharesStudents } from "../utils/groupHierarchy";
 import * as api from "../api/client";
+
+// One reversible change to a slot, used by the undo stack.
+interface SlotPatch {
+  slotId:  number;
+  day?:    number;
+  period?: number;
+  room_id?: number | null;
+}
 
 interface TimetableStore {
   // ── Master data ────────────────────────────────────────────────────────────
@@ -57,6 +66,9 @@ interface TimetableStore {
 
   moveSlot:    (slotId: number, newDay: number, newPeriod: number) => Promise<void>;
   swapRoom:    (slotId: number, newRoomId: number) => Promise<void>;
+  applySwapRoute: (route: import("../utils/swapPlanner").SwapRoute) => Promise<void>;
+  undoStack:   { label: string; patches: SlotPatch[] }[];
+  undo:        () => Promise<void>;
   toggleLock:  (slotId: number) => Promise<void>;
   deleteSlot:  (slotId: number) => Promise<void>;
   lockAll:     () => Promise<void>;
@@ -91,6 +103,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   preLockMode:       false,
   draggingSlot:      null,
   impactMap:         new Map(),
+  undoStack:         [],
   tooltipText:       null,
 
   schoolConfig: {
@@ -135,8 +148,9 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
 
   // ── DnD ─────────────────────────────────────────────────────────────────
   startDrag: (slot) => {
-    const { slots, periods } = get();
-    const map = buildImpactMap(slot, slots, periods);
+    const { slots, periods, groups } = get();
+    const shares = buildSharesStudents(groups);
+    const map = buildImpactMap(slot, slots, periods, 5, shares);
     set({ draggingSlot: slot, impactMap: map });
   },
 
@@ -163,6 +177,15 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       });
 
     set({ slots: patchSlots(slots) });
+    // Record inverse for undo (move parallel siblings back too).
+    const affected = slots.filter((s) =>
+      s.id === slotId ||
+      (slot.parallel_group_key && s.parallel_group_key === slot.parallel_group_key &&
+       s.day === slot.day && s.period === slot.period));
+    set((st) => ({ undoStack: [...st.undoStack, {
+      label: "ย้ายคาบ",
+      patches: affected.map((s) => ({ slotId: s.id, day: s.day, period: s.period })),
+    }].slice(-25) }));
     try {
       await api.updateSlot(slotId, { day: newDay, period: newPeriod });
     } catch {
@@ -181,10 +204,114 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         ? { ...s, room_id: newRoomId, room_name: room.name, room_type: room.type }
         : s)),
     });
+    set((st) => ({ undoStack: [...st.undoStack, {
+      label: "เปลี่ยนห้อง",
+      patches: [{ slotId, room_id: slot.room_id ?? null }],
+    }].slice(-25) }));
     try {
       await api.updateSlot(slotId, { room_id: newRoomId });
     } catch {
       set({ slots }); // revert
+    }
+  },
+
+  // Apply a full replacement route (chain of moves / room changes / deletes).
+  // Each step is applied both optimistically (local state) and to the backend.
+  applySwapRoute: async (route) => {
+    const { rooms, slots } = get();
+    const roomName = (id: number | null) => (id == null ? null : rooms.find((r) => r.id === id)?.name ?? null);
+    const roomType = (id: number | null) => (id == null ? null : rooms.find((r) => r.id === id)?.type ?? null);
+
+    // Record undo only for non-destructive routes (deletes can't be restored).
+    const hasDelete = route.steps.some((s) => s.action === "delete");
+    if (!hasDelete) {
+      const patches: SlotPatch[] = [];
+      for (const step of route.steps) {
+        const cur = slots.find((s) => s.id === step.slotId);
+        if (cur) patches.push({ slotId: cur.id, day: cur.day, period: cur.period, room_id: cur.room_id ?? null });
+      }
+      if (patches.length) set((st) => ({ undoStack: [...st.undoStack, { label: "แทนที่ตาราง", patches }].slice(-25) }));
+    }
+
+    // 1. Optimistic local update for the whole plan at once.
+    set((state) => {
+      let next = state.slots;
+      for (const step of route.steps) {
+        if (step.action === "delete") {
+          next = next.filter((s) => s.id !== step.slotId);
+        } else {
+          next = next.map((s) =>
+            s.id === step.slotId
+              ? {
+                  ...s,
+                  day: step.toDay,
+                  period: step.toPeriod,
+                  room_id: step.toRoomId,
+                  room_name: roomName(step.toRoomId),
+                  room_type: roomType(step.toRoomId),
+                }
+              : s,
+          );
+        }
+      }
+      return { slots: next };
+    });
+
+    // 2. Persist to backend. On any failure, reload authoritative state.
+    try {
+      for (const step of route.steps) {
+        if (step.action === "delete") {
+          await api.deleteSlot(step.slotId);
+        } else {
+          await api.updateSlot(step.slotId, {
+            day: step.toDay,
+            period: step.toPeriod,
+            room_id: step.toRoomId,
+          });
+        }
+      }
+    } catch {
+      await get().loadSlots();
+    }
+  },
+
+  // Pop the last undoable action and restore the affected slots.
+  undo: async () => {
+    const { undoStack, slots, rooms } = get();
+    if (undoStack.length === 0) return;
+    const entry = undoStack[undoStack.length - 1];
+
+    // Apply the restore locally first.
+    const byId = new Map(entry.patches.map((p) => [p.slotId, p]));
+    set({
+      slots: slots.map((s) => {
+        const p = byId.get(s.id);
+        if (!p) return s;
+        const next = { ...s };
+        if (p.day !== undefined) next.day = p.day;
+        if (p.period !== undefined) next.period = p.period;
+        if (p.room_id !== undefined) {
+          next.room_id = p.room_id;
+          const r = rooms.find((x) => x.id === p.room_id);
+          next.room_name = r?.name ?? null;
+          next.room_type = r?.type ?? null;
+        }
+        return next;
+      }),
+      undoStack: undoStack.slice(0, -1),
+    });
+
+    // Persist each restore to the backend.
+    try {
+      for (const p of entry.patches) {
+        const body: Record<string, unknown> = {};
+        if (p.day !== undefined) body.day = p.day;
+        if (p.period !== undefined) body.period = p.period;
+        if (p.room_id !== undefined) body.room_id = p.room_id;
+        await api.updateSlot(p.slotId, body);
+      }
+    } catch {
+      await get().loadSlots();
     }
   },
 
