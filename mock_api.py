@@ -88,13 +88,13 @@ GROUPS: list[dict[str, Any]] = [
 ]
 
 TEACHERS: list[dict[str, Any]] = [
-    {"id":1,"name":"ครูสมชาย ใจดี",     "fixed_room_id":1, "department_id":1,"outdoor_score":3, "max_slots_per_day":6,"max_outdoor_per_week":1},
-    {"id":2,"name":"ครูสมหญิง ขยัน",     "fixed_room_id":2, "department_id":3,"outdoor_score":4, "max_slots_per_day":5,"max_outdoor_per_week":2},
-    {"id":3,"name":"ครูวิทยา ฉลาด",      "fixed_room_id":5, "department_id":2,"outdoor_score":6, "max_slots_per_day":6,"max_outdoor_per_week":2},
-    {"id":4,"name":"ครูพลศึกษา แข็งแรง", "fixed_room_id":None,"department_id":6,"outdoor_score":10,"max_slots_per_day":8,"max_outdoor_per_week":10},
-    {"id":5,"name":"ครูคอมพ์ เก่ง",      "fixed_room_id":6, "department_id":7,"outdoor_score":2, "max_slots_per_day":6,"max_outdoor_per_week":0},
-    {"id":6,"name":"ครูภาษาไทย ดี",      "fixed_room_id":3, "department_id":4,"outdoor_score":5, "max_slots_per_day":6,"max_outdoor_per_week":1},
-    {"id":7,"name":"ครูพลศึกษา มั่นคง",  "fixed_room_id":None,"department_id":6,"outdoor_score":9,"max_slots_per_day":8,"max_outdoor_per_week":10},
+    {"id":1,"name":"ครูสมชาย ใจดี",     "code":"T001", "fixed_room_id":1, "department_id":1,"outdoor_score":3, "max_slots_per_day":6,"max_outdoor_per_week":1},
+    {"id":2,"name":"ครูสมหญิง ขยัน",     "code":"T002", "fixed_room_id":2, "department_id":3,"outdoor_score":4, "max_slots_per_day":5,"max_outdoor_per_week":2},
+    {"id":3,"name":"ครูวิทยา ฉลาด",      "code":"T003", "fixed_room_id":5, "department_id":2,"outdoor_score":6, "max_slots_per_day":6,"max_outdoor_per_week":2},
+    {"id":4,"name":"ครูพลศึกษา แข็งแรง", "code":"T004", "fixed_room_id":None,"department_id":6,"outdoor_score":10,"max_slots_per_day":8,"max_outdoor_per_week":10},
+    {"id":5,"name":"ครูคอมพ์ เก่ง",      "code":"T005", "fixed_room_id":6, "department_id":7,"outdoor_score":2, "max_slots_per_day":6,"max_outdoor_per_week":0},
+    {"id":6,"name":"ครูภาษาไทย ดี",      "code":"T006", "fixed_room_id":3, "department_id":4,"outdoor_score":5, "max_slots_per_day":6,"max_outdoor_per_week":1},
+    {"id":7,"name":"ครูพลศึกษา มั่นคง",  "code":"T007", "fixed_room_id":None,"department_id":6,"outdoor_score":9,"max_slots_per_day":8,"max_outdoor_per_week":10},
 ]
 
 SUBJECTS: list[dict[str, Any]] = [
@@ -103,8 +103,8 @@ SUBJECTS: list[dict[str, Any]] = [
     {"id":3,"code":"ENG101", "name":"ภาษาอังกฤษ", "type":"common",  "duration":1,"department_id":3,"is_activity":False},
     {"id":4,"code":"THAI101","name":"ภาษาไทย",     "type":"common",  "duration":1,"department_id":4,"is_activity":False},
     {"id":5,"code":"SOC101", "name":"สังคมศึกษา", "type":"common",  "duration":1,"department_id":5,"is_activity":False},
-    {"id":6,"code":"PE101",  "name":"พลศึกษา",     "type":"parallel","duration":2,"department_id":6,"is_activity":False},
-    {"id":7,"code":"COM101", "name":"คอมพิวเตอร์", "type":"parallel","duration":1,"department_id":7,"is_activity":False},
+    {"id":6,"code":"PE101",  "name":"พลศึกษา",     "type":"parallel","duration":2,"department_id":6,"is_activity":False,"fixed_room_id":8},
+    {"id":7,"code":"COM101", "name":"คอมพิวเตอร์", "type":"parallel","duration":1,"department_id":7,"is_activity":False,"fixed_room_id":6},
     {"id":8,"code":"ART101", "name":"ศิลปะ",        "type":"common",  "duration":1,"department_id":8,"is_activity":False},
     {"id":9,"code":"ACT001", "name":"ชุมนุม",       "type":"common",  "duration":1,"department_id":None,"is_activity":True},
     {"id":10,"code":"ACT002","name":"ลูกเสือ/ยุวกาชาด","type":"common","duration":1,"department_id":None,"is_activity":True},
@@ -269,6 +269,15 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if r.get("specialized_dept_id") and r["specialized_dept_id"] != t_dept:
                 return False
             return True
+
+        # 1. ห้องประจำวิชา — a room tied to the subject itself (gym, computer
+        #    lab, music room). This outranks the class's homeroom: the students
+        #    walk to the facility the subject needs.
+        subj_room = subj.get("fixed_room_id")
+        if subj_room and (subj_room, day, period) not in room_busy:
+            r = r_map.get(subj_room)
+            if r:
+                return subj_room, r["name"], r["type"]
 
         # 2. Stay in the group's homeroom for ordinary subjects.
         if home and not needs_special and (home, day, period) not in room_busy:
@@ -596,8 +605,14 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         size = grp.get("size", 40)
         wants_outdoor = subj.get("department_id") in dep_out
         t_dept = teacher.get("department_id")
+        subj_room = subj.get("fixed_room_id")
         out = []
         for r in ROOMS:
+            # The subject's own designated room is always allowed — the school
+            # chose it deliberately, so capacity/type rules don't exclude it.
+            if subj_room and r["id"] == subj_room:
+                out.append(r)
+                continue
             if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != occ["teacher_id"]:
                 continue
             if r.get("specialized_dept_id") and r["specialized_dept_id"] != t_dept:
@@ -627,6 +642,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         fixed = t_map.get(occ["teacher_id"], {}).get("fixed_room_id")
         subj = s_map.get(occ["subject_id"], {})
         wants_outdoor = subj.get("department_id") in dep_out
+        subj_room = subj.get("fixed_room_id")   # ห้องประจำวิชา
 
         occ_start_list = []
         for (d, p) in starts:
@@ -652,8 +668,13 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                 rlist.append(rv)
                 for cd, cp_ in cells:
                     room_occ[(r["id"], cd, cp_)].append(rv)
-                # walking penalties: prefer homeroom (students) then fixed room (teacher)
-                if not wants_outdoor:
+                # Walking penalties, strongest first.
+                if subj_room:
+                    # ห้องประจำวิชา wins over the class's homeroom — the subject
+                    # needs that facility, so anything else is heavily penalised.
+                    if r["id"] != subj_room:
+                        penalty_terms.append((60, rv))
+                elif not wants_outdoor:
                     if homeroom and r["id"] != homeroom:
                         penalty_terms.append((5, rv))      # student leaves homeroom
                     if fixed and r["id"] != fixed and not homeroom:
@@ -972,6 +993,7 @@ def bulk_create_teachers(body: list[dict[str, Any]]):
     created = []
     for row in body:
         row["id"] = _next("teacher")
+        row.setdefault("code", None)
         row.setdefault("fixed_room_id", None)
         row.setdefault("outdoor_score", 5)
         row.setdefault("max_slots_per_day", 6)
@@ -1012,6 +1034,7 @@ def bulk_create_subjects(body: list[dict[str, Any]]):
         row["id"] = _next("subject")
         row.setdefault("type", "common")
         row.setdefault("duration", 1)
+        row.setdefault("fixed_room_id", None)
         SUBJECTS.append(row)
         created.append(row)
     return created

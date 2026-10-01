@@ -1,25 +1,45 @@
 /**
- * PrintView v4 — Pixel-perfect replica of Thai school timetable format.
- * Matches the reference layout: header + period row + time row + day rows + signature footer.
- * Supports: group view (ตารางเรียน) and teacher view (ตารางสอน).
+ * PrintView v5 — Thai school timetable, printable on A4.
+ *
+ * Paper: A4 **portrait**, with an option to fit **two timetables per sheet**
+ * (the default) so a whole school costs half the paper. One-per-sheet is still
+ * available when the grid needs the room.
+ *
+ * What gets printed is chosen by the caller through `options`: class timetables
+ * or teacher timetables, which ones, and in what order (by name, by กลุ่มสาระ,
+ * or by teacher code). Teacher sheets carry the teacher's code in the header.
  */
 import React, { forwardRef } from "react";
-import type { Period, SchoolConfig, StudentGroup, Teacher, TimetableSlot } from "../../types";
+import type { Department, Period, SchoolConfig, StudentGroup, Teacher, TimetableSlot } from "../../types";
 import { DAYS } from "../../types";
-import { buildSharesStudents } from "../../utils/groupHierarchy";
+import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
+
+export type PrintMode = "group" | "teacher";
+export type PrintSort = "name" | "department" | "code";
+
+export interface PrintOptions {
+  mode:        PrintMode;
+  /** Which classes / teachers to print. Empty array = every one of them. */
+  selectedIds: number[];
+  sort:        PrintSort;
+  perPage:     1 | 2;
+}
+
+export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
+  mode: "group", selectedIds: [], sort: "name", perPage: 2,
+};
 
 interface PrintViewProps {
-  slots:         TimetableSlot[];
-  groups:        StudentGroup[];
-  teachers?:     Teacher[];
-  periods:       Period[];
-  schoolConfig:  SchoolConfig;
-  filterGroupId:   number | null;
-  filterTeacherId?: number | null;
+  slots:        TimetableSlot[];
+  groups:       StudentGroup[];
+  teachers?:    Teacher[];
+  departments?: Department[];
+  periods:      Period[];
+  schoolConfig: SchoolConfig;
+  options:      PrintOptions;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
 function buildGrid(slots: TimetableSlot[]) {
   const map = new Map<string, TimetableSlot[]>();
   for (const s of slots) {
@@ -30,119 +50,95 @@ function buildGrid(slots: TimetableSlot[]) {
   return map;
 }
 
-/** Deduplicate period_num and sort — produces one column per unique period_num */
+/** One column per unique period_num, in order. */
 function getDisplayPeriods(periods: Period[]) {
   const seen = new Map<number, Period>();
-  for (const p of periods) {
-    if (!seen.has(p.period_num)) seen.set(p.period_num, p);
-  }
-  return Array.from(seen.values()).sort((a, b) => a.period_num - b.period_num);
+  for (const p of periods) if (!seen.has(p.period_num)) seen.set(p.period_num, p);
+  return [...seen.values()].sort((a, b) => a.period_num - b.period_num);
 }
 
-// ── Styles (inline for print-safe rendering) ─────────────────────────────────
-const TH: React.CSSProperties = {
+// ── Sizing: compact when two timetables share a sheet ────────────────────────
+interface Metrics {
+  headFont: string; timeFont: string; cellFont: string; subFont: string;
+  rowH: string; pad: string; titleFont: string; subtitleFont: string; logo: number;
+}
+
+const METRICS: Record<1 | 2, Metrics> = {
+  1: { headFont: "9pt", timeFont: "7pt", cellFont: "8pt", subFont: "7pt",
+       rowH: "15mm", pad: "2px 3px", titleFont: "13pt", subtitleFont: "10pt", logo: 42 },
+  2: { headFont: "7pt", timeFont: "5.5pt", cellFont: "6.5pt", subFont: "5.5pt",
+       rowH: "9.2mm", pad: "1px 2px", titleFont: "10pt", subtitleFont: "8pt", logo: 28 },
+};
+
+const borderCell = (m: Metrics): React.CSSProperties => ({
   border: "1px solid #000",
-  padding: "3px 4px",
+  padding: m.pad,
   textAlign: "center",
   verticalAlign: "middle",
-  fontSize: "8.5pt",
-  fontWeight: 700,
-  backgroundColor: "#fff",
-};
+});
 
-const TD: React.CSSProperties = {
-  border: "1px solid #000",
-  padding: "3px 4px",
-  textAlign: "center",
-  verticalAlign: "middle",
-  fontSize: "8.5pt",
-  minHeight: "52px",
-  height: "52px",
-};
-
-const BREAK_TH: React.CSSProperties = {
-  ...TH,
-  backgroundColor: "#e5e7eb",
-  fontSize: "7.5pt",
-  width: "32px",
-};
-
-const BREAK_TD: React.CSSProperties = {
-  ...TD,
-  backgroundColor: "#f3f4f6",
-  width: "32px",
-};
-
-// ── Single timetable page ─────────────────────────────────────────────────────
-interface PageProps {
-  title:     string;       // e.g. "ตารางสอน 001  นายสมชาย ใจดี"
-  subtitle:  string;       // e.g. "ภาคเรียนที่ 1/2568  โรงเรียนราชวินิต นนทบุรี"
-  grid:      Map<string, TimetableSlot[]>;
-  periods:   Period[];
+// ── One timetable block (header + grid + signatures) ─────────────────────────
+interface BlockProps {
+  title:    string;
+  subtitle: string;
+  grid:     Map<string, TimetableSlot[]>;
+  periods:  Period[];
   schoolConfig: SchoolConfig;
-  /** How to render a slot cell */
-  renderCell: (slots: TimetableSlot[], period: Period) => React.ReactNode;
+  metrics:  Metrics;
+  compact:  boolean;
+  renderCell: (slots: TimetableSlot[]) => React.ReactNode;
 }
 
-const TimetablePage: React.FC<PageProps> = ({ title, subtitle, grid, periods, schoolConfig, renderCell }) => {
+const TimetableBlock: React.FC<BlockProps> = ({
+  title, subtitle, grid, periods, schoolConfig, metrics: m, compact, renderCell,
+}) => {
   const cols = getDisplayPeriods(periods);
+  const TH: React.CSSProperties = { ...borderCell(m), fontSize: m.headFont, fontWeight: 700, backgroundColor: "#fff" };
+  const TD: React.CSSProperties = { ...borderCell(m), fontSize: m.cellFont, height: m.rowH };
+  const BREAK_TH: React.CSSProperties = { ...TH, backgroundColor: "#e5e7eb", fontSize: m.timeFont };
+  const BREAK_TD: React.CSSProperties = { ...TD, backgroundColor: "#f3f4f6" };
 
   return (
-    <div
-      className="print-page"
-      style={{
-        fontFamily: "'Sarabun', 'TH Sarabun New', 'Arial', sans-serif",
-        width: "100%",
-        pageBreakAfter: "always",
-        pageBreakInside: "avoid",
-      }}
-    >
-      {/* ── Header ─────────────────────────────────────────────────────── */}
-      <div style={{ marginBottom: "6px", display: "flex", alignItems: "center", gap: "10px" }}>
-        {/* Logo placeholder */}
+    <div className="tt-block" style={{ breakInside: "avoid", pageBreakInside: "avoid" }}>
+      {/* Header */}
+      <div style={{ marginBottom: "3px", display: "flex", alignItems: "center", gap: "8px" }}>
         <div style={{
-          width: 48, height: 48, border: "1px solid #ccc", borderRadius: "50%",
+          width: m.logo, height: m.logo, border: "1px solid #ccc", borderRadius: "50%",
           display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: "18pt", flexShrink: 0,
+          fontSize: compact ? "12pt" : "16pt", flexShrink: 0,
         }}>🏫</div>
         <div style={{ flex: 1, textAlign: "center" }}>
-          <div style={{ fontSize: "12pt", fontWeight: 700, lineHeight: 1.4 }}>
-            {title}
-          </div>
-          <div style={{ fontSize: "10pt", fontWeight: 600, lineHeight: 1.4 }}>
-            {subtitle}
-          </div>
+          <div style={{ fontSize: m.titleFont, fontWeight: 700, lineHeight: 1.3 }}>{title}</div>
+          <div style={{ fontSize: m.subtitleFont, fontWeight: 600, lineHeight: 1.3 }}>{subtitle}</div>
         </div>
+        <div style={{ width: m.logo, flexShrink: 0 }} />
       </div>
 
-      {/* ── Timetable table ────────────────────────────────────────────── */}
+      {/* Grid */}
       <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
         <colgroup>
-          <col style={{ width: "50px" }} />
+          <col style={{ width: compact ? "34px" : "46px" }} />
           {cols.map((p) =>
             p.type !== "class"
-              ? <col key={p.period_num} style={{ width: "32px" }} />
-              : <col key={p.period_num} />
-          )}
+              ? <col key={p.period_num} style={{ width: compact ? "16px" : "26px" }} />
+              : <col key={p.period_num} />)}
         </colgroup>
 
         <thead>
-          {/* Row 1: คาบที่ */}
           <tr>
-            <th style={{ ...TH, fontSize: "9pt" }}>คาบที่</th>
+            <th style={TH}>คาบที่</th>
             {cols.map((p) => (
               <th key={p.period_num} style={p.type !== "class" ? BREAK_TH : TH}>
-                {p.type !== "class" ? "พัก" : String(p.period_num)}
+                {p.type !== "class" ? "พัก" : p.label.replace(/^คาบ\s*/, "")}
               </th>
             ))}
           </tr>
-
-          {/* Row 2: เวลา */}
           <tr>
-            <th style={{ ...TH, fontSize: "7.5pt" }}>เวลา</th>
+            <th style={{ ...TH, fontSize: m.timeFont, fontWeight: 400 }}>เวลา</th>
             {cols.map((p) => (
-              <th key={p.period_num} style={{ ...(p.type !== "class" ? BREAK_TH : TH), fontSize: "7pt", fontWeight: 400 }}>
-                {p.start_time}–{p.end_time}
+              <th key={p.period_num}
+                  style={{ ...(p.type !== "class" ? BREAK_TH : TH), fontSize: m.timeFont, fontWeight: 400 }}>
+                {p.type !== "class" ? "" : `${p.start_time}–${p.end_time}`}
               </th>
             ))}
           </tr>
@@ -151,29 +147,14 @@ const TimetablePage: React.FC<PageProps> = ({ title, subtitle, grid, periods, sc
         <tbody>
           {DAYS.map((dayName, dayIdx) => (
             <tr key={dayIdx}>
-              {/* Day label */}
-              <td style={{
-                ...TD,
-                fontWeight: 700,
-                fontSize: "9.5pt",
-                backgroundColor: "#f9fafb",
-                width: "50px",
-              }}>
-                {dayName}
+              <td style={{ ...TD, fontWeight: 700, fontSize: m.headFont, backgroundColor: "#f9fafb" }}>
+                {compact ? dayName.slice(0, 2) : dayName}
               </td>
-
               {cols.map((p) => {
-                if (p.type !== "class") {
-                  return (
-                    <td key={p.period_num} style={BREAK_TD}>
-                      <div style={{ fontSize: "6.5pt", color: "#6b7280", writingMode: "vertical-rl" }}>พัก</div>
-                    </td>
-                  );
-                }
-                const cellSlots = grid.get(`${dayIdx}-${p.period_num}`) ?? [];
+                if (p.type !== "class") return <td key={p.period_num} style={BREAK_TD} />;
                 return (
                   <td key={p.period_num} style={TD}>
-                    {renderCell(cellSlots, p)}
+                    {renderCell(grid.get(`${dayIdx}-${p.period_num}`) ?? [])}
                   </td>
                 );
               })}
@@ -182,154 +163,160 @@ const TimetablePage: React.FC<PageProps> = ({ title, subtitle, grid, periods, sc
         </tbody>
       </table>
 
-      {/* ── Footer signatures ──────────────────────────────────────────── */}
+      {/* Signatures */}
       <div style={{
-        marginTop: "12px",
-        display: "flex",
-        justifyContent: "space-between",
-        fontSize: "9pt",
+        marginTop: compact ? "4px" : "10px",
+        display: "flex", justifyContent: "space-between",
+        fontSize: compact ? "6.5pt" : "9pt",
       }}>
-        <div style={{ textAlign: "center", minWidth: "220px" }}>
+        <div style={{ textAlign: "center", minWidth: "40%" }}>
           <div>ลงชื่อ................................</div>
-          <div style={{ marginTop: "2px" }}>รองผู้อำนวยการกลุ่มบริหารวิชาการ</div>
+          <div>รองผู้อำนวยการกลุ่มบริหารวิชาการ</div>
         </div>
-        <div style={{ textAlign: "center", minWidth: "220px" }}>
+        <div style={{ textAlign: "center", minWidth: "40%" }}>
           <div>ลงชื่อ................................</div>
-          <div style={{ marginTop: "2px" }}>
-            {schoolConfig.directorName ? `(${schoolConfig.directorName})` : "ผู้อำนวยการโรงเรียน"}
-          </div>
+          <div>{schoolConfig.directorName ? `(${schoolConfig.directorName})` : "ผู้อำนวยการโรงเรียน"}</div>
         </div>
       </div>
     </div>
   );
 };
 
-// ── Cell renderers ────────────────────────────────────────────────────────────
+// ── Cell renderers ───────────────────────────────────────────────────────────
+const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.25, fontSize: m.cellFont });
 
-/** Group timetable cell: subject code / teacher / room */
-function GroupCell({ slots }: { slots: TimetableSlot[] }) {
+function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
   if (slots.length === 0) return null;
   if (slots.length === 1) {
     const s = slots[0];
     return (
-      <div style={{ lineHeight: 1.45, fontSize: "8pt" }}>
+      <div style={cellText(m)}>
         <div style={{ fontWeight: 700 }}>{s.subject_code ?? s.subject_name ?? ""}</div>
-        <div style={{ fontSize: "7.5pt" }}>{s.teacher_name ?? ""}</div>
-        <div style={{ fontSize: "7pt", color: "#555" }}>{s.room_name ?? ""}</div>
+        <div style={{ fontSize: m.subFont }}>{s.teacher_name ?? ""}</div>
+        <div style={{ fontSize: m.subFont, color: "#555" }}>{s.room_name ?? ""}</div>
       </div>
     );
   }
-  // Parallel: show multiple
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
       {slots.map((s) => (
-        <div key={s.id} style={{ lineHeight: 1.3, fontSize: "7pt", borderBottom: "1px dotted #ccc", paddingBottom: "1px" }}>
-          <div style={{ fontWeight: 700 }}>{s.subject_code ?? ""}</div>
-          <div>{s.group_name ?? ""}</div>
-          <div style={{ color: "#555" }}>{s.room_name ?? ""}</div>
+        <div key={s.id} style={{ fontSize: m.subFont, lineHeight: 1.2, borderBottom: "1px dotted #ccc" }}>
+          <span style={{ fontWeight: 700 }}>{s.subject_code ?? ""}</span>{" "}
+          <span>{s.group_name ?? ""}</span>{" "}
+          <span style={{ color: "#555" }}>{s.room_name ?? ""}</span>
         </div>
       ))}
     </div>
   );
 }
 
-/** Teacher timetable cell: subject code / group / room — matches reference image exactly */
-function TeacherCell({ slots }: { slots: TimetableSlot[] }) {
+function TeacherCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
   if (slots.length === 0) return null;
   const s = slots[0];
   return (
-    <div style={{ lineHeight: 1.5, fontSize: "8.5pt" }}>
+    <div style={cellText(m)}>
       <div style={{ fontWeight: 700 }}>{s.subject_code ?? s.subject_name ?? ""}</div>
-      <div style={{ fontSize: "8pt" }}>{s.group_name ?? ""}</div>
-      <div style={{ fontSize: "7.5pt", color: "#444" }}>{s.room_name ?? ""}</div>
+      <div style={{ fontSize: m.subFont }}>{s.group_name ?? ""}</div>
+      <div style={{ fontSize: m.subFont, color: "#555" }}>{s.room_name ?? ""}</div>
     </div>
   );
 }
 
-// ── Main export ───────────────────────────────────────────────────────────────
+// ── Main export ──────────────────────────────────────────────────────────────
 export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
-  ({ slots, groups, teachers = [], periods, schoolConfig, filterGroupId, filterTeacherId }, ref) => {
-
+  ({ slots, groups, teachers = [], departments = [], periods, schoolConfig, options }, ref) => {
     const termLabel = `ภาคเรียนที่ ${schoolConfig.term}/${schoolConfig.year}  โรงเรียน${schoolConfig.schoolName}`;
+    const m = METRICS[options.perPage];
+    const compact = options.perPage === 2;
+    const pick = new Set(options.selectedIds);
 
-    // Determine which pages to render
-    const pages: React.ReactNode[] = [];
+    // Build one block per class / teacher, in the requested order.
+    const blocks: React.ReactNode[] = [];
 
-    if (filterTeacherId != null) {
-      // ── Teacher view: one page per teacher (or filtered teacher) ──────
-      const teachersToRender = filterTeacherId
-        ? teachers.filter((t) => t.id === filterTeacherId)
-        : teachers;
+    if (options.mode === "teacher") {
+      const deptName = (id: number | null | undefined) =>
+        departments.find((d) => d.id === id)?.name ?? "";
+      const list = teachers
+        .filter((t) => pick.size === 0 || pick.has(t.id))
+        .sort((a, b) => {
+          if (options.sort === "code") return (a.code ?? "").localeCompare(b.code ?? "") || a.name.localeCompare(b.name);
+          if (options.sort === "department") return deptName(a.department_id).localeCompare(deptName(b.department_id)) || a.name.localeCompare(b.name);
+          return a.name.localeCompare(b.name);
+        });
 
-      teachersToRender.forEach((teacher, idx) => {
-        const teacherSlots = slots.filter((s) => s.teacher_id === teacher.id);
-        const grid = buildGrid(teacherSlots);
-        pages.push(
-          <TimetablePage
+      list.forEach((teacher, idx) => {
+        const grid = buildGrid(slots.filter((s) => s.teacher_id === teacher.id));
+        const codePart = teacher.code ? `รหัส ${teacher.code}  ` : "";
+        blocks.push(
+          <TimetableBlock
             key={`t-${teacher.id}`}
-            title={`ตารางสอน ${String(idx + 1).padStart(3, "0")}  ${teacher.name}`}
-            subtitle={termLabel}
-            grid={grid}
-            periods={periods}
-            schoolConfig={schoolConfig}
-            renderCell={(cellSlots) => <TeacherCell slots={cellSlots} />}
-          />
+            title={`ตารางสอน ${String(idx + 1).padStart(3, "0")}  ${codePart}${teacher.name}`}
+            subtitle={`${termLabel}${deptName(teacher.department_id) ? `  ·  ${deptName(teacher.department_id)}` : ""}`}
+            grid={grid} periods={periods} schoolConfig={schoolConfig}
+            metrics={m} compact={compact}
+            renderCell={(cs) => <TeacherCell slots={cs} m={m} />}
+          />,
         );
       });
     } else {
-      // ── Group view: one page per group ─────────────────────────────────
-      // Subgroup schools: a printed sheet must include the group's own lessons
-      // AND its student-sharing relatives (parent whole-class lessons, and for a
-      // parent, its subgroups' split lessons). Siblings are excluded.
+      // A class sheet shows its own lessons plus any shared with parent/subgroups.
       const shares = buildSharesStudents(groups);
-      const flat = groups.flatMap((g) => [g, ...(g.children ?? [])]);
-      const groupsToRender = filterGroupId != null
-        ? flat.filter((g) => g.id === filterGroupId)
-        : flat; // every class + subgroup gets its own complete sheet
+      const flat = flattenGroups(groups);
+      const list = flat
+        .filter((g) => pick.size === 0 || pick.has(g.id))
+        .sort((a, b) => (a.level ?? "").localeCompare(b.level ?? "") || a.name.localeCompare(b.name));
 
-      groupsToRender.forEach((group, idx) => {
-        const groupSlots = slots.filter((s) => shares(s.group_id, group.id));
-        const grid = buildGrid(groupSlots);
-        pages.push(
-          <TimetablePage
+      list.forEach((group, idx) => {
+        const grid = buildGrid(slots.filter((s) => shares(s.group_id, group.id)));
+        blocks.push(
+          <TimetableBlock
             key={`g-${group.id}`}
             title={`ตารางเรียน ${String(idx + 1).padStart(3, "0")}  ห้อง ${group.name}`}
             subtitle={termLabel}
-            grid={grid}
-            periods={periods}
-            schoolConfig={schoolConfig}
-            renderCell={(cellSlots) => <GroupCell slots={cellSlots} />}
-          />
+            grid={grid} periods={periods} schoolConfig={schoolConfig}
+            metrics={m} compact={compact}
+            renderCell={(cs) => <GroupCell slots={cs} m={m} />}
+          />,
         );
       });
+    }
+
+    // Pack the blocks onto sheets.
+    const sheets: React.ReactNode[][] = [];
+    for (let i = 0; i < blocks.length; i += options.perPage) {
+      sheets.push(blocks.slice(i, i + options.perPage));
     }
 
     return (
       <div ref={ref} className="print-wrapper">
         <style>{`
           @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
-
+          .print-wrapper { font-family: 'Sarabun','TH Sarabun New',Arial,sans-serif; }
+          .print-page { width: 190mm; }
+          .tt-block + .tt-block { margin-top: 6mm; padding-top: 4mm; border-top: 1px dashed #bbb; }
           @media print {
             body > *:not(.print-wrapper) { display: none !important; }
             .no-print { display: none !important; }
             .print-wrapper { display: block !important; }
-            @page { size: A4 landscape; margin: 8mm 10mm; }
-            .print-page { page-break-after: always; page-break-inside: avoid; }
-            .print-page:last-child { page-break-after: auto; }
+            @page { size: A4 portrait; margin: 8mm 10mm; }
+            .print-page { page-break-after: always; break-after: page; page-break-inside: avoid; width: auto; }
+            .print-page:last-child { page-break-after: auto; break-after: auto; }
           }
-          @media screen {
-            .print-wrapper { display: none; }
-          }
+          @media screen { .print-wrapper { display: none; } }
         `}</style>
 
-        {pages.length > 0 ? pages : (
-          <div className="print-page" style={{ padding: "20mm", fontFamily: "Sarabun, sans-serif" }}>
-            <p>ยังไม่มีข้อมูลตาราง</p>
+        {sheets.length > 0 ? (
+          sheets.map((sheet, i) => (
+            <div key={i} className="print-page">{sheet}</div>
+          ))
+        ) : (
+          <div className="print-page" style={{ padding: "20mm" }}>
+            <p>ไม่มีตารางที่ตรงกับตัวเลือกการพิมพ์</p>
           </div>
         )}
       </div>
     );
-  }
+  },
 );
 
 PrintView.displayName = "PrintView";

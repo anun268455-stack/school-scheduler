@@ -3,7 +3,7 @@
  */
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { TopNavbar }     from "./components/layout/TopNavbar";
-import { PrintView }     from "./components/print/PrintView";
+import { PrintView, DEFAULT_PRINT_OPTIONS, type PrintOptions } from "./components/print/PrintView";
 import { TimetableGrid } from "./components/timetable/TimetableGrid";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useTimetableStore } from "./store/timetableStore";
@@ -17,9 +17,10 @@ const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","requirem
 export default function App() {
   const [page, setPage] = useState<Page>("timetable");
   const {
-    loadAll, slots, groups, teachers, periods, schoolConfig,
-    selectedGroupId, selectedTeacherId, startLiveSync, stopLiveSync,
+    loadAll, slots, groups, teachers, departments, periods, schoolConfig,
+    startLiveSync, stopLiveSync,
   } = useTimetableStore();
+  const [printOptions, setPrintOptions] = useState<PrintOptions>(DEFAULT_PRINT_OPTIONS);
   const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -36,6 +37,8 @@ export default function App() {
         printRef={printRef}
         onCrudNav={(p) => setPage(p as Page)}
         currentPage={page}
+        printOptions={printOptions}
+        onPrintOptionsChange={setPrintOptions}
       />
 
       <main className="flex-1 overflow-hidden flex flex-col">
@@ -56,16 +59,16 @@ export default function App() {
       </main>
 
       {/* Hidden print target — pixel-perfect format */}
-      <div style={{ position: "fixed", left: "-9999px", top: 0, width: "297mm", zIndex: -1 }}>
+      <div style={{ position: "fixed", left: "-9999px", top: 0, width: "210mm", zIndex: -1 }}>
         <PrintView
           ref={printRef}
           slots={slots}
           groups={groups}
           teachers={teachers}
+          departments={departments}
           periods={periods}
           schoolConfig={schoolConfig}
-          filterGroupId={selectedGroupId}
-          filterTeacherId={selectedTeacherId}
+          options={printOptions}
         />
       </div>
     </div>

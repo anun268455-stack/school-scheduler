@@ -14,6 +14,7 @@ import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { flattenGroups } from "../../utils/groupHierarchy";
+import { SearchableSelect, teacherOptions } from "../common/SearchableSelect";
 import type { Subject } from "../../types";
 
 interface SubjectAssignModalProps {
@@ -274,10 +275,8 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
               <div className="flex items-end gap-2">
                 <div className="flex-1 min-w-0">
                   <label className="block text-[11px] text-gray-500 mb-0.5">ตั้งครูหลัก (ใส่ให้ทุกห้องรวดเดียว)</label>
-                  <select className={inputCls} value={defaultTeacher} onChange={(e) => setDefaultTeacher(e.target.value)}>
-                    <option value="">– เลือกครู –</option>
-                    {optionsFor(defaultTeacher).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                  <SearchableSelect value={defaultTeacher} onChange={setDefaultTeacher}
+                    options={teacherOptions(optionsFor(defaultTeacher))} emptyLabel="– เลือกครู –" />
                 </div>
                 <div style={{ width: 78 }}>
                   <label className="block text-[11px] text-gray-500 mb-0.5">คาบ/สัปดาห์</label>
@@ -300,14 +299,13 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
                   <span className="text-sm text-gray-800 w-20 shrink-0 truncate" title={gName(r.groupId)}>
                     {gName(r.groupId)}
                   </span>
-                  <select
-                    className={clsx(inputCls, "flex-1 min-w-0", !r.teacherId && "border-red-300 bg-red-50")}
+                  <SearchableSelect
+                    className={clsx("flex-1 min-w-0", !r.teacherId && "ring-1 ring-red-300 rounded")}
                     value={r.teacherId}
-                    onChange={(e) => setRow(r.groupId, { teacherId: e.target.value })}
-                  >
-                    <option value="">– เลือกครู –</option>
-                    {optionsFor(r.teacherId).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                    onChange={(v) => setRow(r.groupId, { teacherId: v })}
+                    options={teacherOptions(optionsFor(r.teacherId))}
+                    emptyLabel="– เลือกครู –"
+                  />
                   <input
                     type="number" min={1} max={20} style={{ width: 58 }} className={inputCls}
                     value={r.weekly}

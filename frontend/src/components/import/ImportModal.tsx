@@ -30,7 +30,8 @@ const ENTITY_CONFIGS: Record<EntityType, EntityCfg> = {
     label: "ครู",
     icon: "👨‍🏫",
     cols: [
-      { key: "name",                label: "ชื่อครู",             aliases: ["name","ชื่อ","ชื่อครู"],             required: true,  hint: "ครูสมชาย ใจดี" },
+      { key: "code",                label: "รหัสครู",             aliases: ["code","รหัส","รหัสครู"],              required: false, hint: "เช่น T001" },
+      { key: "name",                label: "ชื่อครู",             aliases: ["teacher_name","ชื่อครู","ชื่อ","name"], required: true,  hint: "ครูสมชาย ใจดี" },
       { key: "department_id",       label: "กลุ่มสาระ",           aliases: ["department","กลุ่มสาระ","สาระ"],      required: false, hint: "ชื่อกลุ่มสาระ เช่น คณิตศาสตร์", resolve: "department" },
       { key: "fixed_room_id",       label: "ห้องประจำครู",        aliases: ["fixed_room","ห้องประจำ","ห้อง"],       required: false, hint: "ชื่อห้อง เช่น ห้อง 101", resolve: "room" },
       { key: "outdoor_score",       label: "คะแนนกลางแจ้ง (0-10)",aliases: ["outdoor_score","outdoor","กลางแจ้ง"], required: false, hint: "5" },
@@ -38,8 +39,8 @@ const ENTITY_CONFIGS: Record<EntityType, EntityCfg> = {
       { key: "max_outdoor_per_week",label: "กลางแจ้งสูงสุด/สัปดาห์",aliases: ["max_outdoor_per_week","max_outdoor"], required: false, hint: "2" },
     ],
     sample: [
-      { name: "ครูสมชาย ใจดี", department_id: "คณิตศาสตร์", fixed_room_id: "ห้อง 101", outdoor_score: 3, max_slots_per_day: 6, max_outdoor_per_week: 1 },
-      { name: "ครูพลศึกษา แข็งแรง", department_id: "พลศึกษา", fixed_room_id: "", outdoor_score: 10, max_slots_per_day: 8, max_outdoor_per_week: 10 },
+      { code: "T001", name: "ครูสมชาย ใจดี", department_id: "คณิตศาสตร์", fixed_room_id: "ห้อง 101", outdoor_score: 3, max_slots_per_day: 6, max_outdoor_per_week: 1 },
+      { code: "T002", name: "ครูพลศึกษา แข็งแรง", department_id: "พลศึกษา", fixed_room_id: "", outdoor_score: 10, max_slots_per_day: 8, max_outdoor_per_week: 10 },
     ],
   },
   rooms: {
@@ -68,10 +69,11 @@ const ENTITY_CONFIGS: Record<EntityType, EntityCfg> = {
       { key: "name",     label: "ชื่อวิชา",   aliases: ["name","ชื่อ","ชื่อวิชา"],                         required: true,  hint: "คณิตศาสตร์" },
       { key: "type",     label: "ประเภท",    aliases: ["type","ประเภท"],                                    required: false, hint: "common / parallel" },
       { key: "duration", label: "จำนวนคาบ", aliases: ["duration","คาบ","จำนวนคาบ"],                      required: false, hint: "1 หรือ 2 (คาบคู่)" },
+      { key: "fixed_room_id", label: "ห้องประจำวิชา", aliases: ["fixed_room","ห้องประจำวิชา","ห้องเรียนประจำ"], required: false, hint: "ชื่อห้อง เช่น สนามกีฬา", resolve: "room" },
     ],
     sample: [
-      { code: "MATH101", name: "คณิตศาสตร์", type: "common", duration: 1 },
-      { code: "PE101", name: "พลศึกษา", type: "parallel", duration: 2 },
+      { code: "MATH101", name: "คณิตศาสตร์", type: "common", duration: 1, fixed_room_id: "" },
+      { code: "PE101", name: "พลศึกษา", type: "parallel", duration: 2, fixed_room_id: "สนามกีฬา" },
     ],
   },
   groups: {

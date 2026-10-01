@@ -16,6 +16,7 @@ import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
+import { SearchableSelect, teacherOptions, roomOptions } from "../common/SearchableSelect";
 import { DAYS, periodLabel, periodTime } from "../../types";
 import type { Subject, SubjectType } from "../../types";
 
@@ -81,14 +82,17 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
     });
   }, [subjects, search, remainingBySubject]);
 
-  // ── Suggested room: the class's homeroom, else the teacher's own room ──────
+  // ── Suggested room, strongest claim first: the subject's own room
+  //    (ห้องประจำวิชา) → the class's homeroom → the teacher's room ───────────
   const suggestedRoomId = useMemo(() => {
+    const subj = subjects.find((x) => x.id === subjectId);
+    if (subj?.fixed_room_id && !busyRoomIds.has(subj.fixed_room_id)) return subj.fixed_room_id;
     const t = teachers.find((x) => x.id === Number(teacherId));
     const home = flat.find((g) => g.id === groupId)?.homeroom_room_id ?? null;
     if (home && !busyRoomIds.has(home)) return home;
     if (t?.fixed_room_id && !busyRoomIds.has(t.fixed_room_id)) return t.fixed_room_id;
     return null;
-  }, [teachers, teacherId, flat, groupId, busyRoomIds]);
+  }, [subjects, subjectId, teachers, teacherId, flat, groupId, busyRoomIds]);
 
   const pickSubject = (s: Subject) => {
     setSubjectId(s.id);
@@ -278,25 +282,25 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
               )}
 
               <Field label="ครูผู้สอน *">
-                <select className={inputCls} value={teacherId} onChange={(e) => setTeacherId(e.target.value)}>
-                  <option value="">เลือกครู</option>
-                  {teachers.map((t) => (
-                    <option key={t.id} value={t.id} disabled={busyTeacherIds.has(t.id)}>
-                      {t.name}{busyTeacherIds.has(t.id) ? " (ติดสอนคาบนี้)" : ""}
-                    </option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  value={teacherId} onChange={setTeacherId} placeholder="เลือกครู"
+                  options={teachers.map((t) => ({
+                    value: String(t.id),
+                    label: busyTeacherIds.has(t.id) ? `${t.name} (ติดสอนคาบนี้)` : t.name,
+                    hint: t.code ?? undefined,
+                    disabled: busyTeacherIds.has(t.id),
+                  }))}
+                />
               </Field>
 
               <Field label="ห้องสอน">
-                <select className={inputCls} value={roomId} onChange={(e) => setRoomId(e.target.value)}>
-                  <option value="">
-                    {suggestedRoomId
-                      ? `แนะนำ: ${rooms.find((r) => r.id === suggestedRoomId)?.name ?? "-"}`
-                      : "– ไม่ระบุห้อง –"}
-                  </option>
-                  {freeRooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                </select>
+                <SearchableSelect
+                  value={roomId} onChange={setRoomId}
+                  options={roomOptions(freeRooms)}
+                  emptyLabel={suggestedRoomId
+                    ? `แนะนำ: ${rooms.find((r) => r.id === suggestedRoomId)?.name ?? "-"}`
+                    : "– ไม่ระบุห้อง –"}
+                />
               </Field>
 
               {/* Conflict feedback */}

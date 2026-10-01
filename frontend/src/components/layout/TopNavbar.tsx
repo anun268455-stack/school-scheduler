@@ -7,10 +7,14 @@ import { useReactToPrint } from "react-to-print";
 
 import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
+import { PrintOptionsModal } from "../print/PrintOptionsModal";
+import type { PrintOptions } from "../print/PrintView";
 import type { ViewMode } from "../../types";
 
 interface TopNavbarProps {
   printRef:    React.RefObject<HTMLDivElement>;
+  printOptions: PrintOptions;
+  onPrintOptionsChange: (o: PrintOptions) => void;
   onCrudNav:   (page: string) => void;
   currentPage: string;
 }
@@ -37,7 +41,7 @@ const CRUD_ITEMS = [
   { id: "help",       icon: "📖", label: "คู่มือการใช้งาน", divider: true  },
 ];
 
-export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, currentPage }) => {
+export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, currentPage, printOptions, onPrintOptionsChange }) => {
   const {
     viewMode, setViewMode,
     groups, teachers, rooms,
@@ -52,6 +56,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showSolver,  setShowSolver]  = useState(false);
   const [showCrud,    setShowCrud]    = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [showPrintOpts, setShowPrintOpts] = useState(false);
 
   const entityOptions = viewMode === "group"
     ? groups.flatMap((g) => [g, ...(g.children ?? [])])
@@ -71,8 +76,15 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const handlePrint = useReactToPrint({
     content: () => printRef.current,
     documentTitle: "ตารางเรียน",
-    pageStyle: "@page { size: A4 landscape; margin: 10mm; } * { -webkit-print-color-adjust: exact; }",
+    pageStyle: "@page { size: A4 portrait; margin: 8mm 10mm; } * { -webkit-print-color-adjust: exact; }",
   });
+
+  // Apply the chosen options, let React paint the new sheets, then print.
+  const confirmPrint = (o: PrintOptions) => {
+    onPrintOptionsChange(o);
+    setShowPrintOpts(false);
+    setTimeout(() => handlePrint(), 150);
+  };
 
   const handlePDF = async () => {
     if (!printRef.current) return;
@@ -83,7 +95,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         import("html2canvas"),
       ]);
       const pages = printRef.current.querySelectorAll<HTMLElement>(".print-page");
-      const pdf   = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+      const pdf   = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
       for (let i = 0; i < pages.length; i++) {
         if (i > 0) pdf.addPage();
         const canvas  = await html2canvas(pages[i], { scale: 2, useCORS: true });
@@ -257,7 +269,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
 
       {/* Print & PDF */}
       <div className="flex items-center gap-1.5 pl-3 shrink-0">
-        <button onClick={handlePrint}
+        <button onClick={() => { setShowPrintOpts(true); setShowSolver(false); setShowCrud(false); }}
           className="flex items-center gap-1 px-2.5 py-1 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-xs text-gray-200">
           🖨 พิมพ์
         </button>
@@ -269,6 +281,15 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           {isExporting ? "⏳..." : "📥 PDF"}
         </button>
       </div>
+      {/* Print options */}
+      {showPrintOpts && (
+        <PrintOptionsModal
+          value={printOptions}
+          onChange={onPrintOptionsChange}
+          onConfirm={confirmPrint}
+          onClose={() => setShowPrintOpts(false)}
+        />
+      )}
     </header>
   );
 };

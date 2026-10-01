@@ -75,6 +75,7 @@ export interface TeacherAdvanced {
 
 export interface Teacher {
   id:                   number;
+  code?:                string | null;   // รหัสประจำตัวครู (ใช้ในหัวกระดาษตอนพิมพ์)
   name:                 string;
   fixed_room_id:        number | null;
   department_id:        number | null;
@@ -92,6 +93,7 @@ export interface Subject {
   duration:      1 | 2;
   department_id: number | null;
   is_activity:   boolean;       // true = ชุมนุม/ลูกเสือ/กิจกรรม
+  fixed_room_id?: number | null; // ห้องประจำวิชา — สำคัญกว่าห้องประจำชั้นของนักเรียน
 }
 
 export interface LessonRequirement {

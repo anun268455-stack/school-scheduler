@@ -11,6 +11,7 @@ import { ImportModal } from "../components/import/ImportModal";
 import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
+import { SearchableSelect, teacherOptions, roomOptions, groupOptions } from "../components/common/SearchableSelect";
 
 export type DashPage =
   | "groups" | "teachers" | "subjects" | "rooms"
@@ -148,22 +149,16 @@ const GroupsPanel: React.FC = () => {
           <input type="number" min={1} className={inputCls} value={form.size} onChange={(e) => setForm({ ...form, size: Number(e.target.value) })} />
         </Field>
         <Field label="ห้องแม่ (Parent)">
-          <select className={inputCls} value={form.parent_id} onChange={(e) => setForm({ ...form, parent_id: e.target.value })}>
-            <option value="">– ไม่มี –</option>
-            {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-          </select>
+          <SearchableSelect value={form.parent_id} onChange={(v) => setForm({ ...form, parent_id: v })}
+            options={groupOptions(groups)} emptyLabel="– ไม่มี –" />
         </Field>
         <Field label="ห้องประจำชั้น (ห้องสอน)">
-          <select className={inputCls} value={form.homeroom_room_id} onChange={(e) => setForm({ ...form, homeroom_room_id: e.target.value })}>
-            <option value="">– ไม่ระบุ –</option>
-            {rooms.map((r) => <option key={r.id} value={r.id}>{r.name} ({ROOM_TYPE_TH[r.type] ?? r.type})</option>)}
-          </select>
+          <SearchableSelect value={form.homeroom_room_id} onChange={(v) => setForm({ ...form, homeroom_room_id: v })}
+            options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่ระบุ –" />
         </Field>
         <Field label="👩‍🏫 ครูประจำชั้น">
-          <select className={inputCls} value={form.homeroom_teacher_id} onChange={(e) => setForm({ ...form, homeroom_teacher_id: e.target.value })}>
-            <option value="">– ไม่ระบุ –</option>
-            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+          <SearchableSelect value={form.homeroom_teacher_id} onChange={(v) => setForm({ ...form, homeroom_teacher_id: v })}
+            options={teacherOptions(teachers)} emptyLabel="– ไม่ระบุ –" />
         </Field>
       </div>
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
@@ -202,16 +197,12 @@ const GroupsPanel: React.FC = () => {
                       </select>
                     </td>
                     <td className="px-2 py-1">
-                      <select className={inlineCls} value={editForm.homeroom_room_id} onChange={(e) => setEditForm({ ...editForm, homeroom_room_id: e.target.value })}>
-                        <option value="">– ไม่ระบุ –</option>
-                        {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                      </select>
+                      <SearchableSelect value={editForm.homeroom_room_id} onChange={(v) => setEditForm({ ...editForm, homeroom_room_id: v })}
+                        options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่ระบุ –" />
                     </td>
                     <td className="px-2 py-1">
-                      <select className={inlineCls} value={editForm.homeroom_teacher_id} onChange={(e) => setEditForm({ ...editForm, homeroom_teacher_id: e.target.value })}>
-                        <option value="">– ไม่ระบุ –</option>
-                        {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                      </select>
+                      <SearchableSelect value={editForm.homeroom_teacher_id} onChange={(v) => setEditForm({ ...editForm, homeroom_teacher_id: v })}
+                        options={teacherOptions(teachers)} emptyLabel="– ไม่ระบุ –" />
                     </td>
                     <td className="px-2 py-1">
                       <div className="flex gap-1">
@@ -259,7 +250,7 @@ const DAYS_TH = ["จันทร์","อังคาร","พุธ","พฤ�
 // ─── Teachers ────────────────────────────────────────────────────────────────
 const TeachersPanel: React.FC = () => {
   const { teachers, departments, rooms } = useTimetableStore();
-  const [form, setForm] = useState({ name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
+  const [form, setForm] = useState({ code: "", name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   const [editing, setEditing] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [advOpen, setAdvOpen] = useState<number | null>(null);  // id of teacher with open adv settings
@@ -274,7 +265,7 @@ const TeachersPanel: React.FC = () => {
       fixed_room_id: form.fixed_room_id ? Number(form.fixed_room_id) : null,
     });
     useTimetableStore.setState((s) => ({ teachers: [...s.teachers, created] }));
-    setForm({ name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
+    setForm({ code: "", name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   };
 
   const handleUpdate = async (id: number) => {
@@ -301,6 +292,9 @@ const TeachersPanel: React.FC = () => {
   return (
     <Section title="ครูผู้สอน" action={<ImportButton entity="teachers" />}>
       <div className="grid grid-cols-3 gap-2 mb-3">
+        <Field label="รหัสประจำตัวครู">
+          <input className={inputCls} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="เช่น T001" />
+        </Field>
         <Field label="ชื่อครู *">
           <input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ครูสมชาย ใจดี" />
         </Field>
@@ -311,10 +305,8 @@ const TeachersPanel: React.FC = () => {
           </select>
         </Field>
         <Field label="🏠 ห้องประจำครู">
-          <select className={inputCls} value={form.fixed_room_id} onChange={(e) => setForm({ ...form, fixed_room_id: e.target.value })}>
-            <option value="">– ไม่มี (ใช้ห้องว่างอัตโนมัติ) –</option>
-            {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
+          <SearchableSelect value={form.fixed_room_id} onChange={(v) => setForm({ ...form, fixed_room_id: v })}
+            options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่มี (ใช้ห้องว่างอัตโนมัติ) –" />
         </Field>
         <Field label="คะแนนกลางแจ้ง (0-10)">
           <input type="number" min={0} max={10} className={inputCls} value={form.outdoor_score} onChange={(e) => setForm({ ...form, outdoor_score: Number(e.target.value) })} />
@@ -332,20 +324,21 @@ const TeachersPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ชื่อครู","กลุ่มสาระฯ","🏠 ห้องประจำ","กลางแจ้ง","สอน/วัน",""].map((h) => (
+              {["รหัส","ชื่อครู","กลุ่มสาระฯ","🏠 ห้องประจำ","กลางแจ้ง","สอน/วัน",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {teachers.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {teachers.map((t) => (
               <React.Fragment key={t.id}>
                 <tr className="hover:bg-gray-50">
                   {editing === t.id && editForm ? (
                     <>
+                      <td className="px-2 py-1"><input className={inlineCls} style={{ width: 70 }} value={editForm.code} onChange={(e) => setEditForm({ ...editForm, code: e.target.value })} /></td>
                       <td className="px-2 py-1"><input className={inlineCls} value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></td>
                       <td className="px-2 py-1">
                         <select className={inlineCls} value={editForm.department_id} onChange={(e) => setEditForm({ ...editForm, department_id: e.target.value })}>
@@ -354,10 +347,8 @@ const TeachersPanel: React.FC = () => {
                         </select>
                       </td>
                       <td className="px-2 py-1">
-                        <select className={inlineCls} value={editForm.fixed_room_id} onChange={(e) => setEditForm({ ...editForm, fixed_room_id: e.target.value })}>
-                          <option value="">– ไม่มี –</option>
-                          {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                        </select>
+                        <SearchableSelect value={editForm.fixed_room_id} onChange={(v) => setEditForm({ ...editForm, fixed_room_id: v })}
+                          options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่มี –" />
                       </td>
                       <td className="px-2 py-1"><input type="number" min={0} max={10} className={inlineCls} style={{ width: 55 }} value={editForm.outdoor_score} onChange={(e) => setEditForm({ ...editForm, outdoor_score: Number(e.target.value) })} /></td>
                       <td className="px-2 py-1"><input type="number" min={1} max={10} className={inlineCls} style={{ width: 55 }} value={editForm.max_slots_per_day} onChange={(e) => setEditForm({ ...editForm, max_slots_per_day: Number(e.target.value) })} /></td>
@@ -370,6 +361,7 @@ const TeachersPanel: React.FC = () => {
                     </>
                   ) : (
                     <>
+                      <td className="px-3 py-2 text-xs font-mono text-gray-500">{t.code || "–"}</td>
                       <td className="px-3 py-2 font-medium text-gray-800">
                         {t.name}
                         {t.advanced_settings?.require_ground_floor && <span className="ml-1 text-xs bg-blue-100 text-blue-600 px-1 rounded">ชั้น 1</span>}
@@ -385,7 +377,7 @@ const TeachersPanel: React.FC = () => {
                       <td className="px-3 py-2 text-gray-600">{t.max_slots_per_day}</td>
                       <td className="px-3 py-2">
                         <div className="flex gap-1 flex-wrap">
-                          <button onClick={() => { setEditing(t.id); setEditForm({ name: t.name, department_id: t.department_id ? String(t.department_id) : "", fixed_room_id: t.fixed_room_id ? String(t.fixed_room_id) : "", outdoor_score: t.outdoor_score, max_slots_per_day: t.max_slots_per_day, max_outdoor_per_week: t.max_outdoor_per_week }); }} className={btnEdit}>แก้ไข</button>
+                          <button onClick={() => { setEditing(t.id); setEditForm({ code: t.code ?? "", name: t.name, department_id: t.department_id ? String(t.department_id) : "", fixed_room_id: t.fixed_room_id ? String(t.fixed_room_id) : "", outdoor_score: t.outdoor_score, max_slots_per_day: t.max_slots_per_day, max_outdoor_per_week: t.max_outdoor_per_week }); }} className={btnEdit}>แก้ไข</button>
                           <button onClick={() => { setAdvOpen(advOpen === t.id ? null : t.id); setAdvForm({ ignore_consecutive_limit: t.advanced_settings?.ignore_consecutive_limit ?? false, require_ground_floor: t.advanced_settings?.require_ground_floor ?? false, days_off: t.advanced_settings?.days_off ?? [], note: t.advanced_settings?.note ?? "" }); }} className="px-2 py-1 text-xs bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 border border-indigo-200">⚙ ขั้นสูง</button>
                           <button onClick={async () => { await api.deleteTeacher(t.id); useTimetableStore.setState((s) => ({ teachers: s.teachers.filter((x) => x.id !== t.id) })); }} className={btnDanger}>ลบ</button>
                         </div>
@@ -396,7 +388,7 @@ const TeachersPanel: React.FC = () => {
                 {/* Advanced settings row */}
                 {advOpen === t.id && (
                   <tr>
-                    <td colSpan={6} className="bg-indigo-50/60 border-b border-indigo-100 px-4 py-3">
+                    <td colSpan={7} className="bg-indigo-50/60 border-b border-indigo-100 px-4 py-3">
                       <p className="text-xs font-bold text-indigo-700 mb-2">⚙ ตั้งค่าขั้นสูง — {t.name}</p>
                       <div className="grid grid-cols-2 gap-3 text-xs">
                         <label className="flex items-center gap-2 cursor-pointer">
@@ -441,8 +433,8 @@ const TeachersPanel: React.FC = () => {
 
 // ─── Subjects ────────────────────────────────────────────────────────────────
 const SubjectsPanel: React.FC = () => {
-  const { subjects, departments, requirements } = useTimetableStore();
-  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false });
+  const { subjects, departments, requirements, rooms } = useTimetableStore();
+  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [assigning, setAssigning] = useState<number | null>(null);
@@ -452,15 +444,18 @@ const SubjectsPanel: React.FC = () => {
     requirements.filter((r) => r.subject_id === subjectId).length;
   const assigningSubject = assigning != null ? subjects.find((s) => s.id === assigning) ?? null : null;
 
+  const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : null;
+
   const handleCreate = async () => {
     const created = await api.createSubject({
       ...form,
       type:          form.type   as SubjectType,
       duration:      Number(form.duration) as 1 | 2,
       department_id: form.department_id ? Number(form.department_id) : null,
+      fixed_room_id: form.fixed_room_id ? Number(form.fixed_room_id) : null,
     });
     useTimetableStore.setState((s) => ({ subjects: [...s.subjects, created] }));
-    setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false });
+    setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "" });
   };
 
   const handleUpdate = async (id: number) => {
@@ -471,6 +466,7 @@ const SubjectsPanel: React.FC = () => {
       duration: Number(editForm.duration) as 1 | 2,
       department_id: editForm.department_id ? Number(editForm.department_id) : null,
       is_activity: editForm.is_activity,
+      fixed_room_id: editForm.fixed_room_id ? Number(editForm.fixed_room_id) : null,
     });
     useTimetableStore.setState((s) => ({ subjects: s.subjects.map((x) => x.id === id ? { ...x, ...updated } : x) }));
     setEditing(null); setEditForm(null);
@@ -493,6 +489,10 @@ const SubjectsPanel: React.FC = () => {
             {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         </Field>
+        <Field label="🏟 ห้องประจำวิชา">
+          <SearchableSelect value={form.fixed_room_id} onChange={(v) => setForm({ ...form, fixed_room_id: v })}
+            options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่มี (ใช้ห้องประจำชั้น) –" />
+        </Field>
         <Field label="ประเภท">
           <select className={inputCls} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
             <option value="common">ทั่วไป</option>
@@ -512,20 +512,24 @@ const SubjectsPanel: React.FC = () => {
           </label>
         </Field>
       </div>
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3 text-xs text-amber-900">
+        🏟 <strong>ห้องประจำวิชา</strong> = วิชานี้ต้องเรียนที่ห้องนี้เสมอ (พละ → สนาม, คอมพิวเตอร์ → ห้องแล็บ, ดนตรี → ห้องดนตรี)
+        — <strong>สำคัญกว่าห้องประจำชั้นของนักเรียน</strong> นักเรียนจะเดินมาเรียนที่ห้องนี้ ส่วนวิชาที่ไม่ได้ตั้งไว้จะเรียนในห้องประจำชั้นของตัวเอง
+      </div>
       <button onClick={handleCreate} disabled={!form.code || !form.name} className={btnPrimary}>+ เพิ่มวิชา</button>
 
       <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","ประเภท","คาบ",""].map((h) => (
+              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","🏟 ห้องประจำวิชา","ประเภท","คาบ",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {subjects.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {subjects.map((s) => (
               <tr key={s.id} className={clsx("hover:bg-gray-50", s.is_activity && "bg-purple-50/30")}>
@@ -538,6 +542,10 @@ const SubjectsPanel: React.FC = () => {
                         <option value="">–</option>
                         {departments.map((d) => <option key={d.id} value={d.id}>{d.name.replace("กลุ่มสาระ","")}</option>)}
                       </select>
+                    </td>
+                    <td className="px-2 py-1" style={{ minWidth: 130 }}>
+                      <SearchableSelect value={editForm.fixed_room_id} onChange={(v) => setEditForm({ ...editForm, fixed_room_id: v })}
+                        options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่มี –" />
                     </td>
                     <td className="px-2 py-1">
                       <select className={inlineCls} value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}>
@@ -569,6 +577,11 @@ const SubjectsPanel: React.FC = () => {
                       {s.is_activity && <span className="ml-1 px-1 py-0.5 bg-purple-100 text-purple-600 rounded text-[10px]">กิจกรรม</span>}
                     </td>
                     <td className="px-3 py-2 text-gray-500 text-xs">{deptName(s.department_id)}</td>
+                    <td className="px-3 py-2 text-xs">
+                      {roomName(s.fixed_room_id)
+                        ? <span className="bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded">🏟 {roomName(s.fixed_room_id)}</span>
+                        : <span className="text-gray-400">–</span>}
+                    </td>
                     <td className="px-3 py-2 text-gray-600">{SUBJECT_TYPE_TH[s.type] ?? s.type}</td>
                     <td className="px-3 py-2 text-gray-600">{s.duration}</td>
                     <td className="px-3 py-2">
@@ -583,7 +596,7 @@ const SubjectsPanel: React.FC = () => {
                             <span className="ml-1 text-[10px] bg-blue-600 text-white px-1 rounded-full">{classCount(s.id)}</span>
                           )}
                         </button>
-                        <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false }); }} className={btnEdit}>แก้ไข</button>
+                        <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "" }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
@@ -668,10 +681,8 @@ const RoomsPanel: React.FC = () => {
           <input type="number" min={1} className={inputCls} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: Number(e.target.value) })} />
         </Field>
         <Field label="🏠 จองให้ครูประจำ">
-          <select className={inputCls} value={form.reserved_teacher_id} onChange={(e) => setForm({ ...form, reserved_teacher_id: e.target.value })}>
-            <option value="">– ห้องรวม (ใครใช้ก็ได้) –</option>
-            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+          <SearchableSelect value={form.reserved_teacher_id} onChange={(v) => setForm({ ...form, reserved_teacher_id: v })}
+            options={teacherOptions(teachers)} emptyLabel="– ห้องรวม (ใครใช้ก็ได้) –" />
         </Field>
         <Field label="🧪 ห้องเฉพาะกลุ่มสาระ">
           <select className={inputCls} value={form.specialized_dept_id} onChange={(e) => setForm({ ...form, specialized_dept_id: e.target.value })}>
@@ -775,7 +786,7 @@ const RoomsPanel: React.FC = () => {
 
 // ─── Requirements (Teacher-Subject-Group Assignments) ─────────────────────────
 const RequirementsPanel: React.FC = () => {
-  const { requirements, groups, teachers, subjects, periods } = useTimetableStore();
+  const { requirements, groups, teachers, subjects, periods, departments } = useTimetableStore();
   const [form, setForm] = useState({
     group_id: "", subject_id: "", teacher_id: "", weekly_count: 1, parallel_group_key: "",
   });
@@ -860,10 +871,8 @@ const RequirementsPanel: React.FC = () => {
 
       <div className="grid grid-cols-3 gap-2 mb-3">
         <Field label="ห้องเรียน *">
-          <select className={inputCls} value={form.group_id} onChange={(e) => setForm({ ...form, group_id: e.target.value })}>
-            <option value="">เลือกห้อง</option>
-            {flat.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-          </select>
+          <SearchableSelect value={form.group_id} onChange={(v) => setForm({ ...form, group_id: v })}
+            options={groupOptions(flat)} placeholder="เลือกห้อง" />
         </Field>
         <Field label="วิชา *">
           <select className={inputCls} value={form.subject_id} onChange={(e) => setForm({ ...form, subject_id: e.target.value })}>
@@ -872,10 +881,8 @@ const RequirementsPanel: React.FC = () => {
           </select>
         </Field>
         <Field label="ครูผู้สอน *">
-          <select className={inputCls} value={form.teacher_id} onChange={(e) => setForm({ ...form, teacher_id: e.target.value })}>
-            <option value="">เลือกครู</option>
-            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+          <SearchableSelect value={form.teacher_id} onChange={(v) => setForm({ ...form, teacher_id: v })}
+            options={teacherOptions(teachers, departments)} placeholder="เลือกครู" />
         </Field>
         <Field label="คาบ/สัปดาห์">
           <input type="number" min={1} max={10} className={inputCls} value={form.weekly_count}

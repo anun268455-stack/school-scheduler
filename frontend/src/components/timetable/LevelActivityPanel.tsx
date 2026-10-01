@@ -12,6 +12,7 @@ import React, { useMemo, useState } from "react";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { DAYS, periodLabel, periodTime } from "../../types";
+import { SearchableSelect } from "../common/SearchableSelect";
 
 export const LevelActivityPanel: React.FC = () => {
   const { groups, subjects, teachers, slots, periods, loadSlots } = useTimetableStore();
@@ -141,14 +142,18 @@ export const LevelActivityPanel: React.FC = () => {
           </select>
         </Field>
         <Field label="ครูผู้ดูแล">
-          <select className={inputCls} value={form.teacher_choice}
-            onChange={(e) => setForm({ ...form, teacher_choice: e.target.value })}>
-            <option value="homeroom">👩‍🏫 ครูประจำชั้นของแต่ละห้อง</option>
-            <option value="none">– ไม่ระบุครู –</option>
-            <optgroup label="ครูคนเดียวดูแลทุกห้อง">
-              {teachers.map((t) => <option key={t.id} value={String(t.id)}>{t.name}</option>)}
-            </optgroup>
-          </select>
+          <SearchableSelect
+            value={form.teacher_choice}
+            onChange={(v) => setForm({ ...form, teacher_choice: v })}
+            options={[
+              { value: "homeroom", label: "👩‍🏫 ครูประจำชั้นของแต่ละห้อง" },
+              { value: "none", label: "– ไม่ระบุครู –" },
+              ...teachers.map((t) => ({
+                value: String(t.id), label: t.name, hint: t.code ?? undefined,
+                group: "ครูคนเดียวดูแลทุกห้อง",
+              })),
+            ]}
+          />
         </Field>
         <Field label="ห้องที่ใช้">
           <select className={inputCls} value={form.room_mode}
