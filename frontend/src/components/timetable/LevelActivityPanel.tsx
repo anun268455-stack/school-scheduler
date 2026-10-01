@@ -10,12 +10,12 @@
  */
 import React, { useMemo, useState } from "react";
 import * as api from "../../api/client";
+import { SearchableSelect, teacherOptions } from "../common/SearchableSelect";
 import { useTimetableStore } from "../../store/timetableStore";
 import { DAYS, periodLabel, periodTime } from "../../types";
-import { SearchableSelect } from "../common/SearchableSelect";
 
 export const LevelActivityPanel: React.FC = () => {
-  const { groups, subjects, teachers, slots, periods, loadSlots } = useTimetableStore();
+  const { groups, subjects, teachers, slots, periods, departments, loadSlots } = useTimetableStore();
 
   const [form, setForm] = useState({
     level: "", day: "0", period: "", subject_id: "",
@@ -68,6 +68,19 @@ export const LevelActivityPanel: React.FC = () => {
     () => targetClasses.filter((g) => !g.homeroom_teacher_id),
     [targetClasses],
   );
+
+  // Assign a class's ครูประจำชั้น without leaving this page.
+  const setHomeroomTeacher = async (groupId: number, teacherId: string) => {
+    const updated = await api.updateGroup(groupId, {
+      homeroom_teacher_id: teacherId ? Number(teacherId) : null,
+    });
+    useTimetableStore.setState((st) => ({
+      groups: st.groups.map((g) =>
+        g.id === groupId
+          ? { ...g, ...updated, children: g.children ?? [] }
+          : { ...g, children: (g.children ?? []).map((c) => c.id === groupId ? { ...c, ...updated } : c) }),
+    }));
+  };
 
   const canCreate = !!form.level && form.period !== "" && !!form.subject_id && !busy;
 
@@ -186,6 +199,32 @@ export const LevelActivityPanel: React.FC = () => {
         <p className="text-xs text-gray-400 mb-2">
           💡 ไม่ระบุครู = ครูทุกคนยังว่างในคาบนั้น นักเรียนได้คาบกิจกรรมอย่างเดียว
         </p>
+      )}
+
+      {/* ครูประจำชั้นของระดับที่เลือก — ตั้งได้ตรงนี้เลย */}
+      {form.level && targetClasses.length > 0 && (
+        <div className="border border-blue-200 bg-blue-50/40 rounded-lg p-3 mb-3">
+          <p className="text-xs font-semibold text-blue-900 mb-2">
+            👩‍🏫 ครูประจำชั้นของ {form.level}
+            <span className="font-normal text-blue-700/70 ml-1">
+              — ครูที่ตั้งไว้จะได้คาบกิจกรรมนี้ลงในตารางสอนของตัวเอง
+            </span>
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {targetClasses.map((g) => (
+              <div key={g.id} className="flex items-center gap-2">
+                <span className="text-sm text-gray-700 w-16 shrink-0 truncate">{g.name}</span>
+                <SearchableSelect
+                  className="flex-1 min-w-0"
+                  value={g.homeroom_teacher_id ? String(g.homeroom_teacher_id) : ""}
+                  onChange={(v) => setHomeroomTeacher(g.id, v)}
+                  options={teacherOptions(teachers, departments)}
+                  emptyLabel="– ยังไม่ตั้ง –"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       <button onClick={handleCreate} disabled={!canCreate}

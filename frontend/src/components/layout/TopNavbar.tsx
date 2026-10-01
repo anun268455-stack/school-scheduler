@@ -1,13 +1,14 @@
 /**
  * TopNavbar v3 — Consolidated top-toolbar with Periods + Bulk-Lock nav items.
  */
-import React, { useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import clsx from "clsx";
 import { useReactToPrint } from "react-to-print";
 
 import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
+import { useDismissOnOutside } from "../common/ModalShell";
 import type { PrintOptions } from "../print/PrintView";
 import type { ViewMode } from "../../types";
 
@@ -57,6 +58,12 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showCrud,    setShowCrud]    = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showPrintOpts, setShowPrintOpts] = useState(false);
+
+  // Toolbar popovers close when you click anywhere else, or press Esc.
+  const solverRef = useRef<HTMLDivElement>(null);
+  const crudRef   = useRef<HTMLDivElement>(null);
+  useDismissOnOutside(solverRef, showSolver, useCallback(() => setShowSolver(false), []));
+  useDismissOnOutside(crudRef,   showCrud,   useCallback(() => setShowCrud(false), []));
 
   const entityOptions = viewMode === "group"
     ? groups.flatMap((g) => [g, ...(g.children ?? [])])
@@ -225,7 +232,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       )}
 
       {/* Solver */}
-      <div className="relative px-3 border-r border-gray-700 shrink-0">
+      <div ref={solverRef} className="relative px-3 border-r border-gray-700 shrink-0">
         <button
           onClick={() => { setShowSolver((v) => !v); setShowCrud(false); }}
           className="flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-semibold transition-colors"
@@ -240,7 +247,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       </div>
 
       {/* CRUD Menu */}
-      <div className="relative px-3 border-r border-gray-700 shrink-0">
+      <div ref={crudRef} className="relative px-3 border-r border-gray-700 shrink-0">
         <button
           onClick={() => { setShowCrud((v) => !v); setShowSolver(false); }}
           className="flex items-center gap-1 px-2.5 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-200 transition-colors border border-gray-600"

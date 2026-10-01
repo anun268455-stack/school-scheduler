@@ -5,6 +5,7 @@
  * For each entity the expected columns are shown as hints and auto-mapped.
  */
 import React, { useRef, useState, useCallback } from "react";
+import { ModalShell } from "../common/ModalShell";
 import * as XLSX from "xlsx";
 import clsx from "clsx";
 import * as api from "../../api/client";
@@ -299,8 +300,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
   const preview = rows.slice(0, 5);
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+    <ModalShell onClose={onClose} maxWidth="max-w-3xl" z="z-[100]">
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 bg-blue-700 text-white shrink-0">
@@ -503,7 +503,6 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };

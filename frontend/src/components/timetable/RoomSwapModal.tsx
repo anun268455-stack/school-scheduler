@@ -3,6 +3,7 @@
  * Shows only rooms that are free at the slot's day+period.
  */
 import React, { useMemo } from "react";
+import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import { DAYS, periodLabel } from "../../types";
 import type { Room, TimetableSlot } from "../../types";
@@ -42,8 +43,7 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
   }, [rooms, slots, slot]);
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-200">
+    <ModalShell onClose={onClose} maxWidth="max-w-md">
 
         {/* Header */}
         <div className="flex items-center gap-3 bg-blue-600 px-5 py-4">
@@ -104,7 +104,6 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
             ยกเลิก
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };

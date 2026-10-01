@@ -5,6 +5,7 @@
  * (by name, by กลุ่มสาระ, or by teacher code) and how many fit on one A4 sheet.
  */
 import React, { useMemo, useState } from "react";
+import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import { useTimetableStore } from "../../store/timetableStore";
 import { flattenGroups } from "../../utils/groupHierarchy";
@@ -73,8 +74,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
   const sheets = Math.ceil(countSel / opt.perPage);
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <ModalShell onClose={onClose} maxWidth="max-w-2xl">
 
         <div className="flex items-center gap-3 bg-gray-800 px-5 py-4 shrink-0">
           <span className="text-2xl">🖨</span>
@@ -177,7 +177,6 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
             🖨 พิมพ์
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };

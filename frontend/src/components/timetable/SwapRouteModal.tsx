@@ -8,6 +8,7 @@
  * click.
  */
 import React, { useState } from "react";
+import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import { DAYS, periodLabel, type Period, type TimetableSlot } from "../../types";
 import type { SwapRoute, RouteStep } from "../../utils/swapPlanner";
@@ -44,8 +45,7 @@ export const SwapRouteModal: React.FC<SwapRouteModalProps> = ({
   const cell = (d: number, p: number) => `${DAYS[d] ?? d} · ${periodLabel(p, periods)}`;
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-200 flex flex-col max-h-[90vh]">
+    <ModalShell onClose={onCancel} maxWidth="max-w-2xl">
 
         {/* Header */}
         <div className="flex items-center gap-3 bg-indigo-600 px-5 py-4 shrink-0">
@@ -114,8 +114,7 @@ export const SwapRouteModal: React.FC<SwapRouteModalProps> = ({
             ใช้เส้นทางนี้
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 

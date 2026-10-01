@@ -10,6 +10,7 @@
  * they can be re-pointed at a different teacher or removed.
  */
 import React, { useMemo, useState } from "react";
+import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
@@ -174,8 +175,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
   const deptLabel = deptName ?? "กลุ่มสาระนี้";
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
+    <ModalShell onClose={onClose} maxWidth="max-w-3xl">
 
         {/* Header */}
         <div className="flex items-center gap-3 bg-blue-700 px-5 py-4 shrink-0">
@@ -335,8 +335,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
             {busy ? "กำลังบันทึก…" : "บันทึก"}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 

@@ -10,6 +10,7 @@ import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
 import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
+import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
 import { SearchableSelect, teacherOptions, roomOptions, groupOptions } from "../components/common/SearchableSelect";
 
@@ -249,11 +250,15 @@ const DAYS_TH = ["จันทร์","อังคาร","พุธ","พฤ�
 
 // ─── Teachers ────────────────────────────────────────────────────────────────
 const TeachersPanel: React.FC = () => {
-  const { teachers, departments, rooms } = useTimetableStore();
+  const { teachers, departments, rooms, requirements } = useTimetableStore();
+  // How many classes this teacher is down to teach.
+  const loadOf = (id: number) => requirements.filter((r) => r.teacher_id === id).length;
   const [form, setForm] = useState({ code: "", name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   const [editing, setEditing] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [advOpen, setAdvOpen] = useState<number | null>(null);  // id of teacher with open adv settings
+  const [assigning, setAssigning] = useState<number | null>(null);
+  const assigningTeacher = assigning != null ? teachers.find((t) => t.id === assigning) ?? null : null;
   const [advForm, setAdvForm] = useState<{ ignore_consecutive_limit: boolean; require_ground_floor: boolean; days_off: number[]; note: string }>({
     ignore_consecutive_limit: false, require_ground_floor: false, days_off: [], note: "",
   });
@@ -378,6 +383,16 @@ const TeachersPanel: React.FC = () => {
                       <td className="px-3 py-2">
                         <div className="flex gap-1 flex-wrap">
                           <button onClick={() => { setEditing(t.id); setEditForm({ code: t.code ?? "", name: t.name, department_id: t.department_id ? String(t.department_id) : "", fixed_room_id: t.fixed_room_id ? String(t.fixed_room_id) : "", outdoor_score: t.outdoor_score, max_slots_per_day: t.max_slots_per_day, max_outdoor_per_week: t.max_outdoor_per_week }); }} className={btnEdit}>แก้ไข</button>
+                          <button
+                            onClick={() => setAssigning(t.id)}
+                            className="px-2 py-1 text-xs bg-indigo-50 text-indigo-700 rounded hover:bg-indigo-100 border border-indigo-200 whitespace-nowrap"
+                            title="เลือกวิชาและห้องเรียนที่ครูคนนี้สอน"
+                          >
+                            📚 วิชาที่สอน
+                            {loadOf(t.id) > 0 && (
+                              <span className="ml-1 text-[10px] bg-indigo-600 text-white px-1 rounded-full">{loadOf(t.id)}</span>
+                            )}
+                          </button>
                           <button onClick={() => { setAdvOpen(advOpen === t.id ? null : t.id); setAdvForm({ ignore_consecutive_limit: t.advanced_settings?.ignore_consecutive_limit ?? false, require_ground_floor: t.advanced_settings?.require_ground_floor ?? false, days_off: t.advanced_settings?.days_off ?? [], note: t.advanced_settings?.note ?? "" }); }} className="px-2 py-1 text-xs bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 border border-indigo-200">⚙ ขั้นสูง</button>
                           <button onClick={async () => { await api.deleteTeacher(t.id); useTimetableStore.setState((s) => ({ teachers: s.teachers.filter((x) => x.id !== t.id) })); }} className={btnDanger}>ลบ</button>
                         </div>
@@ -427,6 +442,10 @@ const TeachersPanel: React.FC = () => {
           </tbody>
         </table>
       </div>
+
+      {assigningTeacher && (
+        <TeacherAssignModal teacher={assigningTeacher} onClose={() => setAssigning(null)} />
+      )}
     </Section>
   );
 };
