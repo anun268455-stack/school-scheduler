@@ -16,7 +16,7 @@ import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
-import { SearchableSelect, teacherOptions, roomOptions } from "../common/SearchableSelect";
+import { SearchableSelect, roomOptions } from "../common/SearchableSelect";
 import { DAYS, periodLabel, periodTime } from "../../types";
 import type { Subject, SubjectType } from "../../types";
 
