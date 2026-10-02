@@ -22,7 +22,8 @@ import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
 import { teachesSlot } from "../../utils/teacherSlots";
 import { TableSearch, matches } from "../common/TableSearch";
-import { DAYS, GRID_PERIODS, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
+import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../utils/levels";
+import { DAYS, type Period, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
 const CELL_H = 88;   // px — all cells share this fixed height
@@ -32,6 +33,8 @@ const CELL_W = 110;  // px — class columns (non-class cols are narrower)
 // DroppableCell
 // ─────────────────────────────────────────────────────────────────────────────
 interface DroppableCellProps {
+  /** The period row as THIS class's level sees it — not a global guess. */
+  periodDef?: Period | null;
   day:    number;
   period: number;
   slots:  TimetableSlot[];
@@ -47,8 +50,8 @@ interface DroppableCellProps {
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
-  day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective, preLockMode, onPreLockClick, isDragging,
-  onAddLesson,
+  periodDef, day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective,
+  preLockMode, onPreLockClick, isDragging, onAddLesson,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: `cell-${day}-${period}`,
@@ -58,8 +61,7 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
     disabled: impact?.level === "fixed",
   });
 
-  const periodDef = GRID_PERIODS.find((p) => p.period_num === period);
-  const isFixed   = periodDef && periodDef.type !== "class";
+  const isFixed   = periodDef != null && periodDef.type !== "class";
 
   // Non-class periods (break/lunch/homeroom/assembly) — grey placeholder
   if (isFixed) {
@@ -191,6 +193,17 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   // sharing relatives (whole-class lessons of the parent, and — when viewing a
   // parent — the split lessons of its subgroups). Siblings are NOT merged.
   const shares = useMemo(() => buildSharesStudents(groups), [groups]);
+
+  // The day as the thing being shown actually experiences it. A class gets its
+  // own level's periods; a teacher or room spans both, so those get the union
+  // with each divided column labelled.
+  const gridPeriods = useMemo(() => {
+    if (selectedGroupId != null) {
+      const g = flattenGroups(groups).find((x) => x.id === selectedGroupId);
+      return periodsForLevel(periods, levelKeyOf(g));
+    }
+    return combinedPeriods(periods);
+  }, [periods, groups, selectedGroupId]);
 
   // Filtered slots for current view
   const viewSlots = useMemo(() => {
@@ -464,12 +477,12 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         >
           <table
             className="border-collapse"
-            style={{ minWidth: `${56 + GRID_PERIODS.length * CELL_W}px` }}
+            style={{ minWidth: `${56 + gridPeriods.length * CELL_W}px` }}
           >
             <colgroup>
               {/* Day label column */}
               <col style={{ width: "56px", minWidth: "56px" }} />
-              {GRID_PERIODS.map((p) => (
+              {gridPeriods.map((p) => (
                 <col
                   key={p.period_num}
                   style={{
@@ -486,7 +499,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                 <th className="bg-gray-800 text-white border border-gray-700 px-1 py-1.5 text-center text-[11px] font-semibold">
                   วัน
                 </th>
-                {GRID_PERIODS.map((pm) => (
+                {gridPeriods.map((pm) => (
                   <th
                     key={pm.period_num}
                     className={clsx(
@@ -499,6 +512,14 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                   >
                     <div className="truncate">{pm.label}</div>
                     <div className="text-[8px] font-normal opacity-70">{pm.start_time}–{pm.end_time}</div>
+                    {/* Only one level is taught in this column; the other is
+                        at lunch. Say so, rather than letting it read as a
+                        period everyone shares. */}
+                    {"onlyFor" in pm && (pm as { onlyFor?: "lower" | "upper" }).onlyFor && (
+                      <div className="text-[8px] font-normal text-amber-300">
+                        เฉพาะ {levelLabel((pm as { onlyFor: "lower" | "upper" }).onlyFor)}
+                      </div>
+                    )}
                   </th>
                 ))}
               </tr>
@@ -515,7 +536,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                     {dayName}
                   </td>
 
-                  {GRID_PERIODS.map((pm) => {
+                  {gridPeriods.map((pm) => {
                     const key       = `${dayIdx}-${pm.period_num}`;
                     const impact    = isDragActive ? (impactMap.get(key) ?? null) : null;
                     const cellSlots = slotGrid.get(key) ?? [];
@@ -529,6 +550,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                         {/* Inner wrapper enforces fixed height, prevents cell expansion */}
                         <div style={{ height: `${CELL_H - 4}px`, overflow: "hidden" }}>
                           <DroppableCell
+                            periodDef={pm}
                             day={dayIdx}
                             period={pm.period_num}
                             slots={cellSlots}

@@ -4,7 +4,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
-import type { SubjectType, RoomType, PeriodType, Room } from "../types";
+import type { SubjectType, RoomType, PeriodType, Room, Period } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
@@ -12,6 +12,8 @@ import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal
 import { ElectivePoolPanel } from "../components/timetable/ElectivePoolPanel";
 import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubjectModal";
 import { teachesSlot, slotLabel } from "../utils/teacherSlots";
+import { levelKeyOf, levelLabel, classPeriodsForLevel } from "../utils/levels";
+import { flattenGroups } from "../utils/groupHierarchy";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
@@ -1341,6 +1343,64 @@ const PERIOD_TYPES: { v: PeriodType; label: string }[] = [
   { v: "homeroom", label: "โฮมรูม"     },
 ];
 
+
+/**
+ * What each level's week adds up to.
+ *
+ * When ม.ต้น and ม.ปลาย eat at different times they get different numbers of
+ * lesson periods, and a class assigned more periods than its level has simply
+ * cannot be timetabled. That was invisible until the generator failed, so it
+ * is stated here, next to the setting that causes it.
+ */
+const LevelDaySummary: React.FC<{ periods: Period[] }> = ({ periods }) => {
+  const { groups, requirements } = useTimetableStore();
+
+  const rows = (["lower", "upper"] as const).map((lvl) => {
+    const nums = classPeriodsForLevel(periods, lvl);
+    const perWeek = nums.length * 5;
+    const classes = flattenGroups(groups).filter((g) => levelKeyOf(g) === lvl);
+    const over = classes
+      .map((g) => {
+        const load = requirements
+          .filter((r) => r.group_id === g.id)
+          .reduce((n, r) => n + (r.weekly_count ?? 0), 0);
+        return { name: g.name, load };
+      })
+      .filter((x) => x.load > perWeek)
+      .sort((a, b) => b.load - a.load);
+    return { lvl, nums, perWeek, total: classes.length, over };
+  });
+
+  return (
+    <div className="grid grid-cols-2 gap-3 mb-4">
+      {rows.map(({ lvl, nums, perWeek, total, over }) => (
+        <div key={lvl} className={clsx("border rounded-lg p-3",
+          over.length > 0 ? "border-red-300 bg-red-50/50" : "border-gray-200 bg-white")}>
+          <p className="text-sm font-bold text-gray-800">
+            {levelLabel(lvl)} <span className="text-xs font-normal text-gray-500">({total} ห้อง)</span>
+          </p>
+          <p className="text-xs text-gray-600 mt-1">
+            คาบเรียน {nums.length} คาบ/วัน = <strong>{perWeek} คาบ/สัปดาห์</strong>
+          </p>
+          <p className="text-[11px] text-gray-400 mt-0.5">
+            คาบที่เรียนได้: {nums.join(", ") || "—"}
+          </p>
+          {over.length > 0 ? (
+            <p className="text-[11px] text-red-700 mt-1.5 leading-relaxed">
+              ⚠ มี {over.length} ห้องที่ถูกจัดวิชาเกินจำนวนคาบที่มี เช่น{" "}
+              {over.slice(0, 3).map((x) => `${x.name} (${x.load})`).join(", ")}
+              {over.length > 3 && " …"}
+              <br />แก้ได้โดยเพิ่มคาบเรียนให้ระดับนี้ หรือลดคาบ/สัปดาห์ของวิชา
+            </p>
+          ) : (
+            <p className="text-[11px] text-emerald-700 mt-1.5">✓ ทุกห้องมีคาบพอ</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const PeriodsPanel: React.FC = () => {
   const { periods } = useTimetableStore();
   const [form, setForm] = useState({
@@ -1375,7 +1435,12 @@ const PeriodsPanel: React.FC = () => {
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-800">
         <strong>คำอธิบาย:</strong> กำหนดเวลาเริ่ม-สิ้นสุดของแต่ละคาบ และประเภทคาบ (เรียน/พัก/กินข้าว)
         <br/>คาบที่เป็น <strong>พัก/กินข้าว/เคารพธง/โฮมรูม</strong> จะแสดงเป็น "คาบว่าง" และระบบจะไม่จัดวิชาทับ
+        <br/>ช่อง <strong>"ใช้กับ"</strong> ให้ตั้งเป็น ม.1-3 หรือ ม.4-6 ได้ เมื่อสองระดับพักกินข้าวไม่ตรงกัน
+        — ระบบจะจัดตารางตามวันของแต่ละระดับแยกกัน และกันครูตาม<strong>เวลาจริง</strong>
+        ไม่ใช่ตามเลขคาบ (คาบ 5 ของ ม.ต้นกับ ม.ปลายคนละเวลากัน)
       </div>
+
+      <LevelDaySummary periods={periods} />
 
       <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
         <p className="text-xs font-semibold text-gray-600 mb-3">➕ เพิ่มคาบใหม่</p>

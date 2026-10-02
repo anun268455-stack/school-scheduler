@@ -14,6 +14,7 @@ import type { Department, Period, SchoolConfig, StudentGroup, Teacher, Timetable
 import { DAYS } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { teachesSlot, myElectiveOption } from "../../utils/teacherSlots";
+import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
 
 export type PrintMode = "group" | "teacher";
 export type PrintSort = "name" | "department" | "code";
@@ -51,11 +52,14 @@ function buildGrid(slots: TimetableSlot[]) {
   return map;
 }
 
-/** One column per unique period_num, in order. */
-function getDisplayPeriods(periods: Period[]) {
-  const seen = new Map<number, Period>();
-  for (const p of periods) if (!seen.has(p.period_num)) seen.set(p.period_num, p);
-  return [...seen.values()].sort((a, b) => a.period_num - b.period_num);
+/**
+ * Columns for a sheet, as the class on it actually experiences the day.
+ *
+ * Deduplicating by period number alone kept whichever row came first and
+ * printed one level's lunch break onto the other level's timetable.
+ */
+function getDisplayPeriods(periods: Period[], level?: LevelKey) {
+  return level ? periodsForLevel(periods, level) : combinedPeriods(periods);
 }
 
 // ── Sizing: compact when two timetables share a sheet ────────────────────────
@@ -80,6 +84,8 @@ const borderCell = (m: Metrics): React.CSSProperties => ({
 
 // ── One timetable block (header + grid + signatures) ─────────────────────────
 interface BlockProps {
+  /** Whose day this sheet shows; omitted for a teacher, who spans both. */
+  level?:   LevelKey;
   title:    string;
   subtitle: string;
   grid:     Map<string, TimetableSlot[]>;
@@ -91,9 +97,9 @@ interface BlockProps {
 }
 
 const TimetableBlock: React.FC<BlockProps> = ({
-  title, subtitle, grid, periods, schoolConfig, metrics: m, compact, renderCell,
+  level, title, subtitle, grid, periods, schoolConfig, metrics: m, compact, renderCell,
 }) => {
-  const cols = getDisplayPeriods(periods);
+  const cols = getDisplayPeriods(periods, level);
   const TH: React.CSSProperties = { ...borderCell(m), fontSize: m.headFont, fontWeight: 700, backgroundColor: "#fff" };
   const TD: React.CSSProperties = { ...borderCell(m), fontSize: m.cellFont, height: m.rowH };
   const BREAK_TH: React.CSSProperties = { ...TH, backgroundColor: "#e5e7eb", fontSize: m.timeFont };
@@ -302,6 +308,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
         blocks.push(
           <TimetableBlock
             key={`g-${group.id}`}
+            level={levelKeyOf(group)}
             title={`ตารางเรียน ${String(idx + 1).padStart(3, "0")}  ห้อง ${group.name}`}
             subtitle={`${termLabel}${advisorLabel}`}
             grid={grid} periods={periods} schoolConfig={schoolConfig}

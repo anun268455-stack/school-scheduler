@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Any
 import random
+import re as _re
 import os as _os
 import json as _json
 import datetime as _dt
@@ -259,8 +260,11 @@ def _requirement_problems() -> list[dict[str, Any]]:
     t_map = {t["id"]: t for t in TEACHERS}
     s_map = {s["id"]: s for s in SUBJECTS}
     shares = _shares_students_fn()
-    class_periods = [p["period_num"] for p in PERIODS if p["type"] == "class"]
-    week_capacity = len(class_periods) * 5
+    # ม.ต้น and ม.ปลาย do not get the same number of lesson periods, because
+    # their lunch falls in different ones.
+    week_capacity_for = {
+        lvl: len(_class_periods_for_level(lvl)) * 5 for lvl in ("lower", "upper")
+    }
     dep_out = {d["id"] for d in DEPARTMENTS if "พลศึกษา" in d.get("name", "")}
 
     # Weekly load per class. A subgroup's lesson also occupies its parent's
@@ -329,11 +333,12 @@ def _requirement_problems() -> list[dict[str, Any]]:
             reasons.append(("blocking", "ไม่มีห้องสอนไหนรองรับวิชานี้ได้เลย (ดูความจุ/ประเภทห้อง)"))
 
         if grp:
-            over = load_group[r["group_id"]] - week_capacity
+            cap = week_capacity_for[_level_key(grp)]
+            over = load_group[r["group_id"]] - cap
             if over > 0:
                 reasons.append(("warning",
                     f"{grp['name']} ถูกจัด {load_group[r['group_id']]} คาบ/สัปดาห์ "
-                    f"แต่มีแค่ {week_capacity} คาบ — เกิน {over} คาบ"))
+                    f"แต่มีแค่ {cap} คาบ — เกิน {over} คาบ"))
         if teach:
             cap = (teach.get("max_slots_per_day") or 6) * 5
             if load_teacher[r["teacher_id"]] > cap:
@@ -433,26 +438,42 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         SLOTS = [s for s in SLOTS if s["id"] in locked_ids or s.get("is_locked") or s.get("is_elective")]
 
     # Build occupation sets
-    teacher_busy: set[tuple] = set()
-    group_busy:   set[tuple] = set()
-    room_busy:    set[tuple] = set()
+    t_map = {t["id"]: t for t in TEACHERS}
+    g_map = {g["id"]: g for g in _flat_groups()}
+
+    # Teachers and rooms are booked by the CLOCK, not by period number: the two
+    # levels number their periods the same but sit them at different times.
+    def cell_buckets(gid: int, period: int) -> frozenset[int]:
+        return _slot_buckets(g_map.get(gid), period)
+
+    teacher_busy: set[tuple] = set()   # (teacher, day, 5-minute bucket)
+    group_busy:   set[tuple] = set()   # (group,   day, period number)
+    room_busy:    set[tuple] = set()   # (room,    day, 5-minute bucket)
     for s in SLOTS:
+        bks = cell_buckets(s["group_id"], s["period"])
         # Activity periods (สาธารณประโยชน์ ฯลฯ) may have no assigned teacher.
+        tids = set()
         if s.get("teacher_id") is not None:
-            teacher_busy.add((s["teacher_id"], s["day"], s["period"]))
+            tids.add(s["teacher_id"])
         # A shared elective runs every option at once, so each option's teacher
         # is teaching in this window even though the class cell names none.
-        for tid in _elective_option_teachers(s):
-            teacher_busy.add((tid, s["day"], s["period"]))
-        group_busy.add((s["group_id"],   s["day"], s["period"]))
+        tids |= _elective_option_teachers(s)
+        for tid in tids:
+            for b in bks:
+                teacher_busy.add((tid, s["day"], b))
+        group_busy.add((s["group_id"], s["day"], s["period"]))
         if s.get("room_id"):
-            room_busy.add((s["room_id"], s["day"], s["period"]))
+            for b in bks:
+                room_busy.add((s["room_id"], s["day"], b))
+
+    # Each level has its own lesson periods — ม.1-3 are at lunch while ม.4-6
+    # are in class — so the cells a lesson may use depend on whose lesson it is.
+    def cells_for(gid: int):
+        lvl = _level_key(g_map.get(gid))
+        return [(d, p) for d in range(5) for p in _class_periods_for_level(lvl)]
 
     class_periods = sorted({p["period_num"] for p in PERIODS if p["type"] == "class"})
     all_cells     = [(d, p) for d in range(5) for p in class_periods]
-
-    t_map = {t["id"]: t for t in TEACHERS}
-    g_map = {g["id"]: g for g in _flat_groups()}
     s_map = {s["id"]: s for s in SUBJECTS}
     r_map = {r["id"]: r for r in ROOMS}
 
@@ -521,9 +542,15 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         wants_outdoor = subj.get("department_id") in outdoor_dept_ids
         grp = g_map.get(group_id, {}) if group_id is not None else {}
         home = grp.get("homeroom_room_id")
+        # A room is taken if it is in use at this time of day — which, between
+        # the two levels, is not the same thing as the same period number.
+        bks = _slot_buckets(grp, period)
+
+        def room_taken(rid: int) -> bool:
+            return any((rid, day, b) in room_busy for b in bks)
 
         def eligible(r: dict) -> bool:
-            if (r["id"], day, period) in room_busy:
+            if room_taken(r["id"]):
                 return False
             # ห้องห้ามใช้ — a staff room, an office, anything the school has
             # said is not a classroom. (capacity 0 meant this before the
@@ -540,7 +567,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         #    lab, music room). This outranks the class's homeroom: the students
         #    walk to the facility the subject needs.
         subj_room = subj.get("fixed_room_id")
-        if subj_room and (subj_room, day, period) not in room_busy:
+        if subj_room and not room_taken(subj_room):
             r = r_map.get(subj_room)
             if r:
                 return subj_room, r["name"], r["type"]
@@ -555,13 +582,13 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 return r["id"], r["name"], r["type"]
 
         # 3. Stay in the group's homeroom for ordinary subjects.
-        if home and not wants_outdoor and (home, day, period) not in room_busy:
+        if home and not wants_outdoor and not room_taken(home):
             r = r_map.get(home)
             if r and (not r.get("reserved_teacher_id") or r["reserved_teacher_id"] == teacher_id):
                 return home, r["name"], r["type"]
 
         # 4. Teacher's own fixed room (skip for outdoor subjects).
-        if fr and not wants_outdoor and (fr, day, period) not in room_busy:
+        if fr and not wants_outdoor and not room_taken(fr):
             r = r_map.get(fr)
             if r:
                 return fr, r["name"], r["type"]
@@ -605,7 +632,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             "subject_code": subj.get("code"),
         }
         if rid:
-            room_busy.add((rid, day, period))
+            for b in cell_buckets(req["group_id"], period):
+                room_busy.add((rid, day, b))
         return slot
 
     # Separate parallel vs solo
@@ -621,26 +649,35 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             solo.append(req)
 
     class_period_set = set(class_periods)
-    # Cells where a double period can start: p and p+1 are both class periods
-    # on the same day (no break/lunch in between).
-    double_start_cells = [(d, p) for d in range(5) for p in class_periods if (p + 1) in class_period_set]
+    def teacher_free(tid, day, gid, period) -> bool:
+        return not any((tid, day, b) in teacher_busy for b in cell_buckets(gid, period))
+
+    def book(tid, gid, day, period) -> None:
+        for b in cell_buckets(gid, period):
+            teacher_busy.add((tid, day, b))
+        group_busy.add((gid, day, period))
+
+    def double_starts(gid: int):
+        """Where a double may start for this class — truly back-to-back only."""
+        lvl = _level_key(g_map.get(gid))
+        return [(d, p) for d in range(5) for p in _class_periods_for_level(lvl)
+                if _next_class_period_for(lvl, p) is not None]
 
     def place_single(req, gid, tid, needed):
         """Place up to `needed` single periods; returns how many placed."""
-        cells = list(all_cells)
+        cells = cells_for(gid)
         random.shuffle(cells)
         placed = 0
         for day, period in cells:
             if placed >= needed:
                 break
-            if (tid, day, period) in teacher_busy:
+            if not teacher_free(tid, day, gid, period):
                 continue
             if group_occupied(gid, day, period):
                 continue
             slot = make_slot(req, day, period)
             SLOTS.append(slot)
-            teacher_busy.add((tid, day, period))
-            group_busy.add((gid, day, period))
+            book(tid, gid, day, period)
             placed += 1
         return placed
 
@@ -657,13 +694,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # Double-period subjects (พลศึกษา ฯลฯ): place consecutive pairs first.
         if duration == 2 and needed >= 2:
             pairs_needed = needed // 2
-            cells = list(double_start_cells)
+            cells = double_starts(gid)
             random.shuffle(cells)
+            lvl = _level_key(g_map.get(gid))
             for day, p in cells:
                 if pairs_needed <= 0:
                     break
-                p2 = p + 1
-                if (tid, day, p) in teacher_busy or (tid, day, p2) in teacher_busy:
+                p2 = _next_class_period_for(lvl, p)
+                if p2 is None:
+                    continue
+                if not teacher_free(tid, day, gid, p) or not teacher_free(tid, day, gid, p2):
                     continue
                 if group_occupied(gid, day, p) or group_occupied(gid, day, p2):
                     continue
@@ -672,8 +712,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 s2 = make_slot(req, day, p2)
                 SLOTS.append(s1); SLOTS.append(s2)
                 for pp in (p, p2):
-                    teacher_busy.add((tid, day, pp))
-                    group_busy.add((gid, day, pp))
+                    book(tid, gid, day, pp)
                 created      += 2
                 placed       += 2
                 pairs_needed -= 1
@@ -713,7 +752,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         def all_free(periods_to_check):
             for day_, per_ in periods_to_check:
                 for r in reqs:
-                    if (r["teacher_id"], day_, per_) in teacher_busy:
+                    # The period must be a lesson period for THIS class's level
+                    # and the teacher free at the matching time of day.
+                    lvl = _level_key(g_map.get(r["group_id"]))
+                    if per_ not in _class_periods_for_level(lvl):
+                        return False
+                    if not teacher_free(r["teacher_id"], day_, r["group_id"], per_):
                         return False
                     if group_occupied(r["group_id"], day_, per_):
                         return False
@@ -726,21 +770,22 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     if i == 0 and len(periods_to_fill) > 1:
                         slot["is_double_start"] = True
                     SLOTS.append(slot)
-                    teacher_busy.add((req["teacher_id"], day_, per_))
-                    group_busy.add((req["group_id"],   day_, per_))
+                    book(req["teacher_id"], req["group_id"], day_, per_)
 
         placed = 0
         created_here = 0
         if is_double and needed >= 2:
             pairs = needed // 2
-            cells = list(double_start_cells)
+            lead_lvl = _level_key(g_map.get(reqs[0]["group_id"]))
+            cells = double_starts(reqs[0]["group_id"])
             random.shuffle(cells)
             for day, p in cells:
                 if pairs <= 0:
                     break
-                if not all_free([(day, p), (day, p + 1)]):
+                p2 = _next_class_period_for(lead_lvl, p)
+                if p2 is None or not all_free([(day, p), (day, p2)]):
                     continue
-                place_block(day, [p, p + 1])
+                place_block(day, [p, p2])
                 created_here += 2 * len(reqs)
                 placed       += 2
                 pairs        -= 1
@@ -748,7 +793,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # Remaining single periods
         remaining = needed - placed
         if remaining > 0:
-            cells = list(all_cells)
+            cells = cells_for(reqs[0]["group_id"])
             random.shuffle(cells)
             for day, period in cells:
                 if remaining <= 0:
@@ -838,14 +883,19 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     busy_group   = set()   # (gid, d, p)  — exact group only; hierarchy added below
     busy_room    = set()   # (rid, d, p)
     for s in SLOTS:
+        bks = _slot_buckets(g_map.get(s["group_id"]), s["period"])
+        tids = set()
         if s.get("teacher_id") is not None:
-            busy_teacher.add((s["teacher_id"], s["day"], s["period"]))
+            tids.add(s["teacher_id"])
         # Shared electives run all options at once — hold every option's teacher.
-        for tid in _elective_option_teachers(s):
-            busy_teacher.add((tid, s["day"], s["period"]))
+        tids |= _elective_option_teachers(s)
+        for tid in tids:
+            for b in bks:
+                busy_teacher.add((tid, s["day"], b))
         busy_group.add((s["group_id"], s["day"], s["period"]))
         if s.get("room_id"):
-            busy_room.add((s["room_id"], s["day"], s["period"]))
+            for b in bks:
+                busy_room.add((s["room_id"], s["day"], b))
 
     def group_prebusy(gid, d, p):
         # a cell is blocked for gid if gid OR any ancestor/descendant is pre-busy
@@ -883,13 +933,27 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                 "subject_id": req["subject_id"], "pgk": req.get("parallel_group_key"),
             })
 
-    def valid_starts(length):
-        if length == 2:
-            return [(d, p) for d in range(DAYS_N) for p in class_periods if (p + 1) in class_set]
-        return [(d, p) for d in range(DAYS_N) for p in class_periods]
+    def occ_level(occ) -> str:
+        return _level_key(g_map.get(occ["group_id"]))
 
-    def covered(length, d, p):
-        return [(d, p)] if length == 1 else [(d, p), (d, p + 1)]
+    def valid_starts(occ, length):
+        """Where this lesson may start — in its own class's version of the day."""
+        lvl = occ_level(occ)
+        nums = _class_periods_for_level(lvl)
+        if length == 2:
+            return [(d, p) for d in range(DAYS_N) for p in nums
+                    if _next_class_period_for(lvl, p) is not None]
+        return [(d, p) for d in range(DAYS_N) for p in nums]
+
+    def covered(occ, length, d, p):
+        if length == 1:
+            return [(d, p)]
+        return [(d, p), (d, _next_class_period_for(occ_level(occ), p))]
+
+    def occ_buckets(occ, d, p):
+        """(day, 5-minute bucket) pairs this lesson would occupy on the clock."""
+        lvl = occ_level(occ)
+        return [(d, b) for b in _period_buckets(lvl, p)]
 
     def compatible_rooms(occ):
         subj = s_map.get(occ["subject_id"], {})
@@ -1010,7 +1074,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
             dept_rooms[r["specialized_dept_id"]].add(r["id"])
 
     for idx, occ in enumerate(occurrences):
-        starts = valid_starts(occ["length"])
+        starts = valid_starts(occ, occ["length"])
         rooms = shortlist_rooms(occ, room_limit)
         group_size = g_map.get(occ["group_id"], {}).get("size", 40)
         homeroom = g_map.get(occ["group_id"], {}).get("homeroom_room_id")
@@ -1022,28 +1086,32 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
 
         occ_start_list = []
         for (d, p) in starts:
-            cells = covered(occ["length"], d, p)
-            # skip if any covered cell pre-busy for teacher/group/all rooms
-            if any((occ["teacher_id"], cd, cp_) in busy_teacher for cd, cp_ in cells):
+            cells = covered(occ, occ["length"], d, p)
+            # Teachers and rooms are held by the clock, so the keys are
+            # (day, 5-minute bucket) — the two levels number the same period
+            # differently and sit it at a different time.
+            tslots = [t for cd, cp_ in cells for t in occ_buckets(occ, cd, cp_)]
+            if any((occ["teacher_id"], cd, b) in busy_teacher for cd, b in tslots):
                 continue
             if any(group_prebusy(occ["group_id"], cd, cp_) for cd, cp_ in cells):
                 continue
             sv = model.NewBoolVar(f"s_{idx}_{d}_{p}")
             start_vars[(idx, d, p)] = sv
             occ_start_list.append(sv)
+            for cd, b in tslots:
+                teacher_occ[(occ["teacher_id"], cd, b)].append(sv)
             for cd, cp_ in cells:
-                teacher_occ[(occ["teacher_id"], cd, cp_)].append(sv)
                 group_occ[(occ["group_id"], cd, cp_)].append(sv)
             # room choice
             rlist = []
             for r in rooms:
-                if any((r["id"], cd, cp_) in busy_room for cd, cp_ in cells):
+                if any((r["id"], cd, b) in busy_room for cd, b in tslots):
                     continue
                 rv = model.NewBoolVar(f"r_{idx}_{d}_{p}_{r['id']}")
                 room_vars[(idx, d, p, r["id"])] = rv
                 rlist.append(rv)
-                for cd, cp_ in cells:
-                    room_occ[(r["id"], cd, cp_)].append(rv)
+                for cd, b in tslots:
+                    room_occ[(r["id"], cd, b)].append(rv)
                 # Walking penalties, strongest first.
                 if subj_room:
                     # ห้องประจำวิชา wins over the class's homeroom — the subject
@@ -1122,7 +1190,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
             continue
         base = idxs[0]
         for other in idxs[1:]:
-            for (d, p) in valid_starts(occurrences[base]["length"]):
+            for (d, p) in valid_starts(occurrences[base], occurrences[base]["length"]):
                 bv = start_vars.get((base, d, p))
                 ov = start_vars.get((other, d, p))
                 if bv is not None and ov is not None:
@@ -1150,7 +1218,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
 
     if ok:
         for idx, occ in enumerate(occurrences):
-            starts = valid_starts(occ["length"])
+            starts = valid_starts(occ, occ["length"])
             chosen = None
             for (d, p) in starts:
                 sv = start_vars.get((idx, d, p))
@@ -1168,7 +1236,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                 rv = room_vars.get((idx, d, p, r["id"]))
                 if rv is not None and solver.Value(rv) == 1:
                     rid = r["id"]; break
-            cells = covered(occ["length"], d, p)
+            cells = covered(occ, occ["length"], d, p)
             for i, (cd, cp_) in enumerate(cells):
                 subj = s_map.get(occ["subject_id"], {})
                 teacher = t_map.get(occ["teacher_id"], {})
@@ -1737,17 +1805,118 @@ def _apply_selected_option(s: dict[str, Any]) -> dict[str, Any]:
     return _enrich_slot(s)
 
 # ── Double-period (คาบคู่) helpers ────────────────────────────────────────────
+
+# ── Levels eat at different times ─────────────────────────────────────────────
+# ม.1-3 and ม.4-6 break for lunch in different periods, so the school's day is
+# really TWO timetables sharing most of their columns. A period row says who it
+# applies to ("lower", "upper" or "all"), and period 5 is a ten-minute break for
+# ม.ต้น while being a full lesson for ม.ปลาย — at an overlapping but different
+# time of day.
+#
+# Two consequences the scheduler has to respect:
+#   1. A lesson may only go where that class's own level has a lesson period.
+#      Ignoring this put 159 periods into ม.1-3's lunch break.
+#   2. Two lessons clash when they overlap on the CLOCK, not when they share a
+#      period number. ม.1's period 5 (12:00-12:50) and ม.4's period 5
+#      (11:50-12:40) are different periods at overlapping times; the same
+#      number is not the same hour, and a teacher cannot be in both.
+
+def _level_key(group: dict[str, Any] | None) -> str:
+    """"lower" for ม.1-3, "upper" for ม.4-6.
+
+    Reads the first digit out of whatever form the year is in — the imported
+    data writes it "M1" while the class is named "ม.1/1", and taking the wrong
+    one silently files every junior class as a senior one.
+    """
+    if not group:
+        return "all"
+    for text in (group.get("level"), group.get("name")):
+        m = _re.search(r"(\d)", str(text or ""))
+        if m:
+            return "lower" if int(m.group(1)) <= 3 else "upper"
+    return "upper"
+
+
+def _periods_for_level(level: str) -> dict[int, dict[str, Any]]:
+    """The day as this level actually experiences it, by period number."""
+    out: dict[int, dict[str, Any]] = {}
+    for p in PERIODS:
+        applies = p.get("applies_to", "all") or "all"
+        if applies == "all" or applies == level or level == "all":
+            # A level-specific row wins over the "all" row for the same number.
+            if p["period_num"] in out and applies == "all":
+                continue
+            out[p["period_num"]] = p
+    return out
+
+
+def _class_periods_for_level(level: str) -> list[int]:
+    return sorted(n for n, p in _periods_for_level(level).items() if p["type"] == "class")
+
+
+def _hhmm(t: str | None) -> int | None:
+    try:
+        h, m = str(t).split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return None
+
+
+_BUCKET = 5   # minutes; every time in the data lands on a 5-minute boundary
+
+
+def _period_buckets(level: str, period_num: int) -> frozenset[int]:
+    """The minutes of the day this period occupies, as 5-minute buckets.
+
+    Buckets, not start times, because the two levels' periods only partly line
+    up: ม.ต้น's 12:00-12:50 lesson runs inside ม.ปลาย's 11:50-12:40 one.
+    """
+    row = _periods_for_level(level).get(period_num)
+    if not row:
+        return frozenset()
+    a, b = _hhmm(row.get("start_time")), _hhmm(row.get("end_time"))
+    if a is None or b is None or b <= a:
+        # No usable time on the row — fall back to the period number itself so
+        # the slot still collides with the same number on the other level.
+        return frozenset({-1000 - period_num})
+    return frozenset(range(a // _BUCKET, (b + _BUCKET - 1) // _BUCKET))
+
+
+def _slot_buckets(group: dict[str, Any] | None, period_num: int) -> frozenset[int]:
+    return _period_buckets(_level_key(group), period_num)
+
+
+def _next_class_period_for(level: str, period: int) -> int | None:
+    """The next lesson period for this level, and only if it really follows on.
+
+    A gap means they are not a pair: a "double" either side of lunch is two
+    separate lessons, not one long one.
+    """
+    nums = _class_periods_for_level(level)
+    if period not in nums:
+        return None
+    i = nums.index(period)
+    if i + 1 >= len(nums):
+        return None
+    nxt = nums[i + 1]
+    rows = _periods_for_level(level)
+    end = _hhmm(rows[period].get("end_time"))
+    start = _hhmm(rows[nxt].get("start_time"))
+    if end is not None and start is not None and start != end:
+        return None          # something sits between them
+    return nxt
+
+
 def _class_period_nums() -> list[int]:
     return sorted({p["period_num"] for p in PERIODS if p["type"] == "class"})
 
-def _next_class_period(period: int) -> int | None:
-    """The class period immediately after `period` (skipping break/lunch), or None."""
-    nums = _class_period_nums()
-    if period in nums:
-        i = nums.index(period)
-        if i + 1 < len(nums):
-            return nums[i + 1]
-    return None
+def _next_class_period(period: int, level: str = "upper") -> int | None:
+    """The lesson period straight after `period` for this level, or None.
+
+    Defaults to "upper" because ม.4-6 have the fuller day; callers that know
+    which class they are placing should pass its level.
+    """
+    return _next_class_period_for(level, period)
 
 def _sync_doubles(slot: dict[str, Any]) -> None:
     """Propagate an elective's option catalog + selection to its double partner.
@@ -1871,10 +2040,15 @@ def _pool_periods(pool: dict[str, Any]) -> list[int]:
         return []
     periods = [pool["period"]]
     if pool.get("is_double"):
-        p2 = _next_class_period(pool["period"])
-        if p2 is None:
-            raise HTTPException(400, "คาบนี้เป็นคาบสุดท้ายของวัน ทำคาบคู่ไม่ได้ กรุณาเลือกคาบอื่น")
-        periods.append(p2)
+        # Every class in the window must have the same second period available,
+        # or the "double" means different things to different classes.
+        levels = {_level_key(_find_group(g)) for g in pool.get("group_ids", [])} or {"upper"}
+        seconds = {_next_class_period_for(lv, pool["period"]) for lv in levels}
+        if None in seconds or len(seconds) != 1:
+            raise HTTPException(
+                400, "คาบนี้ต่อคาบคู่ไม่ได้ — เป็นคาบสุดท้าย หรือติดคาบพัก "
+                     "หรือ ม.ต้นกับ ม.ปลายต่อคาบไม่ตรงกัน กรุณาเลือกคาบอื่น")
+        periods.append(seconds.pop())
     return periods
 
 
@@ -2245,9 +2419,9 @@ def create_elective_slot(body: dict[str, Any]):
         return _apply_selected_option(slot)
 
     # ── Double period: occupy p1 and the next class period ──
-    p2 = _next_class_period(p1)
+    p2 = _next_class_period(p1, _level_key(_find_group(body["group_id"])))
     if p2 is None:
-        raise HTTPException(400, "คาบนี้เป็นคาบสุดท้ายของวัน ทำคาบคู่ไม่ได้ กรุณาเลือกคาบอื่น")
+        raise HTTPException(400, "คาบนี้ต่อคาบคู่ไม่ได้ — เป็นคาบสุดท้ายของวัน หรือมีคาบพักคั่น กรุณาเลือกคาบอื่น")
     key = f"ELEC-DBL-{_next('slot')}"   # borrow slot counter for a unique key
     start = {
         **common, "id": _next("slot"), "day": day, "period": p1,
@@ -2380,7 +2554,6 @@ def copy_elective_slot(slot_id: int, body: dict[str, Any]):
 
 def _validate_moves(moves: list[dict[str, Any]]) -> list[str]:
     """Problems with applying these moves together. Empty means it is fine."""
-    class_periods = {p["period_num"] for p in PERIODS if p["type"] == "class"}
     by_id = {s["id"]: s for s in SLOTS}
     shares = _shares_students_fn()
     problems: list[str] = []
@@ -2397,9 +2570,15 @@ def _validate_moves(moves: list[dict[str, Any]]) -> list[str]:
         if not (0 <= int(day) <= 4):
             problems.append(f"วันที่ {day} ไม่ถูกต้อง")
             continue
-        if int(period) not in class_periods:
-            label = next((p["label"] for p in PERIODS if p["period_num"] == period), period)
-            problems.append(f"{label} ไม่ใช่คาบเรียน จึงวางคาบสอนไม่ได้")
+        # "Is this a lesson period?" depends on the class: period 5 is a lesson
+        # for ม.4-6 and lunch for ม.1-3.
+        grp = _find_group(cur["group_id"])
+        lvl = _level_key(grp)
+        if int(period) not in _class_periods_for_level(lvl):
+            row = _periods_for_level(lvl).get(int(period))
+            label = row["label"] if row else f"คาบ {period}"
+            who = "ม.1-3" if lvl == "lower" else "ม.4-6"
+            problems.append(f"{label} ไม่ใช่คาบเรียนของ {who} จึงวางคาบสอนไม่ได้")
             continue
         moved[sid] = {**cur, "day": int(day), "period": int(period),
                       "room_id": mv.get("room_id", cur.get("room_id"))}
@@ -2412,15 +2591,25 @@ def _validate_moves(moves: list[dict[str, Any]]) -> list[str]:
     t_name = {t["id"]: t["name"] for t in TEACHERS}
     r_name = {r["id"]: r["name"] for r in ROOMS}
 
-    cells: dict[tuple, list[dict]] = defaultdict(list)
+    # Index by the clock, not the period number, so a move is judged against
+    # whatever is genuinely happening at that time of day.
+    by_time: dict[tuple, list[dict]] = defaultdict(list)
+    by_cell: dict[tuple, list[dict]] = defaultdict(list)
+    g_of = {g["id"]: g for g in _flat_groups()}
     for s in after:
-        cells[(s["day"], s["period"])].append(s)
+        by_cell[(s["day"], s["period"])].append(s)
+        for b in _slot_buckets(g_of.get(s["group_id"]), s["period"]):
+            by_time[(s["day"], b)].append(s)
 
     seen: set[str] = set()
     for sid in moved:
         s = moved[sid]
-        here = [o for o in cells[(s["day"], s["period"])] if o["id"] != sid]
-        for o in here:
+        overlapping = {o["id"]: o for b in _slot_buckets(g_of.get(s["group_id"]), s["period"])
+                       for o in by_time[(s["day"], b)] if o["id"] != sid}
+        for o in by_cell[(s["day"], s["period"])]:
+            if o["id"] != sid:
+                overlapping.setdefault(o["id"], o)
+        for o in overlapping.values():
             msgs = []
             if shares(o["group_id"], s["group_id"]):
                 a, b = g_name.get(s["group_id"], "?"), g_name.get(o["group_id"], "?")
