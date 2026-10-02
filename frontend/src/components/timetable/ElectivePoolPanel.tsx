@@ -335,6 +335,9 @@ const PoolCard: React.FC<{
   const [when, setWhen] = useState({ day: pool.day, period: pool.period, isDouble: pool.is_double });
   const [swapping, setSwapping] = useState<number | null>(null);
   const [cands, setCands] = useState<PoolTeacherCandidate[]>([]);
+  // Deleting takes two clicks: it throws away the subject list and the period
+  // together, and nothing restores it.
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const pinned = pool.day != null && pool.period != null;
   const conflicts = pool.conflict_count ?? 0;
@@ -375,6 +378,7 @@ const PoolCard: React.FC<{
   };
 
   const removePool = async () => {
+    if (!confirmDelete) { setConfirmDelete(true); return; }
     setBusy(true);
     try { await api.deleteElectivePool(pool.id); onChanged(); }
     finally { setBusy(false); }
@@ -413,6 +417,18 @@ const PoolCard: React.FC<{
         <button onClick={() => { setWhen({ day: pool.day, period: pool.period, isDouble: pool.is_double }); setMoving((v) => !v); }}
           className="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50 shrink-0">
           {pinned ? "ย้ายคาบ" : "กำหนดคาบ"}
+        </button>
+        <button
+          onClick={removePool}
+          onBlur={() => setConfirmDelete(false)}
+          disabled={busy}
+          title="ลบคาบเสรีนี้ทั้งหมด (วิชาและคาบในตารางจะหายไปด้วย)"
+          className={clsx("px-2 py-1 text-xs rounded border shrink-0 transition-colors",
+            confirmDelete
+              ? "bg-red-600 border-red-600 text-white font-semibold"
+              : "border-red-200 text-red-500 hover:bg-red-50 hover:text-red-700")}
+        >
+          {confirmDelete ? "กดอีกครั้งเพื่อลบ" : "🗑 ลบ"}
         </button>
       </div>
 
@@ -508,12 +524,6 @@ const PoolCard: React.FC<{
             <AddOptionRow pool={pool} onDone={onChanged} />
           </div>
 
-          <div className="flex justify-end pt-1">
-            <button onClick={removePool} disabled={busy}
-              className="text-[11px] text-red-500 hover:text-red-700 hover:underline">
-              ลบคาบเสรีนี้ทั้งหมด
-            </button>
-          </div>
         </div>
       )}
     </div>

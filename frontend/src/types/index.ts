@@ -212,6 +212,34 @@ export interface SolverResult {
   objective_value:     number | null;
   violations:          string[];
   engine?:             string;   // "cp-sat" | "greedy" | "greedy-fallback"
+  /** Requirements the run tried and failed to place. */
+  unplaced_requirement_ids?: number[];
+  /** Requirements the run was told to leave out. */
+  skipped_requirement_ids?:  number[];
+}
+
+/**
+ * A lesson requirement that cannot be scheduled, and why.
+ *
+ * "blocking" is impossible as written and will always fail. "warning" depends
+ * on something over capacity — which of a class's lessons to drop is the
+ * school's call, so every one of them is listed rather than a guess.
+ */
+export interface RequirementProblem {
+  requirement_id: number;
+  group_id:     number;  group_name:   string | null;
+  teacher_id:   number;  teacher_name: string | null; teacher_code: string | null;
+  subject_id:   number;  subject_code: string | null; subject_name: string | null;
+  weekly_count: number;
+  severity: "blocking" | "warning";
+  reasons:  string[];
+}
+
+export interface RequirementProblemReport {
+  problems: RequirementProblem[];
+  blocking: number;
+  warning:  number;
+  total_requirements: number;
 }
 
 // ── Schedule constants ───────────────────────────────────────────────────────

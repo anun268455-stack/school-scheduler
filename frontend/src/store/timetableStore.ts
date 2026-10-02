@@ -117,7 +117,11 @@ interface TimetableStore {
   lockAll:     () => Promise<void>;
   unlockAll:   () => Promise<void>;
 
-  runSolver:   (timeLimitSeconds?: number) => Promise<SolverResult>;
+  runSolver: (opts?: {
+    timeLimitSeconds?: number;
+    excludeRequirementIds?: number[];
+    skipProblems?: boolean | "blocking";
+  }) => Promise<SolverResult>;
 
   // Bulk operations
   bulkLockSlots: (params: {
@@ -439,20 +443,28 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     return result;
   },
 
-  runSolver: async (timeLimitSeconds) => {
+  runSolver: async (opts) => {
     set({ isSolving: true, solverError: null });
     try {
       const lockedIds = get().slots.filter((s) => s.is_locked).map((s) => s.id);
       const result = await api.runSolver({
         clear_existing: true,
-        time_limit_seconds: timeLimitSeconds,
+        time_limit_seconds: opts?.timeLimitSeconds,
         locked_slot_ids: lockedIds,
+        exclude_requirement_ids: opts?.excludeRequirementIds,
+        skip_problems: opts?.skipProblems,
       });
       await get().loadSlots();
       return result;
     } catch (err: unknown) {
       const raw = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
-      const msg = typeof raw === "string" ? raw : JSON.stringify(raw ?? "Solver error");
+      // No `detail` means the backend never answered — it timed out or ran out
+      // of memory and was killed. "Solver error" alone leaves the person with
+      // nothing to act on, so say what actually happens and what to do.
+      const msg = typeof raw === "string"
+        ? raw
+        : "เซิร์ฟเวอร์ไม่ตอบกลับ (อาจใช้เวลานานเกินไปหรือหน่วยความจำไม่พอ) — "
+          + "ลองติ๊ก \"ข้ามวิชาที่มีปัญหา\" แล้วกดใหม่อีกครั้ง";
       set({ solverError: msg });
       throw err;
     } finally {

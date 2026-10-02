@@ -2,10 +2,14 @@
  * SolverWidget — One-click auto-schedule panel.
  * Displays: pre-lock summary → solver params → progress → results.
  */
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
+import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
-import type { SolverResult } from "../../types";
+import type { RequirementProblem, SolverResult } from "../../types";
+
+/** How much of the problem list to leave out of a run. */
+type SkipMode = "none" | "blocking" | "all";
 
 interface Props { onClose: () => void }
 
@@ -15,13 +19,39 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   const [clearExisting, setClearExisting] = useState(true);
   const [result, setResult]               = useState<SolverResult | null>(null);
 
+  // วิชาที่มีปัญหา — found before the run so they can be left out of it.
+  const [problems, setProblems] = useState<RequirementProblem[]>([]);
+  const [skipMode, setSkipMode] = useState<SkipMode>("blocking");
+  const [showList, setShowList] = useState(false);
+  // Rows the user ticked back ON or OFF by hand, overriding the mode.
+  const [manual, setManual] = useState<Record<number, boolean>>({});
+
+  const loadProblems = () =>
+    api.fetchRequirementProblems()
+      .then((r) => setProblems(r.problems))
+      .catch(() => setProblems([]));
+  useEffect(() => { loadProblems(); }, []);
+
+  const blocking = problems.filter((p) => p.severity === "blocking");
+
+  /** Does the current setting leave this requirement out? */
+  const isSkipped = (p: RequirementProblem) => {
+    if (p.requirement_id in manual) return manual[p.requirement_id];
+    return skipMode === "all" || (skipMode === "blocking" && p.severity === "blocking");
+  };
+  const skippedIds = useMemo(
+    () => problems.filter(isSkipped).map((p) => p.requirement_id),
+    [problems, skipMode, manual],
+  );
+
   const lockedSlots   = slots.filter((s) => s.is_locked);
   const unlockedSlots = slots.filter((s) => !s.is_locked);
 
   const handleSolve = async () => {
     try {
-      const r = await runSolver();
+      const r = await runSolver({ excludeRequirementIds: skippedIds });
       setResult(r);
+      await loadProblems();    // the run may have changed what fails
     } catch {
       /* error stored in store.solverError */
     }
@@ -77,6 +107,77 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
           </label>
         </div>
 
+        {/* ── วิชาที่มีปัญหา ───────────────────────────────────────────────── */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+            วิชาที่มีปัญหา
+          </p>
+
+          {problems.length === 0 ? (
+            <p className="text-[11px] text-green-400/90 bg-green-900/20 border border-green-800/50 rounded p-2">
+              ✓ ตรวจแล้วไม่พบวิชาที่จัดลงตารางไม่ได้
+            </p>
+          ) : (
+            <>
+              <div className="bg-amber-900/20 border border-amber-800/50 rounded p-2 text-[11px] text-amber-200/90 leading-relaxed">
+                พบ <strong>{problems.length}</strong> วิชาที่อาจจัดลงไม่ได้
+                {blocking.length > 0 && <> — <strong className="text-red-300">{blocking.length}</strong> วิชาจัดไม่ได้แน่นอน</>}
+                <br />
+                เลือกได้ว่าจะไม่นำวิชาเหล่านี้มาลงตาราง เพื่อให้วิชาที่เหลือจัดได้ครบ
+              </div>
+
+              <div className="space-y-1">
+                {([
+                  ["blocking", `ข้ามเฉพาะที่จัดไม่ได้แน่นอน (${blocking.length} วิชา)`],
+                  ["all",      `ข้ามทุกวิชาที่มีปัญหา (${problems.length} วิชา)`],
+                  ["none",     "ไม่ข้าม — ลองจัดให้ครบทุกวิชา"],
+                ] as [SkipMode, string][]).map(([mode, label]) => (
+                  <label key={mode} className="flex items-center gap-2 cursor-pointer text-[11px] text-gray-300">
+                    <input
+                      type="radio" name="skipmode" checked={skipMode === mode}
+                      onChange={() => { setSkipMode(mode); setManual({}); }}
+                      className="w-3 h-3 accent-amber-500"
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+
+              <button
+                onClick={() => setShowList((v) => !v)}
+                className="text-[11px] text-indigo-300 hover:text-indigo-200 hover:underline"
+              >
+                {showList ? "▾ ซ่อนรายการ" : `▸ ดูรายการ (จะข้าม ${skippedIds.length} วิชา)`}
+              </button>
+
+              {showList && (
+                <div className="max-h-48 overflow-y-auto space-y-1 border border-gray-700 rounded p-1.5 bg-gray-950/60">
+                  {problems.map((p) => {
+                    const off = isSkipped(p);
+                    return (
+                      <label key={p.requirement_id}
+                        className="flex items-start gap-1.5 text-[10px] cursor-pointer hover:bg-gray-800/60 rounded px-1 py-0.5">
+                        <input
+                          type="checkbox" checked={off}
+                          onChange={(e) => setManual((m) => ({ ...m, [p.requirement_id]: e.target.checked }))}
+                          className="mt-0.5 w-3 h-3 accent-amber-500 shrink-0"
+                        />
+                        <span className={clsx("flex-1 min-w-0", off ? "text-gray-500 line-through" : "text-gray-300")}>
+                          <span className="font-mono">{p.subject_code}</span>{" "}
+                          {p.group_name} · {p.teacher_name}
+                          <span className="block text-amber-400/80 no-underline">
+                            {p.severity === "blocking" ? "✕ " : "⚠ "}{p.reasons.join(" · ")}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
         {/* ── Error ─────────────────────────────────────────────────────────── */}
         {solverError && (
           <div className="bg-red-900/40 border border-red-700 rounded p-2 text-xs text-red-300">
@@ -94,6 +195,9 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
                                                 "❓ ไม่ทราบสถานะ"}
             </div>
             <ResultRow label="คาบที่จัดได้" value={`${result.slots_created} คาบ`} />
+            {(result.skipped_requirement_ids?.length ?? 0) > 0 && (
+              <ResultRow label="วิชาที่ข้ามไว้" value={`${result.skipped_requirement_ids!.length} วิชา`} />
+            )}
             <ResultRow label="เวลาที่ใช้"  value={`${result.solve_time_seconds.toFixed(1)} วิ`} />
             <ResultRow label="ตัวจัดตาราง" value={
               result.engine === "cp-sat" ? "CP-SAT (ดีที่สุด)" :
@@ -107,6 +211,20 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
                 <div className="font-semibold">สิ่งที่จัดไม่ได้:</div>
                 {result.violations.map((v, i) => <div key={i}>• {v}</div>)}
                 <div className="mt-1 text-amber-300/80">แนวทางแก้: ลดคาบ/สัปดาห์ เพิ่มครูหรือห้อง หรือปลดล็อกบางคาบ แล้วกดใหม่</div>
+                {(result.unplaced_requirement_ids?.length ?? 0) > 0 && (
+                  <button
+                    onClick={() => {
+                      const add: Record<number, boolean> = {};
+                      for (const id of result.unplaced_requirement_ids ?? []) add[id] = true;
+                      setManual((m) => ({ ...m, ...add }));
+                      setShowList(true);
+                      loadProblems();
+                    }}
+                    className="mt-1.5 w-full px-2 py-1 rounded bg-amber-700/40 border border-amber-600/60 text-amber-100 text-[10px] hover:bg-amber-700/60"
+                  >
+                    ข้าม {result.unplaced_requirement_ids!.length} วิชาที่จัดไม่ได้นี้ แล้วกดจัดใหม่
+                  </button>
+                )}
               </div>
             )}
           </div>

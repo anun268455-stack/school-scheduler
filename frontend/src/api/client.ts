@@ -1,7 +1,7 @@
 import axios from "axios";
 import type {
   Building, Department, LessonRequirement, Period, Room,
-  ElectivePool, PoolTeacherCandidate, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
+  ElectivePool, PoolTeacherCandidate, RequirementProblemReport, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
 
 // In production (GitHub Pages), use the Render backend URL via env var
@@ -178,4 +178,12 @@ export const runSolver = (p: {
   clear_existing?: boolean;
   time_limit_seconds?: number;
   locked_slot_ids?: number[];
+  /** Leave these lesson requirements out of the run entirely. */
+  exclude_requirement_ids?: number[];
+  /** true = skip everything flagged; "blocking" = only the impossible ones. */
+  skip_problems?: boolean | "blocking";
 }) => api.post<SolverResult>("/timetable/solve", p).then((r) => r.data);
+
+/** วิชาที่มีปัญหา — what cannot be scheduled, checked before a run. */
+export const fetchRequirementProblems = () =>
+  api.get<RequirementProblemReport>("/timetable/problems").then((r) => r.data);

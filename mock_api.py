@@ -221,6 +221,154 @@ def _next(key: str) -> int:
     return _counters[key]
 
 
+# ── วิชาที่มีปัญหา: find them, and let a run leave them out ───────────────────
+# Some lessons cannot be placed however the timetable is arranged — a class
+# already asked to sit 40 periods in a 35-period week, a teacher booked past
+# their own limit, a subject whose teacher was deleted. Left in, they make the
+# whole run look like a failure and bury the cases that could still be fixed.
+# So they are found before the run, shown, and may be left out of it.
+
+LAST_RUN: dict[str, Any] = {"unplaced_requirement_ids": [], "skipped_requirement_ids": []}
+
+
+def _requirement_problems() -> list[dict[str, Any]]:
+    """Every lesson requirement that cannot be scheduled, and why.
+
+    "blocking" means it is impossible as written and will always fail.
+    "warning" means it may well fail because something it depends on is
+    over capacity — which of the class's lessons to drop is the school's
+    call, not ours, so all of them are listed.
+    """
+    g_map = {g["id"]: g for g in _flat_groups()}
+    t_map = {t["id"]: t for t in TEACHERS}
+    s_map = {s["id"]: s for s in SUBJECTS}
+    shares = _shares_students_fn()
+    class_periods = [p["period_num"] for p in PERIODS if p["type"] == "class"]
+    week_capacity = len(class_periods) * 5
+    dep_out = {d["id"] for d in DEPARTMENTS if "พลศึกษา" in d.get("name", "")}
+
+    # Weekly load per class. A subgroup's lesson also occupies its parent's
+    # students, so a class owes its own lessons PLUS every ancestor's. Sibling
+    # subgroups (ก/ข/ค) hold different students and run at the same time, so
+    # they are never added together — summing across the whole family would
+    # invent an overload that does not exist.
+    own: dict[int, int] = defaultdict(int)
+    load_teacher: dict[int, int] = defaultdict(int)
+    for r in REQUIREMENTS:
+        wc = r.get("weekly_count") or 0
+        load_teacher[r["teacher_id"]] += wc
+        own[r["group_id"]] += wc
+
+    parent_of = {g["id"]: g.get("parent_id") for g in g_map.values()}
+
+    def chain_load(gid: int) -> int:
+        total, cur, seen = 0, gid, set()
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            total += own.get(cur, 0)
+            cur = parent_of.get(cur)
+        return total
+
+    # What a class is actually asked to sit through. For a class with
+    # subgroups, the worst of its branches is what has to fit in the week.
+    load_group: dict[int, int] = {}
+    for gid in g_map:
+        kids = [c for c, p in parent_of.items() if p == gid]
+        load_group[gid] = max([chain_load(gid)] + [chain_load(c) for c in kids])
+
+    def has_any_room(r: dict) -> bool:
+        subj = s_map.get(r["subject_id"], {})
+        outdoor = subj.get("department_id") in dep_out
+        dept = subj.get("department_id")
+        for room in ROOMS:
+            if subj.get("fixed_room_id") and room["id"] == subj["fixed_room_id"]:
+                return True
+            if room.get("capacity", 1) == 0:
+                continue          # an office, never a classroom
+            if room.get("specialized_dept_id") and room["specialized_dept_id"] != dept:
+                continue
+            if outdoor != (room["type"] == "outdoor"):
+                continue
+            return True
+        return False
+
+    last_failed = set(LAST_RUN.get("unplaced_requirement_ids") or [])
+    out = []
+    for r in REQUIREMENTS:
+        grp  = g_map.get(r["group_id"])
+        teach = t_map.get(r["teacher_id"])
+        subj = s_map.get(r["subject_id"])
+        wc = r.get("weekly_count") or 0
+        reasons: list[tuple[str, str]] = []   # (severity, text)
+
+        if not grp:
+            reasons.append(("blocking", "ไม่พบห้องเรียนนี้แล้ว (อาจถูกลบไป)"))
+        if not teach:
+            reasons.append(("blocking", "ไม่พบครูผู้สอนคนนี้แล้ว (อาจถูกลบไป)"))
+        if not subj:
+            reasons.append(("blocking", "ไม่พบวิชานี้แล้ว (อาจถูกลบไป)"))
+        if wc <= 0:
+            reasons.append(("blocking", "จำนวนคาบ/สัปดาห์เป็น 0"))
+        if grp and teach and subj and not has_any_room(r):
+            reasons.append(("blocking", "ไม่มีห้องสอนไหนรองรับวิชานี้ได้เลย (ดูความจุ/ประเภทห้อง)"))
+
+        if grp:
+            over = load_group[r["group_id"]] - week_capacity
+            if over > 0:
+                reasons.append(("warning",
+                    f"{grp['name']} ถูกจัด {load_group[r['group_id']]} คาบ/สัปดาห์ "
+                    f"แต่มีแค่ {week_capacity} คาบ — เกิน {over} คาบ"))
+        if teach:
+            cap = (teach.get("max_slots_per_day") or 6) * 5
+            if load_teacher[r["teacher_id"]] > cap:
+                reasons.append(("warning",
+                    f"{teach['name']} ถูกจัด {load_teacher[r['teacher_id']]} คาบ/สัปดาห์ "
+                    f"เกินเพดาน {cap} คาบ"))
+        if r["id"] in last_failed:
+            reasons.append(("warning", "ครั้งที่แล้วจัดลงตารางไม่ได้"))
+
+        if not reasons:
+            continue
+        severity = "blocking" if any(s == "blocking" for s, _ in reasons) else "warning"
+        out.append({
+            "requirement_id": r["id"],
+            "group_id": r["group_id"],   "group_name": grp["name"] if grp else None,
+            "teacher_id": r["teacher_id"], "teacher_name": teach["name"] if teach else None,
+            "teacher_code": teach.get("code") if teach else None,
+            "subject_id": r["subject_id"],
+            "subject_code": subj.get("code") if subj else None,
+            "subject_name": subj.get("name") if subj else None,
+            "weekly_count": wc,
+            "severity": severity,
+            "reasons": [t for _, t in reasons],
+        })
+    out.sort(key=lambda x: (x["severity"] != "blocking", x["subject_code"] or ""))
+    return out
+
+
+def _excluded_requirement_ids(body: dict[str, Any]) -> set[int]:
+    """Requirement ids this run must leave alone."""
+    ids = set(body.get("exclude_requirement_ids") or [])
+    if body.get("skip_problems"):
+        only_blocking = body.get("skip_problems") == "blocking"
+        for p in _requirement_problems():
+            if not only_blocking or p["severity"] == "blocking":
+                ids.add(p["requirement_id"])
+    return ids
+
+
+@app.get("/api/timetable/problems")
+def get_requirement_problems():
+    probs = _requirement_problems()
+    return {
+        "problems": probs,
+        "blocking": sum(1 for p in probs if p["severity"] == "blocking"),
+        "warning":  sum(1 for p in probs if p["severity"] == "warning"),
+        "total_requirements": len(REQUIREMENTS),
+        "last_run": LAST_RUN,
+    }
+
+
 # ── Solver entry point: prefer CP-SAT (real optimiser), fall back to greedy ────
 def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     """Run the timetable solver.
@@ -236,10 +384,19 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
         return _solve_greedy(body)
     try:
         return _solve_cpsat(body)
+    except MemoryError as e:
+        # The model was refused before it was built — expected for a large
+        # school on a small host, so say what happened in plain words rather
+        # than leaving the person with a failure they cannot interpret.
+        res = _solve_greedy(body)
+        res.setdefault("violations", [])
+        res["violations"].append(f"ℹ {e} จึงใช้ตัวจัดสำรอง (heuristic) แทน — ผลที่ได้ยังครบเงื่อนไขทุกข้อ")
+        res["engine"] = "greedy-fallback"
+        return res
     except Exception as e:  # never break the app on a solver bug
         res = _solve_greedy(body)
         res.setdefault("violations", [])
-        res["violations"].append(f"(CP-SAT ใช้ไม่ได้ จึงใช้วิธีสำรอง: {type(e).__name__})")
+        res["violations"].append(f"(CP-SAT ใช้ไม่ได้ จึงใช้วิธีสำรอง: {type(e).__name__}: {e})")
         res["engine"] = "greedy-fallback"
         return res
 
@@ -247,8 +404,12 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
 # ── Greedy Mock Solver (fallback) ──────────────────────────────────────────────
 def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     global SLOTS
+    import time as _time
+    _t0 = _time.perf_counter()
     clear      = body.get("clear_existing", True)
     locked_ids = set(body.get("locked_slot_ids", []))
+    skipped_reqs = _excluded_requirement_ids(body)
+    unplaced_ids: list[int] = []
 
     # Keep only locked slots when clearing — elective slots always survive,
     # regardless of is_locked, so the solver never double-books their teacher/room.
@@ -387,12 +548,17 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if r:
                 return fr, r["name"], r["type"]
 
+        group_size = grp.get("size", 40)
+
         def rank(r: dict) -> tuple:
             if wants_outdoor:
                 pref = {"outdoor": 0, "physical": 1, "floating": 2, "special": 3}
             else:
                 pref = {"physical": 0, "floating": 1, "special": 2, "outdoor": 3}
-            return (pref.get(r["type"], 4), r["id"])
+            # Seat the class somewhere it fits when we can — but a tight room
+            # still beats no room, so this orders rather than excludes.
+            too_small = 1 if r.get("capacity", 40) < group_size else 0
+            return (too_small, pref.get(r["type"], 4), r["id"])
 
         for r in sorted((r for r in ROOMS if eligible(r)), key=rank):
             return r["id"], r["name"], r["type"]
@@ -428,6 +594,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     parallel: dict[str, list] = {}
     solo: list[dict] = []
     for req in REQUIREMENTS:
+        if req["id"] in skipped_reqs:
+            continue          # วิชาที่ผู้ใช้สั่งไม่ให้นำมาลงตาราง
         pgk = req.get("parallel_group_key")
         if pgk:
             parallel.setdefault(pgk, []).append(req)
@@ -501,6 +669,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
         if placed < needed:
             code = s_map.get(req["subject_id"], {}).get("code", "?")
+            unplaced_ids.append(req["id"])
             violations.append(
                 f"ไม่สามารถจัด {code} ครบ {req['weekly_count']} คาบ "
                 f"(จัดได้ {placed + already}/{req['weekly_count']})"
@@ -582,17 +751,22 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             )
 
     status = "FEASIBLE" if not violations else "INFEASIBLE"
+    LAST_RUN["unplaced_requirement_ids"] = unplaced_ids
+    LAST_RUN["skipped_requirement_ids"] = sorted(skipped_reqs)
     return {
         "status": status,
         "slots_created": created,
-        "solve_time_seconds": round(len(REQUIREMENTS) * 0.12 + random.uniform(0.1, 0.5), 2),
+        "solve_time_seconds": round(_time.perf_counter() - _t0, 2),
         "objective_value": float(created * 10),
         "violations": violations,
         "engine": "greedy",
+        "unplaced_requirement_ids": unplaced_ids,
+        "skipped_requirement_ids": sorted(skipped_reqs),
     }
 
 
 def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
+    skipped_reqs = _excluded_requirement_ids(body)
     """Real optimiser (Google OR-Tools CP-SAT).
 
     Hard constraints (zero tolerance):
@@ -673,6 +847,8 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     # duration 2 → floor(n/2) double-blocks + (n%2) singles.
     occurrences = []  # dicts: req, occ_id, length, teacher_id, group_id, subject_id, pgk
     for req in REQUIREMENTS:
+        if req["id"] in skipped_reqs:
+            continue          # วิชาที่ผู้ใช้สั่งไม่ให้นำมาลงตาราง
         subj = s_map.get(req["subject_id"], {})
         dur  = subj.get("duration", 1) or 1
         wc   = req.get("weekly_count", 1)
@@ -721,8 +897,12 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                 continue
             if r.get("specialized_dept_id") and r["specialized_dept_id"] != t_dept:
                 continue
-            if r.get("capacity", 40) < size:
-                continue
+            # Capacity is advisory, not a veto. The seat counts were estimated
+            # when the rooms were imported, and the school's largest classes
+            # (ม.6/10 has 48) exceed every one of them — treating that as
+            # impossible would leave those classes with no timetable at all,
+            # while the greedy solver seats them happily. A room that is too
+            # small is penalised below instead, so roomier ones win when free.
             if wants_outdoor and r["type"] != "outdoor":
                 # outdoor subjects only outdoors
                 continue
@@ -730,6 +910,70 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                 continue
             out.append(r)
         return out
+
+    def shortlist_rooms(occ: dict, limit: int) -> list[dict]:
+        """The few rooms worth considering for this lesson.
+
+        Every room a lesson *could* use becomes a boolean variable at every
+        candidate time, so handing CP-SAT all 136 rooms costs millions of
+        variables and the solver process is killed before it answers. The rooms
+        that actually matter are few and known: the subject's own room, the
+        department's labs, the class's homeroom, the teacher's room. Beyond
+        those, one ordinary classroom is as good as another.
+
+        The generic fallbacks start at an offset derived from the class, so two
+        classes do not shortlist the same handful and make the model
+        unsatisfiable for want of somewhere to sit.
+        """
+        rooms = compatible_rooms(occ)
+        subj = s_map.get(occ["subject_id"], {})
+        want_dept = subj.get("department_id")
+        home  = g_map.get(occ["group_id"], {}).get("homeroom_room_id")
+        fixed = t_map.get(occ["teacher_id"], {}).get("fixed_room_id")
+
+        by_id = {r["id"]: r for r in rooms}
+        picked: dict[int, dict] = {}
+
+        def take(rid):
+            if rid and rid in by_id and rid not in picked:
+                picked[rid] = by_id[rid]
+
+        take(subj.get("fixed_room_id"))
+        for r in rooms:
+            if want_dept and r.get("specialized_dept_id") == want_dept:
+                take(r["id"])
+        take(home)
+        take(fixed)
+
+        generic = [r for r in rooms if r["id"] not in picked]
+        if generic:
+            start = (occ["group_id"] * 7) % len(generic)
+            for i in range(len(generic)):
+                if len(picked) >= limit:
+                    break
+                take(generic[(start + i) % len(generic)]["id"])
+        return list(picked.values())
+
+    # How many rooms each lesson may choose between. Trimmed below if the model
+    # would still be too large to build.
+    room_limit = int(body.get("room_choices") or 6)
+    n_starts = DAYS_N * len(class_periods)
+    est = len(occurrences) * n_starts * room_limit
+    # Booleans we can build and search without the host running out of memory.
+    # The free Render box has 512MB, and each search worker holds its own copy
+    # of the model, so the ceiling is far lower than the maths alone suggests.
+    # Move this up when the backend moves to a bigger machine.
+    BUDGET = int(body.get("max_model_vars") or 150_000)
+    while room_limit > 2 and est > BUDGET:
+        room_limit -= 1
+        est = len(occurrences) * n_starts * room_limit
+    if est > BUDGET:
+        # Even at the floor this will not fit. Say so and let the caller fall
+        # back, rather than being killed mid-build and returning nothing.
+        raise MemoryError(
+            f"ตารางนี้ใหญ่เกินกว่าจะใช้ CP-SAT บนเซิร์ฟเวอร์ปัจจุบัน "
+            f"({len(occurrences)} คาบ ≈ {est:,} ตัวแปร)"
+        )
 
     # ── Variables ──────────────────────────────────────────────────────────────
     start_vars   = {}   # (idx, d, p) -> BoolVar
@@ -749,7 +993,8 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
 
     for idx, occ in enumerate(occurrences):
         starts = valid_starts(occ["length"])
-        rooms = compatible_rooms(occ)
+        rooms = shortlist_rooms(occ, room_limit)
+        group_size = g_map.get(occ["group_id"], {}).get("size", 40)
         homeroom = g_map.get(occ["group_id"], {}).get("homeroom_room_id")
         fixed = t_map.get(occ["teacher_id"], {}).get("fixed_room_id")
         subj = s_map.get(occ["subject_id"], {})
@@ -802,6 +1047,10 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                         penalty_terms.append((3, rv))      # teacher leaves fixed room
                     if r["type"] == "special":
                         penalty_terms.append((1, rv))      # mild: avoid burning special rooms
+                # Prefer a room the class actually fits in, without ruling the
+                # tight ones out — see compatible_rooms.
+                if r.get("capacity", 40) < group_size:
+                    penalty_terms.append((8, rv))
             if rlist:
                 # exactly one room iff this start chosen
                 model.Add(sum(rlist) == sv)
@@ -868,13 +1117,18 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         model.Minimize(sum(w * v for w, v in penalty_terms))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = float(body.get("time_limit_seconds") or 20)
-    solver.parameters.num_search_workers = 8
+    # Render's free tier cuts a request off at ~100s, so stay well inside it:
+    # an answer that never arrives looks like a crash to the person waiting.
+    solver.parameters.max_time_in_seconds = float(body.get("time_limit_seconds") or 45)
+    # Each worker keeps its own copy of the model, so 8 of them multiply memory
+    # by 8 on a 512MB box. Four is the most this host can carry.
+    solver.parameters.num_search_workers = 4
     status = solver.Solve(model)
 
     ok = status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
     created = 0
     violations = []
+    unplaced_ids: set[int] = set()
 
     if ok:
         for idx, occ in enumerate(occurrences):
@@ -886,6 +1140,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                     chosen = (d, p); break
             if chosen is None:
                 code = s_map.get(occ["subject_id"], {}).get("code", "?")
+                unplaced_ids.add(occ["req_id"])
                 violations.append(f"ไม่สามารถจัด {code} (กลุ่ม {occ['group_id']})")
                 continue
             d, p = chosen
@@ -916,6 +1171,8 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     else:
         violations.append("ไม่พบคำตอบที่เป็นไปได้ — ลองลดจำนวนคาบ เพิ่มครู/ห้อง หรือปลดล็อกบางคาบ")
 
+    LAST_RUN["unplaced_requirement_ids"] = sorted(unplaced_ids)
+    LAST_RUN["skipped_requirement_ids"] = sorted(skipped_reqs)
     return {
         "status": "OPTIMAL" if status == cp_model.OPTIMAL else ("FEASIBLE" if ok else "INFEASIBLE"),
         "slots_created": created,
@@ -923,6 +1180,8 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         "objective_value": float(solver.ObjectiveValue()) if (ok and penalty_terms) else None,
         "violations": violations,
         "engine": "cp-sat",
+        "unplaced_requirement_ids": sorted(unplaced_ids),
+        "skipped_requirement_ids": sorted(skipped_reqs),
     }
 
 
