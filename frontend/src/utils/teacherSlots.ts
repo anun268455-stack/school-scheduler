@@ -19,3 +19,18 @@ export function myElectiveOption(slot: TimetableSlot, teacherId: number) {
   if (slot.selected_option_id) return null;
   return (slot.elective_options ?? []).find((o) => o.teacher_id === teacherId) ?? null;
 }
+
+/**
+ * What to call a lesson on screen.
+ *
+ * A shared elective has no subject of its own — its students scatter across
+ * every option at once — so both `subject_code` and `subject_name` are null.
+ * Written as `code ?? name` that renders the word "null" inside a sentence,
+ * which is how it reached the screen. Everything that names a lesson goes
+ * through here instead.
+ */
+export function slotLabel(slot: TimetableSlot): string {
+  return slot.subject_code
+    ?? slot.subject_name
+    ?? (slot.is_elective ? "วิชาเสรี" : "—");
+}

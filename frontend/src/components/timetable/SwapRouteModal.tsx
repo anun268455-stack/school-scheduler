@@ -12,6 +12,7 @@ import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import { DAYS, periodLabel, type Period, type TimetableSlot } from "../../types";
 import type { SwapRoute, RouteStep } from "../../utils/swapPlanner";
+import { slotLabel } from "../../utils/teacherSlots";
 
 interface SwapRouteModalProps {
   moving:  TimetableSlot;
@@ -53,7 +54,7 @@ export const SwapRouteModal: React.FC<SwapRouteModalProps> = ({
           <div className="flex-1 min-w-0">
             <h2 className="text-white font-bold text-base leading-tight">เลือกเส้นทางการแทนที่</h2>
             <p className="text-indigo-100 text-xs mt-0.5">
-              ย้าย <strong>{moving.subject_code ?? moving.subject_name}</strong> ({moving.teacher_name}) ไปที่ {cell(target.day, target.period)}
+              ย้าย <strong>{slotLabel(moving)}</strong> ({moving.teacher_name}) ไปที่ {cell(target.day, target.period)}
               {" "}— มี {routes.length} เส้นทางให้เลือก
             </p>
           </div>

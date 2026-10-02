@@ -20,6 +20,7 @@ import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
 import { SearchableSelect, roomOptions } from "../common/SearchableSelect";
 import { DAYS, periodLabel, periodTime } from "../../types";
 import type { Subject, SubjectType } from "../../types";
+import { slotLabel } from "../../utils/teacherSlots";
 
 interface AddLessonModalProps {
   groupId: number;
@@ -169,7 +170,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
         {groupBlocker && (
           <div className="px-5 py-2.5 bg-red-50 border-b border-red-200 text-xs text-red-700 shrink-0">
             ⛔ ช่องนี้ไม่ว่าง — <strong>{groupBlocker.group_name}</strong> เรียน{" "}
-            {groupBlocker.subject_code ?? groupBlocker.subject_name} อยู่แล้ว
+            {slotLabel(groupBlocker)} อยู่แล้ว
             {groupBlocker.group_id !== groupId && " (ใช้นักเรียนกลุ่มเดียวกัน)"}
           </div>
         )}

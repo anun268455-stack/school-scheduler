@@ -11,7 +11,7 @@ import { ImportModal } from "../components/import/ImportModal";
 import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal";
 import { ElectivePoolPanel } from "../components/timetable/ElectivePoolPanel";
 import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubjectModal";
-import { teachesSlot } from "../utils/teacherSlots";
+import { teachesSlot, slotLabel } from "../utils/teacherSlots";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
@@ -1227,7 +1227,7 @@ const ElectivesPanel: React.FC = () => {
                       <span className="ml-1 text-[10px] bg-purple-100 text-purple-700 border border-purple-200 px-1 py-0.5 rounded">🔗 คาบคู่</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-gray-700">{s.subject_code ?? s.subject_name} · {s.teacher_name}</td>
+                  <td className="px-3 py-2 text-gray-700">{slotLabel(s)} · {s.teacher_name ?? `${s.elective_options?.length ?? 0} ตัวเลือก`}</td>
                   <td className="px-3 py-2 text-gray-600">{s.room_name ?? <span className="text-gray-400">–</span>}</td>
                   <td className="px-3 py-2 text-center text-gray-500">{s.elective_options?.length ?? 1}</td>
                   <td className="px-3 py-2">

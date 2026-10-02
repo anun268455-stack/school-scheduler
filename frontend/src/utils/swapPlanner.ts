@@ -14,6 +14,7 @@
  */
 import type { Room, Teacher, TimetableSlot, Period, StudentGroup } from "../types";
 import { buildSharesStudents, type SharesStudents } from "./groupHierarchy";
+import { slotLabel } from "./teacherSlots";
 
 // ── A single concrete move inside a route ────────────────────────────────────
 export interface RouteStep {
@@ -154,7 +155,7 @@ function mkStep(
   const roomChanged = (toRoomId ?? null) !== (slot.room_id ?? null);
   return {
     slotId: slot.id,
-    label: `${slot.subject_code ?? slot.subject_name ?? "?"} (${slot.teacher_name ?? "?"})`,
+    label: `${slotLabel(slot)} (${slot.teacher_name ?? "หลายคน"})`,
     teacherName: slot.teacher_name ?? "?",
     fromDay: slot.day,
     fromPeriod: slot.period,
@@ -278,7 +279,7 @@ export function planRoutes(
         id: "two-way",
         kind: "two-way",
         title: "สลับสองทาง (A ↔ B)",
-        summary: `${blocker.subject_code ?? blocker.subject_name} ↔ ${moving.subject_code ?? moving.subject_name} สลับตำแหน่งกัน`,
+        summary: `${slotLabel(blocker)} ↔ ${slotLabel(moving)} สลับตำแหน่งกัน`,
         steps,
         risk: warnings.length ? "medium" : "safe",
         score: 2 + roomChanges,
@@ -323,7 +324,7 @@ export function planRoutes(
         id: `relocate-${c.day}-${c.period}`,
         kind: "relocate",
         title: "ย้ายคาบที่ชนไปช่องว่าง",
-        summary: `ย้าย ${blocker.subject_code ?? blocker.subject_name} ของ ${blocker.teacher_name} ไปช่องว่าง`,
+        summary: `ย้าย ${slotLabel(blocker)} ของ ${blocker.teacher_name ?? "วิชาเสรี"} ไปช่องว่าง`,
         steps,
         risk: warnings.length ? "medium" : "safe",
         score: 4 + roomChanges,

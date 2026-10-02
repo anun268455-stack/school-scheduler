@@ -12,7 +12,7 @@
 import React, { forwardRef } from "react";
 import type { Department, Period, SchoolConfig, StudentGroup, Teacher, TimetableSlot } from "../../types";
 import { DAYS } from "../../types";
-import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
+import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { teachesSlot, myElectiveOption } from "../../utils/teacherSlots";
 
 export type PrintMode = "group" | "teacher";
@@ -253,9 +253,9 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
       const list = teachers
         .filter((t) => pick.size === 0 || pick.has(t.id))
         .sort((a, b) => {
-          if (options.sort === "code") return (a.code ?? "").localeCompare(b.code ?? "") || a.name.localeCompare(b.name);
-          if (options.sort === "department") return deptName(a.department_id).localeCompare(deptName(b.department_id)) || a.name.localeCompare(b.name);
-          return a.name.localeCompare(b.name);
+          if (options.sort === "code") return (a.code ?? "").localeCompare(b.code ?? "") || compareNames(a.name, b.name);
+          if (options.sort === "department") return deptName(a.department_id).localeCompare(deptName(b.department_id)) || compareNames(a.name, b.name);
+          return compareNames(a.name, b.name);
         });
 
       list.forEach((teacher, idx) => {
@@ -278,7 +278,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
       const flat = flattenGroups(groups);
       const list = flat
         .filter((g) => pick.size === 0 || pick.has(g.id))
-        .sort((a, b) => (a.level ?? "").localeCompare(b.level ?? "") || a.name.localeCompare(b.name));
+        .sort((a, b) => compareNames(a.level ?? "", b.level ?? "") || compareNames(a.name, b.name));
 
       list.forEach((group, idx) => {
         const grid = buildGrid(slots.filter((s) => shares(s.group_id, group.id)));

@@ -8,7 +8,7 @@ import React, { useMemo, useState } from "react";
 import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import { useTimetableStore } from "../../store/timetableStore";
-import { flattenGroups } from "../../utils/groupHierarchy";
+import { flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import type { PrintOptions, PrintMode, PrintSort } from "./PrintView";
 
 /** Sentinel id that matches nothing — "clear" without meaning "print everything". */
@@ -36,15 +36,15 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
     if (opt.mode === "teacher") {
       return [...teachers]
         .sort((a, b) => {
-          if (opt.sort === "code") return (a.code ?? "").localeCompare(b.code ?? "") || a.name.localeCompare(b.name);
-          if (opt.sort === "department") return deptName(a.department_id).localeCompare(deptName(b.department_id)) || a.name.localeCompare(b.name);
-          return a.name.localeCompare(b.name);
+          if (opt.sort === "code") return (a.code ?? "").localeCompare(b.code ?? "") || compareNames(a.name, b.name);
+          if (opt.sort === "department") return deptName(a.department_id).localeCompare(deptName(b.department_id)) || compareNames(a.name, b.name);
+          return compareNames(a.name, b.name);
         })
         .filter((t) => !q || t.name.toLowerCase().includes(q) || (t.code ?? "").toLowerCase().includes(q))
         .map((t) => ({ id: t.id, label: t.name, hint: t.code ?? "", group: deptName(t.department_id) }));
     }
     return [...flat]
-      .sort((a, b) => (a.level ?? "").localeCompare(b.level ?? "") || a.name.localeCompare(b.name))
+      .sort((a, b) => compareNames(a.level ?? "", b.level ?? "") || compareNames(a.name, b.name))
       .filter((g) => !q || g.name.toLowerCase().includes(q))
       .map((g) => ({ id: g.id, label: g.name, hint: `${g.size} คน`, group: g.level ?? "ไม่ระบุระดับ" }));
   }, [opt.mode, opt.sort, teachers, flat, search, departments]);

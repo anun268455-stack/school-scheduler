@@ -7,6 +7,7 @@ import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import { DAYS, periodLabel } from "../../types";
 import type { Room, TimetableSlot } from "../../types";
+import { slotLabel } from "../../utils/teacherSlots";
 
 const ROOM_TYPE_TH: Record<string, string> = {
   physical: "ห้องเรียนทั่วไป", special: "ห้องพิเศษ", outdoor: "กลางแจ้ง", floating: "ห้องเวียน",
@@ -49,7 +50,7 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
         <div className="flex items-center gap-3 bg-blue-600 px-5 py-4">
           <span className="text-2xl">🔁</span>
           <div className="flex-1 min-w-0">
-            <h2 className="text-white font-bold text-base leading-tight truncate">สลับห้อง — {slot.subject_code ?? slot.subject_name}</h2>
+            <h2 className="text-white font-bold text-base leading-tight truncate">สลับห้อง — {slotLabel(slot)}</h2>
             <p className="text-blue-100 text-xs mt-0.5">
               {dayName} {periodLabel(slot.period)} · {slot.group_name} · {slot.teacher_name}
             </p>

@@ -13,8 +13,10 @@ import type { StudentGroup } from "../types";
 
 export function flattenGroups(groups: StudentGroup[]): StudentGroup[] {
   const out: StudentGroup[] = [];
+  // Ordered as a person reads class numbers, so every list and picker built on
+  // this agrees — and ม.1/10 stops coming between ม.1/1 and ม.1/2.
   const walk = (list: StudentGroup[]) => {
-    for (const g of list) {
+    for (const g of [...list].sort((a, b) => compareNames(a.name, b.name))) {
       out.push(g);
       if (g.children?.length) walk(g.children);
     }
@@ -48,3 +50,29 @@ export function buildSharesStudents(groups: StudentGroup[]): SharesStudents {
 
 /** Default predicate used when no hierarchy is supplied: strict equality only. */
 export const strictShares: SharesStudents = (a, b) => a === b;
+
+/**
+ * Compare two class names the way a person reads them.
+ *
+ * Plain string comparison orders ม.1/10 before ม.1/2, because "1" sorts before
+ * "2" one character at a time. That is how the printed stack of 93 timetables
+ * came out, and how every class picker was ordered. Comparing the numbers
+ * inside the names as numbers fixes it, and keeps ก/ข/ค subgroups after their
+ * parent.
+ */
+export function compareNames(a: string, b: string): number {
+  const parts = (s: string) => s.split(/(\d+)/).filter(Boolean);
+  const pa = parts(a), pb = parts(b);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i], y = pb[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = Number(x), ny = Number(y);
+    if (!Number.isNaN(nx) && !Number.isNaN(ny)) {
+      if (nx !== ny) return nx - ny;
+    } else if (x !== y) {
+      return x.localeCompare(y, "th");
+    }
+  }
+  return 0;
+}
