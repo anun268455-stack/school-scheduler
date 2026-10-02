@@ -121,6 +121,8 @@ interface TimetableStore {
     timeLimitSeconds?: number;
     excludeRequirementIds?: number[];
     skipProblems?: boolean | "blocking";
+    maxConsecutive?: number;
+    preferConsecutive?: number;
   }) => Promise<SolverResult>;
 
   // Bulk operations
@@ -476,6 +478,8 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         locked_slot_ids: lockedIds,
         exclude_requirement_ids: opts?.excludeRequirementIds,
         skip_problems: opts?.skipProblems,
+        max_consecutive: opts?.maxConsecutive,
+        prefer_consecutive: opts?.preferConsecutive,
       });
       await get().loadSlots();
       return result;

@@ -228,6 +228,9 @@ export interface SolverResult {
   unplaced_requirement_ids?: number[];
   /** Requirements the run was told to leave out. */
   skipped_requirement_ids?:  number[];
+  /** The back-to-back limits this run applied. */
+  max_consecutive?:    number;
+  prefer_consecutive?: number;
 }
 
 /**
@@ -321,6 +324,9 @@ export interface SchoolConfig {
   deputyName?:  string; // รองผู้อำนวยการกลุ่มบริหารวิชาการ
   /** The school crest, stored as a data URL so it travels with the backup. */
   logoUrl?:   string;
+  /** Most periods in a row a teacher may be given, and what to aim for. */
+  max_consecutive?:    number;
+  prefer_consecutive?: number;
 }
 
 // Drag item payload

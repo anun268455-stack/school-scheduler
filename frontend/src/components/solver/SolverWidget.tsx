@@ -17,6 +17,9 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   const { slots, isSolving, solverError, runSolver, groups, teachers, subjects } = useTimetableStore();
 
   const [clearExisting, setClearExisting] = useState(true);
+  // How many periods in a row one teacher may be given. The school's rule is
+  // never more than three, and two if the timetable can bear it.
+  const [maxConsec, setMaxConsec] = useState(3);
   const [result, setResult]               = useState<SolverResult | null>(null);
 
   // วิชาที่มีปัญหา — found before the run so they can be left out of it.
@@ -49,7 +52,11 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
 
   const handleSolve = async () => {
     try {
-      const r = await runSolver({ excludeRequirementIds: skippedIds });
+      const r = await runSolver({
+        excludeRequirementIds: skippedIds,
+        maxConsecutive: maxConsec,
+        preferConsecutive: Math.min(2, maxConsec),
+      });
       setResult(r);
       await loadProblems();    // the run may have changed what fails
     } catch {
@@ -109,6 +116,34 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
             />
             ล้างคาบเดิมก่อนคำนวณใหม่ (ยกเว้นคาบที่ล็อก)
           </label>
+        </div>
+
+        {/* ── สอนติดกันกี่คาบ ──────────────────────────────────────────────── */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+            ครูสอนติดกันได้สูงสุด
+          </p>
+          <div className="flex gap-1.5">
+            {[2, 3, 4].map((n) => (
+              <button key={n} onClick={() => setMaxConsec(n)}
+                className={clsx("flex-1 px-2 py-1.5 rounded text-xs font-semibold border transition-colors",
+                  maxConsec === n
+                    ? "bg-indigo-600 border-indigo-500 text-white"
+                    : "bg-gray-800 border-gray-600 text-gray-300 hover:bg-gray-700")}>
+                {n} คาบ
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            {maxConsec === 2
+              ? "เข้มที่สุด — ครูไม่สอนติดกันเกิน 2 คาบ แต่บางวิชาอาจลงไม่ครบ"
+              : maxConsec === 3
+                ? "แนะนำ — ไม่เกิน 3 คาบ และระบบจะพยายามให้อยู่ที่ 2 คาบก่อน"
+                : "ผ่อนที่สุด — ลงได้ครบกว่า แต่ครูจะสอนยาวขึ้น"}
+            <br />
+            ระบบยังพยายามไม่ให้คาบไปติดกับเวลากินข้าวด้วย ·
+            ครูที่ต้องการสอนยาวได้ ตั้งยกเว้นรายคนได้ที่หน้าครู → ขั้นสูง
+          </p>
         </div>
 
         {/* ── วิชาที่มีปัญหา ───────────────────────────────────────────────── */}
@@ -203,6 +238,9 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
               <ResultRow label="วิชาที่ข้ามไว้" value={`${result.skipped_requirement_ids!.length} วิชา`} />
             )}
             <ResultRow label="เวลาที่ใช้"  value={`${result.solve_time_seconds.toFixed(1)} วิ`} />
+            {result.max_consecutive != null && (
+              <ResultRow label="สอนติดกันสูงสุด" value={`${result.max_consecutive} คาบ`} />
+            )}
             <ResultRow label="ตัวจัดตาราง" value={
               result.engine === "cp-sat" ? "CP-SAT (ดีที่สุด)" :
               result.engine === "greedy-fallback" ? "สำรอง (heuristic)" :

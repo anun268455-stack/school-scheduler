@@ -410,6 +410,90 @@ def get_requirement_problems():
     }
 
 
+
+# ── Teaching back to back ─────────────────────────────────────────────────────
+# Nothing limited how many periods in a row a teacher could be given, and on
+# the real data one ended up with seven consecutive. The school's rule: never
+# more than three in a row, and two is better. A ten-minute break between two
+# periods is not a rest, so it does not break a run; lunch does.
+
+CONSEC_HARD = 3     # never more than this
+CONSEC_SOFT = 2     # what we aim for
+
+
+def _consec_settings(body: dict[str, Any] | None = None) -> tuple[int, int]:
+    """(hard ceiling, soft target) for this run.
+
+    The school sets these; a run may override them; a teacher may have the
+    ceiling lifted individually.
+    """
+    cfg = SCHOOL_CONFIG if isinstance(SCHOOL_CONFIG, dict) else {}
+    body = body or {}
+    def pick(key: str, default: int) -> int:
+        for src in (body, cfg):
+            v = src.get(key)
+            if v not in (None, ""):
+                try:
+                    return max(1, int(v))
+                except (TypeError, ValueError):
+                    pass
+        return default
+    hard = pick("max_consecutive", CONSEC_HARD)
+    soft = min(pick("prefer_consecutive", CONSEC_SOFT), hard)
+    return hard, soft
+_GAP_IS_REST = 15   # minutes; shorter than this and the periods count as joined
+
+
+def _consec_limit(teacher: dict[str, Any] | None, hard: int = CONSEC_HARD) -> int:
+    """This teacher's ceiling, which they may have had lifted."""
+    adv = (teacher or {}).get("advanced_settings") or {}
+    if adv.get("ignore_consecutive_limit"):
+        return 99
+    try:
+        return max(1, int(adv.get("max_consecutive") or hard))
+    except (TypeError, ValueError):
+        return hard
+
+
+def _run_length(busy: list[tuple[int, int]], start: int, end: int) -> int:
+    """How many periods in a row this one would sit in, including itself.
+
+    Walks outwards from the new period rather than scanning once and keeping
+    the longest run seen so far: a period dropped into a gap JOINS the runs on
+    either side of it, and a single scan reports only the half it finished on.
+    """
+    spans = sorted([*busy, (start, end)])
+    i = spans.index((start, end))
+    total = 1
+    for j in range(i, 0, -1):                       # backwards while joined
+        if spans[j][0] - spans[j - 1][1] < _GAP_IS_REST:
+            total += 1
+        else:
+            break
+    for j in range(i, len(spans) - 1):              # forwards while joined
+        if spans[j + 1][0] - spans[j][1] < _GAP_IS_REST:
+            total += 1
+        else:
+            break
+    return total
+
+
+def _touches_lunch(period_rows: dict[int, dict[str, Any]], start: int, end: int) -> bool:
+    """Is this period hard up against the lunch break?
+
+    Teaching straight into lunch and straight out of it again is the tiring
+    shape the school wants to avoid, so it costs a little when choosing.
+    """
+    for row in period_rows.values():
+        if row.get("type") != "lunch":
+            continue
+        ls, le = _hhmm(row.get("start_time")), _hhmm(row.get("end_time"))
+        if ls is None or le is None:
+            continue
+        if end == ls or start == le:
+            return True
+    return False
+
 # ── Solver entry point: prefer CP-SAT (real optimiser), fall back to greedy ────
 def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     """Run the timetable solver.
@@ -451,6 +535,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     locked_ids = set(body.get("locked_slot_ids", []))
     skipped_reqs = _excluded_requirement_ids(body)
     unplaced_ids: list[int] = []
+    consec_hard, consec_soft = _consec_settings(body)
 
     # Keep only locked slots when clearing — elective slots always survive,
     # regardless of is_locked, so the solver never double-books their teacher/room.
@@ -469,6 +554,17 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     teacher_busy: set[tuple] = set()   # (teacher, day, 5-minute bucket)
     group_busy:   set[tuple] = set()   # (group,   day, period number)
     room_busy:    set[tuple] = set()   # (room,    day, 5-minute bucket)
+    # (teacher, day) -> the clock intervals they already teach, so we can see
+    # how long a run of back-to-back periods would become.
+    teacher_spans: dict[tuple, list[tuple[int, int]]] = defaultdict(list)
+
+    def span_of(gid: int, period: int) -> tuple[int, int] | None:
+        row = _periods_for_level(_level_key(g_map.get(gid))).get(period)
+        if not row:
+            return None
+        a, b = _hhmm(row.get("start_time")), _hhmm(row.get("end_time"))
+        return (a, b) if a is not None and b is not None else None
+
     for s in SLOTS:
         bks = cell_buckets(s["group_id"], s["period"])
         # Activity periods (สาธารณประโยชน์ ฯลฯ) may have no assigned teacher.
@@ -481,6 +577,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         for tid in tids:
             for b in bks:
                 teacher_busy.add((tid, s["day"], b))
+        sp = span_of(s["group_id"], s["period"])
+        if sp:
+            for tid in tids:
+                teacher_spans[(tid, s["day"])].append(sp)
         group_busy.add((s["group_id"], s["day"], s["period"]))
         if s.get("room_id"):
             for b in bks:
@@ -675,7 +775,23 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     def book(tid, gid, day, period) -> None:
         for b in cell_buckets(gid, period):
             teacher_busy.add((tid, day, b))
+        sp = span_of(gid, period)
+        if sp:
+            teacher_spans[(tid, day)].append(sp)
         group_busy.add((gid, day, period))
+
+    def run_if_placed(tid, gid, day, period) -> int:
+        """Length of the back-to-back run this placement would create."""
+        sp = span_of(gid, period)
+        if not sp:
+            return 1
+        return _run_length(teacher_spans[(tid, day)], sp[0], sp[1])
+
+    def lunch_adjacent(gid: int, period: int) -> bool:
+        sp = span_of(gid, period)
+        if not sp:
+            return False
+        return _touches_lunch(_periods_for_level(_level_key(g_map.get(gid))), sp[0], sp[1])
 
     def double_starts(gid: int):
         """Where a double may start for this class — truly back-to-back only."""
@@ -684,21 +800,40 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 if _next_class_period_for(lvl, p) is not None]
 
     def place_single(req, gid, tid, needed):
-        """Place up to `needed` single periods; returns how many placed."""
-        cells = cells_for(gid)
-        random.shuffle(cells)
+        """Place up to `needed` single periods; returns how many placed.
+
+        Tried in three passes, each loosening what we will settle for:
+          1. keeps the teacher's run at or under CONSEC_SOFT and away from lunch
+          2. still under CONSEC_SOFT, but may sit against lunch
+          3. up to the teacher's hard ceiling
+        A lesson that cannot be placed even then is reported, rather than
+        stacking a teacher up to seven periods in a row as it used to.
+        """
+        hard = _consec_limit(t_map.get(tid), consec_hard)
         placed = 0
-        for day, period in cells:
+        for attempt in range(3):
             if placed >= needed:
                 break
-            if not teacher_free(tid, day, gid, period):
-                continue
-            if group_occupied(gid, day, period):
-                continue
-            slot = make_slot(req, day, period)
-            SLOTS.append(slot)
-            book(tid, gid, day, period)
-            placed += 1
+            cells = cells_for(gid)
+            random.shuffle(cells)
+            for day, period in cells:
+                if placed >= needed:
+                    break
+                if not teacher_free(tid, day, gid, period):
+                    continue
+                if group_occupied(gid, day, period):
+                    continue
+                run = run_if_placed(tid, gid, day, period)
+                if attempt == 0 and (run > consec_soft or lunch_adjacent(gid, period)):
+                    continue
+                if attempt == 1 and run > consec_soft:
+                    continue
+                if run > hard:
+                    continue
+                slot = make_slot(req, day, period)
+                SLOTS.append(slot)
+                book(tid, gid, day, period)
+                placed += 1
         return placed
 
     # ── Place solo requirements ──
@@ -714,28 +849,43 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # Double-period subjects (พลศึกษา ฯลฯ): place consecutive pairs first.
         if duration == 2 and needed >= 2:
             pairs_needed = needed // 2
-            cells = double_starts(gid)
-            random.shuffle(cells)
+            hard = _consec_limit(t_map.get(tid), consec_hard)
             lvl = _level_key(g_map.get(gid))
-            for day, p in cells:
+            # A double is two in a row by definition, so it only has room to
+            # sit beside one more period before hitting the ceiling.
+            for attempt in range(2):
                 if pairs_needed <= 0:
                     break
-                p2 = _next_class_period_for(lvl, p)
-                if p2 is None:
-                    continue
-                if not teacher_free(tid, day, gid, p) or not teacher_free(tid, day, gid, p2):
-                    continue
-                if group_occupied(gid, day, p) or group_occupied(gid, day, p2):
-                    continue
-                s1 = make_slot(req, day, p)
-                s1["is_double_start"] = True
-                s2 = make_slot(req, day, p2)
-                SLOTS.append(s1); SLOTS.append(s2)
-                for pp in (p, p2):
-                    book(tid, gid, day, pp)
-                created      += 2
-                placed       += 2
-                pairs_needed -= 1
+                cells = double_starts(gid)
+                random.shuffle(cells)
+                for day, p in cells:
+                    if pairs_needed <= 0:
+                        break
+                    p2 = _next_class_period_for(lvl, p)
+                    if p2 is None:
+                        continue
+                    if not teacher_free(tid, day, gid, p) or not teacher_free(tid, day, gid, p2):
+                        continue
+                    if group_occupied(gid, day, p) or group_occupied(gid, day, p2):
+                        continue
+                    # Measure the pair as a whole: placing the first then the
+                    # second separately would under-count the run.
+                    sp1, sp2 = span_of(gid, p), span_of(gid, p2)
+                    if sp1 and sp2:
+                        run = _run_length([*teacher_spans[(tid, day)], sp2], sp1[0], sp1[1])
+                        if attempt == 0 and run > consec_soft:
+                            continue
+                        if run > hard:
+                            continue
+                    s1 = make_slot(req, day, p)
+                    s1["is_double_start"] = True
+                    s2 = make_slot(req, day, p2)
+                    SLOTS.append(s1); SLOTS.append(s2)
+                    for pp in (p, p2):
+                        book(tid, gid, day, pp)
+                    created      += 2
+                    placed       += 2
+                    pairs_needed -= 1
 
         # Remaining periods (odd leftover, or any pairs that didn't fit) → singles.
         remaining = needed - placed
@@ -780,6 +930,11 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     if not teacher_free(r["teacher_id"], day_, r["group_id"], per_):
                         return False
                     if group_occupied(r["group_id"], day_, per_):
+                        return False
+                    # Parallel lessons went in without any run check, so a
+                    # teacher could be stacked up here however long.
+                    if run_if_placed(r["teacher_id"], r["group_id"], day_, per_) \
+                            > _consec_limit(t_map.get(r["teacher_id"]), consec_hard):
                         return False
             return True
 
@@ -845,6 +1000,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         "engine": "greedy",
         "unplaced_requirement_ids": unplaced_ids,
         "skipped_requirement_ids": sorted(skipped_reqs),
+        "max_consecutive": consec_hard,
+        "prefer_consecutive": consec_soft,
     }
 
 
@@ -1081,6 +1238,9 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     start_vars   = {}   # (idx, d, p) -> BoolVar
     room_vars    = {}   # (idx, d, p, rid) -> BoolVar
     teacher_occ  = defaultdict(list)
+    # (teacher, day, period number) -> the starts that would occupy it, used by
+    # the back-to-back limit, which reasons in periods rather than minutes.
+    teacher_occ_by_period = defaultdict(list)
     group_occ    = defaultdict(list)   # keyed by exact group id
     room_occ     = defaultdict(list)
     penalty_terms = []   # (weight, var) minimise sum(weight*var)
@@ -1121,6 +1281,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
             for cd, b in tslots:
                 teacher_occ[(occ["teacher_id"], cd, b)].append(sv)
             for cd, cp_ in cells:
+                teacher_occ_by_period[(occ["teacher_id"], cd, cp_)].append(sv)
                 group_occ[(occ["group_id"], cd, cp_)].append(sv)
             # room choice
             rlist = []
@@ -1184,6 +1345,60 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     for key, vs in room_occ.items():
         if len(vs) > 1:
             model.Add(sum(vs) <= 1)
+
+    # ── No teacher gets too many periods back to back ──────────────────────────
+    # The same ceiling the greedy solver applies, as a hard constraint: for
+    # every run of (limit + 1) touching time bands on a day, a teacher may
+    # occupy at most `limit` of them.
+    consec_hard, _soft = _consec_settings(body)
+    bands_by_day: dict[int, list[list[int]]] = {}
+    for d in range(DAYS_N):
+        # Distinct time bands either level is taught in, in clock order.
+        bands: dict[tuple[int, int], set[int]] = {}
+        for lvl in ("lower", "upper"):
+            for num in _class_periods_for_level(lvl):
+                row = _periods_for_level(lvl).get(num)
+                a, b = _hhmm(row.get("start_time")), _hhmm(row.get("end_time"))
+                if a is None or b is None:
+                    continue
+                bands.setdefault((a, b), set()).add(num)
+        ordered = sorted(bands.items())
+        # Keep only bands that genuinely touch the next one.
+        chains: list[list[int]] = []
+        current: list[set[int]] = []
+        prev_end = None
+        for (a, b), nums in ordered:
+            if prev_end is not None and a - prev_end >= _GAP_IS_REST:
+                if current:
+                    chains.append([n for st in current for n in st])
+                current = []
+            current.append(nums)
+            prev_end = b
+        if current:
+            chains.append([n for st in current for n in st])
+        bands_by_day[d] = chains
+
+    for tid in {occ["teacher_id"] for occ in occurrences}:
+        limit = _consec_limit(t_map.get(tid), consec_hard)
+        if limit >= 99:
+            continue
+        for d in range(DAYS_N):
+            # Rebuild the chain as a list of band-groups so we can slide a
+            # window of limit+1 over it.
+            groups: list[list[int]] = []
+            seen_nums: set[int] = set()
+            for lvl in ("lower", "upper"):
+                for num in _class_periods_for_level(lvl):
+                    seen_nums.add(num)
+            ordered_nums = sorted(seen_nums)
+            if len(ordered_nums) <= limit:
+                continue
+            groups = [[n] for n in ordered_nums]
+            for i in range(len(groups) - limit):
+                window = [n for grp in groups[i:i + limit + 1] for n in grp]
+                vs = [v for n in window for v in teacher_occ_by_period.get((tid, d, n), [])]
+                if len(vs) > limit:
+                    model.Add(sum(vs) <= limit)
 
     # ── Subgroup student-sharing: parent lesson excludes child lessons ─────────
     # For every (group g, ancestor a) at each cell: occ(a)+occ(g) ≤ 1.
@@ -2997,6 +3212,8 @@ def analyze_conflict(slot_id: int, target_day: int, target_period: int):
 SCHOOL_CONFIG: dict[str, Any] = {
     "schoolName": "", "term": "1", "year": "2568",
     "directorName": "", "deputyName": "", "logoUrl": "",
+    # How many periods in a row a teacher may be given, and what to aim for.
+    "max_consecutive": CONSEC_HARD, "prefer_consecutive": CONSEC_SOFT,
 }
 
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
@@ -3119,7 +3336,8 @@ def get_school_config():
 
 @app.put("/api/school/config")
 def update_school_config(body: dict[str, Any]):
-    for k in ("schoolName", "term", "year", "directorName", "deputyName", "logoUrl"):
+    for k in ("schoolName", "term", "year", "directorName", "deputyName", "logoUrl",
+              "max_consecutive", "prefer_consecutive"):
         if k in body:
             SCHOOL_CONFIG[k] = body[k]
     return SCHOOL_CONFIG

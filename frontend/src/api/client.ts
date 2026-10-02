@@ -201,6 +201,10 @@ export const runSolver = (p: {
   exclude_requirement_ids?: number[];
   /** true = skip everything flagged; "blocking" = only the impossible ones. */
   skip_problems?: boolean | "blocking";
+  /** Most periods in a row one teacher may be given. */
+  max_consecutive?: number;
+  /** What to aim for, below the ceiling. */
+  prefer_consecutive?: number;
 }) => api.post<SolverResult>("/timetable/solve", p).then((r) => r.data);
 
 /** วิชาที่มีปัญหา — what cannot be scheduled, checked before a run. */
