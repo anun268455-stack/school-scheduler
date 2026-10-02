@@ -154,9 +154,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         ))}
       </div>
 
-      {/* Entity Selector */}
+      {/* Entity Selector. A fixed width, not flex-1: every other item on this
+          bar is shrink-0, so this was the only thing that could give — and it
+          gave all of it, collapsing to a single letter and an arrow. The bar
+          wraps to a second line when it must, which is the better way to lose
+          space. */}
       {currentPage === "timetable" && (
-        <div className="px-3 border-r border-gray-700 min-w-0 flex-1 max-w-[240px]">
+        <div className="px-3 border-r border-gray-700 w-[260px] shrink-0">
           {/* Typing beats scrolling 143 teachers or 93 classes. */}
           <SearchableSelect
             tone="dark"

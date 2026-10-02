@@ -91,7 +91,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
         className={clsx(
           "w-full flex items-center gap-1 rounded text-left border outline-none",
           tone === "dark"
-            ? "bg-gray-800 border-gray-600 text-white px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 disabled:text-gray-500"
+            ? "bg-gray-800 border-gray-600 text-white px-2.5 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 disabled:text-gray-500"
             : "bg-white border-gray-300 px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400",
         )}
       >

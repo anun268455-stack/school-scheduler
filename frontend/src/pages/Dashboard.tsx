@@ -598,8 +598,14 @@ const SubjectsPanel: React.FC = () => {
         </Field>
       </div>
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3 text-xs text-amber-900">
-        ☀️ <strong>คาบเช้า</strong> = วิชายากๆ (คณิต วิทย์) ที่อยากให้อยู่ช่วงเช้า กดรูปพระอาทิตย์ในตารางด้านล่างได้เลย
-        — เป็น<strong>แนวทาง</strong> ไม่ใช่กฎ ระบบจะลองวางในเช้าก่อน ถ้าไม่มีที่จริงๆ จึงลงบ่าย วิชาจะไม่หายไปจากตาราง
+        <span className="inline-flex items-center gap-1 bg-amber-400 text-white font-bold rounded px-1.5 py-0.5">☀️ เช้า</span>{" "}
+        <strong>= วิชายากๆ (คณิต วิทย์) ที่อยากให้อยู่ช่วงเช้า</strong> นักเรียนจะได้ไม่ง่วงในคาบบ่าย ·
+        กดปุ่มในคอลัมน์ "ช่วงเวลาที่อยากให้สอน" เพื่อสลับระหว่าง{" "}
+        <span className="inline-flex items-center gap-1 bg-amber-400 text-white font-bold rounded px-1.5 py-0.5">☀️ เช้า</span>{" "}
+        กับ{" "}
+        <span className="inline-flex items-center gap-1 bg-gray-50 border border-gray-200 text-gray-400 rounded px-1.5 py-0.5">🌙 ไม่ระบุ</span>
+        <br />
+        เป็น<strong>แนวทาง</strong> ไม่ใช่กฎ ระบบจะลองวางในเช้าก่อน ถ้าไม่มีที่จริงๆ จึงลงบ่าย วิชาจะไม่หายไปจากตาราง
         <br />
         🏟 <strong>ห้องประจำวิชา</strong> = วิชานี้ต้องเรียนที่ห้องนี้เสมอ (พละ → สนาม, คอมพิวเตอร์ → ห้องแล็บ, ดนตรี → ห้องดนตรี)
         — <strong>สำคัญกว่าห้องประจำชั้นของนักเรียน</strong> นักเรียนจะเดินมาเรียนที่ห้องนี้ ส่วนวิชาที่ไม่ได้ตั้งไว้จะเรียนในห้องประจำชั้นของตัวเอง
@@ -614,7 +620,7 @@ const SubjectsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","🏟 ห้องประจำวิชา","ประเภท","คาบ","☀️ เช้า",""].map((h) => (
+              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","🏟 ห้องประจำวิชา","ประเภท","คาบ","ช่วงเวลาที่อยากให้สอน",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
@@ -653,7 +659,7 @@ const SubjectsPanel: React.FC = () => {
                     </td>
                     <td className="px-2 py-1">
                       <label className="flex items-center gap-1"><input type="checkbox" checked={editForm.is_activity} onChange={(e) => setEditForm({ ...editForm, is_activity: e.target.checked })} /> กิจกรรม</label>
-                      <label className="flex items-center gap-1"><input type="checkbox" checked={editForm.prefer_morning} onChange={(e) => setEditForm({ ...editForm, prefer_morning: e.target.checked })} /> ☀️ เช้า</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={editForm.prefer_morning} onChange={(e) => setEditForm({ ...editForm, prefer_morning: e.target.checked })} /> ☀️ สอนเช้า</label>
                     </td>
                     <td className="px-2 py-1">
                       <div className="flex gap-1">
@@ -678,18 +684,22 @@ const SubjectsPanel: React.FC = () => {
                     <td className="px-3 py-2 text-gray-600">{SUBJECT_TYPE_TH[s.type] ?? s.type}</td>
                     <td className="px-3 py-2 text-gray-600">{s.duration}</td>
                     <td className="px-3 py-2">
+                      {/* A tinted background alone was not readable — two pale
+                          shades of the same icon. The state is written out
+                          instead, so it can be read rather than compared. */}
                       <button
                         onClick={() => toggleMorning(s)}
                         title={s.prefer_morning
                           ? "วิชานี้จะถูกลองวางในคาบเช้าก่อน — กดเพื่อปิด"
                           : "กดเพื่อให้ระบบลองวางวิชานี้ในคาบเช้าก่อน"}
                         className={clsx(
-                          "px-2 py-1 rounded-lg border text-xs transition-colors",
+                          "flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs whitespace-nowrap transition-colors",
                           s.prefer_morning
-                            ? "bg-amber-100 border-amber-300 text-amber-800 font-semibold"
-                            : "bg-white border-gray-200 text-gray-300 hover:border-amber-300 hover:text-amber-500")}
+                            ? "bg-amber-400 border-amber-500 text-white font-bold shadow-sm"
+                            : "bg-gray-50 border-gray-200 text-gray-400 hover:border-amber-400 hover:text-amber-600")}
                       >
-                        ☀️
+                        <span>{s.prefer_morning ? "☀️" : "🌙"}</span>
+                        <span>{s.prefer_morning ? "เช้า" : "ไม่ระบุ"}</span>
                       </button>
                     </td>
                     <td className="px-3 py-2">

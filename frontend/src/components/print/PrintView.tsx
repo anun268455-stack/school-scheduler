@@ -215,9 +215,12 @@ const TimetableBlock: React.FC<BlockProps> = ({
       </table>
       </div>
 
-      {/* Signatures */}
+      {/* Signatures. The gap above is deliberate and in millimetres: the grid
+          is the flex child that grows, so whatever is reserved here is taken
+          off the table rather than added to the page, and the signature line
+          stops sitting right on the table's bottom border. */}
       <div style={{
-        marginTop: compact ? "4px" : "10px",
+        marginTop: compact ? "6mm" : "10mm",
         display: "flex", justifyContent: "space-between",
         fontSize: compact ? "8pt" : "10pt",
       }}>
@@ -238,22 +241,63 @@ const TimetableBlock: React.FC<BlockProps> = ({
 
 
 /**
- * "นางสาวกรรณิการ์ เจริญกิจ" → "นางสาวกรรณิการ์".
+ * "นางสาวกรรณิการ์ เจริญกิจ" → "กรรณิการ์".
  *
- * A printed cell is a few millimetres wide; a full name with a surname wraps or
- * is cut, and the surname is the part nobody needs to tell two teachers apart
- * on a timetable.
+ * A printed cell is a few millimetres wide. The surname is the part nobody
+ * needs to tell two teachers apart on a timetable, and the title in front of
+ * the given name is three or four characters of the cell spent saying nothing
+ * — every teacher has one.
+ *
+ * Thai titles run together with the name ("นางสาวกรรณิการ์"), so they are
+ * stripped off the front of the first word, longest first: take "นาง" off
+ * "นางสาวกรรณิการ์" and what is left is "สาวกรรณิการ์". Western titles stand
+ * as their own word and are dropped with it.
  */
+// Sorted longest-first below, so the list can be written in any order: match
+// "นาง" before "นางสาว" and "นางสาวกรรณิการ์" comes out as "สาวกรรณิการ์".
+const THAI_TITLES = [
+  "นางสาว", "นาง", "นาย", "น.ส.", "ด.ช.", "ด.ญ.", "ครู",
+  "ดร.", "ผศ.ดร.", "รศ.ดร.", "ศ.ดร.", "ผศ.", "รศ.", "ศ.",
+  "ว่าที่ร้อยตรีหญิง", "ว่าที่ร้อยตรี", "ว่าที่ ร.ต.", "ว่าที่ร.ต.",
+  // Ranks: this school has a "สิบตำรวจตรี" on the staff list.
+  "สิบตำรวจตรี", "สิบตำรวจโท", "สิบตำรวจเอก", "จ่าสิบตำรวจ",
+  "ร้อยตำรวจตรี", "ร้อยตำรวจโท", "ร้อยตำรวจเอก",
+  "พันตำรวจตรี", "พันตำรวจโท", "พันตำรวจเอก",
+  "จ่าสิบตรี", "จ่าสิบโท", "จ่าสิบเอก",
+  "สิบตรี", "สิบโท", "สิบเอก", "ร้อยตรี", "ร้อยโท", "ร้อยเอก",
+  "พันตรี", "พันโท", "พันเอก",
+  "ด.ต.", "ส.ต.ต.", "ส.ต.ท.", "ส.ต.อ.", "ร.ต.ต.",
+].sort((a, b) => b.length - a.length);
+const WESTERN_TITLE = /^(mr|mrs|miss|ms|dr|prof|master|sir)\.?$/i;
+/** The same titles written hard against the name: "Mr.Charles", "Mr.Hu". */
+const WESTERN_GLUED = /^(mr|mrs|miss|ms|dr|prof)\.\s*(?=\S)/i;
+
 function shortTeacher(name: string | null | undefined): string {
   if (!name) return "";
   const parts = String(name).trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "";
-  // A Thai title is glued to the given name ("นางสาวกรรณิการ์"), so the first
-  // word is already the whole thing. A Western title stands alone, and
-  // dropping everything after it would leave just "Miss".
-  const TITLES = /^(mr|mrs|miss|ms|dr|prof|master)\.?$/i;
-  if (TITLES.test(parts[0]) && parts.length > 1) return `${parts[0]} ${parts[1]}`;
-  return parts[0];
+
+  // "Mr. Charles" / "Miss Risen" — the title is a word of its own.
+  let rest = parts;
+  if (WESTERN_TITLE.test(parts[0])) {
+    rest = parts.slice(1);
+    if (rest.length === 0) return parts[0];   // nothing but a title; keep it
+  }
+
+  // "Mr.Charles" — the same title with the space left out, which the
+  // whole-word test above cannot see.
+  let first = rest[0].replace(WESTERN_GLUED, "");
+  if (!first) first = rest[0];
+  for (const t of THAI_TITLES) {
+    if (first.startsWith(t)) {
+      const stripped = first.slice(t.length);
+      // Only drop the title if a name is actually left behind, so someone
+      // recorded as just "นาย" does not come out as an empty cell.
+      if (stripped) first = stripped;
+      break;                                   // longest match wins, once
+    }
+  }
+  return first;
 }
 
 /**
