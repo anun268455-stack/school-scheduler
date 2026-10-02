@@ -19,8 +19,9 @@ import { AddLessonModal } from "./AddLessonModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
 import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
-import { buildSharesStudents } from "../../utils/groupHierarchy";
+import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
 import { teachesSlot } from "../../utils/teacherSlots";
+import { TableSearch, matches } from "../common/TableSearch";
 import { DAYS, GRID_PERIODS, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
@@ -167,8 +168,8 @@ interface TimetableGridProps { onNav?: (page: string) => void }
 
 export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   const {
-    slots, rooms, teachers, periods, groups, subjects, requirements, selectedGroupId, selectedTeacherId, selectedRoomId, viewMode,
-    impactMap, draggingSlot, startDrag, endDrag, setSelectedGroupId,
+    slots, rooms, teachers, periods, groups, subjects, requirements, selectedGroupId, selectedTeacherId, selectedRoomId,
+    impactMap, draggingSlot, startDrag, endDrag,
     moveSlot, swapRoom, toggleLock, deleteSlot, applySwapRoute, preLockMode, undo, undoStack,
   } = useTimetableStore();
 
@@ -283,7 +284,6 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   }, [undo, undoStack.length]);
 
   if (!selectedGroupId && !selectedTeacherId && !selectedRoomId) {
-    const flatGroups = groups.flatMap((g) => [g, ...(g.children ?? [])]);
     const steps = [
       { key: "groups",       icon: "👥", label: "เพิ่มห้องเรียน",   done: groups.length > 0,       count: groups.length },
       { key: "teachers",     icon: "👨‍🏫", label: "เพิ่มครูผู้สอน",  done: teachers.length > 0,     count: teachers.length },
@@ -359,27 +359,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     }
 
     // Data + timetable exist → quick-pick which schedule to view.
-    return (
-      <div className="flex-1 overflow-y-auto flex flex-col items-center justify-center py-16 px-4 gap-4">
-        <span className="text-4xl">📅</span>
-        <p className="text-sm text-gray-500">
-          เลือก{viewMode === "group" ? "ห้องเรียน" : viewMode === "teacher" ? "ครู" : "ห้องสอน"}เพื่อดูตาราง
-        </p>
-        {viewMode === "group" && flatGroups.length > 0 && (
-          <div className="flex flex-wrap gap-2 justify-center max-w-xl">
-            {flatGroups.slice(0, 24).map((g) => (
-              <button
-                key={g.id}
-                onClick={() => setSelectedGroupId(g.id)}
-                className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 bg-white hover:border-indigo-400 hover:bg-indigo-50 text-gray-700"
-              >
-                {g.name}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    );
+    return <PickEntityScreen />;
   }
 
   return (
@@ -604,3 +584,77 @@ const LegendDot: React.FC<{ color: string; label: string }> = ({ color, label })
     <span className={clsx("inline-block w-2.5 h-2.5 rounded-sm", color)} />{label}
   </span>
 );
+
+/**
+ * The "nothing selected yet" screen.
+ *
+ * It used to show the first 24 classes as chips and stop — with 93 classes and
+ * 143 teachers the one you wanted was usually not among them, and there was no
+ * way to ask for it. Every chip is reachable now, through a search box, and the
+ * teacher and room views get the same screen instead of a bare line of text.
+ */
+const PickEntityScreen: React.FC = () => {
+  const {
+    viewMode, groups, teachers, rooms,
+    setSelectedGroupId, setSelectedTeacherId, setSelectedRoomId,
+  } = useTimetableStore();
+  const [q, setQ] = useState("");
+
+  const what = viewMode === "group" ? "ห้องเรียน" : viewMode === "teacher" ? "ครู" : "ห้องสอน";
+
+  const items = useMemo(() => {
+    if (viewMode === "group") {
+      return flattenGroups(groups).map((g) => ({ id: g.id, label: g.name, hint: g.level ?? "" }));
+    }
+    if (viewMode === "teacher") {
+      return teachers.map((t) => ({
+        id: t.id, label: t.name, hint: t.code ?? "",
+      }));
+    }
+    return rooms.map((r) => ({ id: r.id, label: r.name, hint: "" }));
+  }, [viewMode, groups, teachers, rooms]);
+
+  const shown = useMemo(
+    () => items.filter((it) => matches(q, it.label, it.hint)),
+    [items, q],
+  );
+
+  const pick = (id: number) => {
+    if (viewMode === "group")   setSelectedGroupId(id);
+    if (viewMode === "teacher") setSelectedTeacherId(id);
+    if (viewMode === "room")    setSelectedRoomId(id);
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto flex flex-col items-center py-10 px-4 gap-4">
+      <span className="text-4xl">📅</span>
+      <p className="text-sm text-gray-500">เลือก{what}เพื่อดูตาราง</p>
+
+      <div className="w-full max-w-xl">
+        <TableSearch
+          value={q} onChange={setQ}
+          count={shown.length} total={items.length}
+          placeholder={`ค้นหา${what}…${viewMode === "teacher" ? " (ชื่อ หรือ รหัสครู)" : ""}`}
+        />
+      </div>
+
+      <div className="flex flex-wrap gap-2 justify-center max-w-3xl">
+        {shown.map((it) => (
+          <button
+            key={it.id}
+            onClick={() => pick(it.id)}
+            className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 bg-white hover:border-indigo-400 hover:bg-indigo-50 text-gray-700"
+          >
+            {it.hint && viewMode === "teacher" && (
+              <span className="text-gray-400 font-mono text-xs mr-1">{it.hint}</span>
+            )}
+            {it.label}
+          </button>
+        ))}
+        {shown.length === 0 && (
+          <p className="text-sm text-gray-400 py-6">ไม่พบ{what}ที่ค้นหา</p>
+        )}
+      </div>
+    </div>
+  );
+};

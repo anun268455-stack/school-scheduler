@@ -10,6 +10,7 @@ import { SolverWidget } from "../solver/SolverWidget";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { ClearTimetableModal } from "../timetable/ClearTimetableModal";
 import { useDismissOnOutside } from "../common/ModalShell";
+import { SearchableSelect } from "../common/SearchableSelect";
 import type { PrintOptions } from "../print/PrintView";
 import type { ViewMode } from "../../types";
 
@@ -76,7 +77,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const selectedId = viewMode === "group" ? selectedGroupId
     : viewMode === "teacher" ? selectedTeacherId : selectedRoomId;
 
-  const handleEntityChange = (id: number) => {
+  /** null clears the selection and shows the "pick one" screen again. */
+  const handleEntityChange = (id: number | null) => {
     if (viewMode === "group")   setSelectedGroupId(id);
     if (viewMode === "teacher") setSelectedTeacherId(id);
     if (viewMode === "room")    setSelectedRoomId(id);
@@ -123,7 +125,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const totalSlots  = slots.length;
 
   return (
-    <header className="no-print sticky top-0 z-50 flex items-center gap-0 bg-gray-900 text-white shadow-lg border-b border-gray-700 px-3 h-12 shrink-0">
+    <header className="no-print sticky top-0 z-50 flex flex-wrap items-center gap-y-1 bg-gray-900 text-white shadow-lg border-b border-gray-700 px-3 py-1 min-h-12 shrink-0">
 
       {/* Logo */}
       <div
@@ -154,28 +156,36 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
 
       {/* Entity Selector */}
       {currentPage === "timetable" && (
-        <div className="px-3 border-r border-gray-700 shrink-0">
-          <select
-            value={selectedId ?? ""}
-            onChange={(e) => handleEntityChange(Number(e.target.value))}
-            className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 focus:ring-1 focus:ring-blue-500 outline-none min-w-[140px]"
-          >
-            <option value="">
-              {viewMode === "group" ? "-- เลือกห้อง --"
-               : viewMode === "teacher" ? "-- เลือกครู --"
-               : "-- เลือกห้องสอน --"}
-            </option>
-            {entityOptions.map((e) => (
-              <option key={(e as { id: number }).id} value={(e as { id: number }).id}>
-                {(e as { name: string }).name}
-              </option>
-            ))}
-          </select>
+        <div className="px-3 border-r border-gray-700 min-w-0 flex-1 max-w-[240px]">
+          {/* Typing beats scrolling 143 teachers or 93 classes. */}
+          <SearchableSelect
+            tone="dark"
+            value={selectedId == null ? "" : String(selectedId)}
+            onChange={(v) => handleEntityChange(v === "" ? null : Number(v))}
+            placeholder={viewMode === "group" ? "-- เลือกห้อง --"
+              : viewMode === "teacher" ? "-- เลือกครู --"
+              : "-- เลือกห้องสอน --"}
+            emptyLabel={viewMode === "group" ? "-- เลือกห้อง --"
+              : viewMode === "teacher" ? "-- เลือกครู --"
+              : "-- เลือกห้องสอน --"}
+            searchThreshold={8}
+            options={entityOptions.map((e) => {
+              const row = e as { id: number; name: string; code?: string | null; level?: string | null };
+              return {
+                value: String(row.id),
+                // Teacher codes are how staff refer to each other, so they are
+                // searchable here as well as the name.
+                label: viewMode === "teacher" && row.code ? `${row.code} ${row.name}` : row.name,
+                group: viewMode === "group" ? (row.level ?? undefined) : undefined,
+              };
+            })}
+          />
         </div>
       )}
 
-      {/* Spacer */}
-      <div className="flex-1" />
+      {/* Pushes the actions right when there is room, and simply wraps when
+          there is not — nothing gets cut off the edge either way. */}
+      <div className="flex-1 min-w-0" />
 
       {/* Live-sync indicator — shows that two people can edit at once */}
       <div className="flex items-center px-3 border-r border-gray-700 shrink-0">
@@ -291,7 +301,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       </div>
 
       {/* Print & PDF */}
-      <div className="flex items-center gap-1.5 pl-3 shrink-0">
+      <div className="flex items-center gap-1.5 pl-3 shrink-0 ml-auto">
         <button onClick={() => { setShowPrintOpts(true); setShowSolver(false); setShowCrud(false); }}
           className="flex items-center gap-1 px-2.5 py-1 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-xs text-gray-200">
           🖨 พิมพ์

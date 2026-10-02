@@ -28,11 +28,13 @@ interface SearchableSelectProps {
   disabled?:   boolean;
   /** Below this many options the search box is hidden — it would only be noise. */
   searchThreshold?: number;
+  /** "dark" matches the top toolbar; the open panel stays light either way. */
+  tone?: "light" | "dark";
 }
 
 export const SearchableSelect: React.FC<SearchableSelectProps> = ({
   value, onChange, options, placeholder = "เลือก…", emptyLabel,
-  className, disabled, searchThreshold = 7,
+  className, disabled, searchThreshold = 7, tone = "light",
 }) => {
   const [open, setOpen]     = useState(false);
   const [query, setQuery]   = useState("");
@@ -87,11 +89,14 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         className={clsx(
-          "w-full flex items-center gap-1 border border-gray-300 rounded px-2 py-1.5 text-sm text-left bg-white",
-          "focus:ring-1 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:text-gray-400",
+          "w-full flex items-center gap-1 rounded text-left border outline-none",
+          tone === "dark"
+            ? "bg-gray-800 border-gray-600 text-white px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 disabled:text-gray-500"
+            : "bg-white border-gray-300 px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400",
         )}
       >
-        <span className={clsx("flex-1 min-w-0 truncate", !selected && "text-gray-400")}>
+        <span className={clsx("flex-1 min-w-0 truncate",
+          !selected && (tone === "dark" ? "text-gray-400" : "text-gray-400"))}>
           {selected ? selected.label : (emptyLabel && !value ? emptyLabel : placeholder)}
         </span>
         {selected?.hint && <span className="text-[11px] text-gray-400 shrink-0">{selected.hint}</span>}
@@ -99,7 +104,10 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-xl overflow-hidden">
+        <div className={clsx(
+          "absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl overflow-hidden text-gray-900",
+          tone === "dark" ? "min-w-full w-max max-w-[320px]" : "w-full",
+        )}>
           {showSearch && (
             <div className="p-1.5 border-b border-gray-100">
               <input
