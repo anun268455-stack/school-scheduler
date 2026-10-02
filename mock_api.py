@@ -128,6 +128,26 @@ REQUIREMENTS: list[dict[str, Any]] = [
 SLOTS: list[dict[str, Any]] = []
 
 
+
+def _room_reserved_for(room: dict[str, Any]) -> set[int]:
+    """Teachers this room is kept for. Empty means anyone may use it.
+
+    A room can belong to several teachers who share it — a department office
+    with three desks, a lab two people run between them. It was a single
+    teacher before, so that older shape is still read.
+    """
+    ids = room.get("reserved_teacher_ids")
+    if isinstance(ids, list):
+        return {int(x) for x in ids if x}
+    one = room.get("reserved_teacher_id")
+    return {int(one)} if one else set()
+
+
+def _room_free_for(room: dict[str, Any], teacher_id: int | None) -> bool:
+    kept = _room_reserved_for(room)
+    return not kept or (teacher_id is not None and teacher_id in kept)
+
+
 def _room_usable(room: dict[str, Any]) -> bool:
     """May a lesson be scheduled in this room?
 
@@ -557,7 +577,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # setting existed, and still does.)
             if not _room_usable(r):
                 return False
-            if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != teacher_id:
+            if not _room_free_for(r, teacher_id):
                 return False
             if r.get("specialized_dept_id") and r["specialized_dept_id"] != want_dept:
                 return False
@@ -584,7 +604,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # 3. Stay in the group's homeroom for ordinary subjects.
         if home and not wants_outdoor and not room_taken(home):
             r = r_map.get(home)
-            if r and (not r.get("reserved_teacher_id") or r["reserved_teacher_id"] == teacher_id):
+            if r and _room_free_for(r, teacher_id):
                 return home, r["name"], r["type"]
 
         # 4. Teacher's own fixed room (skip for outdoor subjects).
@@ -975,7 +995,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                 continue
             if not _room_usable(r):
                 continue
-            if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != occ["teacher_id"]:
+            if not _room_free_for(r, occ["teacher_id"]):
                 continue
             if r.get("specialized_dept_id") and r["specialized_dept_id"] != t_dept:
                 continue
@@ -1656,6 +1676,7 @@ def get_rooms():
 def create_room(body: dict[str, Any]):
     body["id"] = _next("room")
     body.setdefault("usable", True)
+    body.setdefault("reserved_teacher_ids", [])
     ROOMS.append(body)
     return body
 
@@ -1681,7 +1702,7 @@ def bulk_create_rooms(body: list[dict[str, Any]]):
         row["id"] = _next("room")
         row.setdefault("building_name", None)
         row.setdefault("specialized_dept_id", None)
-        row.setdefault("reserved_teacher_id", None)
+        row.setdefault("reserved_teacher_ids", [])
         row.setdefault("usable", True)
         ROOMS.append(row)
         created.append(row)

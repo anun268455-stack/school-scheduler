@@ -34,6 +34,7 @@ const KIND_ICON: Record<SwapRoute["kind"], string> = {
   "room-only":"🚪",
   "two-way":  "🔄",
   relocate:   "➡️",
+  chain:      "🔁",
   force:      "⚠️",
 };
 

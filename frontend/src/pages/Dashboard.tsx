@@ -12,7 +12,7 @@ import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal
 import { ElectivePoolPanel } from "../components/timetable/ElectivePoolPanel";
 import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubjectModal";
 import { teachesSlot, slotLabel } from "../utils/teacherSlots";
-import { levelKeyOf, levelLabel, classPeriodsForLevel } from "../utils/levels";
+import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
 import { flattenGroups } from "../utils/groupHierarchy";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
@@ -738,9 +738,55 @@ const SubjectsPanel: React.FC = () => {
 };
 
 // ─── Rooms ───────────────────────────────────────────────────────────────────
+
+/**
+ * Pick any number of teachers for a room.
+ *
+ * A room can be shared — a department office with three desks, a lab two
+ * people run between them. One dropdown could only name one of them, so the
+ * others had no way to be recorded and the scheduler treated the room as
+ * belonging to a single person.
+ */
+const TeacherMultiPicker: React.FC<{
+  value: number[];
+  onChange: (ids: number[]) => void;
+  teachers: { id: number; name: string; code?: string | null }[];
+}> = ({ value, onChange, teachers }) => {
+  const [pick, setPick] = useState("");
+  const name = (id: number) => {
+    const t = teachers.find((x) => x.id === id);
+    return t ? `${t.code ? `${t.code} ` : ""}${t.name}` : String(id);
+  };
+  return (
+    <div className="space-y-1">
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {value.map((id) => (
+            <span key={id} className="inline-flex items-center gap-1 text-[11px] bg-teal-50 text-teal-800 border border-teal-200 rounded px-1.5 py-0.5">
+              🏠 {name(id)}
+              <button onClick={() => onChange(value.filter((x) => x !== id))}
+                className="text-teal-500 hover:text-red-600">✕</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <SearchableSelect
+        value={pick}
+        onChange={(v) => {
+          if (v) onChange([...new Set([...value, Number(v)])]);
+          setPick("");
+        }}
+        options={teachers
+          .filter((t) => !value.includes(t.id))
+          .map((t) => ({ value: String(t.id), label: `${t.code ? `${t.code} ` : ""}${t.name}` }))}
+        placeholder={value.length ? "+ เพิ่มครูอีกคน" : "– ห้องรวม (ใครใช้ก็ได้) –"} />
+    </div>
+  );
+};
+
 const RoomsPanel: React.FC = () => {
   const { rooms, buildings, teachers, departments } = useTimetableStore();
-  const [form, setForm]     = useState({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40, reserved_teacher_id: "", specialized_dept_id: "" });
+  const [form, setForm]     = useState({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40, reserved_teacher_ids: [] as number[], specialized_dept_id: "" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
 
@@ -766,7 +812,7 @@ const RoomsPanel: React.FC = () => {
   const shownRooms = rooms.filter((r) =>
     (!onlyBlocked || r.usable === false) &&
     matches(q, r.name, ROOM_TYPE_TH[r.type] ?? r.type,
-      r.building_name, r.floor, teacherName(r.reserved_teacher_id),
+      r.building_name, r.floor, roomReservedFor(r).map(teacherName).join(" "),
       r.usable === false ? "ห้ามใช้" : "ใช้ได้"));
   const deptName    = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name ?? "–") : null;
 
@@ -778,10 +824,10 @@ const RoomsPanel: React.FC = () => {
       floor:       Number(form.floor),
       capacity:    Number(form.capacity),
       specialized_dept_id: form.specialized_dept_id ? Number(form.specialized_dept_id) : null,
-      reserved_teacher_id: form.reserved_teacher_id ? Number(form.reserved_teacher_id) : null,
+      reserved_teacher_ids: form.reserved_teacher_ids,
     });
     useTimetableStore.setState((s) => ({ rooms: [...s.rooms, created] }));
-    setForm({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40, reserved_teacher_id: "", specialized_dept_id: "" });
+    setForm({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40, reserved_teacher_ids: [], specialized_dept_id: "" });
   };
 
   const handleUpdate = async (id: number) => {
@@ -793,7 +839,7 @@ const RoomsPanel: React.FC = () => {
       floor: Number(editForm.floor),
       capacity: Number(editForm.capacity),
       specialized_dept_id: editForm.specialized_dept_id ? Number(editForm.specialized_dept_id) : null,
-      reserved_teacher_id: editForm.reserved_teacher_id ? Number(editForm.reserved_teacher_id) : null,
+      reserved_teacher_ids: editForm.reserved_teacher_ids,
     });
     useTimetableStore.setState((s) => ({ rooms: s.rooms.map((r) => r.id === id ? { ...r, ...updated } : r) }));
     setEditing(null); setEditForm(null);
@@ -825,9 +871,9 @@ const RoomsPanel: React.FC = () => {
         <Field label="ความจุ (คน)">
           <input type="number" min={1} className={inputCls} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: Number(e.target.value) })} />
         </Field>
-        <Field label="🏠 จองให้ครูประจำ">
-          <SearchableSelect value={form.reserved_teacher_id} onChange={(v) => setForm({ ...form, reserved_teacher_id: v })}
-            options={teacherOptions(teachers)} emptyLabel="– ห้องรวม (ใครใช้ก็ได้) –" />
+        <Field label="🏠 จองให้ครู (เลือกได้หลายคน)">
+          <TeacherMultiPicker value={form.reserved_teacher_ids} teachers={teachers}
+            onChange={(ids) => setForm({ ...form, reserved_teacher_ids: ids })} />
         </Field>
         <Field label="🧪 ห้องเฉพาะกลุ่มสาระ">
           <select className={inputCls} value={form.specialized_dept_id} onChange={(e) => setForm({ ...form, specialized_dept_id: e.target.value })}>
@@ -890,11 +936,9 @@ const RoomsPanel: React.FC = () => {
                     <td className="px-2 py-1"><input type="number" className={inlineCls} style={{ width: 60 }} value={editForm.floor} onChange={(e) => setEditForm({ ...editForm, floor: Number(e.target.value) })} /></td>
                     <td className="px-2 py-1"><input type="number" className={inlineCls} style={{ width: 70 }} value={editForm.capacity} onChange={(e) => setEditForm({ ...editForm, capacity: Number(e.target.value) })} /></td>
                     <td className="px-2 py-1">
-                      <div className="flex flex-col gap-1" style={{ minWidth: 130 }}>
-                        <select className={inlineCls} value={editForm.reserved_teacher_id} onChange={(e) => setEditForm({ ...editForm, reserved_teacher_id: e.target.value })}>
-                          <option value="">🏠 ห้องรวม</option>
-                          {teachers.map((t) => <option key={t.id} value={t.id}>🏠 {t.name}</option>)}
-                        </select>
+                      <div className="flex flex-col gap-1" style={{ minWidth: 180 }}>
+                        <TeacherMultiPicker value={editForm.reserved_teacher_ids} teachers={teachers}
+                          onChange={(ids) => setEditForm({ ...editForm, reserved_teacher_ids: ids })} />
                         <select className={inlineCls} value={editForm.specialized_dept_id} onChange={(e) => setEditForm({ ...editForm, specialized_dept_id: e.target.value })}>
                           <option value="">🧪 ไม่จำกัด</option>
                           {departments.map((d) => <option key={d.id} value={d.id}>🧪 {d.name}</option>)}
@@ -920,13 +964,15 @@ const RoomsPanel: React.FC = () => {
                     <td className="px-3 py-2 text-gray-600">{r.capacity}</td>
                     <td className="px-3 py-2 text-xs">
                       <div className="flex flex-col gap-0.5">
-                        {teacherName(r.reserved_teacher_id) && (
-                          <span className="bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded w-fit">🏠 {teacherName(r.reserved_teacher_id)}</span>
-                        )}
+                        {roomReservedFor(r).map((id) => (
+                          <span key={id} className="bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded w-fit">
+                            🏠 {teacherName(id)}
+                          </span>
+                        ))}
                         {deptName(r.specialized_dept_id) && (
                           <span className="bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded w-fit">🧪 {deptName(r.specialized_dept_id)}</span>
                         )}
-                        {!r.reserved_teacher_id && !r.specialized_dept_id && <span className="text-gray-400">ห้องรวม</span>}
+                        {roomReservedFor(r).length === 0 && !r.specialized_dept_id && <span className="text-gray-400">ห้องรวม</span>}
                       </div>
                     </td>
                     {/* One click to take a room out of the timetable — a staff
@@ -947,7 +993,7 @@ const RoomsPanel: React.FC = () => {
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
-                        <button onClick={() => { setEditing(r.id); setEditForm({ name: r.name, type: r.type, building_id: r.building_id ? String(r.building_id) : "", floor: r.floor, capacity: r.capacity, reserved_teacher_id: r.reserved_teacher_id ? String(r.reserved_teacher_id) : "", specialized_dept_id: r.specialized_dept_id ? String(r.specialized_dept_id) : "" }); }} className={btnEdit}>แก้ไข</button>
+                        <button onClick={() => { setEditing(r.id); setEditForm({ name: r.name, type: r.type, building_id: r.building_id ? String(r.building_id) : "", floor: r.floor, capacity: r.capacity, reserved_teacher_ids: roomReservedFor(r), specialized_dept_id: r.specialized_dept_id ? String(r.specialized_dept_id) : "" }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteRoom(r.id); useTimetableStore.setState((s) => ({ rooms: s.rooms.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>

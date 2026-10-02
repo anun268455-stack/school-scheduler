@@ -43,7 +43,14 @@ export interface Room {
   floor:               number;
   capacity:            number;
   specialized_dept_id: number | null;  // e.g. Physics lab locked to Science dept
-  reserved_teacher_id: number | null;  // permanently reserved for a specific teacher
+  /**
+   * ครูที่จองห้องนี้ไว้ — empty means anyone may use it.
+   *
+   * A room can belong to several teachers who share it. This was a single
+   * teacher once, so `reserved_teacher_id` is still read from older data.
+   */
+  reserved_teacher_ids?: number[];
+  reserved_teacher_id?: number | null;
   /**
    * ห้ามใช้ — false keeps the scheduler out of this room entirely.
    * For staff rooms, offices and anything else that is not a classroom.
@@ -250,6 +257,13 @@ export interface RequirementProblemReport {
 // ── Schedule constants ───────────────────────────────────────────────────────
 export const DAYS    = ["จันทร์","อังคาร","พุธ","พฤหัสบดี","ศุกร์"] as const;
 export const DAYS_EN = ["Mon","Tue","Wed","Thu","Fri"]                as const;
+/**
+ * The standard Thai one-letter day abbreviations.
+ *
+ * Slicing the full name gave "จั" and "อั" — not abbreviations, just truncated
+ * words. พฤหัสบดี needs two letters because พุธ already has พ.
+ */
+export const DAYS_SHORT = ["จ","อ","พ","พฤ","ศ"]                      as const;
 
 /** Default period manifest (overridden from API /periods if available) */
 export const DEFAULT_PERIODS: Period[] = [

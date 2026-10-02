@@ -78,3 +78,26 @@ export function combinedPeriods(periods: Period[]): (Period & { onlyFor?: LevelK
 export function levelLabel(level: LevelKey): string {
   return level === "lower" ? "ม.1-3" : "ม.4-6";
 }
+
+/**
+ * Teachers a room is kept for — empty means anyone may use it.
+ *
+ * Rooms held one teacher once and now hold a list; both shapes are read so
+ * older data and older backups keep working.
+ */
+export function roomReservedFor(room: {
+  reserved_teacher_ids?: number[] | null;
+  reserved_teacher_id?: number | null;
+}): number[] {
+  if (Array.isArray(room.reserved_teacher_ids)) return room.reserved_teacher_ids.filter(Boolean);
+  return room.reserved_teacher_id ? [room.reserved_teacher_id] : [];
+}
+
+/** May this teacher use the room? */
+export function roomFreeFor(
+  room: { reserved_teacher_ids?: number[] | null; reserved_teacher_id?: number | null },
+  teacherId: number | null | undefined,
+): boolean {
+  const kept = roomReservedFor(room);
+  return kept.length === 0 || (teacherId != null && kept.includes(teacherId));
+}

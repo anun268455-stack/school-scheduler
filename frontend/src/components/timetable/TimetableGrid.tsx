@@ -256,7 +256,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     }
 
     // Compute concrete replacement routes for this drop.
-    const routes = planRoutes(movingSlot, nd, np, slots, rooms, teachers, periods, groups);
+    const routes = planRoutes(movingSlot, nd, np, slots, rooms, teachers, periods, groups, 5, subjects);
 
     // If the only route is a clean direct placement, just do it — no modal.
     if (routes.length === 1 && routes[0].kind === "direct" && routes[0].feasible) {

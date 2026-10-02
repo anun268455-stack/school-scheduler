@@ -8,6 +8,7 @@ import clsx from "clsx";
 import { DAYS, periodLabel } from "../../types";
 import type { Room, TimetableSlot } from "../../types";
 import { slotLabel } from "../../utils/teacherSlots";
+import { roomFreeFor } from "../../utils/levels";
 
 const ROOM_TYPE_TH: Record<string, string> = {
   physical: "ห้องเรียนทั่วไป", special: "ห้องพิเศษ", outdoor: "กลางแจ้ง", floating: "ห้องเวียน",
@@ -32,7 +33,9 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
     );
     const free = rooms.filter((r) => {
       if (occupiedRoomIds.has(r.id)) return false;
-      if (r.reserved_teacher_id && r.reserved_teacher_id !== slot.teacher_id) return false;
+      // ห้ามใช้ — a staff room or office is not somewhere to move a class to.
+      if (r.usable === false || (r.capacity ?? 1) <= 0) return false;
+      if (!roomFreeFor(r, slot.teacher_id)) return false;
       return true;
     });
     // Prioritize rooms matching the slot's current room type

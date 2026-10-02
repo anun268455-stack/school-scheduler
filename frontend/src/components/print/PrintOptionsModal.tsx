@@ -88,7 +88,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
         <div className="px-5 py-4 space-y-4 overflow-y-auto">
           {/* What to print */}
           <div>
-            <p className="text-xs font-semibold text-gray-500 mb-1.5">พิมพ์อะไร</p>
+            <p className="text-xs font-semibold text-gray-700 mb-1.5">พิมพ์อะไร</p>
             <div className="flex gap-2">
               {([["group", "👥 ตารางเรียน (รายห้อง)"], ["teacher", "👨‍🏫 ตารางสอน (รายครู)"]] as [PrintMode, string][]).map(([k, label]) => (
                 <button key={k}
@@ -106,8 +106,8 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
           {/* Order + sheets */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <p className="text-xs font-semibold text-gray-500 mb-1.5">เรียงลำดับ</p>
-              <select className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              <p className="text-xs font-semibold text-gray-700 mb-1.5">เรียงลำดับ</p>
+              <select className="w-full border border-gray-400 bg-white text-gray-900 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                 value={opt.sort} onChange={(e) => set({ sort: e.target.value as PrintSort })}>
                 <option value="name">ตามชื่อ</option>
                 {opt.mode === "teacher" && <option value="code">ตามรหัสประจำตัวครู</option>}
@@ -115,8 +115,8 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
               </select>
             </div>
             <div>
-              <p className="text-xs font-semibold text-gray-500 mb-1.5">จำนวนต่อแผ่น A4</p>
-              <select className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              <p className="text-xs font-semibold text-gray-700 mb-1.5">จำนวนต่อแผ่น A4</p>
+              <select className="w-full border border-gray-400 bg-white text-gray-900 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                 value={opt.perPage} onChange={(e) => set({ perPage: Number(e.target.value) as 1 | 2 })}>
                 <option value={2}>2 ตาราง/แผ่น (ประหยัดกระดาษ)</option>
                 <option value={1}>1 ตาราง/แผ่น (ตัวใหญ่ อ่านง่าย)</option>
@@ -127,17 +127,17 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
           {/* Pick which ones */}
           <div>
             <div className="flex items-center gap-2 mb-1.5">
-              <p className="text-xs font-semibold text-gray-500">
+              <p className="text-xs font-semibold text-gray-700">
                 เลือก{opt.mode === "teacher" ? "ครู" : "ห้องเรียน"}
               </p>
-              <span className="text-[11px] text-gray-400">เลือกแล้ว {countSel} / {allIds.length}</span>
+              <span className="text-[11px] text-gray-600">เลือกแล้ว {countSel} / {allIds.length}</span>
               <div className="ml-auto flex gap-2">
                 <button onClick={() => set({ selectedIds: [] })} className="text-[11px] text-blue-600 hover:underline">เลือกทั้งหมด</button>
                 <button onClick={() => set({ selectedIds: [NONE_SELECTED] })} className="text-[11px] text-gray-500 hover:underline">ล้าง</button>
               </div>
             </div>
             <input
-              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-2"
+              className="w-full border border-gray-400 bg-white text-gray-900 placeholder-gray-500 rounded px-2 py-1.5 text-sm mb-2 focus:ring-1 focus:ring-blue-500 outline-none"
               placeholder={opt.mode === "teacher" ? "ค้นหาชื่อครู หรือรหัสครู" : "ค้นหาห้องเรียน"}
               value={search} onChange={(e) => setSearch(e.target.value)}
             />
@@ -149,13 +149,13 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
                 return (
                   <React.Fragment key={it.id}>
                     {newGroup && (
-                      <p className="px-2.5 pt-1.5 pb-0.5 text-[10px] font-semibold text-gray-400 bg-gray-50">{it.group}</p>
+                      <p className="px-2.5 pt-1.5 pb-0.5 text-[10px] font-semibold text-gray-600 bg-gray-100">{it.group}</p>
                     )}
                     <label className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer hover:bg-gray-50">
                       <input type="checkbox" className="w-3.5 h-3.5 accent-gray-800"
                         checked={on} onChange={() => toggle(it.id)} />
                       <span className="text-sm text-gray-800 flex-1">{it.label}</span>
-                      <span className="text-[11px] text-gray-400 font-mono">{it.hint}</span>
+                      <span className="text-[11px] text-gray-600 font-mono">{it.hint}</span>
                     </label>
                   </React.Fragment>
                 );

@@ -15,6 +15,7 @@
 import type { Room, Teacher, TimetableSlot, Period, StudentGroup } from "../types";
 import { buildSharesStudents, type SharesStudents } from "./groupHierarchy";
 import { slotLabel } from "./teacherSlots";
+import { roomFreeFor } from "./levels";
 
 // ── A single concrete move inside a route ────────────────────────────────────
 export interface RouteStep {
@@ -40,6 +41,7 @@ export type RouteKind =
   | "room-only"   // only a room clash — reassign a room, nobody moves cell
   | "two-way"     // classic A↔B swap
   | "relocate"    // bump the blocker to another free cell
+  | "chain"       // a bumps b, b bumps c … up to MAX_CHAIN deep
   | "force";      // overwrite (delete blocker) — last resort
 
 export interface SwapRoute {
@@ -60,10 +62,14 @@ interface Ctx {
   rooms:    Room[];
   teachers: Teacher[];
   periods:  Period[];
+  subjects?: { id: number; department_id?: number | null }[];
   classPeriodNums: number[];
   numDays:  number;
   shares:   SharesStudents;
 }
+
+/** How many lessons a single route may shuffle. Beyond this nobody can follow it. */
+const MAX_CHAIN = 5;
 
 function roomName(ctx: Ctx, id: number | null): string | null {
   if (id == null) return null;
@@ -92,11 +98,19 @@ function pickRoom(
       .map((s) => s.room_id as number),
   );
   const teacher = ctx.teachers.find((t) => t.id === slot.teacher_id);
+  const subject = ctx.subjects?.find((x) => x.id === slot.subject_id);
 
   const allowed = (r: Room): boolean => {
     if (busy.has(r.id)) return false;
-    // A room reserved for another teacher is off-limits.
-    if (r.reserved_teacher_id && r.reserved_teacher_id !== slot.teacher_id) return false;
+    // ห้ามใช้ — a staff room or office. The planner was offering these as
+    // destinations despite the school having said they are not classrooms.
+    if (r.usable === false || (r.capacity ?? 1) <= 0) return false;
+    // A room reserved for other teachers is off-limits.
+    if (!roomFreeFor(r, slot.teacher_id)) return false;
+    // A lab belongs to its own department.
+    if (r.specialized_dept_id
+        && subject?.department_id
+        && r.specialized_dept_id !== subject.department_id) return false;
     return true;
   };
 
@@ -173,6 +187,79 @@ function mkStep(
 }
 
 // ── Main entry ───────────────────────────────────────────────────────────────
+
+/**
+ * Find a chain of moves that clears the way.
+ *
+ * A direct swap only works when the blocker happens to fit where the moving
+ * lesson came from. Usually it does not, and the next thing a person tries by
+ * hand is to push the blocker somewhere, push whatever is THERE somewhere else,
+ * and so on. That search is what this does, breadth-first and depth-limited,
+ * so the answer is the shortest chain rather than the first one found.
+ *
+ * Each link is "this lesson moves to this free-or-freeable cell". The chain
+ * stops at MAX_CHAIN because a longer one is not something anyone can check.
+ */
+function findChain(
+  ctx: Ctx,
+  moving: TimetableSlot,
+  targetDay: number,
+  targetPeriod: number,
+  maxDepth: number,
+): { slot: TimetableSlot; day: number; period: number }[] | null {
+  type Move = { slot: TimetableSlot; day: number; period: number };
+
+  /** Lessons that would block `slot` at this cell, ignoring ones already moving. */
+  const blockersFor = (slot: TimetableSlot, d: number, p: number, movedIds: Set<number>) =>
+    ctx.slots.filter(
+      (s) => s.day === d && s.period === p && s.id !== slot.id && !movedIds.has(s.id)
+        && (sameTeacher(s.teacher_id, slot.teacher_id) || ctx.shares(s.group_id, slot.group_id)),
+    );
+
+  // Cells a lesson could go to, nearest-first so a chain stays close to home.
+  const cellsFor = (slot: TimetableSlot): { day: number; period: number }[] => {
+    const out: { day: number; period: number }[] = [];
+    for (let d = 0; d < ctx.numDays; d++) {
+      for (const p of ctx.classPeriodNums) {
+        if (d === slot.day && p === slot.period) continue;
+        out.push({ day: d, period: p });
+      }
+    }
+    return out.sort((a, b) =>
+      Math.abs(a.day - slot.day) + Math.abs(a.period - slot.period)
+      - (Math.abs(b.day - slot.day) + Math.abs(b.period - slot.period)));
+  };
+
+  type State = { chain: Move[]; frontier: Move };
+  const start: Move = { slot: moving, day: targetDay, period: targetPeriod };
+  const queue: State[] = [{ chain: [start], frontier: start }];
+  const seen = new Set<string>([`${moving.id}@${targetDay}-${targetPeriod}`]);
+
+  while (queue.length > 0) {
+    const { chain, frontier } = queue.shift()!;
+    const movedIds = new Set(chain.map((m) => m.slot.id));
+    const blockers = blockersFor(frontier.slot, frontier.day, frontier.period, movedIds);
+
+    if (blockers.length === 0) return chain;      // the way is clear
+    if (chain.length >= maxDepth) continue;       // too long to be useful
+    // Several blockers at once would need a branching plan; a person cannot
+    // follow that, and the force route already covers it.
+    if (blockers.length > 1) continue;
+
+    const blocker = blockers[0];
+    if (blocker.is_locked || blocker.is_elective) continue;   // not ours to move
+
+    for (const cell of cellsFor(blocker)) {
+      const key = `${blocker.id}@${cell.day}-${cell.period}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const next: Move = { slot: blocker, day: cell.day, period: cell.period };
+      queue.push({ chain: [...chain, next], frontier: next });
+    }
+  }
+  return null;
+}
+
 export function planRoutes(
   moving:   TimetableSlot,
   targetDay:    number,
@@ -183,12 +270,13 @@ export function planRoutes(
   periods:  Period[],
   groups:   StudentGroup[] = [],
   numDays = 5,
+  subjects: { id: number; department_id?: number | null }[] = [],
 ): SwapRoute[] {
   const classPeriodNums = [
     ...new Set(periods.filter((p) => p.type === "class").map((p) => p.period_num)),
   ].sort((a, b) => a - b);
   const shares = buildSharesStudents(groups);
-  const ctx: Ctx = { slots, rooms, teachers, periods, classPeriodNums, numDays, shares };
+  const ctx: Ctx = { slots, rooms, teachers, periods, subjects, classPeriodNums, numDays, shares };
 
   const atTarget = slots.filter(
     (s) => s.day === targetDay && s.period === targetPeriod && s.id !== moving.id,
@@ -328,6 +416,52 @@ export function planRoutes(
         steps,
         risk: warnings.length ? "medium" : "safe",
         score: 4 + roomChanges,
+        feasible: warnings.length === 0,
+        warnings,
+      });
+    }
+  }
+
+  // ── Chained moves: push the blocker on, and whatever it displaces too ──────
+  // The last thing to try before overwriting: a person doing this by hand would
+  // keep pushing lessons along until something lands somewhere free.
+  {
+    const chain = findChain(ctx, moving, targetDay, targetPeriod, MAX_CHAIN);
+    if (chain && chain.length > 1) {
+      // Apply the moves in reverse — the far end of the chain steps aside
+      // first, so nothing is ever briefly double-booked.
+      const ordered = [...chain].reverse();
+      const movedIds = new Set(chain.map((m) => m.slot.id));
+      const rest = slots.filter((x) => !movedIds.has(x.id));
+
+      const steps: RouteStep[] = [];
+      const warnings: string[] = [];
+      let roomChanges = 0;
+      const placed: TimetableSlot[] = [];
+      for (const m of ordered) {
+        const occupying = [
+          ...rest.filter((x) => x.day === m.day && x.period === m.period),
+          ...placed.filter((x) => x.day === m.day && x.period === m.period),
+        ];
+        const room = pickRoom(ctx, m.slot, m.day, m.period, occupying);
+        const step = mkStep(ctx, m.slot, m.day, m.period, room, "move");
+        if (step.roomChanged) roomChanges++;
+        if (step.noRoomAvailable) warnings.push(`${step.label}: ไม่มีห้องว่างที่ปลายทาง`);
+        steps.push(step);
+        placed.push({ ...m.slot, day: m.day, period: m.period, room_id: room });
+      }
+
+      const others = ordered.length - 1;
+      routes.push({
+        id: "chain",
+        kind: "chain",
+        title: `ย้ายต่อกัน ${ordered.length} คาบ`,
+        summary: `ย้าย ${slotLabel(moving)} ไปช่องที่เลือก โดยให้อีก ${others} คาบขยับต่อกันเป็นทอดๆ`
+          + (roomChanges > 0 ? ` · เปลี่ยนห้อง ${roomChanges} คาบ` : ""),
+        steps,
+        risk: ordered.length <= 3 ? "medium" : "risky",
+        // Longer chains sort below a plain swap but above overwriting.
+        score: 10 + ordered.length * 2 + roomChanges,
         feasible: warnings.length === 0,
         warnings,
       });

@@ -15274,10 +15274,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "001",
    "label": "ศูนย์1",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 2,
@@ -15288,10 +15288,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "002",
    "label": "ศูนย์2",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 3,
@@ -15302,10 +15302,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "003",
    "label": "ศูนย์3",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 4,
@@ -15316,10 +15316,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "004",
    "label": "ศูนย์4",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 5,
@@ -15330,10 +15330,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "005",
    "label": "ลานข้างคาเฟ่",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 6,
@@ -15344,10 +15344,10 @@
    "floor": 1,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "111",
    "label": "ห้องกิจการฯ",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 7,
@@ -15358,10 +15358,10 @@
    "floor": 1,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "112",
    "label": "ห้องพยาบาล",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 8,
@@ -15372,10 +15372,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "113",
    "label": "ห้องแนะแนว",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 9,
@@ -15386,10 +15386,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "114",
    "label": "ห้องภาษาไทย",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 10,
@@ -15400,10 +15400,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": 6,
-   "reserved_teacher_id": null,
    "room_no": "115",
    "label": "ห้องสุขศึกษา",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 11,
@@ -15414,10 +15414,10 @@
    "floor": 1,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "116",
    "label": "ห้องสำเนาฯ",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 12,
@@ -15428,10 +15428,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "117",
    "label": "ลานกิจกรรม",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 13,
@@ -15442,10 +15442,10 @@
    "floor": 1,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "118",
    "label": "ห้องบุคคล",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 14,
@@ -15456,10 +15456,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": 7,
-   "reserved_teacher_id": null,
    "room_no": "121",
    "label": "ห้องดนตรีไทย",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 15,
@@ -15470,10 +15470,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": 7,
-   "reserved_teacher_id": null,
    "room_no": "122",
    "label": "ห้องดนตรีสากล",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 16,
@@ -15484,10 +15484,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "123",
    "label": "2/10",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 17,
@@ -15498,10 +15498,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "124",
    "label": "2/11",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 18,
@@ -15512,10 +15512,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "125",
    "label": "2/12",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 19,
@@ -15526,10 +15526,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "126",
    "label": "2/13",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 20,
@@ -15540,10 +15540,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "127",
    "label": "2/14",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 21,
@@ -15554,10 +15554,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": 7,
-   "reserved_teacher_id": null,
    "room_no": "128",
    "label": "ห้องนาฏศิลป์",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 22,
@@ -15568,10 +15568,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": 4,
-   "reserved_teacher_id": null,
    "room_no": "131",
    "label": "ห้องคอมฯ3",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 23,
@@ -15582,10 +15582,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": 4,
-   "reserved_teacher_id": null,
    "room_no": "132",
    "label": "ห้องคอมฯ4",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 24,
@@ -15596,10 +15596,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "133",
    "label": "ห้อง Server",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 25,
@@ -15610,10 +15610,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "134",
    "label": "3/5",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 26,
@@ -15624,10 +15624,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "135",
    "label": "3/6",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 27,
@@ -15638,10 +15638,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "136",
    "label": "3/7",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 28,
@@ -15652,10 +15652,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "137",
    "label": "3/8",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 29,
@@ -15666,10 +15666,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": 7,
-   "reserved_teacher_id": null,
    "room_no": "138",
    "label": "ห้องวงโยฯ",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 30,
@@ -15680,10 +15680,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": 4,
-   "reserved_teacher_id": null,
    "room_no": "141",
    "label": "ห้องคอมฯ5",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 31,
@@ -15694,10 +15694,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "142",
    "label": "3/9",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 32,
@@ -15708,10 +15708,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "143",
    "label": "3/10",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 33,
@@ -15722,10 +15722,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "144",
    "label": "3/11",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 34,
@@ -15736,10 +15736,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "145",
    "label": "3/12",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 35,
@@ -15750,10 +15750,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "146",
    "label": "3/13",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 36,
@@ -15764,10 +15764,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "147",
    "label": "3/14",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 37,
@@ -15778,10 +15778,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "148",
    "label": "ห้องจริยธรรม",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 38,
@@ -15792,10 +15792,10 @@
    "floor": 1,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "211",
    "label": "ห้องวิชาการ 1",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 39,
@@ -15806,10 +15806,10 @@
    "floor": 1,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "212",
    "label": "ห้องวิชาการ 2",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 40,
@@ -15820,10 +15820,10 @@
    "floor": 1,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "213",
    "label": "ห้องวิชาการ 3",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 41,
@@ -15834,10 +15834,10 @@
    "floor": 1,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "214",
    "label": "ห้องสมาคมฯ",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 42,
@@ -15848,10 +15848,10 @@
    "floor": 2,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "221",
    "label": "สำนักงานผ.อ.",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 43,
@@ -15862,10 +15862,10 @@
    "floor": 2,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "222",
    "label": "ห้องการเงิน",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 44,
@@ -15876,10 +15876,10 @@
    "floor": 2,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "223",
    "label": "ห้องพัสดุ",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 45,
@@ -15890,10 +15890,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": 4,
-   "reserved_teacher_id": null,
    "room_no": "224",
    "label": "ห้องคอมฯ1",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 46,
@@ -15904,10 +15904,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": 4,
-   "reserved_teacher_id": null,
    "room_no": "225",
    "label": "ห้องคอมฯ2",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 47,
@@ -15918,10 +15918,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "231",
    "label": "2/3",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 48,
@@ -15932,10 +15932,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "232",
    "label": "1/1",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 49,
@@ -15946,10 +15946,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "233",
    "label": "ห้องภาษา",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 50,
@@ -15960,10 +15960,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": 3,
-   "reserved_teacher_id": null,
    "room_no": "234",
    "label": "ห้องกลุ่มวิทย์",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 51,
@@ -15974,10 +15974,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "235",
    "label": "3/2",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 52,
@@ -15988,10 +15988,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "236",
    "label": "3/3",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 53,
@@ -16002,10 +16002,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "237",
    "label": "3/4",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 54,
@@ -16016,10 +16016,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "241",
    "label": "1/2",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 55,
@@ -16030,10 +16030,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "242",
    "label": "1/3",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 56,
@@ -16044,10 +16044,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "243",
    "label": "5/2",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 57,
@@ -16058,10 +16058,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "244",
    "label": "ห้องต่างประเทศ",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 58,
@@ -16072,10 +16072,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "245",
    "label": "4/2",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 59,
@@ -16086,10 +16086,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "246",
    "label": "4/1",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 60,
@@ -16100,10 +16100,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "247",
    "label": "5/1",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 61,
@@ -16114,10 +16114,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "251",
    "label": "2/2",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 62,
@@ -16128,10 +16128,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "252",
    "label": "3/1",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 63,
@@ -16142,10 +16142,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "253",
    "label": "6/1",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 64,
@@ -16156,10 +16156,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "254",
    "label": "ห้องกลุ่มคณิตฯ",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 65,
@@ -16170,10 +16170,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "255",
    "label": "6/3",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 66,
@@ -16184,10 +16184,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "256",
    "label": "6/2",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 67,
@@ -16198,10 +16198,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "257",
    "label": "2/1",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 68,
@@ -16212,10 +16212,10 @@
    "floor": 6,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "261",
    "label": "ห้องสมุด",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 69,
@@ -16226,10 +16226,10 @@
    "floor": 6,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "262",
    "label": "ห้องประชุม",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 70,
@@ -16240,10 +16240,10 @@
    "floor": 6,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "263",
    "label": "ห้องศาสตร์ราชา",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 71,
@@ -16254,10 +16254,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "311",
    "label": "ห้องประชุม(สโลป)",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 72,
@@ -16268,10 +16268,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "312",
    "label": "ลานกิจกรรม 2",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 73,
@@ -16282,10 +16282,10 @@
    "floor": 2,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "321",
    "label": "บริหารงานทั่วไป",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   },
   {
    "id": 74,
@@ -16296,10 +16296,10 @@
    "floor": 2,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "322",
    "label": "ToBeNumberOne",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 75,
@@ -16310,10 +16310,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "331",
    "label": "1/4",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 76,
@@ -16324,10 +16324,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "332",
    "label": "1/5",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 77,
@@ -16338,10 +16338,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "333",
    "label": "1/6",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 78,
@@ -16352,10 +16352,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "334",
    "label": "1/7",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 79,
@@ -16366,10 +16366,10 @@
    "floor": 3,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "335",
    "label": "1/8",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 80,
@@ -16380,10 +16380,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "341",
    "label": "1/9",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 81,
@@ -16394,10 +16394,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "342",
    "label": "1/10",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 82,
@@ -16408,10 +16408,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "343",
    "label": "1/11",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 83,
@@ -16422,10 +16422,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "344",
    "label": "1/12",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 84,
@@ -16436,10 +16436,10 @@
    "floor": 4,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "345",
    "label": "2/4",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 85,
@@ -16450,10 +16450,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": 3,
-   "reserved_teacher_id": null,
    "room_no": "351",
    "label": "เคมี",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 86,
@@ -16464,10 +16464,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": 3,
-   "reserved_teacher_id": null,
    "room_no": "352",
    "label": "ชีววิทยา",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 87,
@@ -16478,10 +16478,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": 3,
-   "reserved_teacher_id": null,
    "room_no": "353",
    "label": "ฟิสิกส์",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 88,
@@ -16492,10 +16492,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": 3,
-   "reserved_teacher_id": null,
    "room_no": "354",
    "label": "วิทย์ทั่วไป",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 89,
@@ -16506,10 +16506,10 @@
    "floor": 5,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "355",
    "label": "ภาษา",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 90,
@@ -16520,10 +16520,10 @@
    "floor": 6,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "361",
    "label": "2/5",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 91,
@@ -16534,10 +16534,10 @@
    "floor": 6,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "362",
    "label": "2/6",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 92,
@@ -16548,10 +16548,10 @@
    "floor": 6,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "363",
    "label": "2/7",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 93,
@@ -16562,10 +16562,10 @@
    "floor": 6,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "364",
    "label": "2/8",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 94,
@@ -16576,10 +16576,10 @@
    "floor": 6,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "365",
    "label": "2/9",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 95,
@@ -16590,10 +16590,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ภิรมย์1",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 96,
@@ -16604,10 +16604,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ภิรมย์2",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 97,
@@ -16618,10 +16618,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ภิรมย์3",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 98,
@@ -16632,10 +16632,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ภิรมย์4",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 99,
@@ -16646,10 +16646,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานcafe",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 100,
@@ -16660,10 +16660,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกิจฯ1",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 101,
@@ -16674,10 +16674,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกิจฯ2",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 102,
@@ -16688,10 +16688,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกิจฯ3",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 103,
@@ -16702,10 +16702,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกิจฯ4",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 104,
@@ -16716,10 +16716,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกิจฯ5",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 105,
@@ -16730,10 +16730,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกิจฯ6",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 106,
@@ -16744,10 +16744,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกีฬา 1",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 107,
@@ -16758,10 +16758,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกีฬา 2",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 108,
@@ -16772,10 +16772,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกีฬา3",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 109,
@@ -16786,10 +16786,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานกีฬา4",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 110,
@@ -16800,10 +16800,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานนนทฯ1",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 111,
@@ -16814,10 +16814,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานนนทฯ2",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 112,
@@ -16828,10 +16828,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานอบจ.1",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 113,
@@ -16842,10 +16842,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานอาคาร3",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 114,
@@ -16856,10 +16856,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานเสริม1",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 115,
@@ -16870,10 +16870,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานเสริม2",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 116,
@@ -16884,10 +16884,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานเสริม3",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 117,
@@ -16898,10 +16898,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานเสริม4",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 118,
@@ -16912,10 +16912,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานเสริม5",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 119,
@@ -16926,10 +16926,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ลานแนะแนว",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 120,
@@ -16940,10 +16940,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ส.ฟุตซอล",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 121,
@@ -16954,10 +16954,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "ส.ฟุตบอล",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 122,
@@ -16968,10 +16968,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "สนาม1",
    "label": "สนามบาส",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 123,
@@ -16982,10 +16982,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "สนาม2",
    "label": "สนามวอลเล่ย์บอล",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 124,
@@ -16996,10 +16996,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "สนาม3",
    "label": "สนามหลังอาคาร3",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 125,
@@ -17010,10 +17010,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "สนามเปตอง",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 126,
@@ -17024,10 +17024,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "สวนเกษตร",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 127,
@@ -17038,10 +17038,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "สวนเกษตร2",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 128,
@@ -17052,10 +17052,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": 6,
-   "reserved_teacher_id": null,
    "room_no": "สูงข1",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 129,
@@ -17066,10 +17066,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": 6,
-   "reserved_teacher_id": null,
    "room_no": "สูงข2",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 130,
@@ -17080,10 +17080,10 @@
    "floor": 1,
    "capacity": 50,
    "specialized_dept_id": 8,
-   "reserved_teacher_id": null,
    "room_no": "ห.การงาน",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 131,
@@ -17094,10 +17094,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "หลังตึก1",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 132,
@@ -17108,10 +17108,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "แสตน1",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 133,
@@ -17122,10 +17122,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "แสตน2",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 134,
@@ -17136,10 +17136,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "แสตน3",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 135,
@@ -17150,10 +17150,10 @@
    "floor": 1,
    "capacity": 120,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "แสตน4",
    "label": "",
-   "usable": true
+   "usable": true,
+   "reserved_teacher_ids": []
   },
   {
    "id": 136,
@@ -17164,10 +17164,10 @@
    "floor": 1,
    "capacity": 0,
    "specialized_dept_id": null,
-   "reserved_teacher_id": null,
    "room_no": "โรงอาหาร",
    "label": "",
-   "usable": false
+   "usable": false,
+   "reserved_teacher_ids": []
   }
  ],
  "elective_pools": [

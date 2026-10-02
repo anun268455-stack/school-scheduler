@@ -11,7 +11,7 @@
  */
 import React, { forwardRef } from "react";
 import type { Department, Period, SchoolConfig, StudentGroup, Teacher, TimetableSlot } from "../../types";
-import { DAYS } from "../../types";
+import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { teachesSlot, myElectiveOption } from "../../utils/teacherSlots";
 import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
@@ -65,16 +65,18 @@ function getDisplayPeriods(periods: Period[], level?: LevelKey) {
 // ── Sizing: compact when two timetables share a sheet ────────────────────────
 interface Metrics {
   headFont: string; timeFont: string; cellFont: string; subFont: string;
-  /** The room number is printed larger than everything else in the cell. */
+  /** The subject code and room number are the two things read at a glance. */
   roomFont: string;
+  /** Fixed height per line, so every cell's three lines sit at the same place. */
+  lineH: string;
   rowH: string; pad: string; titleFont: string; subtitleFont: string; logo: number;
 }
 
 const METRICS: Record<1 | 2, Metrics> = {
-  1: { headFont: "11pt", timeFont: "8.5pt", cellFont: "10pt", subFont: "8.5pt", roomFont: "15pt",
-       rowH: "40mm", pad: "3px 4px", titleFont: "15pt", subtitleFont: "11.5pt", logo: 52 },
-  2: { headFont: "8.5pt", timeFont: "7pt", cellFont: "8pt", subFont: "7pt", roomFont: "11pt",
-       rowH: "19mm", pad: "2px 3px", titleFont: "11.5pt", subtitleFont: "9pt", logo: 34 },
+  1: { headFont: "11pt", timeFont: "8.5pt", cellFont: "15pt", subFont: "9.5pt", roomFont: "15pt",
+       lineH: "11mm", rowH: "40mm", pad: "3px 4px", titleFont: "15pt", subtitleFont: "11.5pt", logo: 52 },
+  2: { headFont: "8.5pt", timeFont: "7pt", cellFont: "11pt", subFont: "7.5pt", roomFont: "11pt",
+       lineH: "5.3mm", rowH: "19mm", pad: "2px 3px", titleFont: "11.5pt", subtitleFont: "9pt", logo: 34 },
 };
 
 const borderCell = (m: Metrics): React.CSSProperties => ({
@@ -132,7 +134,11 @@ const TimetableBlock: React.FC<BlockProps> = ({
       </div>
 
       {/* Grid */}
-      <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+      <table style={{
+        width: "100%", borderCollapse: "collapse", tableLayout: "fixed",
+        border: "1.2px solid #000",     /* the outer frame, which collapsed
+                                           borders alone were leaving open */
+      }}>
         <colgroup>
           <col style={{ width: compact ? "34px" : "46px" }} />
           {cols.map((p) =>
@@ -165,7 +171,7 @@ const TimetableBlock: React.FC<BlockProps> = ({
           {DAYS.map((dayName, dayIdx) => (
             <tr key={dayIdx}>
               <td style={{ ...TD, fontWeight: 700, fontSize: m.headFont, backgroundColor: "#f9fafb" }}>
-                {compact ? dayName.slice(0, 2) : dayName}
+                {compact ? DAYS_SHORT[dayIdx] : dayName}
               </td>
               {cols.map((p) => {
                 if (p.type !== "class") return <td key={p.period_num} style={BREAK_TD} />;
@@ -234,7 +240,30 @@ function roomNumber(room: string | null | undefined): string {
 }
 
 // ── Cell renderers ───────────────────────────────────────────────────────────
-const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.25, fontSize: m.cellFont });
+const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.1, fontSize: m.cellFont });
+
+/**
+ * The three lines every cell has: subject code, teacher, room.
+ *
+ * Each line is a fixed height whether or not it has anything in it, so the
+ * codes across a row sit on one line, the teachers on the next and the rooms
+ * on the next — instead of every cell starting wherever its own content ended.
+ */
+function CellLines(
+  { m, code, mid, room }: { m: Metrics; code: string; mid: string; room: string },
+) {
+  const line = (h: string): React.CSSProperties => ({
+    height: h, display: "flex", alignItems: "center", justifyContent: "center",
+    overflow: "hidden", whiteSpace: "nowrap",
+  });
+  return (
+    <div style={{ ...cellText(m), display: "flex", flexDirection: "column", height: "100%" }}>
+      <div style={{ ...line(m.lineH), fontSize: m.cellFont, fontWeight: 700 }}>{code}</div>
+      <div style={{ ...line(m.lineH), fontSize: m.subFont }}>{mid}</div>
+      <div style={{ ...line(m.lineH), fontSize: m.roomFont, fontWeight: 700 }}>{room}</div>
+    </div>
+  );
+}
 
 function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
   if (slots.length === 0) return null;
@@ -244,18 +273,13 @@ function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
     // options — so the printed cell says so instead of coming out blank.
     const sharedElective = s.is_elective && !s.selected_option_id;
     return (
-      <div style={cellText(m)}>
-        <div style={{ fontWeight: 700 }}>
-          {s.subject_code ?? s.subject_name ?? (sharedElective ? "วิชาเสรี" : "")}
-        </div>
-        <div style={{ fontSize: m.subFont }}>
-          {shortTeacher(s.teacher_name)
-            || (sharedElective ? `${s.elective_options?.length ?? 0} ตัวเลือก` : "")}
-        </div>
-        <div style={{ fontSize: m.roomFont, fontWeight: 700, lineHeight: 1.1, marginTop: "1px" }}>
-          {roomNumber(s.room_name)}
-        </div>
-      </div>
+      <CellLines
+        m={m}
+        code={s.subject_code ?? s.subject_name ?? (sharedElective ? "วิชาเสรี" : "")}
+        mid={shortTeacher(s.teacher_name)
+          || (sharedElective ? `${s.elective_options?.length ?? 0} ตัวเลือก` : "")}
+        room={roomNumber(s.room_name)}
+      />
     );
   }
   return (
@@ -278,15 +302,12 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
   // teach one of its options — print that subject, not an empty box.
   const mine = teacherId != null ? myElectiveOption(s, teacherId) : null;
   return (
-    <div style={cellText(m)}>
-      <div style={{ fontWeight: 700 }}>
-        {s.subject_code ?? s.subject_name ?? mine?.code ?? (mine ? "วิชาเสรี" : "")}
-      </div>
-      <div style={{ fontSize: m.subFont }}>{mine?.label ?? s.group_name ?? ""}</div>
-      <div style={{ fontSize: m.roomFont, fontWeight: 700, lineHeight: 1.1, marginTop: "1px" }}>
-        {roomNumber(s.room_name)}
-      </div>
-    </div>
+    <CellLines
+      m={m}
+      code={s.subject_code ?? s.subject_name ?? mine?.code ?? (mine ? "วิชาเสรี" : "")}
+      mid={mine?.label ?? s.group_name ?? ""}
+      room={roomNumber(s.room_name)}
+    />
   );
 }
 
