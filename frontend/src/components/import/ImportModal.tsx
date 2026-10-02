@@ -67,14 +67,15 @@ const ENTITY_CONFIGS: Record<EntityType, EntityCfg> = {
     icon: "📚",
     cols: [
       { key: "code",     label: "รหัสวิชา",  aliases: ["code","รหัส","รหัสวิชา"],                         required: true,  hint: "MATH101" },
-      { key: "name",     label: "ชื่อวิชา",   aliases: ["name","ชื่อ","ชื่อวิชา"],                         required: true,  hint: "คณิตศาสตร์" },
+      { key: "name",     label: "ชื่อวิชา",   aliases: ["subject_name","ชื่อวิชา","ชื่อ","name"],           required: true,  hint: "คณิตศาสตร์" },
+      { key: "department_id", label: "กลุ่มสาระ", aliases: ["department","กลุ่มสาระ","สาระ"],                required: false, hint: "ชื่อกลุ่มสาระ", resolve: "department" },
       { key: "type",     label: "ประเภท",    aliases: ["type","ประเภท"],                                    required: false, hint: "common / parallel" },
       { key: "duration", label: "จำนวนคาบ", aliases: ["duration","คาบ","จำนวนคาบ"],                      required: false, hint: "1 หรือ 2 (คาบคู่)" },
       { key: "fixed_room_id", label: "ห้องประจำวิชา", aliases: ["fixed_room","ห้องประจำวิชา","ห้องเรียนประจำ"], required: false, hint: "ชื่อห้อง เช่น สนามกีฬา", resolve: "room" },
     ],
     sample: [
-      { code: "MATH101", name: "คณิตศาสตร์", type: "common", duration: 1, fixed_room_id: "" },
-      { code: "PE101", name: "พลศึกษา", type: "parallel", duration: 2, fixed_room_id: "สนามกีฬา" },
+      { code: "MATH101", name: "คณิตศาสตร์", department_id: "กลุ่มสาระคณิตศาสตร์", type: "common", duration: 1, fixed_room_id: "" },
+      { code: "PE101", name: "พลศึกษา", department_id: "กลุ่มสาระสุขศึกษาและพลศึกษา", type: "parallel", duration: 2, fixed_room_id: "สนามกีฬา" },
     ],
   },
   groups: {

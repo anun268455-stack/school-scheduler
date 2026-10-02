@@ -123,13 +123,57 @@ REQUIREMENTS: list[dict[str, Any]] = [
 
 SLOTS: list[dict[str, Any]] = []
 
+# ── Real school data (อัตรากำลัง) ─────────────────────────────────────────────
+# school_data.json holds the school's actual departments, classes, teachers,
+# subjects and teaching assignments, generated from the staffing workbook.
+# When the file is present it replaces the small demo dataset above, so a fresh
+# deploy comes up with the real timetable inputs already loaded.
+def _load_school_data() -> bool:
+    import os, json
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "school_data.json")
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return False
+
+    for key, target in (("departments", DEPARTMENTS), ("teachers", TEACHERS),
+                        ("subjects", SUBJECTS), ("requirements", REQUIREMENTS)):
+        rows = data.get(key)
+        if rows:
+            target.clear()
+            target.extend(rows)
+
+    # Classes are stored flat with parent_id; the API serves them nested.
+    rows = data.get("groups")
+    if rows:
+        by_id = {g["id"]: {**g, "children": []} for g in rows}
+        GROUPS.clear()
+        for g in by_id.values():
+            parent = by_id.get(g.get("parent_id")) if g.get("parent_id") else None
+            (parent["children"] if parent else GROUPS).append(g)
+    return True
+
+
+_LOADED_REAL_DATA = _load_school_data()
+
 # ── Sequential ID counters ─────────────────────────────────────────────────────
+def _max_id(rows: list[dict[str, Any]]) -> int:
+    """Highest id in a collection — new records continue from here."""
+    return max((r.get("id", 0) for r in rows), default=0)
+
+
 _counters: dict[str, int] = {
-    "period": max(p["id"] for p in PERIODS),
-    "room": max(r["id"] for r in ROOMS),
-    "department": max(d["id"] for d in DEPARTMENTS),
-    "group": 8, "teacher": 7, "subject": 10,
-    "requirement": max(r["id"] for r in REQUIREMENTS),
+    "period": _max_id(PERIODS),
+    "room": _max_id(ROOMS),
+    "department": _max_id(DEPARTMENTS),
+    # Walk the nested class tree here: _flat_groups() is defined further down.
+    "group": _max_id([g for top in GROUPS for g in (top, *top.get("children", []))]),
+    "teacher": _max_id(TEACHERS),
+    "subject": _max_id(SUBJECTS),
+    "requirement": _max_id(REQUIREMENTS),
     "slot": 0,
     "elective_option": 0,
 }
