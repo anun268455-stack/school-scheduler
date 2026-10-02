@@ -1100,7 +1100,7 @@ const ElectivesPanel: React.FC = () => {
 
   return (
     <>
-    <Section title="กลุ่มวิชาเสรี — คาบเสรีที่หลายห้องเรียนพร้อมกัน (จากอัตรากำลัง)">
+    <Section title="คาบเสรี — ล็อกคาบก่อน แล้วค่อยใส่วิชา">
       <ElectivePoolPanel />
     </Section>
 

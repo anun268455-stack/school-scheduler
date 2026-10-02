@@ -181,7 +181,15 @@ def _load_school_data() -> bool:
     pools = data.get("elective_pools")
     if pools:
         ELECTIVE_POOLS.clear()
-        ELECTIVE_POOLS.extend(pools)
+        # Pools arrive unpinned: the staffing sheet says which classes share an
+        # elective and what the choices are, never which period it runs in.
+        # That is the school's decision, taken in the app.
+        for i, p in enumerate(pools, start=1):
+            p.setdefault("day", None)
+            p.setdefault("period", None)
+            for j, o in enumerate(p.get("options", []), start=1):
+                o.setdefault("key", i * 1000 + j)
+            ELECTIVE_POOLS.append(p)
     return True
 
 
@@ -203,7 +211,9 @@ _counters: dict[str, int] = {
     "subject": _max_id(SUBJECTS),
     "requirement": _max_id(REQUIREMENTS),
     "slot": 0,
-    "elective_option": 0,
+    # Option keys are seeded above the pool-derived range so a newly added
+    # option can never collide with one loaded from school_data.json.
+    "elective_option": (_max_id(ELECTIVE_POOLS) + 1) * 1000,
     "elective_pool": _max_id(ELECTIVE_POOLS),
 }
 def _next(key: str) -> int:
@@ -1397,91 +1407,45 @@ def delete_level_activity(activity_key: str):
 
 
 # ── วิชาเสรี: pools ───────────────────────────────────────────────────────────
-@app.get("/api/elective-pools")
-def get_elective_pools():
-    """Each pool, plus where (if anywhere) it currently sits in the timetable."""
-    out = []
-    for p in ELECTIVE_POOLS:
-        placed = [s for s in SLOTS if s.get("elective_pool_id") == p["id"]]
-        here = placed[0] if placed else None
-        out.append({
-            **p,
-            "placed_count": len({s["group_id"] for s in placed}),
-            "placed_day":    here["day"]    if here else None,
-            "placed_period": here["period"] if here else None,
-        })
-    return out
+# A pool is a LOCKED WINDOW first and a list of subjects second: the school says
+# "ม.1/7-12 has its elective on Wednesday, period 7", the window goes into the
+# timetable and is locked there, and the subject options are filled in
+# afterwards — which is the order the work actually happens in.
+#
+# The pool is the single source of truth. Its slots are rebuilt from it by
+# _sync_pool_slots on every change, so a day/period move or an added subject can
+# never leave the timetable disagreeing with the pool.
 
-@app.post("/api/elective-pools")
-def create_elective_pool(body: dict[str, Any]):
-    pool = {
-        "id": _next("elective_pool"),
-        "name": body.get("name") or "วิชาเสรีใหม่",
-        "raw_group": body.get("raw_group") or "",
-        "group_ids": body.get("group_ids") or [],
-        "weekly": body.get("weekly") or 2,
-        "is_double": bool(body.get("is_double", True)),
-        "options": body.get("options") or [],
-    }
-    ELECTIVE_POOLS.append(pool)
-    return pool
-
-@app.put("/api/elective-pools/{pool_id}")
-def update_elective_pool(pool_id: int, body: dict[str, Any]):
-    for p in ELECTIVE_POOLS:
-        if p["id"] == pool_id:
-            p.update({k: v for k, v in body.items() if k != "id"})
-            return p
-    raise HTTPException(404, "ไม่พบกลุ่มวิชาเสรีนี้")
-
-@app.delete("/api/elective-pools/{pool_id}")
-def delete_elective_pool(pool_id: int):
-    global SLOTS, ELECTIVE_POOLS
-    SLOTS = [s for s in SLOTS if s.get("elective_pool_id") != pool_id]
-    ELECTIVE_POOLS = [p for p in ELECTIVE_POOLS if p["id"] != pool_id]
-    return {}
-
-@app.delete("/api/elective-pools/{pool_id}/placement")
-def unplace_elective_pool(pool_id: int):
-    """Lift the pool back out of the timetable, leaving the pool itself intact."""
-    global SLOTS
-    before = len(SLOTS)
-    SLOTS = [s for s in SLOTS if s.get("elective_pool_id") != pool_id]
-    return {"deleted": before - len(SLOTS)}
-
-@app.post("/api/elective-pools/{pool_id}/place")
-def place_elective_pool(pool_id: int, body: dict[str, Any]):
-    """Drop a whole pool into the timetable at one day/period.
-
-    Every class in the pool gets its own elective slot carrying the same option
-    catalogue, so each class can settle on a different วงเรียน later. Returns
-    which classes were written and which had to be skipped, rather than failing
-    the lot — a single clash should not block the other eleven classes.
-    """
-    pool = next((p for p in ELECTIVE_POOLS if p["id"] == pool_id), None)
-    if not pool:
-        raise HTTPException(404, "ไม่พบกลุ่มวิชาเสรีนี้")
-    if not pool.get("options"):
-        raise HTTPException(400, "กลุ่มนี้ยังไม่มีตัวเลือกวิชา")
-
-    day    = body["day"]
-    period = body["period"]
-    is_double = bool(body.get("is_double", pool.get("is_double")))
-    replace = body.get("replace", True)
-
-    global SLOTS
-    if replace:
-        SLOTS = [s for s in SLOTS if s.get("elective_pool_id") != pool_id]
-
-    periods = [period]
-    if is_double:
-        p2 = _next_class_period(period)
+def _pool_periods(pool: dict[str, Any]) -> list[int]:
+    """The class periods this pool covers, or [] if it isn't pinned anywhere."""
+    if pool.get("day") is None or pool.get("period") is None:
+        return []
+    periods = [pool["period"]]
+    if pool.get("is_double"):
+        p2 = _next_class_period(pool["period"])
         if p2 is None:
             raise HTTPException(400, "คาบนี้เป็นคาบสุดท้ายของวัน ทำคาบคู่ไม่ได้ กรุณาเลือกคาบอื่น")
         periods.append(p2)
+    return periods
 
+
+def _sync_pool_slots(pool: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite this pool's slots so the timetable matches the pool.
+
+    Called after every change. Classes whose window is already taken by another
+    lesson are reported rather than forced — one clash should not stop the other
+    eleven classes getting their elective.
+    """
+    global SLOTS
+    SLOTS = [s for s in SLOTS if s.get("elective_pool_id") != pool["id"]]
+
+    periods = _pool_periods(pool)
+    if not periods:
+        return {"placed": 0, "skipped": []}
+
+    day = pool["day"]
     shares = _shares_students_fn()
-    created, skipped = [], []
+    placed, skipped = 0, []
     for gid in pool["group_ids"]:
         grp = _find_group(gid)
         if not grp:
@@ -1491,7 +1455,7 @@ def place_elective_pool(pool_id: int, body: dict[str, Any]):
         # on either blocks this window for the other.
         clash = next(
             (s for s in SLOTS
-             if s["period"] in periods and s["day"] == day and shares(s["group_id"], gid)),
+             if s["day"] == day and s["period"] in periods and shares(s["group_id"], gid)),
             None,
         )
         if clash:
@@ -1499,8 +1463,7 @@ def place_elective_pool(pool_id: int, body: dict[str, Any]):
                             "reason": "มีคาบอื่นอยู่แล้ว"})
             continue
 
-        options = [{**o, "id": _next("elective_option")} for o in pool["options"]]
-        key = f"ELEC-POOL-{pool_id}-{gid}" if is_double else None
+        key = f"ELEC-POOL-{pool['id']}-{gid}" if pool.get("is_double") else None
         # No option is selected for the class. In a shared elective the class
         # does not sit together — its students scatter across every option at
         # once — so pinning one subject here would be a lie, and worse, it would
@@ -1509,25 +1472,296 @@ def place_elective_pool(pool_id: int, body: dict[str, Any]):
         common = {
             "group_id": gid, "room_id": None, "parallel_group_key": None,
             "is_locked": True, "is_elective": True,
-            "elective_pool_id": pool_id,
+            "elective_pool_id": pool["id"],
             "elective_label": pool.get("name") or "วิชาเสรี",
             "selected_option_id": None,
             "subject_id": None,
             "teacher_id": None,
         }
         for i, p in enumerate(periods):
-            slot = {
+            SLOTS.append({
                 **common, "id": _next("slot"), "day": day, "period": p,
-                "elective_options": [dict(o) for o in options],
-                "is_double_start": is_double and i == 0,
+                "elective_options": [
+                    {**o, "id": _next("elective_option")} for o in pool["options"]
+                ],
+                "is_double_start": bool(pool.get("is_double")) and i == 0,
                 "double_group_key": key,
-                "is_double_cont": is_double and i > 0,
-            }
-            SLOTS.append(slot)
-            if i == 0:
-                created.append(_enrich_slot(slot))
+                "is_double_cont": bool(pool.get("is_double")) and i > 0,
+            })
+        placed += 1
 
-    return {"created": len(created), "skipped": skipped, "slots": created}
+    return {"placed": placed, "skipped": skipped}
+
+
+def _teacher_busy_outside_pool(teacher_id: int, pool: dict[str, Any]) -> list[dict[str, Any]]:
+    """Where else this teacher is teaching during this pool's window.
+
+    Checked when a subject is added, so a double-booked teacher is caught while
+    it is still one click to fix — not after the whole timetable is generated.
+    """
+    periods = _pool_periods(pool)
+    if not periods or teacher_id is None:
+        return []
+    # One row per clashing lesson, not per cell: a double period across six
+    # classes is one problem to fix, so reporting it twelve times only buries it.
+    seen, out = set(), []
+    for s in SLOTS:
+        if s["day"] != pool["day"] or s["period"] not in periods:
+            continue
+        if s.get("elective_pool_id") == pool["id"]:
+            continue
+        if s.get("teacher_id") == teacher_id or teacher_id in _elective_option_teachers(s):
+            grp = _find_group(s["group_id"]) or {}
+            subj = next((x for x in SUBJECTS if x["id"] == s.get("subject_id")), {})
+            label = subj.get("name") or s.get("elective_label") or "วิชาเสรี"
+            key = (label, grp.get("name"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"group_name": grp.get("name"), "subject_name": label,
+                        "period": s["period"]})
+    return out
+
+
+def _decorate_pool(p: dict[str, Any]) -> dict[str, Any]:
+    """A pool as the UI needs it: who teaches what, and who is double-booked."""
+    t_map = {t["id"]: t for t in TEACHERS}
+    s_map = {s["id"]: s for s in SUBJECTS}
+    d_map = {d["id"]: d for d in DEPARTMENTS}
+
+    # Two options in the SAME window sharing a teacher is a clash too — she
+    # cannot run both at once — and it is the easiest one to create by accident,
+    # since the whole point of a window is that its options run simultaneously.
+    inside = defaultdict(list)
+    for o in p.get("options", []):
+        if o.get("teacher_id"):
+            inside[o["teacher_id"]].append(o)
+
+    options = []
+    for o in p.get("options", []):
+        t = t_map.get(o.get("teacher_id"), {})
+        subj = s_map.get(o.get("subject_id"), {})
+        conflicts = _teacher_busy_outside_pool(o.get("teacher_id"), p)
+        for other in inside.get(o.get("teacher_id"), []):
+            if other is o:
+                continue
+            osubj = s_map.get(other.get("subject_id"), {})
+            conflicts.append({
+                "group_name": "ในคาบเสรีนี้",
+                "subject_name": osubj.get("name") or other.get("label"),
+                "period": p.get("period"),
+            })
+        options.append({
+            **o,
+            "subject_code": subj.get("code") or o.get("code"),
+            "subject_name": subj.get("name") or o.get("label"),
+            "teacher_name": t.get("name"),
+            "teacher_code": t.get("code"),
+            "department_name": d_map.get(subj.get("department_id"), {}).get("name"),
+            "conflicts": conflicts,
+        })
+
+    placed = [s for s in SLOTS if s.get("elective_pool_id") == p["id"]]
+    skipped = []
+    if p.get("day") is not None and p.get("period") is not None:
+        done = {s["group_id"] for s in placed}
+        for gid in p["group_ids"]:
+            if gid not in done:
+                grp = _find_group(gid) or {}
+                skipped.append({"group_id": gid, "group_name": grp.get("name")})
+
+    return {
+        **p,
+        "options": options,
+        "placed_count": len({s["group_id"] for s in placed}),
+        "unplaced_groups": skipped,
+        "conflict_count": sum(1 for o in options if o["conflicts"]),
+    }
+
+
+@app.get("/api/elective-pools")
+def get_elective_pools():
+    return [_decorate_pool(p) for p in ELECTIVE_POOLS]
+
+
+def _find_pool(pool_id: int) -> dict[str, Any]:
+    pool = next((p for p in ELECTIVE_POOLS if p["id"] == pool_id), None)
+    if not pool:
+        raise HTTPException(404, "ไม่พบคาบเสรีนี้")
+    return pool
+
+
+@app.post("/api/elective-pools")
+def create_elective_pool(body: dict[str, Any]):
+    """Create the WINDOW. Subjects are added afterwards, and may start empty."""
+    if not body.get("group_ids"):
+        raise HTTPException(400, "ต้องเลือกห้องเรียนอย่างน้อย 1 ห้อง")
+    pool = {
+        "id": _next("elective_pool"),
+        "name": body.get("name") or "คาบเสรีใหม่",
+        "raw_group": body.get("raw_group") or "",
+        "group_ids": body["group_ids"],
+        "weekly": body.get("weekly") or (2 if body.get("is_double", True) else 1),
+        "is_double": bool(body.get("is_double", True)),
+        "day": body.get("day"),
+        "period": body.get("period"),
+        "options": [
+            {**o, "key": _next("elective_option")} for o in (body.get("options") or [])
+        ],
+    }
+    ELECTIVE_POOLS.append(pool)
+    _sync_pool_slots(pool)
+    return _decorate_pool(pool)
+
+
+@app.put("/api/elective-pools/{pool_id}")
+def update_elective_pool(pool_id: int, body: dict[str, Any]):
+    """Rename, move to another day/period, change its classes, or un-pin it.
+
+    Pass day/period as null to lift the window out of the timetable while
+    keeping its subject list.
+    """
+    pool = _find_pool(pool_id)
+    for k in ("name", "group_ids", "is_double", "weekly", "day", "period", "raw_group"):
+        if k in body:
+            pool[k] = body[k]
+    result = _sync_pool_slots(pool)
+    return {**_decorate_pool(pool), "sync": result}
+
+
+@app.delete("/api/elective-pools/{pool_id}")
+def delete_elective_pool(pool_id: int):
+    global SLOTS, ELECTIVE_POOLS
+    SLOTS = [s for s in SLOTS if s.get("elective_pool_id") != pool_id]
+    ELECTIVE_POOLS = [p for p in ELECTIVE_POOLS if p["id"] != pool_id]
+    return {}
+
+
+@app.post("/api/elective-pools/{pool_id}/options")
+def add_pool_option(pool_id: int, body: dict[str, Any]):
+    """Add a subject to the window, together with the teacher who takes it.
+
+    The teacher may be left out, in which case whoever already teaches this
+    subject elsewhere is used — the staffing sheet usually settles it, so there
+    is no need to pick by hand. The reply says plainly whether that teacher is
+    free in this window.
+    """
+    pool = _find_pool(pool_id)
+    subject_id = body.get("subject_id")
+    subj = next((s for s in SUBJECTS if s["id"] == subject_id), None)
+    if not subj:
+        raise HTTPException(400, "ไม่พบวิชานี้")
+
+    # Who teaches this? Ask the staffing data before asking the user: the
+    # ordinary lesson assignments first, then any other elective window that
+    # already offers this subject (elective subjects have no ordinary lessons,
+    # so for them this second source is the only one).
+    teacher_id = body.get("teacher_id")
+    if not teacher_id:
+        teaches = [r["teacher_id"] for r in REQUIREMENTS if r["subject_id"] == subject_id]
+        teaches += [o["teacher_id"] for q in ELECTIVE_POOLS for o in q.get("options", [])
+                    if o.get("subject_id") == subject_id and o.get("teacher_id")]
+        if teaches:
+            teacher_id = max(set(teaches), key=teaches.count)
+    if not teacher_id:
+        raise HTTPException(
+            400, f"ยังไม่มีข้อมูลว่าใครสอน {subj.get('code', '')} {subj.get('name', '')} "
+                 "— กรุณาเลือกครูผู้สอน")
+
+    if any(o.get("subject_id") == subject_id and o.get("teacher_id") == teacher_id
+           for o in pool["options"]):
+        raise HTTPException(400, "วิชาและครูคู่นี้อยู่ในคาบเสรีนี้แล้ว")
+
+    pool["options"].append({
+        "key": _next("elective_option"),
+        "subject_id": subject_id,
+        "teacher_id": teacher_id,
+        "label": body.get("label") or subj["name"],
+        "code": subj.get("code"),
+    })
+    _sync_pool_slots(pool)
+    return _decorate_pool(pool)
+
+
+@app.delete("/api/elective-pools/{pool_id}/options/{option_key}")
+def delete_pool_option(pool_id: int, option_key: int):
+    pool = _find_pool(pool_id)
+    before = len(pool["options"])
+    pool["options"] = [o for o in pool["options"] if o.get("key") != option_key]
+    if len(pool["options"]) == before:
+        raise HTTPException(404, "ไม่พบตัวเลือกนี้")
+    _sync_pool_slots(pool)
+    return _decorate_pool(pool)
+
+
+@app.put("/api/elective-pools/{pool_id}/options/{option_key}")
+def update_pool_option(pool_id: int, option_key: int, body: dict[str, Any]):
+    """Change which teacher takes an option — the usual fix for a clash."""
+    pool = _find_pool(pool_id)
+    opt = next((o for o in pool["options"] if o.get("key") == option_key), None)
+    if not opt:
+        raise HTTPException(404, "ไม่พบตัวเลือกนี้")
+    for k in ("teacher_id", "subject_id", "label"):
+        if k in body:
+            opt[k] = body[k]
+    if "subject_id" in body:
+        subj = next((s for s in SUBJECTS if s["id"] == body["subject_id"]), {})
+        opt["code"] = subj.get("code")
+    _sync_pool_slots(pool)
+    return _decorate_pool(pool)
+
+
+@app.get("/api/elective-pools/{pool_id}/teachers")
+def pool_teacher_candidates(pool_id: int, subject_id: int | None = None):
+    """Who could take a subject in this window, and who is free.
+
+    Teachers of the subject's own กลุ่มสาระ come first, with those who already
+    teach it marked, so picking is a matter of recognising a name rather than
+    scrolling 143 of them.
+    """
+    pool = _find_pool(pool_id)
+    subj = next((s for s in SUBJECTS if s["id"] == subject_id), {}) if subject_id else {}
+    dept = subj.get("department_id")
+    already = {r["teacher_id"] for r in REQUIREMENTS if r["subject_id"] == subject_id}
+
+    out = []
+    for t in TEACHERS:
+        conflicts = _teacher_busy_outside_pool(t["id"], pool)
+        out.append({
+            "id": t["id"], "name": t["name"], "code": t.get("code"),
+            "department_id": t.get("department_id"),
+            "same_department": dept is not None and t.get("department_id") == dept,
+            "teaches_subject": t["id"] in already,
+            "free": not conflicts,
+            "conflicts": conflicts,
+        })
+    out.sort(key=lambda t: (not t["teaches_subject"], not t["same_department"],
+                            not t["free"], t["code"] or ""))
+    return out
+
+
+@app.post("/api/elective-pools/{pool_id}/place")
+def place_elective_pool(pool_id: int, body: dict[str, Any]):
+    """Pin the window to a day/period (and re-pin it when it moves)."""
+    pool = _find_pool(pool_id)
+    pool["day"] = body["day"]
+    pool["period"] = body["period"]
+    if "is_double" in body:
+        pool["is_double"] = bool(body["is_double"])
+    result = _sync_pool_slots(pool)
+    return {"created": result["placed"], "skipped": result["skipped"],
+            "pool": _decorate_pool(pool)}
+
+
+@app.delete("/api/elective-pools/{pool_id}/placement")
+def unplace_elective_pool(pool_id: int):
+    """Lift the window out of the timetable, keeping the pool and its subjects."""
+    pool = _find_pool(pool_id)
+    pool["day"] = None
+    pool["period"] = None
+    before = len(SLOTS)
+    _sync_pool_slots(pool)
+    return {"deleted": before - len(SLOTS)}
 
 @app.post("/api/timetable/elective-slots")
 def create_elective_slot(body: dict[str, Any]):
@@ -1702,6 +1936,15 @@ def clear_slots(scope: str = "unlocked", group_id: int | None = None,
         return True
 
     SLOTS = [s for s in SLOTS if not doomed(s)]
+
+    # Wiping everything must leave the คาบเสรี windows un-pinned too, or they
+    # would still claim a day and period the timetable no longer shows and
+    # report every class as blocked.
+    if scope == "all" and group_id is None and teacher_id is None:
+        for p in ELECTIVE_POOLS:
+            p["day"] = None
+            p["period"] = None
+
     return {"deleted": before - len(SLOTS), "remaining": len(SLOTS)}
 
 # Bulk lock/unlock by filter criteria

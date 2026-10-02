@@ -1,7 +1,7 @@
 import axios from "axios";
 import type {
   Building, Department, LessonRequirement, Period, Room,
-  ElectivePool, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
+  ElectivePool, PoolTeacherCandidate, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
 
 // In production (GitHub Pages), use the Render backend URL via env var
@@ -99,29 +99,51 @@ export const selectElectiveOption = (slotId: number, optionId: number) =>
 export const copyElectiveSlot = (slotId: number, targetGroupIds: number[]) =>
   api.post<TimetableSlot[]>(`/timetable/elective-slots/${slotId}/copy`, { target_group_ids: targetGroupIds }).then((r) => r.data);
 
-// ── กลุ่มวิชาเสรี (elective pools) ──────────────────────────────────────────
-// A pool is one elective window shared by several classes, holding the subject
-// options a student may choose inside it. Placing a pool writes one elective
-// slot per class at the same day/period, in a single call.
+// ── คาบเสรี (elective windows / pools) ──────────────────────────────────────
+// A window is created and pinned to a day/period FIRST, then subjects are added
+// into it. Every call returns the whole window back, already carrying each
+// subject's teacher and any clash, so the UI never has to work that out itself.
 export const fetchElectivePools = () =>
   api.get<ElectivePool[]>("/elective-pools").then((r) => r.data);
 
-export const createElectivePool = (d: Partial<ElectivePool>) =>
-  api.post<ElectivePool>("/elective-pools", d).then((r) => r.data);
+export const createElectivePool = (d: {
+  name?: string; group_ids: number[];
+  day?: number | null; period?: number | null; is_double?: boolean;
+}) => api.post<ElectivePool>("/elective-pools", d).then((r) => r.data);
 
-export const updateElectivePool = (id: number, d: Partial<ElectivePool>) =>
-  api.put<ElectivePool>(`/elective-pools/${id}`, d).then((r) => r.data);
+export const updateElectivePool = (id: number, d: {
+  name?: string; group_ids?: number[]; is_double?: boolean;
+  day?: number | null; period?: number | null;
+}) => api.put<ElectivePool>(`/elective-pools/${id}`, d).then((r) => r.data);
 
 export const deleteElectivePool = (id: number) => api.delete(`/elective-pools/${id}`);
 
+/** Pin (or move) the window. Returns how many classes took it and which didn't. */
 export const placeElectivePool = (id: number, d: { day: number; period: number; is_double?: boolean }) =>
   api.post<{
     created: number;
     skipped: { group_id: number; group_name?: string; reason: string }[];
+    pool: ElectivePool;
   }>(`/elective-pools/${id}/place`, d).then((r) => r.data);
 
 export const unplaceElectivePool = (id: number) =>
   api.delete<{ deleted: number }>(`/elective-pools/${id}/placement`).then((r) => r.data);
+
+/** Add a subject. Omit teacher_id and the staffing data decides who teaches it. */
+export const addPoolOption = (id: number, d: { subject_id: number; teacher_id?: number; label?: string }) =>
+  api.post<ElectivePool>(`/elective-pools/${id}/options`, d).then((r) => r.data);
+
+export const updatePoolOption = (id: number, key: number, d: { teacher_id?: number; subject_id?: number; label?: string }) =>
+  api.put<ElectivePool>(`/elective-pools/${id}/options/${key}`, d).then((r) => r.data);
+
+export const deletePoolOption = (id: number, key: number) =>
+  api.delete<ElectivePool>(`/elective-pools/${id}/options/${key}`).then((r) => r.data);
+
+/** Who can take a subject in this window, free teachers and own-department first. */
+export const fetchPoolTeachers = (id: number, subjectId?: number) =>
+  api.get<PoolTeacherCandidate[]>(`/elective-pools/${id}/teachers`, {
+    params: subjectId ? { subject_id: subjectId } : undefined,
+  }).then((r) => r.data);
 
 // Bulk lock/unlock slots by filter
 export const bulkLockSlots = (params: {

@@ -115,13 +115,31 @@ export interface ElectiveOption {
 }
 
 /**
- * กลุ่มวิชาเสรี — one elective window shared by several classes.
+ * คาบเสรี — one elective window shared by several classes.
  *
- * The staffing sheet writes these as "ม.1/7-12 กรีฑา 2 คาบ": six classes, one
- * window, and กรีฑา is one of nine options students pick between. So the pool,
- * not the row, is the thing the school schedules — placing it drops the window
- * into every one of its classes at the same day and period.
+ * The window comes first: the school decides "ม.1/7-12 has its elective on
+ * Wednesday period 7", it is pinned there and locked, and the subjects students
+ * may choose between go in afterwards. That is the order the work happens in,
+ * and it is why `day`/`period` can be set while `options` is still empty.
+ *
+ * All of its options run at the same time, so each needs its own teacher — the
+ * API fills in who teaches what and flags anyone double-booked.
  */
+export interface ElectivePoolOption {
+  key:        number;        // stable id for editing/removing this option
+  subject_id: number;
+  teacher_id: number;
+  label:      string;
+  code?:      string;
+  // Filled in by the API.
+  subject_code?:    string | null;
+  subject_name?:    string | null;
+  teacher_name?:    string | null;
+  teacher_code?:    string | null;
+  department_name?: string | null;
+  conflicts?: { group_name: string | null; subject_name: string | null; period: number | null }[];
+}
+
 export interface ElectivePool {
   id:        number;
   name:      string;
@@ -129,11 +147,25 @@ export interface ElectivePool {
   group_ids: number[];
   weekly:    number;
   is_double: boolean;
-  options:   { subject_id: number; teacher_id: number; label: string; code?: string }[];
-  // Filled in by the API: where this pool currently sits, if anywhere.
-  placed_count?:  number;
-  placed_day?:    number | null;
-  placed_period?: number | null;
+  day:       number | null;  // null = not pinned to the timetable yet
+  period:    number | null;
+  options:   ElectivePoolOption[];
+  // Filled in by the API.
+  placed_count?:    number;
+  unplaced_groups?: { group_id: number; group_name: string | null }[];
+  conflict_count?:  number;
+}
+
+/** A teacher who could take a subject in a window, and whether they are free. */
+export interface PoolTeacherCandidate {
+  id:   number;
+  name: string;
+  code: string | null;
+  department_id:   number | null;
+  same_department: boolean;
+  teaches_subject: boolean;
+  free: boolean;
+  conflicts: { group_name: string | null; subject_name: string | null; period: number | null }[];
 }
 
 export interface TimetableSlot {
