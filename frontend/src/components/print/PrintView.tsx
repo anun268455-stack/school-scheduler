@@ -141,11 +141,11 @@ const TimetableBlock: React.FC<BlockProps> = ({
       <div className="tt-grid">
       <table style={{
         width: "100%", height: "100%", borderCollapse: "collapse", tableLayout: "fixed",
-        /* height 100% inside a flex child that grows: the day rows share the
-           sheet's leftover space instead of stopping at a fixed height and
-           leaving the bottom of the page empty. */
-        border: "1.2px solid #000",     /* the outer frame, which collapsed
-                                           borders alone were leaving open */
+        /* The frame lives on .tt-grid, not here. A collapsed table draws its
+           own border centred ON the table edge, so half of it falls outside
+           the table's box — and the page clips that half away, which is why
+           the right-hand column kept coming out open. A plain div's border
+           sits inside its own box and cannot be clipped. */
       }}>
         <colgroup>
           <col style={{ width: compact ? "34px" : "46px" }} />
@@ -437,6 +437,12 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
           .print-wrapper { font-family: 'Sarabun','TH Sarabun New',Arial,sans-serif; }
           .print-page { width: 190mm; }
           .tt-block + .tt-block { margin-top: 5mm; padding-top: 3mm; border-top: 1px dashed #bbb; }
+          /* The frame round the whole timetable. It is on this wrapper rather
+             than on the table so that it cannot be clipped at the page edge,
+             and the table is laid out as this box's only flex child so the day
+             rows stretch to fill it — the grid closes on all four sides and
+             the last column ends in a border like every other one. */
+          .tt-grid { border: 1.4px solid #000; box-sizing: border-box; }
           /* Fill the sheet top to bottom. The page is a flex column of the
              exact printable height; each block takes an equal share of it and
              its grid stretches into that share, so the cells are full-height
