@@ -139,7 +139,8 @@ def _load_school_data() -> bool:
     except Exception:
         return False
 
-    for key, target in (("departments", DEPARTMENTS), ("teachers", TEACHERS),
+    for key, target in (("departments", DEPARTMENTS), ("buildings", BUILDINGS),
+                        ("rooms", ROOMS), ("teachers", TEACHERS),
                         ("subjects", SUBJECTS), ("requirements", REQUIREMENTS)):
         rows = data.get(key)
         if rows:
@@ -307,6 +308,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
         def eligible(r: dict) -> bool:
             if (r["id"], day, period) in room_busy:
+                return False
+            # capacity 0 marks an office / service room — never schedule a class there
+            if r.get("capacity", 1) == 0:
                 return False
             if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != teacher_id:
                 return False
@@ -656,6 +660,8 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
             # chose it deliberately, so capacity/type rules don't exclude it.
             if subj_room and r["id"] == subj_room:
                 out.append(r)
+                continue
+            if r.get("capacity", 1) == 0:
                 continue
             if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != occ["teacher_id"]:
                 continue

@@ -13,6 +13,7 @@ import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
 import { SearchableSelect, teacherOptions, roomOptions, groupOptions } from "../components/common/SearchableSelect";
+import { TableSearch, matches } from "../components/common/TableSearch";
 
 export type DashPage =
   | "groups" | "teachers" | "subjects" | "rooms"
@@ -133,6 +134,9 @@ const GroupsPanel: React.FC = () => {
 
   const flat = groups.flatMap((g) => [g, ...(g.children ?? [])]);
   const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : "–";
+  const [q, setQ] = useState("");
+  const shownGroups = flat.filter((g) => matches(q, g.name, g.level, roomName(g.homeroom_room_id),
+    teachers.find((t) => t.id === g.homeroom_teacher_id)?.name));
   const hrTeacherName = (id: number | null | undefined) => id ? (teachers.find((t) => t.id === id)?.name ?? "–") : null;
 
   return (
@@ -167,7 +171,11 @@ const GroupsPanel: React.FC = () => {
       </div>
       <button onClick={handleCreate} disabled={!form.name} className={btnPrimary}>+ เพิ่มห้องเรียน</button>
 
-      <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
+      <div className="mt-4">
+        <TableSearch value={q} onChange={setQ} count={shownGroups.length} total={flat.length}
+          placeholder="ค้นหาห้องเรียน / ระดับ / ห้องประจำชั้น / ครูประจำชั้น" />
+      </div>
+      <div className="border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
@@ -180,7 +188,7 @@ const GroupsPanel: React.FC = () => {
             {flat.length === 0 && (
               <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
-            {flat.map((g) => (
+            {shownGroups.map((g) => (
               <tr key={g.id} className={clsx("hover:bg-gray-50", g.level === "ห้องเวียน" && "bg-purple-50/40")}>
                 {editing === g.id && editForm ? (
                   <>
@@ -293,6 +301,8 @@ const TeachersPanel: React.FC = () => {
   };
 
   const deptName = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name ?? "–") : "–";
+  const [q, setQ] = useState("");
+  const shownTeachers = teachers.filter((t) => matches(q, t.code, t.name, deptName(t.department_id), roomName(t.fixed_room_id)));
 
   return (
     <Section title="ครูผู้สอน" action={<ImportButton entity="teachers" />}>
@@ -325,7 +335,11 @@ const TeachersPanel: React.FC = () => {
       </div>
       <button onClick={handleCreate} disabled={!form.name} className={btnPrimary}>+ เพิ่มครู</button>
 
-      <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
+      <div className="mt-4">
+        <TableSearch value={q} onChange={setQ} count={shownTeachers.length} total={teachers.length}
+          placeholder="ค้นหารหัสครู / ชื่อครู / กลุ่มสาระ" />
+      </div>
+      <div className="border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
@@ -338,7 +352,7 @@ const TeachersPanel: React.FC = () => {
             {teachers.length === 0 && (
               <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
-            {teachers.map((t) => (
+            {shownTeachers.map((t) => (
               <React.Fragment key={t.id}>
                 <tr className="hover:bg-gray-50">
                   {editing === t.id && editForm ? (
@@ -492,6 +506,8 @@ const SubjectsPanel: React.FC = () => {
   };
 
   const deptName = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name?.replace("กลุ่มสาระ","") ?? String(id)) : "–";
+  const [q, setQ] = useState("");
+  const shownSubjects = subjects.filter((x) => matches(q, x.code, x.name, deptName(x.department_id), roomName(x.fixed_room_id)));
 
   return (
     <Section title="วิชาเรียน" action={<ImportButton entity="subjects" />}>
@@ -537,7 +553,11 @@ const SubjectsPanel: React.FC = () => {
       </div>
       <button onClick={handleCreate} disabled={!form.code || !form.name} className={btnPrimary}>+ เพิ่มวิชา</button>
 
-      <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
+      <div className="mt-4">
+        <TableSearch value={q} onChange={setQ} count={shownSubjects.length} total={subjects.length}
+          placeholder="ค้นหารหัสวิชา / ชื่อวิชา / กลุ่มสาระ" />
+      </div>
+      <div className="border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
@@ -550,7 +570,7 @@ const SubjectsPanel: React.FC = () => {
             {subjects.length === 0 && (
               <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
-            {subjects.map((s) => (
+            {shownSubjects.map((s) => (
               <tr key={s.id} className={clsx("hover:bg-gray-50", s.is_activity && "bg-purple-50/30")}>
                 {editing === s.id && editForm ? (
                   <>
@@ -642,6 +662,9 @@ const RoomsPanel: React.FC = () => {
   const [editForm, setEditForm] = useState<typeof form | null>(null);
 
   const teacherName = (id: number | null | undefined) => id ? (teachers.find((t) => t.id === id)?.name ?? "–") : null;
+  const [q, setQ] = useState("");
+  const shownRooms = rooms.filter((r) => matches(q, r.name, ROOM_TYPE_TH[r.type] ?? r.type,
+    r.building_name, r.floor, teacherName(r.reserved_teacher_id)));
   const deptName    = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name ?? "–") : null;
 
   const handleCreate = async () => {
@@ -715,7 +738,11 @@ const RoomsPanel: React.FC = () => {
       </div>
       <button onClick={handleCreate} disabled={!form.name} className={btnPrimary}>+ เพิ่มห้อง</button>
 
-      <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
+      <div className="mt-4">
+        <TableSearch value={q} onChange={setQ} count={shownRooms.length} total={rooms.length}
+          placeholder="ค้นหาเลขห้อง / ชื่อห้อง / อาคาร" />
+      </div>
+      <div className="border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
@@ -728,7 +755,7 @@ const RoomsPanel: React.FC = () => {
             {rooms.length === 0 && (
               <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
-            {rooms.map((r) => (
+            {shownRooms.map((r) => (
               <tr key={r.id} className="hover:bg-gray-50">
                 {editing === r.id && editForm ? (
                   <>
@@ -864,6 +891,13 @@ const RequirementsPanel: React.FC = () => {
 
   const existingParallelKeys = [...new Set(requirements.map((r) => r.parallel_group_key).filter(Boolean))] as string[];
 
+  // 1,200+ rows: filter first, then draw only a slice so the page stays quick.
+  const [q, setQ] = useState("");
+  const matchedReqs = requirements.filter((r) =>
+    matches(q, gName(r.group_id), sCode(r.subject_id), tName(r.teacher_id), r.parallel_group_key));
+  const ROW_CAP = 200;
+  const shownReqs = matchedReqs.slice(0, ROW_CAP);
+
   return (
     <Section title="ข้อกำหนดคาบเรียน — ครูสอนวิชาอะไร ในห้องใด">
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-800">
@@ -921,7 +955,11 @@ const RequirementsPanel: React.FC = () => {
         + เพิ่มข้อกำหนด
       </button>
 
-      <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
+      <div className="mt-4">
+        <TableSearch value={q} onChange={setQ} count={matchedReqs.length} total={requirements.length}
+          shown={shownReqs.length} placeholder="ค้นหาห้องเรียน / รหัสวิชา / ชื่อครู" />
+      </div>
+      <div className="border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
@@ -934,7 +972,7 @@ const RequirementsPanel: React.FC = () => {
             {requirements.length === 0 && (
               <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อกำหนด</td></tr>
             )}
-            {requirements.map((r) => (
+            {shownReqs.map((r) => (
               editing === r.id && editForm ? (
                 <tr key={r.id} className="bg-yellow-50">
                   <td className="px-2 py-1">
@@ -1003,7 +1041,8 @@ const ElectivesPanel: React.FC = () => {
     .sort((a, b) => a.period_num - b.period_num);
 
   // Only "start"/single slots make a row — the continuation half is hidden.
-  const electiveSlots = slots.filter((s) => s.is_elective && !s.is_double_cont);
+  const allElectives = slots.filter((s) => s.is_elective && !s.is_double_cont);
+  const [q, setQ] = useState("");
   const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
 
   // Show "คาบ 3 + คาบ 4" for a double, or the single label otherwise.
@@ -1053,6 +1092,8 @@ const ElectivesPanel: React.FC = () => {
     setCopyTargets([]);
   };
 
+  const electiveSlots = allElectives.filter((s) => matches(q, gName(s.group_id),
+    s.subject_code, s.subject_name, s.teacher_name, s.room_name));
   const managingSlot = managing != null ? slots.find((s) => s.id === managing) ?? null : null;
 
   return (
@@ -1129,7 +1170,11 @@ const ElectivesPanel: React.FC = () => {
         + สร้างวิชาเสรี
       </button>
 
-      <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
+      <div className="mt-4">
+        <TableSearch value={q} onChange={setQ} count={electiveSlots.length} total={allElectives.length}
+          placeholder="ค้นหาห้องเรียน / วิชา / ครู" />
+      </div>
+      <div className="border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
@@ -1636,6 +1681,9 @@ const AnalyticsPanel: React.FC = () => {
     return { teacher: t, total: tSlots.length, maxDay, outdoorCount, maxConsec };
   }).sort((a, b) => b.total - a.total);
 
+  const [tq, setTq] = useState("");
+  const shownStats = teacherStats.filter(({ teacher }) => matches(tq, teacher.name, teacher.code));
+
   // Requirement coverage
   const totalReq  = requirements.reduce((s, r) => s + r.weekly_count, 0);
   const filledReq = slots.length;
@@ -1683,6 +1731,10 @@ const AnalyticsPanel: React.FC = () => {
           <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
             <h3 className="text-sm font-bold text-gray-700">ภาระงานครู</h3>
           </div>
+          <div className="px-3 pt-3">
+            <TableSearch value={tq} onChange={setTq} count={shownStats.length} total={teacherStats.length}
+              placeholder="ค้นหาชื่อครู / รหัสครู" />
+          </div>
           <table className="w-full text-xs">
             <thead className="bg-gray-50/50">
               <tr>
@@ -1692,7 +1744,7 @@ const AnalyticsPanel: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {teacherStats.map(({ teacher: t, total, maxDay, maxConsec, outdoorCount }) => (
+              {shownStats.map(({ teacher: t, total, maxDay, maxConsec, outdoorCount }) => (
                 <tr key={t.id} className={clsx("hover:bg-gray-50", (maxConsec >= 4 || maxDay > t.max_slots_per_day) && "bg-red-50/60")}>
                   <td className="px-3 py-2 font-medium text-gray-800 truncate max-w-[100px]">{t.name}</td>
                   <td className="px-3 py-2">{total}</td>
