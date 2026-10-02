@@ -44,6 +44,11 @@ export interface Room {
   capacity:            number;
   specialized_dept_id: number | null;  // e.g. Physics lab locked to Science dept
   reserved_teacher_id: number | null;  // permanently reserved for a specific teacher
+  /**
+   * ห้ามใช้ — false keeps the scheduler out of this room entirely.
+   * For staff rooms, offices and anything else that is not a classroom.
+   */
+  usable?:             boolean;
 }
 
 export interface GroupAdvanced {

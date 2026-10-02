@@ -4,7 +4,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
-import type { SubjectType, RoomType, PeriodType } from "../types";
+import type { SubjectType, RoomType, PeriodType, Room } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
@@ -677,8 +677,28 @@ const RoomsPanel: React.FC = () => {
 
   const teacherName = (id: number | null | undefined) => id ? (teachers.find((t) => t.id === id)?.name ?? "–") : null;
   const [q, setQ] = useState("");
-  const shownRooms = rooms.filter((r) => matches(q, r.name, ROOM_TYPE_TH[r.type] ?? r.type,
-    r.building_name, r.floor, teacherName(r.reserved_teacher_id)));
+  const [onlyBlocked, setOnlyBlocked] = useState(false);
+
+  /** Take a room out of the timetable, or put it back. */
+  const toggleUsable = async (r: Room) => {
+    const usable = r.usable === false;
+    useTimetableStore.setState((s) => ({
+      rooms: s.rooms.map((x) => (x.id === r.id ? { ...x, usable } : x)),
+    }));
+    try {
+      await api.updateRoom(r.id, { usable });
+    } catch {
+      useTimetableStore.setState((s) => ({
+        rooms: s.rooms.map((x) => (x.id === r.id ? { ...x, usable: !usable } : x)),
+      }));
+    }
+  };
+  const blockedCount = rooms.filter((r) => r.usable === false).length;
+  const shownRooms = rooms.filter((r) =>
+    (!onlyBlocked || r.usable === false) &&
+    matches(q, r.name, ROOM_TYPE_TH[r.type] ?? r.type,
+      r.building_name, r.floor, teacherName(r.reserved_teacher_id),
+      r.usable === false ? "ห้ามใช้" : "ใช้ได้"));
   const deptName    = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name ?? "–") : null;
 
   const handleCreate = async () => {
@@ -754,23 +774,33 @@ const RoomsPanel: React.FC = () => {
 
       <div className="mt-4">
         <TableSearch value={q} onChange={setQ} count={shownRooms.length} total={rooms.length}
-          placeholder="ค้นหาเลขห้อง / ชื่อห้อง / อาคาร" />
+          placeholder="ค้นหาเลขห้อง / ชื่อห้อง / อาคาร">
+          <label className="flex items-center gap-1.5 text-xs text-gray-600 shrink-0 cursor-pointer">
+            <input type="checkbox" checked={onlyBlocked}
+              onChange={(e) => setOnlyBlocked(e.target.checked)} />
+            เฉพาะห้องห้ามใช้ ({blockedCount})
+          </label>
+        </TableSearch>
+        <p className="text-[11px] text-gray-500 -mt-1 mb-2">
+          🚫 <strong>ห้ามใช้</strong> = ระบบจะไม่จัดคาบเรียนลงห้องนี้เลย — ใช้กับห้องพักครู
+          ห้องสำนักงาน หรือห้องที่ไม่ใช่ห้องเรียน · กดปุ่มในคอลัมน์ "ใช้จัดคาบ" เพื่อสลับ
+        </p>
       </div>
       <div className="border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ชื่อ","ประเภท","อาคาร","ชั้น","ความจุ","🏠 จอง/เฉพาะ",""].map((h) => (
+              {["ชื่อ","ประเภท","อาคาร","ชั้น","ความจุ","🏠 จอง/เฉพาะ","ใช้จัดคาบ",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {rooms.length === 0 && (
-              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {shownRooms.map((r) => (
-              <tr key={r.id} className="hover:bg-gray-50">
+              <tr key={r.id} className={clsx("hover:bg-gray-50", r.usable === false && "bg-red-50/40 text-gray-400")}>
                 {editing === r.id && editForm ? (
                   <>
                     <td className="px-2 py-1"><input className={inlineCls} value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></td>
@@ -802,6 +832,9 @@ const RoomsPanel: React.FC = () => {
                         </select>
                       </div>
                     </td>
+                    <td className="px-2 py-1 text-xs text-gray-400">
+                      {r.usable === false ? "🚫 ห้ามใช้" : "✓ ใช้ได้"}
+                    </td>
                     <td className="px-2 py-1">
                       <div className="flex gap-1">
                         <button onClick={() => handleUpdate(r.id)} className={btnSave}>บันทึก</button>
@@ -826,6 +859,22 @@ const RoomsPanel: React.FC = () => {
                         )}
                         {!r.reserved_teacher_id && !r.specialized_dept_id && <span className="text-gray-400">ห้องรวม</span>}
                       </div>
+                    </td>
+                    {/* One click to take a room out of the timetable — a staff
+                        room or an office is not somewhere to put a class. */}
+                    <td className="px-3 py-2">
+                      <button
+                        onClick={() => toggleUsable(r)}
+                        title={r.usable === false
+                          ? "ตอนนี้ห้ามใช้ — กดเพื่ออนุญาตให้จัดคาบลงห้องนี้"
+                          : "ตอนนี้ใช้ได้ — กดเพื่อห้ามไม่ให้จัดคาบลงห้องนี้ (เช่น ห้องพักครู)"}
+                        className={clsx("px-2 py-1 rounded text-xs border whitespace-nowrap",
+                          r.usable === false
+                            ? "bg-red-50 border-red-200 text-red-700 hover:bg-red-100"
+                            : "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100")}
+                      >
+                        {r.usable === false ? "🚫 ห้ามใช้" : "✓ ใช้ได้"}
+                      </button>
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
@@ -1014,7 +1063,7 @@ const RequirementsPanel: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                <tr key={r.id} className="hover:bg-gray-50">
+                <tr key={r.id} className={clsx("hover:bg-gray-50", r.usable === false && "bg-red-50/40 text-gray-400")}>
                   <td className="px-3 py-2 font-medium text-blue-700">{gName(r.group_id)}</td>
                   <td className="px-3 py-2">{sCode(r.subject_id)}</td>
                   <td className="px-3 py-2 text-gray-600">{tName(r.teacher_id)}</td>

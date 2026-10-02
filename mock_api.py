@@ -127,6 +127,19 @@ REQUIREMENTS: list[dict[str, Any]] = [
 SLOTS: list[dict[str, Any]] = []
 
 
+def _room_usable(room: dict[str, Any]) -> bool:
+    """May a lesson be scheduled in this room?
+
+    Schools have rooms that are not classrooms — staff rooms, offices, the
+    canteen. Marking one ห้ามใช้ keeps the scheduler out of it. A capacity of 0
+    meant the same thing before this setting existed, and is still honoured so
+    older data keeps working.
+    """
+    if room.get("usable") is False:
+        return False
+    return (room.get("capacity", 1) or 0) > 0 or room.get("usable") is True
+
+
 def _elective_option_teachers(slot: dict[str, Any]) -> set[int]:
     """Teachers occupied by a shared elective window.
 
@@ -286,8 +299,8 @@ def _requirement_problems() -> list[dict[str, Any]]:
         for room in ROOMS:
             if subj.get("fixed_room_id") and room["id"] == subj["fixed_room_id"]:
                 return True
-            if room.get("capacity", 1) == 0:
-                continue          # an office, never a classroom
+            if not _room_usable(room):
+                continue          # ห้องห้ามใช้ — a staff room or office
             if room.get("specialized_dept_id") and room["specialized_dept_id"] != dept:
                 continue
             if outdoor != (room["type"] == "outdoor"):
@@ -512,8 +525,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         def eligible(r: dict) -> bool:
             if (r["id"], day, period) in room_busy:
                 return False
-            # capacity 0 marks an office / service room — never schedule a class there
-            if r.get("capacity", 1) == 0:
+            # ห้องห้ามใช้ — a staff room, an office, anything the school has
+            # said is not a classroom. (capacity 0 meant this before the
+            # setting existed, and still does.)
+            if not _room_usable(r):
                 return False
             if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != teacher_id:
                 return False
@@ -894,7 +909,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
             if subj_room and r["id"] == subj_room:
                 out.append(r)
                 continue
-            if r.get("capacity", 1) == 0:
+            if not _room_usable(r):
                 continue
             if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != occ["teacher_id"]:
                 continue
@@ -1406,6 +1421,7 @@ def get_rooms():
 @app.post("/api/rooms/")
 def create_room(body: dict[str, Any]):
     body["id"] = _next("room")
+    body.setdefault("usable", True)
     ROOMS.append(body)
     return body
 
@@ -1432,6 +1448,7 @@ def bulk_create_rooms(body: list[dict[str, Any]]):
         row.setdefault("building_name", None)
         row.setdefault("specialized_dept_id", None)
         row.setdefault("reserved_teacher_id", None)
+        row.setdefault("usable", True)
         ROOMS.append(row)
         created.append(row)
     return created
