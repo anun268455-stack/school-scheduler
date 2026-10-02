@@ -74,9 +74,9 @@ interface Metrics {
 
 const METRICS: Record<1 | 2, Metrics> = {
   1: { headFont: "11pt", timeFont: "8.5pt", cellFont: "15pt", subFont: "9.5pt", roomFont: "15pt",
-       lineH: "11mm", rowH: "40mm", pad: "3px 4px", titleFont: "15pt", subtitleFont: "11.5pt", logo: 52 },
+       lineH: "8mm", rowH: "34mm", pad: "3px 4px", titleFont: "15pt", subtitleFont: "11.5pt", logo: 52 },
   2: { headFont: "8.5pt", timeFont: "7pt", cellFont: "11pt", subFont: "7.5pt", roomFont: "11pt",
-       lineH: "5.3mm", rowH: "19mm", pad: "2px 3px", titleFont: "11.5pt", subtitleFont: "9pt", logo: 34 },
+       lineH: "4.2mm", rowH: "15mm", pad: "2px 3px", titleFont: "11.5pt", subtitleFont: "9pt", logo: 34 },
 };
 
 const borderCell = (m: Metrics): React.CSSProperties => ({
@@ -105,12 +105,16 @@ const TimetableBlock: React.FC<BlockProps> = ({
 }) => {
   const cols = getDisplayPeriods(periods, level);
   const TH: React.CSSProperties = { ...borderCell(m), fontSize: m.headFont, fontWeight: 700, backgroundColor: "#fff" };
-  const TD: React.CSSProperties = { ...borderCell(m), fontSize: m.cellFont, height: m.rowH };
+  // A minimum, not a fixed height: the rows share whatever the sheet has left.
+  const TD: React.CSSProperties = { ...borderCell(m), fontSize: m.cellFont, minHeight: m.rowH };
   const BREAK_TH: React.CSSProperties = { ...TH, backgroundColor: "#e5e7eb", fontSize: m.timeFont };
   const BREAK_TD: React.CSSProperties = { ...TD, backgroundColor: "#f3f4f6" };
 
   return (
-    <div className="tt-block" style={{ breakInside: "avoid", pageBreakInside: "avoid" }}>
+    <div className="tt-block" style={{
+      breakInside: "avoid", pageBreakInside: "avoid",
+      display: "flex", flexDirection: "column", minHeight: 0,
+    }}>
       {/* Header */}
       <div style={{ marginBottom: "3px", display: "flex", alignItems: "center", gap: "8px" }}>
         {schoolConfig.logoUrl ? (
@@ -134,8 +138,12 @@ const TimetableBlock: React.FC<BlockProps> = ({
       </div>
 
       {/* Grid */}
+      <div className="tt-grid">
       <table style={{
-        width: "100%", borderCollapse: "collapse", tableLayout: "fixed",
+        width: "100%", height: "100%", borderCollapse: "collapse", tableLayout: "fixed",
+        /* height 100% inside a flex child that grows: the day rows share the
+           sheet's leftover space instead of stopping at a fixed height and
+           leaving the bottom of the page empty. */
         border: "1.2px solid #000",     /* the outer frame, which collapsed
                                            borders alone were leaving open */
       }}>
@@ -177,7 +185,11 @@ const TimetableBlock: React.FC<BlockProps> = ({
                 if (p.type !== "class") return <td key={p.period_num} style={BREAK_TD} />;
                 return (
                   <td key={p.period_num} style={TD}>
-                    {renderCell(grid.get(`${dayIdx}-${p.period_num}`) ?? [])}
+                    {/* A full-height wrapper, so the cell's three lines can
+                        share the row however tall the row ends up. */}
+                    <div style={{ height: "100%", minHeight: m.rowH }}>
+                      {renderCell(grid.get(`${dayIdx}-${p.period_num}`) ?? [])}
+                    </div>
                   </td>
                 );
               })}
@@ -185,6 +197,7 @@ const TimetableBlock: React.FC<BlockProps> = ({
           ))}
         </tbody>
       </table>
+      </div>
 
       {/* Signatures */}
       <div style={{
@@ -252,15 +265,20 @@ const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.1, fontSi
 function CellLines(
   { m, code, mid, room }: { m: Metrics; code: string; mid: string; room: string },
 ) {
-  const line = (h: string): React.CSSProperties => ({
-    height: h, display: "flex", alignItems: "center", justifyContent: "center",
+  // Each line takes a third of the cell. Equal shares keep the codes across a
+  // row on one line and the rooms on another, and because they are shares
+  // rather than fixed heights they grow with the cell when the grid stretches
+  // to fill the sheet.
+  const line: React.CSSProperties = {
+    flex: "1 1 0", minHeight: m.lineH,
+    display: "flex", alignItems: "center", justifyContent: "center",
     overflow: "hidden", whiteSpace: "nowrap",
-  });
+  };
   return (
     <div style={{ ...cellText(m), display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ ...line(m.lineH), fontSize: m.cellFont, fontWeight: 700 }}>{code}</div>
-      <div style={{ ...line(m.lineH), fontSize: m.subFont }}>{mid}</div>
-      <div style={{ ...line(m.lineH), fontSize: m.roomFont, fontWeight: 700 }}>{room}</div>
+      <div style={{ ...line, fontSize: m.cellFont, fontWeight: 700 }}>{code}</div>
+      <div style={{ ...line, fontSize: m.subFont }}>{mid}</div>
+      <div style={{ ...line, fontSize: m.roomFont, fontWeight: 700 }}>{room}</div>
     </div>
   );
 }
@@ -390,14 +408,18 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
           @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
           .print-wrapper { font-family: 'Sarabun','TH Sarabun New',Arial,sans-serif; }
           .print-page { width: 190mm; }
-          .tt-block + .tt-block { margin-top: 6mm; padding-top: 4mm; border-top: 1px dashed #bbb; }
-          /* Fill the sheet top to bottom rather than leaving the lower half
-             blank: the blocks share the height between them. */
+          .tt-block + .tt-block { margin-top: 5mm; padding-top: 3mm; border-top: 1px dashed #bbb; }
+          /* Fill the sheet top to bottom. The page is a flex column of the
+             exact printable height; each block takes an equal share of it and
+             its grid stretches into that share, so the cells are full-height
+             whether there are one or two tables on the sheet. */
           @media print {
             .print-page {
-              display: flex; flex-direction: column; justify-content: space-between;
-              height: 281mm;
+              display: flex; flex-direction: column;
+              height: 281mm; max-height: 281mm; overflow: hidden;
             }
+            .tt-block { flex: 1 1 0; min-height: 0; }
+            .tt-grid  { flex: 1 1 auto; min-height: 0; }
           }
           @media print {
             body > *:not(.print-wrapper) { display: none !important; }
