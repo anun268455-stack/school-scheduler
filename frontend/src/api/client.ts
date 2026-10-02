@@ -218,6 +218,25 @@ export const restoreBackup = (data: unknown) =>
   api.post<{ restored: Record<string, number>; saved_at?: string }>("/restore", data)
     .then((r) => r.data);
 
+// ── เลขคาบ ───────────────────────────────────────────────────────────────────
+// period_num is a column index the timetable refers to; it is derived from the
+// clock rather than typed, so a stray number cannot drop a period off the grid.
+export const fetchPeriodPlan = () =>
+  api.get<{
+    plan: { period_num: number; rows: {
+      id: number; label: string; type: string;
+      start_time: string; end_time: string; applies_to: string; period_num: number;
+    }[] }[];
+    moves: { id: number; label: string; from: number; to: number }[];
+    issues: { level: string; kind: string; minutes?: number; text: string }[];
+    needs_renumber: boolean;
+  }>("/periods/plan").then((r) => r.data);
+
+/** Renumber the columns from the clock, carrying every placed lesson with them. */
+export const renumberPeriods = () =>
+  api.post<{ columns: number; slots_moved: number }>("/periods/renumber", {})
+    .then((r) => r.data);
+
 export const fetchStateInfo = () =>
   api.get<{
     revision: number;

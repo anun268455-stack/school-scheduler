@@ -1401,10 +1401,16 @@ const LevelDaySummary: React.FC<{ periods: Period[] }> = ({ periods }) => {
   );
 };
 
+/** "08:50" + 50 → "09:40". Used to prefill the next period's times. */
+function addMinutes(hhmm: string, mins: number): string {
+  const [h, m] = hhmm.split(":").map(Number);
+  const t = (h * 60 + m + mins + 1440) % 1440;
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+}
+
 const PeriodsPanel: React.FC = () => {
-  const { periods } = useTimetableStore();
+  const { periods, loadAll } = useTimetableStore();
   const [form, setForm] = useState({
-    period_num: 0,
     label: "",
     start_time: "08:00",
     end_time: "08:50",
@@ -1413,11 +1419,22 @@ const PeriodsPanel: React.FC = () => {
   });
   const [editing, setEditing] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
+  const [plan, setPlan] = useState<Awaited<ReturnType<typeof api.fetchPeriodPlan>> | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refreshPlan = () => api.fetchPeriodPlan().then(setPlan).catch(() => setPlan(null));
+  useEffect(() => { refreshPlan(); }, [periods]);
 
   const handleCreate = async () => {
-    const created = await api.createPeriod(form);
+    // No period number to type: the server works it out from the time, so a
+    // new row cannot land on a number that already means something else.
+    const created = await api.createPeriod({ ...form, auto_number: true } as Partial<Period>);
     useTimetableStore.setState((s) => ({ periods: [...s.periods, created] }));
-    setForm({ period_num: form.period_num + 1, label: "", start_time: form.end_time, end_time: "09:00", type: "class", applies_to: "all" });
+    const len = Math.max(10, Math.abs(
+      Number(form.end_time.split(":")[0]) * 60 + Number(form.end_time.split(":")[1])
+      - Number(form.start_time.split(":")[0]) * 60 - Number(form.start_time.split(":")[1])));
+    setForm({ label: "", start_time: form.end_time, end_time: addMinutes(form.end_time, len),
+      type: "class", applies_to: "all" });
   };
 
   const handleUpdate = async (id: number) => {
@@ -1428,7 +1445,21 @@ const PeriodsPanel: React.FC = () => {
     setEditForm(null);
   };
 
-  const sortedPeriods = [...periods].sort((a, b) => a.period_num - b.period_num || a.id - b.id);
+  const doRenumber = async () => {
+    setBusy(true);
+    try {
+      await api.renumberPeriods();
+      await loadAll();       // slot period numbers moved with the columns
+      await refreshPlan();
+    } finally { setBusy(false); }
+  };
+
+  // Ordered by the clock, which is the order they actually happen in — sorting
+  // by the stored number showed them out of sequence whenever it had drifted.
+  const sortedPeriods = [...periods].sort((a, b) =>
+    (a.start_time ?? "").localeCompare(b.start_time ?? "")
+    || (a.end_time ?? "").localeCompare(b.end_time ?? "")
+    || a.period_num - b.period_num);
 
   return (
     <Section title="จัดการคาบเรียนและเวลา">
@@ -1442,13 +1473,66 @@ const PeriodsPanel: React.FC = () => {
 
       <LevelDaySummary periods={periods} />
 
+      {/* ── เลขคาบและรูปร่างของวัน ───────────────────────────────────────── */}
+      {plan && (
+        <div className={clsx("border rounded-lg mb-4 overflow-hidden",
+          plan.needs_renumber ? "border-amber-300" : "border-gray-200")}>
+          <div className={clsx("px-4 py-3 flex items-start gap-3 flex-wrap",
+            plan.needs_renumber ? "bg-amber-50" : "bg-gray-50")}>
+            <div className="flex-1 min-w-[260px]">
+              <p className="text-sm font-bold text-gray-800">🔢 เลขคาบ</p>
+              <p className="text-xs text-gray-600 mt-1 leading-relaxed">
+                เลขคาบเป็นแค่<strong>ลำดับคอลัมน์</strong>ในตาราง ไม่ต้องกรอกเอง —
+                ระบบเรียงให้จากเวลาเริ่ม คาบที่เวลาเดียวกันแต่คนละระดับจะใช้เลขเดียวกัน
+                {plan.needs_renumber
+                  ? <> · ตอนนี้เลข<strong className="text-amber-800">ไม่เรียงกัน</strong> ({plan.moves.length} แถวต้องย้าย)</>
+                  : <> · ตอนนี้<strong className="text-emerald-700">เรียงถูกต้องแล้ว</strong></>}
+              </p>
+            </div>
+            {plan.needs_renumber && (
+              <button onClick={doRenumber} disabled={busy}
+                className="px-4 py-2 text-sm bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-40 shrink-0">
+                {busy ? "กำลังจัด…" : "จัดเลขคาบใหม่"}
+              </button>
+            )}
+          </div>
+
+          {plan.needs_renumber && (
+            <div className="px-4 py-2 bg-white border-t border-amber-200">
+              <p className="text-[11px] text-gray-500 mb-1">
+                จะเปลี่ยนเป็น (คาบที่จัดไว้ในตารางจะย้ายตามไปด้วย เวลาเรียนจริงไม่เปลี่ยน):
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {plan.moves.map((m) => (
+                  <span key={m.id} className="text-[11px] bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                    {m.label}: <span className="text-gray-400">{m.from}</span> → <strong>{m.to}</strong>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {plan.issues.filter((i) => i.kind !== "capacity").length > 0 && (
+            <div className="px-4 py-2.5 bg-white border-t border-gray-100 space-y-1">
+              <p className="text-[11px] font-semibold text-gray-500">ช่องว่าง / เวลาทับกันในวัน</p>
+              {plan.issues.filter((i) => i.kind !== "capacity").map((i, n) => (
+                <p key={n} className={clsx("text-[11px]",
+                  i.kind === "overlap" || i.kind === "duplicate" ? "text-red-700" : "text-amber-700")}>
+                  {i.kind === "gap" ? "⏳" : "⚠"} {i.text}
+                </p>
+              ))}
+              <p className="text-[10px] text-gray-400 pt-0.5">
+                ช่องว่างไม่ใช่ความผิดเสมอไป (เช่น เวลาเดินเปลี่ยนห้อง) แต่ช่องว่างยาวๆ
+                มักแปลว่าลืมใส่คาบเรียนของระดับนั้น
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
         <p className="text-xs font-semibold text-gray-600 mb-3">➕ เพิ่มคาบใหม่</p>
         <div className="grid grid-cols-3 gap-2 mb-3">
-          <Field label="เลขคาบ">
-            <input type="number" min={0} className={inputCls} value={form.period_num}
-              onChange={(e) => setForm({ ...form, period_num: Number(e.target.value) })} />
-          </Field>
           <Field label="ชื่อคาบ *">
             <input className={inputCls} value={form.label}
               onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="คาบ 1" />
@@ -1483,7 +1567,7 @@ const PeriodsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["คาบ#","ชื่อ","ประเภท","เริ่ม","สิ้นสุด","ใช้กับ",""].map((h) => (
+              {["เลขคาบ (อัตโนมัติ)","ชื่อ","ประเภท","เริ่ม","สิ้นสุด","ใช้กับ",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
@@ -1493,9 +1577,8 @@ const PeriodsPanel: React.FC = () => {
               <tr key={p.id} className={clsx("hover:bg-gray-50", p.type !== "class" && "bg-orange-50/30")}>
                 {editing === p.id && editForm ? (
                   <>
-                    <td className="px-2 py-1">
-                      <input type="number" className="w-14 border rounded px-1 py-0.5 text-xs" value={editForm.period_num}
-                        onChange={(e) => setEditForm({ ...editForm, period_num: Number(e.target.value) })} />
+                    <td className="px-2 py-1 text-xs text-gray-400" title="เลขคาบมาจากเวลา ไม่ต้องกรอก">
+                      {p.period_num}
                     </td>
                     <td className="px-2 py-1">
                       <input className="w-32 border rounded px-1 py-0.5 text-xs" value={editForm.label}
@@ -1545,7 +1628,7 @@ const PeriodsPanel: React.FC = () => {
                     <td className="px-3 py-2 font-mono text-xs">{p.end_time}</td>
                     <td className="px-3 py-2 text-xs text-gray-500">{APPLIES_TO_TH[p.applies_to] ?? p.applies_to}</td>
                     <td className="px-3 py-2 flex gap-1">
-                      <button onClick={() => { setEditing(p.id); setEditForm({ period_num: p.period_num, label: p.label, start_time: p.start_time, end_time: p.end_time, type: p.type, applies_to: p.applies_to }); }}
+                      <button onClick={() => { setEditing(p.id); setEditForm({ label: p.label, start_time: p.start_time, end_time: p.end_time, type: p.type, applies_to: p.applies_to }); }}
                         className={btnEdit}>แก้ไข</button>
                       <button onClick={async () => { await api.deletePeriod(p.id); useTimetableStore.setState((s) => ({ periods: s.periods.filter((x) => x.id !== p.id) })); }} className={btnDanger}>ลบ</button>
                     </td>

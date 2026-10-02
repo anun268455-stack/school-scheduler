@@ -1325,8 +1325,174 @@ def get_periods():
 @app.post("/api/periods/")
 def create_period(body: dict[str, Any]):
     body["id"] = _next("period")
+    body.setdefault("applies_to", "all")
+    # The number is the column this lands in, worked out from its time — the
+    # caller does not have to know or guess it.
+    if body.get("period_num") is None or body.get("auto_number"):
+        body.pop("auto_number", None)
+        PERIODS.append(body)
+        cols = _column_groups()
+        for i, col in enumerate(cols):
+            if any(r is body for r in col):
+                body["period_num"] = i
+                break
+        else:
+            body["period_num"] = _max_id([{"id": p.get("period_num", 0)} for p in PERIODS]) + 1
+        return body
     PERIODS.append(body)
     return body
+
+# ── Period numbers should not be the school's problem ─────────────────────────
+# period_num is an internal column index. It has to have gaps (a break is a
+# column too) and duplicates (ม.1-3 and ม.4-6 each describe the same column
+# differently), and every slot in the timetable refers to it. Asking a person to
+# type it correctly means a stray number silently drops a period off the grid or
+# merges two that should be apart.
+#
+# So it is derived instead: rows are sorted by the clock, rows that cover the
+# same stretch of time are one column, and columns are numbered from zero. Any
+# slot already placed is carried over to the new number of the column it was in.
+
+def _period_sort_key(p: dict[str, Any]) -> tuple:
+    start = _hhmm(p.get("start_time"))
+    end = _hhmm(p.get("end_time"))
+    return (start if start is not None else 9999,
+            end if end is not None else 9999,
+            p.get("period_num", 0))
+
+
+def _column_groups() -> list[list[dict[str, Any]]]:
+    """Rows grouped into columns: same time band, possibly one row per level."""
+    rows = sorted(PERIODS, key=_period_sort_key)
+    cols: list[list[dict[str, Any]]] = []
+    for row in rows:
+        start, end = _hhmm(row.get("start_time")), _hhmm(row.get("end_time"))
+        placed = False
+        for col in cols:
+            # Same column when they overlap in time AND describe different
+            # levels — two rows for the same level at the same time is a
+            # mistake, not a column, and is reported rather than merged.
+            levels = {c.get("applies_to", "all") or "all" for c in col}
+            mine = row.get("applies_to", "all") or "all"
+            if mine in levels or "all" in levels and mine != "all" and len(levels) > 1:
+                continue
+            ref = col[0]
+            rs, re_ = _hhmm(ref.get("start_time")), _hhmm(ref.get("end_time"))
+            if None in (start, end, rs, re_):
+                continue
+            if start < re_ and rs < end:          # the bands overlap
+                col.append(row)
+                placed = True
+                break
+        if not placed:
+            cols.append([row])
+    return cols
+
+
+@app.get("/api/periods/plan")
+def period_plan():
+    """What the numbering would become, and anything wrong with the day.
+
+    Shown before renumbering so nothing changes by surprise, and used on its own
+    to point out gaps and clashes in the timetable's shape.
+    """
+    cols = _column_groups()
+    plan, moves = [], []
+    for new_num, col in enumerate(cols):
+        for row in col:
+            if row.get("period_num") != new_num:
+                moves.append({"id": row["id"], "label": row.get("label"),
+                              "from": row.get("period_num"), "to": new_num})
+        plan.append({
+            "period_num": new_num,
+            "rows": [{"id": r["id"], "label": r.get("label"), "type": r.get("type"),
+                      "start_time": r.get("start_time"), "end_time": r.get("end_time"),
+                      "applies_to": r.get("applies_to", "all"),
+                      "period_num": r.get("period_num")} for r in col],
+        })
+
+    # Gaps and overlaps, judged per level — the two have different days.
+    issues = []
+    for lvl in ("lower", "upper"):
+        rows = sorted(
+            (p for p in PERIODS if (p.get("applies_to", "all") or "all") in ("all", lvl)),
+            key=_period_sort_key)
+        who = "ม.1-3" if lvl == "lower" else "ม.4-6"
+        seen_times: dict[tuple, list[str]] = {}
+        for a, b in zip(rows, rows[1:]):
+            ae, bs = _hhmm(a.get("end_time")), _hhmm(b.get("start_time"))
+            if ae is None or bs is None:
+                continue
+            if bs > ae:
+                issues.append({"level": lvl, "kind": "gap", "minutes": bs - ae,
+                               "text": f"{who}: ว่าง {bs - ae} นาที ระหว่าง {a.get('end_time')} "
+                                       f"ถึง {b.get('start_time')} (หลัง \"{a.get('label')}\")"})
+            elif bs < ae:
+                issues.append({"level": lvl, "kind": "overlap", "minutes": ae - bs,
+                               "text": f"{who}: \"{a.get('label')}\" กับ \"{b.get('label')}\" "
+                                       f"เวลาทับกัน {ae - bs} นาที"})
+        for r in rows:
+            key = (r.get("start_time"), r.get("end_time"))
+            seen_times.setdefault(key, []).append(r.get("label") or "")
+        for (st, en), labels in seen_times.items():
+            if len(labels) > 1:
+                issues.append({"level": lvl, "kind": "duplicate",
+                               "text": f"{who}: มี {len(labels)} คาบที่เวลา {st}-{en} ซ้ำกัน "
+                                       f"({', '.join(labels)})"})
+
+    for lvl in ("lower", "upper"):
+        nums = _class_periods_for_level(lvl)
+        who = "ม.1-3" if lvl == "lower" else "ม.4-6"
+        issues.append({"level": lvl, "kind": "capacity",
+                       "text": f"{who}: เรียนได้ {len(nums)} คาบ/วัน = {len(nums) * 5} คาบ/สัปดาห์"})
+
+    return {"plan": plan, "moves": moves, "issues": issues,
+            "needs_renumber": len(moves) > 0}
+
+
+@app.post("/api/periods/renumber")
+def renumber_periods():
+    """Renumber the columns from the clock, carrying the timetable with them."""
+    cols = _column_groups()
+
+    # (old number, level) -> new number, so a slot lands in the column it was
+    # already in rather than on a number that now means something else.
+    remap: dict[tuple[int, str], int] = {}
+    for new_num, col in enumerate(cols):
+        for row in col:
+            old = row.get("period_num")
+            lvl = row.get("applies_to", "all") or "all"
+            if old is None:
+                continue
+            for key in (("all",) if lvl == "all" else (lvl,)):
+                remap[(old, key)] = new_num
+            if lvl == "all":
+                remap[(old, "lower")] = new_num
+                remap[(old, "upper")] = new_num
+
+    moved = 0
+    for s in SLOTS:
+        lvl = _level_key(_find_group(s["group_id"]))
+        new = remap.get((s["period"], lvl), remap.get((s["period"], "all")))
+        if new is not None and new != s["period"]:
+            s["period"] = new
+            moved += 1
+    for pool in ELECTIVE_POOLS:
+        if pool.get("period") is None:
+            continue
+        lvls = {_level_key(_find_group(g)) for g in pool.get("group_ids", [])} or {"upper"}
+        new = remap.get((pool["period"], next(iter(lvls))), remap.get((pool["period"], "all")))
+        if new is not None:
+            pool["period"] = new
+
+    for new_num, col in enumerate(cols):
+        for row in col:
+            row["period_num"] = new_num
+
+    return {"columns": len(cols), "slots_moved": moved,
+            "plan": period_plan()}
+
+
 
 @app.put("/api/periods/{pid}")
 def update_period(pid: int, body: dict[str, Any]):
