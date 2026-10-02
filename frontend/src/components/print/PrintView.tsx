@@ -65,13 +65,15 @@ function getDisplayPeriods(periods: Period[], level?: LevelKey) {
 // ── Sizing: compact when two timetables share a sheet ────────────────────────
 interface Metrics {
   headFont: string; timeFont: string; cellFont: string; subFont: string;
+  /** The room number is printed larger than everything else in the cell. */
+  roomFont: string;
   rowH: string; pad: string; titleFont: string; subtitleFont: string; logo: number;
 }
 
 const METRICS: Record<1 | 2, Metrics> = {
-  1: { headFont: "11pt", timeFont: "8.5pt", cellFont: "10pt", subFont: "8.5pt",
+  1: { headFont: "11pt", timeFont: "8.5pt", cellFont: "10pt", subFont: "8.5pt", roomFont: "15pt",
        rowH: "40mm", pad: "3px 4px", titleFont: "15pt", subtitleFont: "11.5pt", logo: 52 },
-  2: { headFont: "8.5pt", timeFont: "7pt", cellFont: "8pt", subFont: "7pt",
+  2: { headFont: "8.5pt", timeFont: "7pt", cellFont: "8pt", subFont: "7pt", roomFont: "11pt",
        rowH: "19mm", pad: "2px 3px", titleFont: "11.5pt", subtitleFont: "9pt", logo: 34 },
 };
 
@@ -199,6 +201,38 @@ const TimetableBlock: React.FC<BlockProps> = ({
   );
 };
 
+
+/**
+ * "นางสาวกรรณิการ์ เจริญกิจ" → "นางสาวกรรณิการ์".
+ *
+ * A printed cell is a few millimetres wide; a full name with a surname wraps or
+ * is cut, and the surname is the part nobody needs to tell two teachers apart
+ * on a timetable.
+ */
+function shortTeacher(name: string | null | undefined): string {
+  if (!name) return "";
+  const parts = String(name).trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "";
+  // A Thai title is glued to the given name ("นางสาวกรรณิการ์"), so the first
+  // word is already the whole thing. A Western title stands alone, and
+  // dropping everything after it would leave just "Miss".
+  const TITLES = /^(mr|mrs|miss|ms|dr|prof|master)\.?$/i;
+  if (TITLES.test(parts[0]) && parts.length > 1) return `${parts[0]} ${parts[1]}`;
+  return parts[0];
+}
+
+/**
+ * "131 ห้องคอมฯ3" → "131".
+ *
+ * Which room matters most in the cell and is what people look for, so it is
+ * printed large and bold while the name is dropped — the number is on the door.
+ */
+function roomNumber(room: string | null | undefined): string {
+  if (!room) return "";
+  const m = String(room).trim().match(/^([0-9][0-9.\-/]*)\b/);
+  return m ? m[1] : String(room).trim();
+}
+
 // ── Cell renderers ───────────────────────────────────────────────────────────
 const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.25, fontSize: m.cellFont });
 
@@ -215,20 +249,22 @@ function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
           {s.subject_code ?? s.subject_name ?? (sharedElective ? "วิชาเสรี" : "")}
         </div>
         <div style={{ fontSize: m.subFont }}>
-          {s.teacher_name
-            ?? (sharedElective ? `${s.elective_options?.length ?? 0} ตัวเลือก` : "")}
+          {shortTeacher(s.teacher_name)
+            || (sharedElective ? `${s.elective_options?.length ?? 0} ตัวเลือก` : "")}
         </div>
-        <div style={{ fontSize: m.subFont, color: "#555" }}>{s.room_name ?? ""}</div>
+        <div style={{ fontSize: m.roomFont, fontWeight: 700, lineHeight: 1.1, marginTop: "1px" }}>
+          {roomNumber(s.room_name)}
+        </div>
       </div>
     );
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
       {slots.map((s) => (
-        <div key={s.id} style={{ fontSize: m.subFont, lineHeight: 1.2, borderBottom: "1px dotted #ccc" }}>
+        <div key={s.id} style={{ fontSize: m.subFont, lineHeight: 1.25, borderBottom: "1px dotted #ccc" }}>
           <span style={{ fontWeight: 700 }}>{s.subject_code ?? ""}</span>{" "}
           <span>{s.group_name ?? ""}</span>{" "}
-          <span style={{ color: "#555" }}>{s.room_name ?? ""}</span>
+          <span style={{ fontWeight: 700 }}>{roomNumber(s.room_name)}</span>
         </div>
       ))}
     </div>
@@ -247,7 +283,9 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
         {s.subject_code ?? s.subject_name ?? mine?.code ?? (mine ? "วิชาเสรี" : "")}
       </div>
       <div style={{ fontSize: m.subFont }}>{mine?.label ?? s.group_name ?? ""}</div>
-      <div style={{ fontSize: m.subFont, color: "#555" }}>{s.room_name ?? ""}</div>
+      <div style={{ fontSize: m.roomFont, fontWeight: 700, lineHeight: 1.1, marginTop: "1px" }}>
+        {roomNumber(s.room_name)}
+      </div>
     </div>
   );
 }

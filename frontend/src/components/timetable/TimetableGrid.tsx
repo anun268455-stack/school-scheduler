@@ -6,6 +6,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import {
   DndContext, DragEndEvent, DragOverlay, DragStartEvent,
   MouseSensor, TouchSensor, useSensor, useSensors,
+  pointerWithin, rectIntersection,
   useDroppable, useDraggable,
 } from "@dnd-kit/core";
 import { restrictToWindowEdges } from "@dnd-kit/modifiers";
@@ -471,6 +472,19 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       <div className="flex-1 overflow-auto">
         <DndContext
           sensors={sensors}
+          /* Pick the cell under the POINTER.
+           *
+           * Without this dnd-kit compares rectangles and takes whichever cell
+           * the dragged card overlaps most. The card is cell-sized and follows
+           * the grab point, so as soon as you pick a lesson up anywhere but its
+           * exact centre the card straddles two cells and the drop lands on the
+           * neighbour — the lesson moves somewhere you did not choose.
+           * Falls back to rectangles only when the pointer has left the grid.
+           */
+          collisionDetection={(args) => {
+            const hits = pointerWithin(args);
+            return hits.length > 0 ? hits : rectIntersection(args);
+          }}
           modifiers={[restrictToWindowEdges]}
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}

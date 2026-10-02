@@ -1,10 +1,10 @@
 ﻿/**
  * Dashboard v4 – Full CRUD with inline edit for all entities + Periods + Bulk Lock + Import
  */
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
-import type { SubjectType, RoomType, PeriodType, Room, Period } from "../types";
+import type { SubjectType, RoomType, PeriodType, Room, Period, StudentGroup } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
@@ -262,10 +262,54 @@ const GroupsPanel: React.FC = () => {
 const DAYS_TH = ["จันทร์","อังคาร","พุธ","พฤหัสบดี","ศุกร์"];
 
 // ─── Teachers ────────────────────────────────────────────────────────────────
+
+/** Update one class inside the nested group tree, leaving the rest alone. */
+function patchGroupTree(
+  groups: StudentGroup[], id: number, patch: Partial<StudentGroup>,
+): StudentGroup[] {
+  return groups.map((g) => {
+    const next = g.id === id ? { ...g, ...patch } : g;
+    return next.children?.length
+      ? { ...next, children: patchGroupTree(next.children, id, patch) }
+      : next;
+  });
+}
+
 const TeachersPanel: React.FC = () => {
-  const { teachers, departments, rooms, requirements } = useTimetableStore();
+  const { teachers, departments, rooms, requirements, groups } = useTimetableStore();
   // How many classes this teacher is down to teach.
   const loadOf = (id: number) => requirements.filter((r) => r.teacher_id === id).length;
+
+  const flat = useMemo(() => flattenGroups(groups), [groups]);
+  const teacherName = (id: number) => teachers.find((t) => t.id === id)?.name;
+
+  /** The class this teacher advises, if any. Stored on the class, not here. */
+  const advisorClassId = (teacherId: number) => {
+    const g = flat.find((x) => x.homeroom_teacher_id === teacherId);
+    return g ? String(g.id) : "";
+  };
+  const advisorClassNames = (teacherId: number) =>
+    flat.filter((x) => x.homeroom_teacher_id === teacherId).map((x) => x.name).join(", ");
+
+  /** Move the advisory: clear the teacher's old class, set the new one. */
+  const setAdvisorClass = async (teacherId: number, groupId: number | null) => {
+    const previous = flat.filter((g) => g.homeroom_teacher_id === teacherId);
+    const writes: Promise<unknown>[] = [];
+    for (const g of previous) {
+      if (g.id === groupId) continue;
+      writes.push(api.updateGroup(g.id, { homeroom_teacher_id: null }));
+      useTimetableStore.setState((st) => ({
+        groups: patchGroupTree(st.groups, g.id, { homeroom_teacher_id: null }),
+      }));
+    }
+    if (groupId != null) {
+      writes.push(api.updateGroup(groupId, { homeroom_teacher_id: teacherId }));
+      useTimetableStore.setState((st) => ({
+        groups: patchGroupTree(st.groups, groupId, { homeroom_teacher_id: teacherId }),
+      }));
+    }
+    await Promise.all(writes).catch(() => { /* reload will correct it */ });
+  };
   const [form, setForm] = useState({ code: "", name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   const [editing, setEditing] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
@@ -348,7 +392,7 @@ const TeachersPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["รหัส","ชื่อครู","กลุ่มสาระฯ","🏠 ห้องประจำ","กลางแจ้ง","สอน/วัน",""].map((h) => (
+              {["รหัส","ชื่อครู","กลุ่มสาระฯ","👩‍🏫 ครูประจำชั้น","🏠 ห้องประจำครู","กลางแจ้ง","สอน/วัน",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
@@ -369,6 +413,9 @@ const TeachersPanel: React.FC = () => {
                           <option value="">–</option>
                           {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                         </select>
+                      </td>
+                      <td className="px-2 py-1 text-xs text-gray-400">
+                        {advisorClassNames(t.id) || "–"}
                       </td>
                       <td className="px-2 py-1">
                         <SearchableSelect value={editForm.fixed_room_id} onChange={(v) => setEditForm({ ...editForm, fixed_room_id: v })}
@@ -392,6 +439,26 @@ const TeachersPanel: React.FC = () => {
                         {(t.advanced_settings?.days_off ?? []).length > 0 && <span className="ml-1 text-xs bg-orange-100 text-orange-600 px-1 rounded">วันหยุด</span>}
                       </td>
                       <td className="px-3 py-2 text-gray-500 text-xs truncate max-w-[140px]">{deptName(t.department_id)}</td>
+                      {/* ครูประจำชั้น is a CLASS of students, not a room — it is
+                          stored on the class, and shown here because this is
+                          where you think about a teacher. */}
+                      <td className="px-3 py-2 text-xs" style={{ minWidth: 150 }}>
+                        <SearchableSelect
+                          value={advisorClassId(t.id)}
+                          onChange={(v) => setAdvisorClass(t.id, v === "" ? null : Number(v))}
+                          options={flat.map((g) => {
+                            const owner = g.homeroom_teacher_id;
+                            return {
+                              value: String(g.id),
+                              label: g.name,
+                              hint: owner && owner !== t.id ? teacherName(owner) ?? "มีครูแล้ว" : undefined,
+                              group: g.level ?? undefined,
+                              disabled: !!owner && owner !== t.id,
+                            };
+                          })}
+                          emptyLabel="– ไม่ได้เป็นครูประจำชั้น –"
+                          placeholder="– ไม่ได้เป็น –" />
+                      </td>
                       <td className="px-3 py-2 text-xs">
                         {t.fixed_room_id
                           ? <span className="bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded">🏠 {roomName(t.fixed_room_id)}</span>

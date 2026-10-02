@@ -104,24 +104,26 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
       </button>
 
       {open && (
-        <div className={clsx(
-          "absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl overflow-hidden text-gray-900",
-          tone === "dark" ? "min-w-full w-max max-w-[320px]" : "w-full",
-        )}>
+        <div
+          className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-2xl overflow-hidden text-gray-900"
+          /* Always at least readable, however narrow the trigger is: a picker
+             inside a table column was coming out a few characters wide. */
+          style={{ minWidth: "max(100%, 240px)", width: "max-content", maxWidth: "min(380px, 90vw)" }}
+        >
           {showSearch && (
-            <div className="p-1.5 border-b border-gray-100">
+            <div className="p-2 border-b border-gray-100 bg-gray-50">
               <input
                 ref={inputRef}
                 value={query}
                 onChange={(e) => { setQuery(e.target.value); setCursor(0); }}
                 onKeyDown={onKeyDown}
                 placeholder="พิมพ์เพื่อค้นหา…"
-                className="w-full border border-gray-200 rounded px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
           )}
 
-          <div className="max-h-56 overflow-y-auto py-1">
+          <div className="max-h-72 overflow-y-auto py-1">
             {emptyLabel && (
               <Row
                 label={emptyLabel} active={value === ""} highlighted={false} muted
@@ -168,13 +170,13 @@ const Row: React.FC<{
     onMouseEnter={onHover}
     disabled={disabled}
     className={clsx(
-      "w-full flex items-center gap-2 px-2.5 py-1.5 text-sm text-left transition-colors",
+      "w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors leading-snug",
       active ? "bg-blue-50 text-blue-800 font-medium" : highlighted ? "bg-gray-100" : "hover:bg-gray-50",
       muted && "text-gray-400",
       disabled && "opacity-40 cursor-not-allowed",
     )}
   >
-    <span className="flex-1 min-w-0 truncate">{label}</span>
+    <span className="flex-1 min-w-0 break-words">{label}</span>
     {hint && <span className="text-[11px] text-gray-400 shrink-0">{hint}</span>}
   </button>
 );
