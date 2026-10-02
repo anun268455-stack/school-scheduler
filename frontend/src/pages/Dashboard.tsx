@@ -1063,7 +1063,7 @@ const RequirementsPanel: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                <tr key={r.id} className={clsx("hover:bg-gray-50", r.usable === false && "bg-red-50/40 text-gray-400")}>
+                <tr key={r.id} className="hover:bg-gray-50">
                   <td className="px-3 py-2 font-medium text-blue-700">{gName(r.group_id)}</td>
                   <td className="px-3 py-2">{sCode(r.subject_id)}</td>
                   <td className="px-3 py-2 text-gray-600">{tName(r.teacher_id)}</td>
