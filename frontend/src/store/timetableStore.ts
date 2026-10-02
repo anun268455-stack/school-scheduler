@@ -130,6 +130,12 @@ interface TimetableStore {
   }) => Promise<{ affected: number }>;
 }
 
+/** The backend's reason for refusing a move, or a usable fallback. */
+function moveRefusal(err: unknown): string {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  return typeof detail === "string" ? `ย้ายไม่ได้: ${detail}` : "ย้ายไม่ได้ — ช่องนั้นไม่ว่าง";
+}
+
 export const useTimetableStore = create<TimetableStore>((set, get) => ({
   departments:       [],
   buildings:         [],
@@ -283,8 +289,11 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     }].slice(-25) }));
     try {
       await api.updateSlot(slotId, { day: newDay, period: newPeriod });
-    } catch {
-      set({ slots }); // revert
+    } catch (err: unknown) {
+      // The backend refuses a move that would double-book a class, teacher or
+      // room. Put the lesson back and say why, rather than letting it snap
+      // home with no explanation.
+      set({ slots, solverError: moveRefusal(err) });
     }
   },
 
@@ -305,8 +314,8 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     }].slice(-25) }));
     try {
       await api.updateSlot(slotId, { room_id: newRoomId });
-    } catch {
-      set({ slots }); // revert
+    } catch (err: unknown) {
+      set({ slots, solverError: moveRefusal(err) });
     }
   },
 
@@ -352,18 +361,23 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       return { slots: next };
     });
 
-    // 2. Persist to backend. On any failure, reload authoritative state.
+    // 2. Persist. The moves go together in one call: a swap's first half looks
+    //    like a clash on its own, so the backend judges them against the result.
     try {
-      for (const step of route.steps) {
-        if (step.action === "delete") {
-          await api.deleteSlot(step.slotId);
-        } else {
-          await api.updateSlot(step.slotId, {
-            day: step.toDay,
-            period: step.toPeriod,
-            room_id: step.toRoomId,
-          });
+      const moves = route.steps
+        .filter((s) => s.action !== "delete")
+        .map((s) => ({ slot_id: s.slotId, day: s.toDay, period: s.toPeriod, room_id: s.toRoomId }));
+      if (moves.length > 0) {
+        const r = await api.moveSlots(moves);
+        if (!r.ok) {
+          // Someone else may have taken the cell since the plan was drawn.
+          set({ solverError: `ย้ายไม่ได้: ${r.conflicts.slice(0, 2).join(" · ")}` });
+          await get().loadSlots();
+          return;
         }
+      }
+      for (const step of route.steps) {
+        if (step.action === "delete") await api.deleteSlot(step.slotId);
       }
     } catch {
       await get().loadSlots();

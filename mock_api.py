@@ -1600,16 +1600,31 @@ def update_req(i: int, body: dict[str, Any]):
 
 @app.post("/api/timetable/requirements/bulk")
 def bulk_create_reqs(body: list[dict[str, Any]]):
-    created = []
-    for row in body:
-        # Skip rows missing the essentials rather than crashing the whole import.
+    # Skip rows missing or pointing at something that is not there, rather than
+    # crashing the whole import — or, worse, accepting a row that names a class
+    # or teacher that does not exist and only failing when the timetable runs.
+    gids = {g["id"] for g in _flat_groups()}
+    tids = {t["id"] for t in TEACHERS}
+    sids = {x["id"] for x in SUBJECTS}
+    created, rejected = [], []
+    for i, row in enumerate(body):
         if not row.get("group_id") or not row.get("subject_id") or not row.get("teacher_id"):
+            rejected.append({"row": i, "reason": "ข้อมูลไม่ครบ (ต้องมีห้องเรียน วิชา และครู)"})
+            continue
+        missing = [label for label, val, pool in
+                   (("ห้องเรียน", row["group_id"], gids),
+                    ("วิชา", row["subject_id"], sids),
+                    ("ครู", row["teacher_id"], tids)) if val not in pool]
+        if missing:
+            rejected.append({"row": i, "reason": f"ไม่พบ{'/'.join(missing)}ที่อ้างถึง"})
             continue
         row["id"] = _next("requirement")
         row.setdefault("weekly_count", 1)
         row.setdefault("parallel_group_key", None)
         REQUIREMENTS.append(row)
         created.append(row)
+    if rejected:
+        return {"created": created, "rejected": rejected}
     return created
 
 @app.delete("/api/timetable/requirements/{i}")
@@ -1632,6 +1647,19 @@ def get_slots(group_id: int | None = None, teacher_id: int | None = None,
 @app.post("/api/timetable/slots")
 def create_slot(body: dict[str, Any]):
     """Add one lesson to a specific cell (used by 'click an empty cell to add')."""
+    # Refuse a lesson that cannot exist: a teacher, class or subject that was
+    # deleted, or a cell that is a break or already taken. Without this the
+    # lesson lands on the board and only turns out to be impossible later.
+    if not body.get("force"):
+        for key, rows, label in (("group_id", _flat_groups(), "ห้องเรียน"),
+                                 ("teacher_id", TEACHERS, "ครู"),
+                                 ("subject_id", SUBJECTS, "วิชา")):
+            val = body.get(key)
+            if val is None or not any(r["id"] == int(val) for r in rows):
+                raise HTTPException(400, f"ไม่พบ{label}ที่เลือก (อาจถูกลบไปแล้ว)")
+        if body.get("room_id") and not any(r["id"] == int(body["room_id"]) for r in ROOMS):
+            raise HTTPException(400, "ไม่พบห้องสอนที่เลือก (อาจถูกลบไปแล้ว)")
+
     slot = {
         "id": _next("slot"),
         "day": int(body["day"]), "period": int(body["period"]),
@@ -1643,6 +1671,16 @@ def create_slot(body: dict[str, Any]):
         "parallel_group_key": body.get("parallel_group_key"),
         "is_locked": bool(body.get("is_locked", False)),
     }
+    if not body.get("force"):
+        # Judge the cell with the new lesson in place.
+        SLOTS.append(slot)
+        problems = _validate_moves([{"slot_id": slot["id"]}])
+        if problems:
+            SLOTS.remove(slot)
+            _counters["slot"] -= 1
+            raise HTTPException(409, " · ".join(problems[:3]))
+        return _enrich_slot(slot)
+
     SLOTS.append(slot)
     return _enrich_slot(slot)
 
@@ -2309,8 +2347,124 @@ def copy_elective_slot(slot_id: int, body: dict[str, Any]):
             created.append(_apply_selected_option(new_slot))
     return {"created": created, "skipped": skipped}
 
+
+# ── Is this move legal? ───────────────────────────────────────────────────────
+# Nothing stopped a lesson being dropped on an occupied cell, on a break period,
+# or on day 99. The grid warns before a drag, but a warning is not a rule: two
+# people editing at once both get a green cell and both drops land.
+#
+# A swap moves two lessons through each other, so the first half always looks
+# like a clash on its own. Moves are therefore checked as a SET, against the
+# state they would produce — which is also what makes a swap safe to validate
+# at all.
+
+def _validate_moves(moves: list[dict[str, Any]]) -> list[str]:
+    """Problems with applying these moves together. Empty means it is fine."""
+    class_periods = {p["period_num"] for p in PERIODS if p["type"] == "class"}
+    by_id = {s["id"]: s for s in SLOTS}
+    shares = _shares_students_fn()
+    problems: list[str] = []
+
+    moved: dict[int, dict[str, Any]] = {}
+    for mv in moves:
+        sid = mv.get("slot_id")
+        cur = by_id.get(sid)
+        if cur is None:
+            problems.append(f"ไม่พบคาบ id {sid}")
+            continue
+        day    = mv.get("day",    cur["day"])
+        period = mv.get("period", cur["period"])
+        if not (0 <= int(day) <= 4):
+            problems.append(f"วันที่ {day} ไม่ถูกต้อง")
+            continue
+        if int(period) not in class_periods:
+            label = next((p["label"] for p in PERIODS if p["period_num"] == period), period)
+            problems.append(f"{label} ไม่ใช่คาบเรียน จึงวางคาบสอนไม่ได้")
+            continue
+        moved[sid] = {**cur, "day": int(day), "period": int(period),
+                      "room_id": mv.get("room_id", cur.get("room_id"))}
+    if problems:
+        return problems
+
+    # The timetable as it would be once every move has been applied.
+    after = [moved.get(s["id"], s) for s in SLOTS]
+    g_name = {g["id"]: g["name"] for g in _flat_groups()}
+    t_name = {t["id"]: t["name"] for t in TEACHERS}
+    r_name = {r["id"]: r["name"] for r in ROOMS}
+
+    cells: dict[tuple, list[dict]] = defaultdict(list)
+    for s in after:
+        cells[(s["day"], s["period"])].append(s)
+
+    seen: set[str] = set()
+    for sid in moved:
+        s = moved[sid]
+        here = [o for o in cells[(s["day"], s["period"])] if o["id"] != sid]
+        for o in here:
+            msgs = []
+            if shares(o["group_id"], s["group_id"]):
+                a, b = g_name.get(s["group_id"], "?"), g_name.get(o["group_id"], "?")
+                msgs.append(f"{a} มีคาบอื่นอยู่แล้ว" if a == b
+                            else f"{a} กับ {b} ใช้นักเรียนกลุ่มเดียวกัน จึงเรียนพร้อมกันไม่ได้")
+            mine  = ({s["teacher_id"]} if s.get("teacher_id") else set()) | _elective_option_teachers(s)
+            yours = ({o["teacher_id"]} if o.get("teacher_id") else set()) | _elective_option_teachers(o)
+            for tid in mine & yours:
+                msgs.append(f"{t_name.get(tid, '?')} สอนคาบนี้อยู่แล้ว")
+            if s.get("room_id") and s["room_id"] == o.get("room_id"):
+                msgs.append(f"ห้อง {r_name.get(s['room_id'], '?')} ถูกใช้อยู่แล้ว")
+            for m in msgs:
+                if m not in seen:
+                    seen.add(m); problems.append(m)
+    return problems
+
+
+@app.post("/api/timetable/slots/move")
+def move_slots(body: dict[str, Any]):
+    """Apply several moves at once, all or nothing.
+
+    This is how a swap travels: both halves are judged against the result, so
+    two lessons can trade places even though each half alone looks like a clash.
+    """
+    moves = body.get("moves") or []
+    if not moves:
+        return {"ok": True, "conflicts": [], "slots": []}
+    conflicts = [] if body.get("force") else _validate_moves(moves)
+    if conflicts:
+        return {"ok": False, "conflicts": conflicts, "slots": []}
+
+    by_id = {s["id"]: s for s in SLOTS}
+    out = []
+    for mv in moves:
+        slot = by_id.get(mv.get("slot_id"))
+        if not slot:
+            continue
+        for k in ("day", "period", "room_id"):
+            if k in mv:
+                slot[k] = mv[k]
+        _sync_doubles(slot)
+        out.append(_enrich_slot(slot))
+    return {"ok": True, "conflicts": [], "slots": out}
+
+
 @app.patch("/api/timetable/slots/{slot_id}")
 def patch_slot(slot_id: int, body: dict[str, Any]):
+    if ("day" in body or "period" in body or "room_id" in body) and not body.get("force"):
+        delta = {k: body[k] for k in ("day", "period", "room_id") if k in body}
+        batch = [{"slot_id": slot_id, **delta}]
+        # Parallel lessons travel together (they are moved below), so they are
+        # judged together too — otherwise a sibling lands on an occupied cell
+        # that nothing checked.
+        cur = next((x for x in SLOTS if x["id"] == slot_id), None)
+        pgk = cur.get("parallel_group_key") if cur else None
+        if pgk and ("day" in body or "period" in body):
+            for sib in SLOTS:
+                if (sib.get("parallel_group_key") == pgk and sib["id"] != slot_id
+                        and sib["day"] == cur["day"] and sib["period"] == cur["period"]):
+                    batch.append({"slot_id": sib["id"],
+                                  **{k: v for k, v in delta.items() if k != "room_id"}})
+        problems = _validate_moves(batch)
+        if problems:
+            raise HTTPException(409, " · ".join(problems[:3]))
     for s in SLOTS:
         if s["id"] == slot_id:
             old_day, old_period = s["day"], s["period"]

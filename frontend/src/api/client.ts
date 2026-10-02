@@ -73,6 +73,20 @@ export const createSlot = (d: Partial<TimetableSlot>) =>
 export const updateSlot = (id: number, d: Partial<TimetableSlot>) =>
   api.patch<TimetableSlot>(`/timetable/slots/${id}`, d).then((r) => r.data);
 export const deleteSlot  = (id: number) => api.delete(`/timetable/slots/${id}`);
+
+/**
+ * Move several lessons at once, all or nothing.
+ *
+ * A swap moves two lessons through each other, so each half on its own looks
+ * like a clash — they have to be judged against the result, together. The
+ * backend rejects the whole set and changes nothing if the result would double
+ * -book a class, a teacher or a room.
+ */
+export const moveSlots = (
+  moves: { slot_id: number; day?: number; period?: number; room_id?: number | null }[],
+  force = false,
+) => api.post<{ ok: boolean; conflicts: string[]; slots: TimetableSlot[] }>(
+  "/timetable/slots/move", { moves, force }).then((r) => r.data);
 /** Empty the timetable. "unlocked" spares locked periods; "all" wipes them too. */
 export const clearSlots = (params?: {
   scope?: "unlocked" | "all"; group_id?: number; teacher_id?: number;
