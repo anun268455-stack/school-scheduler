@@ -2,11 +2,13 @@
  * ElectiveOptionModal — switch / manage the catalog of subject+teacher
  * choices ("วงเสรี") available inside a pinned วิชาเสรี slot.
  */
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { ModalShell } from "../common/ModalShell";
+import { SearchableSelect } from "../common/SearchableSelect";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
+import { teachesSlot } from "../../utils/teacherSlots";
 import { DAYS, periodLabel } from "../../types";
 import type { TimetableSlot } from "../../types";
 
@@ -16,13 +18,60 @@ interface ElectiveOptionModalProps {
 }
 
 export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, onClose }) => {
-  const { subjects, teachers, loadSlots } = useTimetableStore();
+  const { subjects, teachers, departments, slots, requirements, loadSlots } = useTimetableStore();
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ subject_id: "", teacher_id: "", label: "" });
   const [busy, setBusy] = useState(false);
 
   const dayName = DAYS[slot.day] ?? `วัน ${slot.day}`;
   const options = slot.elective_options ?? [];
+
+  const subj = subjects.find((s) => s.id === Number(form.subject_id));
+
+  const subjectOpts = useMemo(() => {
+    const dName = (id?: number | null) => departments.find((d) => d.id === id)?.name ?? "ไม่ระบุกลุ่มสาระ";
+    const here = new Set(options.map((o) => o.subject_id));
+    return [...subjects].sort((a, b) => a.code.localeCompare(b.code)).map((x) => ({
+      value: String(x.id),
+      label: `${x.code} – ${x.name}`,
+      hint: here.has(x.id) ? "อยู่ในคาบนี้แล้ว" : undefined,
+      group: dName(x.department_id),
+      disabled: here.has(x.id),
+    }));
+  }, [subjects, departments, options]);
+
+  /** Every วง in this window runs at once, so a teacher already booked at this
+      hour — here or anywhere else — cannot take another one. Say so up front. */
+  const busyHere = useMemo(() => {
+    const ids = new Set<number>();
+    for (const t of teachers) {
+      const clash = slots.some((x) =>
+        x.day === slot.day && x.period === slot.period && x.id !== slot.id && teachesSlot(x, t.id));
+      const twice = options.some((o) => o.teacher_id === t.id);
+      if (clash || twice) ids.add(t.id);
+    }
+    return ids;
+  }, [teachers, slots, options, slot.day, slot.period, slot.id]);
+
+  const teacherOpts = useMemo(() => {
+    const dept = subj?.department_id;
+    const teaching = new Set(requirements.filter((r) => r.subject_id === subj?.id).map((r) => r.teacher_id));
+    return [...teachers]
+      .sort((a, b) => {
+        const rank = (t: typeof a) =>
+          (busyHere.has(t.id) ? 4 : 0) +
+          (teaching.has(t.id) ? 0 : (dept != null && t.department_id === dept) ? 1 : 2);
+        return rank(a) - rank(b) || (a.code ?? "").localeCompare(b.code ?? "");
+      })
+      .map((t) => ({
+        value: String(t.id),
+        label: `${t.code ? `${t.code} ` : ""}${t.name}`,
+        hint: busyHere.has(t.id) ? "ไม่ว่างคาบนี้" : teaching.has(t.id) ? "สอนวิชานี้อยู่" : undefined,
+        group: busyHere.has(t.id) ? "ไม่ว่างคาบนี้"
+          : teaching.has(t.id) ? "ครูที่สอนวิชานี้"
+          : (dept != null && t.department_id === dept) ? "กลุ่มสาระเดียวกัน" : "ครูอื่น",
+      }));
+  }, [teachers, subj, requirements, busyHere]);
 
   const patchSlot = (updated: TimetableSlot) =>
     useTimetableStore.setState((s) => ({ slots: s.slots.map((x) => x.id === slot.id ? updated : x) }));
@@ -43,7 +92,6 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
   };
 
   const handleDelete = async (optionId: number) => {
-    if (options.length <= 1) return;
     setBusy(true);
     try {
       const updated = await api.deleteElectiveOption(slot.id, optionId);
@@ -88,6 +136,11 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
         {/* Options list */}
         <div className="px-5 py-4 max-h-80 overflow-y-auto space-y-1.5">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">เลือกวงที่ต้องการสอนในคาบนี้</p>
+          {options.length === 0 && (
+            <p className="text-xs text-gray-400 py-3 text-center">
+              ยังไม่มีวิชาในคาบนี้ — ช่องนี้ยังถูกล็อกไว้ เพิ่มวิชาได้ด้านล่าง
+            </p>
+          )}
           {options.map((opt) => {
             const subj = subjects.find((s) => s.id === opt.subject_id);
             const teacher = teachers.find((t) => t.id === opt.teacher_id);
@@ -110,16 +163,14 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
                   </p>
                   <p className="text-xs text-gray-500 truncate">{subj?.code ?? "?"} – {subj?.name} · {teacher?.name}</p>
                 </button>
-                {options.length > 1 && (
-                  <button
-                    onClick={() => handleDelete(opt.id)}
-                    disabled={busy}
-                    className="text-red-400 hover:text-red-600 text-xs px-1.5 py-1 shrink-0"
-                    title="ลบวงนี้"
-                  >
-                    ✕
-                  </button>
-                )}
+                <button
+                  onClick={() => handleDelete(opt.id)}
+                  disabled={busy}
+                  className="text-red-400 hover:text-red-600 text-sm px-2 py-1 shrink-0 rounded hover:bg-red-50"
+                  title="ลบวิชานี้ออกจากคาบเสรี"
+                >
+                  ✕
+                </button>
               </div>
             );
           })}
@@ -135,22 +186,22 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
                 value={form.label}
                 onChange={(e) => setForm({ ...form, label: e.target.value })}
               />
-              <select
-                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              <SearchableSelect
                 value={form.subject_id}
-                onChange={(e) => setForm({ ...form, subject_id: e.target.value })}
-              >
-                <option value="">เลือกวิชา</option>
-                {subjects.map((s) => <option key={s.id} value={s.id}>{s.code} – {s.name}</option>)}
-              </select>
-              <select
-                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                onChange={(v) => setForm({ ...form, subject_id: v, label: form.label || (subjects.find((x) => x.id === Number(v))?.name ?? "") })}
+                options={subjectOpts}
+                placeholder="ค้นหาวิชา (รหัส/ชื่อ)…" />
+              <SearchableSelect
                 value={form.teacher_id}
-                onChange={(e) => setForm({ ...form, teacher_id: e.target.value })}
-              >
-                <option value="">เลือกครู</option>
-                {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+                onChange={(v) => setForm({ ...form, teacher_id: v })}
+                options={teacherOpts}
+                disabled={!form.subject_id}
+                placeholder={form.subject_id ? "ค้นหาครู…" : "เลือกวิชาก่อน"} />
+              {form.teacher_id && busyHere.has(Number(form.teacher_id)) && (
+                <p className="text-[10px] text-red-700">
+                  ⚠ ครูคนนี้ไม่ว่างคาบนี้ — มีคาบอื่นอยู่แล้วหรือรับวงอื่นในคาบนี้ไปแล้ว
+                </p>
+              )}
               <div className="flex gap-2">
                 <button
                   onClick={handleAdd}

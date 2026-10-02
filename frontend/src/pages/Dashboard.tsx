@@ -10,6 +10,7 @@ import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
 import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal";
 import { ElectivePoolPanel } from "../components/timetable/ElectivePoolPanel";
+import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubjectModal";
 import { teachesSlot } from "../utils/teacherSlots";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
@@ -473,6 +474,7 @@ const SubjectsPanel: React.FC = () => {
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [assigning, setAssigning] = useState<number | null>(null);
+  const [electiveFor, setElectiveFor] = useState<number | null>(null);
 
   // How many classes each subject is already assigned to.
   const classCount = (subjectId: number) =>
@@ -637,6 +639,13 @@ const SubjectsPanel: React.FC = () => {
                             <span className="ml-1 text-[10px] bg-blue-600 text-white px-1 rounded-full">{classCount(s.id)}</span>
                           )}
                         </button>
+                        <button
+                          onClick={() => setElectiveFor(s.id)}
+                          className="px-2 py-1 text-xs bg-purple-50 text-purple-700 rounded hover:bg-purple-100 border border-purple-200 whitespace-nowrap"
+                          title="ใส่วิชานี้เป็นตัวเลือกในคาบเสรีที่มีอยู่"
+                        >
+                          🎓 ใส่คาบเสรี
+                        </button>
                         <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "" }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
@@ -649,6 +658,9 @@ const SubjectsPanel: React.FC = () => {
         </table>
       </div>
 
+      {electiveFor != null && (
+        <AddElectiveSubjectModal subjectId={electiveFor} onClose={() => setElectiveFor(null)} />
+      )}
       {assigningSubject && (
         <SubjectAssignModal subject={assigningSubject} onClose={() => setAssigning(null)} />
       )}

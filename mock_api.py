@@ -1836,11 +1836,17 @@ def delete_elective_option(slot_id: int, option_id: int):
     slot = next((s for s in SLOTS if s["id"] == slot_id and s.get("is_elective")), None)
     if not slot:
         raise HTTPException(404, "Elective slot not found")
-    if len(slot["elective_options"]) <= 1:
-        raise HTTPException(400, "ต้องมีอย่างน้อย 1 วงเสมอ")
     slot["elective_options"] = [o for o in slot["elective_options"] if o["id"] != option_id]
     if slot["selected_option_id"] == option_id:
-        slot["selected_option_id"] = slot["elective_options"][0]["id"]
+        # Removing the last วง leaves the window empty but still locked — the
+        # period is the school's decision and should not evaporate because its
+        # subject list was cleared out to be rebuilt.
+        slot["selected_option_id"] = (
+            slot["elective_options"][0]["id"] if slot["elective_options"] else None
+        )
+        if slot["selected_option_id"] is None:
+            slot["subject_id"] = None
+            slot["teacher_id"] = None
     _sync_doubles(slot)
     return _apply_selected_option(slot)
 

@@ -23,6 +23,7 @@ import { useTimetableStore } from "../../store/timetableStore";
 import { flattenGroups } from "../../utils/groupHierarchy";
 import { TableSearch, matches } from "../common/TableSearch";
 import { SearchableSelect } from "../common/SearchableSelect";
+import { AddElectiveSubjectModal } from "./AddElectiveSubjectModal";
 import { DAYS, periodLabel } from "../../types";
 import type { ElectivePool, ElectivePoolOption, PoolTeacherCandidate, Period } from "../../types";
 
@@ -527,6 +528,7 @@ export const ElectivePoolPanel: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<number | null>(null);
+  const [addingSubject, setAddingSubject] = useState(false);
 
   const flat = useMemo(() => flattenGroups(groups), [groups]);
   const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
@@ -574,7 +576,19 @@ export const ElectivePoolPanel: React.FC = () => {
         <span>ทั้งหมด <strong>{pools.length}</strong> คาบเสรี</span>
         <span>· ลงตารางแล้ว <strong className="text-purple-700">{pinnedCount}</strong></span>
         {clashCount > 0 && <span className="text-red-700">· ⚠ ครูชนกัน {clashCount} จุด</span>}
+        <button
+          onClick={() => setAddingSubject(true)}
+          disabled={pinnedCount === 0}
+          title={pinnedCount === 0 ? "ต้องมีคาบเสรีที่กำหนดวัน/คาบแล้วอย่างน้อย 1 คาบ" : undefined}
+          className="ml-auto px-2.5 py-1 text-xs bg-purple-50 text-purple-700 border border-purple-200 rounded hover:bg-purple-100 disabled:opacity-40"
+        >
+          🎓 เพิ่มวิชาเข้าคาบเสรี…
+        </button>
       </div>
+
+      {addingSubject && (
+        <AddElectiveSubjectModal onClose={() => setAddingSubject(false)} onDone={reload} />
+      )}
 
       <CreateWindow onCreated={reload} />
 
