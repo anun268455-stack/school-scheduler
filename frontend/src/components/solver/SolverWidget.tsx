@@ -65,7 +65,10 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   };
 
   return (
-    <div className="w-80 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl text-white overflow-hidden animate-fade-in">
+    <div
+      className="w-[26rem] max-w-[calc(100vw-2rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl text-white flex flex-col animate-fade-in"
+      style={{ maxHeight: "calc(100vh - 5rem)" }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-indigo-900/60 border-b border-indigo-800">
         <div className="flex items-center gap-2">
@@ -75,7 +78,8 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
         <button onClick={onClose} className="text-gray-400 hover:text-white text-lg leading-none">✕</button>
       </div>
 
-      <div className="p-4 space-y-4">
+      {/* Scrolls on its own so the button below always stays reachable. */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
         {/* ── Pre-lock summary ────────────────────────────────────────────── */}
         <div className="bg-gray-800 rounded-lg p-3 space-y-1.5">
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">สถานะก่อนคำนวณ</p>
@@ -230,7 +234,10 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
           </div>
         )}
 
-        {/* ── CTA Button ────────────────────────────────────────────────────── */}
+      </div>
+
+      {/* ── CTA + pipeline, pinned ──────────────────────────────────────────── */}
+      <div className="shrink-0 border-t border-gray-700 p-4 space-y-3 bg-gray-900 rounded-b-xl">
         <button
           onClick={handleSolve}
           disabled={isSolving}
@@ -255,7 +262,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
         </button>
 
         {/* ── Pipeline Steps ─────────────────────────────────────────────────── */}
-        <div className="border-t border-gray-700 pt-3 space-y-1.5 text-[10px] text-gray-500">
+        <div className="space-y-1.5 text-[10px] text-gray-500">
           <PipelineStep done={!!result || isSolving} label="1. อ่านข้อกำหนดคาบ + เงื่อนไขห้อง" />
           <PipelineStep done={lockedSlots.length > 0} label={`2. กันคาบที่ล็อกไว้ ${lockedSlots.length} คาบ`} />
           <PipelineStep done={isSolving || !!result} label="3. หาคำตอบ (CP-SAT / สำรอง) กันชนครู/ห้อง/นักเรียน" />

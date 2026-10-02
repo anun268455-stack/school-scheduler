@@ -1252,9 +1252,29 @@ def update_period(pid: int, body: dict[str, Any]):
 
 @app.delete("/api/periods/{pid}")
 def delete_period(pid: int):
-    global PERIODS
+    """Remove a period from the day.
+
+    Any lesson taught in it goes too: the timetable has no column to show it
+    in any more, so it would sit there invisible while still holding its
+    teacher and room against everything else.
+    """
+    global PERIODS, SLOTS
+    gone = next((p for p in PERIODS if p["id"] == pid), None)
     PERIODS = [p for p in PERIODS if p["id"] != pid]
-    return {}
+    removed = 0
+    if gone is not None:
+        # Only if no other period definition still uses that number.
+        still_used = any(p["period_num"] == gone["period_num"] and p["type"] == "class"
+                         for p in PERIODS)
+        if not still_used:
+            before = len(SLOTS)
+            SLOTS = [s for s in SLOTS if s["period"] != gone["period_num"]]
+            removed = before - len(SLOTS)
+            for pool in ELECTIVE_POOLS:
+                if pool.get("period") == gone["period_num"]:
+                    pool["day"] = None
+                    pool["period"] = None
+    return {"removed_slots": removed}
 
 # ── Buildings & Rooms ─────────────────────────────────────────────────────────
 @app.get("/api/rooms/buildings")
@@ -1266,6 +1286,115 @@ def create_building(body: dict[str, Any]):
     body["id"] = max((b["id"] for b in BUILDINGS), default=0) + 1
     BUILDINGS.append(body)
     return body
+
+
+# ── Deleting something that is still referenced ───────────────────────────────
+# A bare `del` leaves the timetable pointing at a teacher, class or subject that
+# no longer exists: the lessons stay on the board with blank names, keep their
+# teacher and room reserved against everything else, and cannot be reached in
+# the UI to be removed. So every delete cleans up after itself.
+
+def _purge_teacher(tid: int) -> dict[str, int]:
+    global SLOTS, REQUIREMENTS
+    before_s, before_r = len(SLOTS), len(REQUIREMENTS)
+    SLOTS = [s for s in SLOTS if s.get("teacher_id") != tid]
+    REQUIREMENTS = [r for r in REQUIREMENTS if r.get("teacher_id") != tid]
+    opts = 0
+    for pool in ELECTIVE_POOLS:
+        keep = [o for o in pool.get("options", []) if o.get("teacher_id") != tid]
+        opts += len(pool.get("options", [])) - len(keep)
+        if len(keep) != len(pool.get("options", [])):
+            pool["options"] = keep
+            _sync_pool_slots(pool)
+    for s in SLOTS:
+        if s.get("is_elective"):
+            s["elective_options"] = [o for o in s.get("elective_options", [])
+                                     if o.get("teacher_id") != tid]
+    return {"slots": before_s - len(SLOTS), "requirements": before_r - len(REQUIREMENTS),
+            "elective_options": opts}
+
+
+def _purge_subject(sid: int) -> dict[str, int]:
+    global SLOTS, REQUIREMENTS
+    before_s, before_r = len(SLOTS), len(REQUIREMENTS)
+    SLOTS = [s for s in SLOTS if s.get("subject_id") != sid]
+    REQUIREMENTS = [r for r in REQUIREMENTS if r.get("subject_id") != sid]
+    opts = 0
+    for pool in ELECTIVE_POOLS:
+        keep = [o for o in pool.get("options", []) if o.get("subject_id") != sid]
+        opts += len(pool.get("options", [])) - len(keep)
+        if len(keep) != len(pool.get("options", [])):
+            pool["options"] = keep
+            _sync_pool_slots(pool)
+    for s in SLOTS:
+        if s.get("is_elective"):
+            s["elective_options"] = [o for o in s.get("elective_options", [])
+                                     if o.get("subject_id") != sid]
+    return {"slots": before_s - len(SLOTS), "requirements": before_r - len(REQUIREMENTS),
+            "elective_options": opts}
+
+
+def _purge_group(gid: int) -> dict[str, int]:
+    """Remove a class and every subgroup under it."""
+    doomed = {gid}
+    stack = [gid]
+    while stack:
+        cur = stack.pop()
+        for g in _flat_groups():
+            if g.get("parent_id") == cur and g["id"] not in doomed:
+                doomed.add(g["id"]); stack.append(g["id"])
+
+    global SLOTS, REQUIREMENTS, GROUPS
+    before_s, before_r = len(SLOTS), len(REQUIREMENTS)
+    SLOTS = [s for s in SLOTS if s.get("group_id") not in doomed]
+    REQUIREMENTS = [r for r in REQUIREMENTS if r.get("group_id") not in doomed]
+
+    # A class may be a subgroup, so prune the tree rather than the top level.
+    def prune(nodes: list) -> list:
+        out = []
+        for g in nodes:
+            if g["id"] in doomed:
+                continue
+            if g.get("children"):
+                g["children"] = prune(g["children"])
+            out.append(g)
+        return out
+    GROUPS = prune(GROUPS)
+
+    for pool in ELECTIVE_POOLS:
+        keep = [x for x in pool.get("group_ids", []) if x not in doomed]
+        if len(keep) != len(pool.get("group_ids", [])):
+            pool["group_ids"] = keep
+            _sync_pool_slots(pool)
+    # A homeroom that no longer belongs to anyone must not stay reserved.
+    for r in ROOMS:
+        if r.get("homeroom_group_id") in doomed:
+            r["homeroom_group_id"] = None
+    return {"groups": len(doomed), "slots": before_s - len(SLOTS),
+            "requirements": before_r - len(REQUIREMENTS)}
+
+
+def _purge_room(rid: int) -> dict[str, int]:
+    """Free the room from the timetable. The lessons themselves survive —
+    losing a room is not a reason to lose the period it was taught in."""
+    freed = 0
+    for s in SLOTS:
+        if s.get("room_id") == rid:
+            s["room_id"] = None
+            s["room_name"] = None
+            s["room_type"] = None
+            freed += 1
+    for g in _flat_groups():
+        if g.get("homeroom_room_id") == rid:
+            g["homeroom_room_id"] = None
+    for t in TEACHERS:
+        if t.get("fixed_room_id") == rid:
+            t["fixed_room_id"] = None
+    for sub in SUBJECTS:
+        if sub.get("fixed_room_id") == rid:
+            sub["fixed_room_id"] = None
+    return {"slots_unassigned": freed}
+
 
 @app.get("/api/rooms/")
 def get_rooms():
@@ -1288,8 +1417,9 @@ def update_room(i: int, body: dict[str, Any]):
 @app.delete("/api/rooms/{i}")
 def del_room(i: int):
     global ROOMS
+    removed = _purge_room(i)
     ROOMS = [r for r in ROOMS if r["id"] != i]
-    return {}
+    return {"removed": removed}
 
 @app.post("/api/rooms/bulk")
 def bulk_create_rooms(body: list[dict[str, Any]]):
@@ -1352,9 +1482,9 @@ def update_group(i: int, body: dict[str, Any]):
 
 @app.delete("/api/groups/{i}")
 def del_group(i: int):
-    global GROUPS
-    GROUPS = [g for g in GROUPS if g["id"] != i]
-    return {}
+    # Walks the tree, so a subgroup (ม.4/6ก) deletes too — the old top-level
+    # filter silently did nothing for those.
+    return {"removed": _purge_group(i)}
 
 @app.post("/api/groups/bulk")
 def bulk_create_groups(body: list[dict[str, Any]]):
@@ -1391,8 +1521,9 @@ def update_teacher(i: int, body: dict[str, Any]):
 @app.delete("/api/teachers/{i}")
 def del_teacher(i: int):
     global TEACHERS
+    removed = _purge_teacher(i)
     TEACHERS = [t for t in TEACHERS if t["id"] != i]
-    return {}
+    return {"removed": removed}
 
 @app.post("/api/teachers/bulk")
 def bulk_create_teachers(body: list[dict[str, Any]]):
@@ -1430,8 +1561,9 @@ def update_subject(i: int, body: dict[str, Any]):
 @app.delete("/api/subjects/{i}")
 def del_subject(i: int):
     global SUBJECTS
+    removed = _purge_subject(i)
     SUBJECTS = [s for s in SUBJECTS if s["id"] != i]
-    return {}
+    return {"removed": removed}
 
 @app.post("/api/subjects/bulk")
 def bulk_create_subjects(body: list[dict[str, Any]]):
@@ -2132,25 +2264,50 @@ def copy_elective_slot(slot_id: int, body: dict[str, Any]):
     group_slots = [s for s in SLOTS if key and s.get("double_group_key") == key] if key else [src]
     group_slots.sort(key=lambda s: s["period"])
 
-    created = []
+    shares = _shares_students_fn()
+    cells = [(gs["day"], gs["period"]) for gs in group_slots]
+
+    created, skipped = [], []
     for target_group_id in body.get("target_group_ids", []):
+        grp = _find_group(target_group_id)
+        if not grp:
+            skipped.append({"group_id": target_group_id, "reason": "ไม่พบห้องเรียน"})
+            continue
+        # Do not drop the elective on top of a lesson the class already has.
+        # A parent class and its subgroups hold the same students, so a clash
+        # with either of those counts — copying ม.4/6's elective onto ม.4/6ก
+        # would put one set of students in two places at once.
+        clash = next((s for s in SLOTS
+                      if (s["day"], s["period"]) in cells
+                      and shares(s["group_id"], target_group_id)), None)
+        if clash:
+            other = _find_group(clash["group_id"]) or {}
+            skipped.append({
+                "group_id": target_group_id, "group_name": grp.get("name"),
+                "reason": ("มีคาบอื่นอยู่แล้ว" if clash["group_id"] == target_group_id
+                           else f"ชนกับ {other.get('name')} ซึ่งใช้นักเรียนกลุ่มเดียวกัน"),
+            })
+            continue
+
         new_key = f"ELEC-DBL-{_next('slot')}" if key else None
         # Shared option-id remap so both halves keep matching ids.
         id_map: dict[int, int] = {}
         for o in group_slots[0]["elective_options"]:
             id_map[o["id"]] = _next("elective_option")
         for gs in group_slots:
+            sel = gs.get("selected_option_id")
             new_slot = {
                 **gs,
                 "id": _next("slot"),
                 "group_id": target_group_id,
                 "double_group_key": new_key,
                 "elective_options": [{**o, "id": id_map[o["id"]]} for o in gs["elective_options"]],
-                "selected_option_id": id_map[gs["selected_option_id"]],
+                # A shared window has no selected option, and None is not a key.
+                "selected_option_id": id_map.get(sel) if sel is not None else None,
             }
             SLOTS.append(new_slot)
             created.append(_apply_selected_option(new_slot))
-    return created
+    return {"created": created, "skipped": skipped}
 
 @app.patch("/api/timetable/slots/{slot_id}")
 def patch_slot(slot_id: int, body: dict[str, Any]):

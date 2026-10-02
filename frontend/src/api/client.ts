@@ -96,8 +96,13 @@ export const deleteElectiveOption = (slotId: number, optionId: number) =>
 export const selectElectiveOption = (slotId: number, optionId: number) =>
   api.patch<TimetableSlot>(`/timetable/elective-slots/${slotId}/select`, { option_id: optionId }).then((r) => r.data);
 
+/** Copy an elective to other classes. Classes already busy then are skipped. */
 export const copyElectiveSlot = (slotId: number, targetGroupIds: number[]) =>
-  api.post<TimetableSlot[]>(`/timetable/elective-slots/${slotId}/copy`, { target_group_ids: targetGroupIds }).then((r) => r.data);
+  api.post<{
+    created: TimetableSlot[];
+    skipped: { group_id: number; group_name?: string; reason: string }[];
+  }>(`/timetable/elective-slots/${slotId}/copy`, { target_group_ids: targetGroupIds })
+    .then((r) => r.data);
 
 // ── คาบเสรี (elective windows / pools) ──────────────────────────────────────
 // A window is created and pinned to a day/period FIRST, then subjects are added

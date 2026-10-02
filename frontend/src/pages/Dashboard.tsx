@@ -1048,6 +1048,7 @@ const ElectivesPanel: React.FC = () => {
   const [form, setForm] = useState({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "", room_id: "", is_double: false });
   const [managing, setManaging]   = useState<number | null>(null);
   const [copyingId, setCopyingId] = useState<number | null>(null);
+  const [copyNote, setCopyNote]   = useState<string | null>(null);
   const [copyTargets, setCopyTargets] = useState<number[]>([]);
 
   const flat = groups.flatMap((g) => [g, ...(g.children ?? [])]);
@@ -1100,10 +1101,19 @@ const ElectivesPanel: React.FC = () => {
 
   const handleCopy = async (id: number) => {
     if (copyTargets.length === 0) return;
-    await api.copyElectiveSlot(id, copyTargets);
+    const r = await api.copyElectiveSlot(id, copyTargets);
     await loadSlots();
     setCopyingId(null);
     setCopyTargets([]);
+    // Say which classes were left out, rather than letting them quietly not
+    // appear — a class already teaching something then cannot take this too.
+    setCopyNote(
+      r.skipped.length === 0
+        ? `คัดลอกไปแล้ว ${copyTargets.length} ห้อง`
+        : `คัดลอกได้ ${r.created.length > 0 ? copyTargets.length - r.skipped.length : 0} ห้อง · `
+          + `ข้าม ${r.skipped.length} ห้อง — `
+          + r.skipped.map((s) => `${s.group_name ?? s.group_id} (${s.reason})`).join(", "),
+    );
   };
 
   const electiveSlots = allElectives.filter((s) => matches(q, gName(s.group_id),
@@ -1259,6 +1269,14 @@ const ElectivesPanel: React.FC = () => {
 
       {managingSlot && (
         <ElectiveOptionModal slot={managingSlot} onClose={() => setManaging(null)} />
+      )}
+      {copyNote && (
+        <div className="fixed bottom-4 right-4 z-50 max-w-md bg-white border border-purple-300 shadow-lg rounded-lg px-4 py-3 text-xs text-gray-800">
+          <div className="flex items-start gap-2">
+            <span className="flex-1">{copyNote}</span>
+            <button onClick={() => setCopyNote(null)} className="text-gray-400 hover:text-gray-700">✕</button>
+          </div>
+        </div>
       )}
     </Section>
     </>
