@@ -21,3 +21,4 @@ Thumbs.db
 # local typecheck harness (not part of the app)
 frontend/tsconfig.check.json
 frontend/typecheck-stubs.d.ts
+data_state.json

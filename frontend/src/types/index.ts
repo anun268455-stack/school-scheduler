@@ -299,6 +299,8 @@ export interface SchoolConfig {
   term:       string;   // "1" หรือ "2"
   year:       string;   // "2568"
   directorName: string; // ชื่อผู้อำนวยการ
+  deputyName?:  string; // รองผู้อำนวยการกลุ่มบริหารวิชาการ
+  /** The school crest, stored as a data URL so it travels with the backup. */
   logoUrl?:   string;
 }
 

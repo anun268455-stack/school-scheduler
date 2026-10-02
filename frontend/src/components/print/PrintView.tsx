@@ -65,10 +65,10 @@ interface Metrics {
 }
 
 const METRICS: Record<1 | 2, Metrics> = {
-  1: { headFont: "9pt", timeFont: "7pt", cellFont: "8pt", subFont: "7pt",
-       rowH: "15mm", pad: "2px 3px", titleFont: "13pt", subtitleFont: "10pt", logo: 42 },
-  2: { headFont: "7pt", timeFont: "5.5pt", cellFont: "6.5pt", subFont: "5.5pt",
-       rowH: "9.2mm", pad: "1px 2px", titleFont: "10pt", subtitleFont: "8pt", logo: 28 },
+  1: { headFont: "11pt", timeFont: "8.5pt", cellFont: "10pt", subFont: "8.5pt",
+       rowH: "40mm", pad: "3px 4px", titleFont: "15pt", subtitleFont: "11.5pt", logo: 52 },
+  2: { headFont: "8.5pt", timeFont: "7pt", cellFont: "8pt", subFont: "7pt",
+       rowH: "19mm", pad: "2px 3px", titleFont: "11.5pt", subtitleFont: "9pt", logo: 34 },
 };
 
 const borderCell = (m: Metrics): React.CSSProperties => ({
@@ -103,11 +103,19 @@ const TimetableBlock: React.FC<BlockProps> = ({
     <div className="tt-block" style={{ breakInside: "avoid", pageBreakInside: "avoid" }}>
       {/* Header */}
       <div style={{ marginBottom: "3px", display: "flex", alignItems: "center", gap: "8px" }}>
-        <div style={{
-          width: m.logo, height: m.logo, border: "1px solid #ccc", borderRadius: "50%",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: compact ? "12pt" : "16pt", flexShrink: 0,
-        }}>🏫</div>
+        {schoolConfig.logoUrl ? (
+          <img
+            src={schoolConfig.logoUrl}
+            alt=""
+            style={{ width: m.logo, height: m.logo, objectFit: "contain", flexShrink: 0 }}
+          />
+        ) : (
+          <div style={{
+            width: m.logo, height: m.logo, border: "1px solid #ccc", borderRadius: "50%",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: compact ? "12pt" : "16pt", flexShrink: 0,
+          }}>🏫</div>
+        )}
         <div style={{ flex: 1, textAlign: "center" }}>
           <div style={{ fontSize: m.titleFont, fontWeight: 700, lineHeight: 1.3 }}>{title}</div>
           <div style={{ fontSize: m.subtitleFont, fontWeight: 600, lineHeight: 1.3 }}>{subtitle}</div>
@@ -168,15 +176,17 @@ const TimetableBlock: React.FC<BlockProps> = ({
       <div style={{
         marginTop: compact ? "4px" : "10px",
         display: "flex", justifyContent: "space-between",
-        fontSize: compact ? "6.5pt" : "9pt",
+        fontSize: compact ? "8pt" : "10pt",
       }}>
         <div style={{ textAlign: "center", minWidth: "40%" }}>
           <div>ลงชื่อ................................</div>
+          {schoolConfig.deputyName && <div>({schoolConfig.deputyName})</div>}
           <div>รองผู้อำนวยการกลุ่มบริหารวิชาการ</div>
         </div>
         <div style={{ textAlign: "center", minWidth: "40%" }}>
           <div>ลงชื่อ................................</div>
-          <div>{schoolConfig.directorName ? `(${schoolConfig.directorName})` : "ผู้อำนวยการโรงเรียน"}</div>
+          {schoolConfig.directorName && <div>({schoolConfig.directorName})</div>}
+          <div>ผู้อำนวยการโรงเรียน</div>
         </div>
       </div>
     </div>
@@ -260,12 +270,13 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
 
       list.forEach((teacher, idx) => {
         const grid = buildGrid(slots.filter((s) => teachesSlot(s, teacher.id)));
-        const codePart = teacher.code ? `รหัส ${teacher.code}  ` : "";
+        const codePart = teacher.code ? `รหัสประจำตัว ${teacher.code}` : "";
         blocks.push(
           <TimetableBlock
             key={`t-${teacher.id}`}
-            title={`ตารางสอน ${String(idx + 1).padStart(3, "0")}  ${codePart}${teacher.name}`}
-            subtitle={`${termLabel}${deptName(teacher.department_id) ? `  ·  ${deptName(teacher.department_id)}` : ""}`}
+            title={`ตารางสอน ${String(idx + 1).padStart(3, "0")}  ${teacher.name}`}
+            subtitle={[codePart, deptName(teacher.department_id), termLabel]
+              .filter(Boolean).join("  ·  ")}
             grid={grid} periods={periods} schoolConfig={schoolConfig}
             metrics={m} compact={compact}
             renderCell={(cs) => <TeacherCell slots={cs} m={m} teacherId={teacher.id} />}
@@ -282,11 +293,17 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
 
       list.forEach((group, idx) => {
         const grid = buildGrid(slots.filter((s) => shares(s.group_id, group.id)));
+        // Who to ask about this class's timetable — named on the sheet, with
+        // the code, so a printed copy identifies itself without the system.
+        const advisor = teachers.find((t) => t.id === group.homeroom_teacher_id);
+        const advisorLabel = advisor
+          ? `  ·  ครูประจำชั้น ${advisor.code ? `${advisor.code} ` : ""}${advisor.name}`
+          : "";
         blocks.push(
           <TimetableBlock
             key={`g-${group.id}`}
             title={`ตารางเรียน ${String(idx + 1).padStart(3, "0")}  ห้อง ${group.name}`}
-            subtitle={termLabel}
+            subtitle={`${termLabel}${advisorLabel}`}
             grid={grid} periods={periods} schoolConfig={schoolConfig}
             metrics={m} compact={compact}
             renderCell={(cs) => <GroupCell slots={cs} m={m} />}
@@ -308,6 +325,14 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
           .print-wrapper { font-family: 'Sarabun','TH Sarabun New',Arial,sans-serif; }
           .print-page { width: 190mm; }
           .tt-block + .tt-block { margin-top: 6mm; padding-top: 4mm; border-top: 1px dashed #bbb; }
+          /* Fill the sheet top to bottom rather than leaving the lower half
+             blank: the blocks share the height between them. */
+          @media print {
+            .print-page {
+              display: flex; flex-direction: column; justify-content: space-between;
+              height: 281mm;
+            }
+          }
           @media print {
             body > *:not(.print-wrapper) { display: none !important; }
             .no-print { display: none !important; }

@@ -1,7 +1,7 @@
 ﻿/**
  * Dashboard v4 – Full CRUD with inline edit for all entities + Periods + Bulk Lock + Import
  */
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
 import type { SubjectType, RoomType, PeriodType } from "../types";
@@ -1869,12 +1869,68 @@ const AnalyticsPanel: React.FC = () => {
 
 // ─── School Settings Panel ────────────────────────────────────────────────────
 const SettingsPanel: React.FC = () => {
-  const { schoolConfig, setSchoolConfig } = useTimetableStore();
-  const [saved, setSaved] = useState(false);
+  const { schoolConfig, setSchoolConfig, loadAll } = useTimetableStore();
+  const [saved, setSaved]   = useState(false);
+  const [busy, setBusy]     = useState<string | null>(null);
+  const [note, setNote]     = useState<string | null>(null);
+  const [info, setInfo]     = useState<Awaited<ReturnType<typeof api.fetchStateInfo>> | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const logoRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { api.fetchStateInfo().then(setInfo).catch(() => setInfo(null)); }, []);
 
   const handle = (key: string, val: string) => {
     setSchoolConfig({ [key]: val });
     setSaved(false);
+  };
+
+  /** Read the crest as a data URL so it travels inside the backup file. */
+  const pickLogo = async (file: File) => {
+    if (file.size > 400_000) {
+      setNote("ไฟล์โลโก้ใหญ่เกิน 400KB — ขอไฟล์เล็กกว่านี้ (ย่อรูปก่อน)");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => handle("logoUrl", String(reader.result));
+    reader.readAsDataURL(file);
+  };
+
+  const doBackup = async () => {
+    setBusy("backup"); setNote(null);
+    try {
+      const data = await api.downloadBackup();
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+      const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `ตารางเรียน-สำรองข้อมูล-${stamp}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setNote("ดาวน์โหลดไฟล์สำรองแล้ว — เก็บไฟล์นี้ไว้ ถ้าข้อมูลหายให้กู้คืนจากไฟล์นี้");
+    } catch {
+      setNote("ดาวน์โหลดไม่สำเร็จ");
+    } finally { setBusy(null); }
+  };
+
+  const doRestore = async (file: File) => {
+    setBusy("restore"); setNote(null);
+    try {
+      const data = JSON.parse(await file.text());
+      const r = await api.restoreBackup(data);
+      await loadAll();
+      setInfo(await api.fetchStateInfo().catch(() => info));
+      setNote(
+        `กู้คืนแล้ว — ห้องเรียน ${r.restored.groups ?? 0} · ครู ${r.restored.teachers ?? 0} · `
+        + `วิชา ${r.restored.subjects ?? 0} · คาบในตาราง ${r.restored.slots ?? 0}`
+        + (r.saved_at ? ` (ข้อมูลของวันที่ ${r.saved_at.replace("T", " ")})` : ""),
+      );
+    } catch (e: unknown) {
+      const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setNote(d ?? "กู้คืนไม่สำเร็จ — ไฟล์อาจไม่ใช่ไฟล์สำรองของระบบ");
+    } finally {
+      setBusy(null);
+      if (fileRef.current) fileRef.current.value = "";
+    }
   };
 
   return (
@@ -1915,6 +1971,45 @@ const SettingsPanel: React.FC = () => {
               placeholder="2568"
             />
           </Field>
+          <Field label="รองผู้อำนวยการกลุ่มบริหารวิชาการ">
+            <input
+              className={inputCls}
+              value={schoolConfig.deputyName ?? ""}
+              onChange={(e) => handle("deputyName", e.target.value)}
+              placeholder="นางสาวสมหญิง ขยัน"
+            />
+          </Field>
+        </div>
+
+        {/* โลโก้โรงเรียน */}
+        <div className="border-t border-gray-100 pt-4 mb-4">
+          <p className="text-xs font-semibold text-gray-500 mb-2">โลโก้โรงเรียน (แสดงบนหัวตารางที่พิมพ์)</p>
+          <div className="flex items-center gap-4">
+            <div className="w-20 h-20 border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center bg-gray-50 shrink-0 overflow-hidden">
+              {schoolConfig.logoUrl
+                ? <img src={schoolConfig.logoUrl} alt="โลโก้" className="w-full h-full object-contain" />
+                : <span className="text-2xl text-gray-300">🏫</span>}
+            </div>
+            <div className="flex-1">
+              <input ref={logoRef} type="file" accept="image/png,image/jpeg,image/svg+xml" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) pickLogo(f); }} />
+              <div className="flex gap-2">
+                <button onClick={() => logoRef.current?.click()}
+                  className="px-3 py-1.5 text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded hover:bg-blue-100">
+                  {schoolConfig.logoUrl ? "เปลี่ยนรูป" : "เลือกไฟล์รูป"}
+                </button>
+                {schoolConfig.logoUrl && (
+                  <button onClick={() => handle("logoUrl", "")}
+                    className="px-3 py-1.5 text-xs text-red-600 border border-red-200 rounded hover:bg-red-50">
+                    เอาออก
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-gray-400 mt-1.5">
+                PNG / JPG / SVG · ไม่เกิน 400KB · ไฟล์จะถูกเก็บไว้ในระบบและติดไปกับไฟล์สำรองข้อมูลด้วย
+              </p>
+            </div>
+          </div>
         </div>
 
         <button
@@ -1932,13 +2027,69 @@ const SettingsPanel: React.FC = () => {
       {/* Preview */}
       <div className="mt-4 border border-gray-200 rounded-lg p-4 bg-gray-50">
         <p className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wide">ตัวอย่างหัวตาราง</p>
-        <div className="bg-white border rounded p-3 text-center">
-          <div className="text-sm font-bold">
-            ตารางเรียน 001  ห้อง ม.1/1
+        <div className="bg-white border rounded p-3 flex items-center gap-3">
+          {schoolConfig.logoUrl && (
+            <img src={schoolConfig.logoUrl} alt="" className="w-12 h-12 object-contain shrink-0" />
+          )}
+          <div className="flex-1 text-center">
+            <div className="text-sm font-bold">ตารางสอน 001  รหัส T001  นายสมชาย ใจดี</div>
+            <div className="text-xs text-gray-600 mt-1">
+              ภาคเรียนที่ {schoolConfig.term}/{schoolConfig.year}  โรงเรียน{schoolConfig.schoolName || "…"}
+            </div>
           </div>
-          <div className="text-xs text-gray-600 mt-1">
-            ภาคเรียนที่ {schoolConfig.term}/{schoolConfig.year}  โรงเรียน{schoolConfig.schoolName}
+        </div>
+      </div>
+
+      {/* ── สำรองและกู้คืนข้อมูล ──────────────────────────────────────────── */}
+      <div className="mt-5 border-2 border-amber-300 rounded-lg overflow-hidden">
+        <div className="bg-amber-50 px-4 py-3 border-b border-amber-200">
+          <p className="text-sm font-bold text-amber-900">💾 สำรองและกู้คืนข้อมูล</p>
+          <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+            เซิร์ฟเวอร์ที่ใช้อยู่เป็นแบบฟรี <strong>ข้อมูลจะถูกล้างทุกครั้งที่อัปเดตระบบ</strong>
+            และเมื่อไม่มีคนใช้งานนานๆ ระบบจะบันทึกข้อมูลลงเครื่องให้เองหลังการแก้ไขทุกครั้ง
+            แต่เอาไม่อยู่ตอนอัปเดตระบบ
+            <br />
+            <strong>ก่อนให้ผมอัปเดตระบบ กดดาวน์โหลดไฟล์สำรองเก็บไว้ก่อนทุกครั้ง</strong>
+            แล้วค่อยกู้คืนทีหลัง หรือส่งไฟล์นั้นมาให้ผมใส่กลับเข้าไปเป็นข้อมูลตั้งต้นก็ได้
+          </p>
+        </div>
+
+        <div className="p-4 space-y-3 bg-white">
+          {info && (
+            <div className="text-xs text-gray-600 flex flex-wrap gap-x-4 gap-y-1">
+              <span>ข้อมูลตอนนี้:</span>
+              <span>ห้องเรียน <strong>{info.counts.groups}</strong></span>
+              <span>ครู <strong>{info.counts.teachers}</strong></span>
+              <span>วิชา <strong>{info.counts.subjects}</strong></span>
+              <span>ห้องสอน <strong>{info.counts.rooms}</strong></span>
+              <span>คาบในตาราง <strong>{info.counts.slots}</strong></span>
+              <span className={info.source === "snapshot" ? "text-green-700" : "text-amber-700"}>
+                {info.source === "snapshot" ? "· กำลังใช้ข้อมูลที่แก้ไขไว้"
+                  : "· กำลังใช้ข้อมูลตั้งต้น (ยังไม่เคยแก้ หรือเพิ่งอัปเดตระบบ)"}
+              </span>
+            </div>
+          )}
+
+          <div className="flex gap-2 flex-wrap">
+            <button onClick={doBackup} disabled={busy !== null}
+              className="px-4 py-2 text-sm bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-40">
+              {busy === "backup" ? "กำลังเตรียมไฟล์…" : "⬇ ดาวน์โหลดไฟล์สำรองข้อมูล"}
+            </button>
+            <input ref={fileRef} type="file" accept="application/json,.json" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) doRestore(f); }} />
+            <button onClick={() => fileRef.current?.click()} disabled={busy !== null}
+              className="px-4 py-2 text-sm border border-amber-400 text-amber-800 rounded-lg font-semibold hover:bg-amber-50 disabled:opacity-40">
+              {busy === "restore" ? "กำลังกู้คืน…" : "⬆ กู้คืนจากไฟล์สำรอง"}
+            </button>
           </div>
+
+          {note && (
+            <p className="text-xs bg-blue-50 border border-blue-200 text-blue-900 rounded-lg px-3 py-2">{note}</p>
+          )}
+          <p className="text-[11px] text-gray-400">
+            ไฟล์สำรองมีครบทุกอย่าง — ห้องเรียน ครู วิชา ห้องสอน การสอน คาบเสรี ตารางที่จัดไว้
+            ตั้งค่าโรงเรียน และโลโก้ · การกู้คืนจะ<strong>แทนที่ข้อมูลทั้งหมด</strong>ที่มีอยู่ตอนนี้
+          </p>
         </div>
       </div>
     </Section>

@@ -1,7 +1,7 @@
 import axios from "axios";
 import type {
   Building, Department, LessonRequirement, Period, Room,
-  ElectivePool, PoolTeacherCandidate, RequirementProblemReport, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
+  ElectivePool, PoolTeacherCandidate, RequirementProblemReport, SchoolConfig, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
 
 // In production (GitHub Pages), use the Render backend URL via env var
@@ -206,3 +206,31 @@ export const runSolver = (p: {
 /** วิชาที่มีปัญหา — what cannot be scheduled, checked before a run. */
 export const fetchRequirementProblems = () =>
   api.get<RequirementProblemReport>("/timetable/problems").then((r) => r.data);
+
+// ── สำรอง / กู้คืนข้อมูล ─────────────────────────────────────────────────────
+// The server keeps everything in memory and writes a snapshot to disk, but a
+// free host hands out a fresh, empty filesystem on every redeploy — so the
+// downloaded file is the only copy that reliably outlives a deployment.
+export const downloadBackup = () =>
+  api.get<Record<string, unknown>>("/backup").then((r) => r.data);
+
+export const restoreBackup = (data: unknown) =>
+  api.post<{ restored: Record<string, number>; saved_at?: string }>("/restore", data)
+    .then((r) => r.data);
+
+export const fetchStateInfo = () =>
+  api.get<{
+    revision: number;
+    source: "snapshot" | "seed" | "demo";
+    disk_snapshot: boolean;
+    counts: Record<string, number>;
+  }>("/state/info").then((r) => r.data);
+
+// ── ตั้งค่าโรงเรียน ──────────────────────────────────────────────────────────
+// Kept on the server, not in the browser, so both people editing see the same
+// school name and logo and it survives a refresh.
+export const fetchSchoolConfig = () =>
+  api.get<SchoolConfig>("/school/config").then((r) => r.data);
+
+export const updateSchoolConfig = (c: Partial<SchoolConfig>) =>
+  api.put<SchoolConfig>("/school/config", c).then((r) => r.data);

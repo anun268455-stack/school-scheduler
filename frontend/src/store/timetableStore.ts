@@ -170,7 +170,12 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     year: "2568",
     directorName: "",
   },
-  setSchoolConfig: (c) => set((s) => ({ schoolConfig: { ...s.schoolConfig, ...c } })),
+  // Kept on the server so both editors see the same settings and a refresh
+  // does not lose them. Applied locally first so typing stays responsive.
+  setSchoolConfig: (c) => {
+    set((s) => ({ schoolConfig: { ...s.schoolConfig, ...c } }));
+    api.updateSchoolConfig(c).catch(() => { /* kept locally either way */ });
+  },
 
   setViewMode: (viewMode) => set({ viewMode, selectedGroupId: null, selectedTeacherId: null, selectedRoomId: null }),
   setSelectedGroupId:   (id) => set({ selectedGroupId: id,   selectedTeacherId: null, selectedRoomId: null }),
@@ -181,7 +186,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   loadAll: async () => {
     set({ isLoading: true });
     try {
-      const [departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods] =
+      const [departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods, config] =
         await Promise.all([
           api.fetchDepartments().catch(() => get().departments),
           api.fetchBuildings().catch(() => get().buildings),
@@ -192,8 +197,12 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
           api.fetchRequirements().catch(() => get().requirements),
           api.fetchSlots().catch(() => get().slots),
           api.fetchPeriods().catch(() => get().periods.length ? get().periods : DEFAULT_PERIODS),
+          api.fetchSchoolConfig().catch(() => null),
         ]);
       set({ departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
+      // The school name, logo and signatories live on the server too, so a
+      // refresh — or the other person's browser — shows the same header.
+      if (config) set((st) => ({ schoolConfig: { ...st.schoolConfig, ...config } }));
     } finally {
       set({ isLoading: false });
     }

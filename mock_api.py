@@ -7,6 +7,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Any
 import random
+import os as _os
+import json as _json
+import datetime as _dt
 from collections import defaultdict
 
 app = FastAPI(title="School Scheduler Mock API v3")
@@ -2582,6 +2585,171 @@ def analyze_conflict(slot_id: int, target_day: int, target_period: int):
     if n <= 4:
         return {"level": "yellow", "cascades": n, "reason": f"ต้องสลับ {n} คาบ"}
     return {"level": "red", "cascades": n, "reason": f"สลับมากเกิน ({n})"}
+
+
+
+# ── Keeping the data ──────────────────────────────────────────────────────────
+# Everything above lives in memory, which is gone the moment the server
+# restarts — and the free Render instance restarts whenever it is redeployed or
+# has been idle for a quarter of an hour. Every edit the school made would be
+# back to the seed file the next morning.
+#
+# Two layers. A snapshot on disk, rewritten after each change, carries the data
+# across a restart of the same container. That is not enough on its own: a free
+# instance gets a fresh, empty filesystem on redeploy, so the disk copy goes
+# too. The backup file is what actually survives that — the school downloads
+# one, and uploads it again afterwards, or sends it to be committed as the new
+# starting point.
+
+SCHOOL_CONFIG: dict[str, Any] = {
+    "schoolName": "", "term": "1", "year": "2568",
+    "directorName": "", "deputyName": "", "logoUrl": "",
+}
+
+_STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
+_SAVE_KEYS = ("departments", "buildings", "rooms", "teachers", "subjects",
+              "requirements", "periods", "slots", "elective_pools", "school_config")
+
+
+def _snapshot() -> dict[str, Any]:
+    """Everything worth keeping, in one plain structure."""
+    return {
+        "version": 1,
+        "saved_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "departments": DEPARTMENTS,
+        "buildings": BUILDINGS,
+        "rooms": ROOMS,
+        # Classes are stored flat with parent_id; the tree is rebuilt on load.
+        "groups": [{k: v for k, v in g.items() if k != "children"} for g in _flat_groups()],
+        "teachers": TEACHERS,
+        "subjects": SUBJECTS,
+        "requirements": REQUIREMENTS,
+        "periods": PERIODS,
+        "slots": SLOTS,
+        "elective_pools": ELECTIVE_POOLS,
+        "school_config": SCHOOL_CONFIG,
+        "counters": _counters,
+    }
+
+
+def _apply_snapshot(data: dict[str, Any]) -> None:
+    """Replace the whole dataset. Anything absent is left as it is.
+
+    Every incoming list is copied before the target is emptied. A snapshot
+    taken from this same server hands back the live lists themselves, so
+    clearing the target would empty the data being restored from it and leave
+    nothing behind.
+    """
+    for key, target in (("departments", DEPARTMENTS), ("buildings", BUILDINGS),
+                        ("rooms", ROOMS), ("teachers", TEACHERS),
+                        ("subjects", SUBJECTS), ("requirements", REQUIREMENTS),
+                        ("periods", PERIODS), ("slots", SLOTS),
+                        ("elective_pools", ELECTIVE_POOLS)):
+        rows = data.get(key)
+        if rows is not None:
+            rows = [dict(r) for r in rows]
+            target.clear()
+            target.extend(rows)
+
+    rows = data.get("groups")
+    if rows is not None:
+        rows = [dict(g) for g in rows]
+        by_id = {g["id"]: {**g, "children": []} for g in rows}
+        GROUPS.clear()
+        for g in by_id.values():
+            parent = by_id.get(g.get("parent_id")) if g.get("parent_id") else None
+            (parent["children"] if parent else GROUPS).append(g)
+
+    if data.get("school_config"):
+        SCHOOL_CONFIG.update(dict(data["school_config"]))
+
+    # Keep issuing ids above everything that exists, however the data arrived.
+    saved = dict(data.get("counters") or {})
+    for key, value in saved.items():
+        if isinstance(value, int):
+            _counters[key] = max(_counters.get(key, 0), value)
+    for key, rows in (("room", ROOMS), ("teacher", TEACHERS), ("subject", SUBJECTS),
+                      ("requirement", REQUIREMENTS), ("department", DEPARTMENTS),
+                      ("period", PERIODS), ("slot", SLOTS),
+                      ("elective_pool", ELECTIVE_POOLS)):
+        _counters[key] = max(_counters.get(key, 0), _max_id(rows))
+    _counters["group"] = max(_counters.get("group", 0), _max_id(_flat_groups()))
+
+
+def _save_state() -> None:
+    """Write the snapshot to disk. Never let a failed save break a request."""
+    try:
+        tmp = _STATE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            _json.dump(_snapshot(), fh, ensure_ascii=False)
+        _os.replace(tmp, _STATE_PATH)      # atomic: a crash mid-write cannot truncate it
+    except Exception:
+        pass
+
+
+def _load_state() -> bool:
+    if not _os.path.exists(_STATE_PATH):
+        return False
+    try:
+        with open(_STATE_PATH, encoding="utf-8") as fh:
+            _apply_snapshot(_json.load(fh))
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/api/backup")
+def download_backup():
+    """The whole dataset, to be saved somewhere that outlives this server."""
+    return _snapshot()
+
+
+@app.post("/api/restore")
+def restore_backup(body: dict[str, Any]):
+    """Replace everything with a previously downloaded backup."""
+    if not isinstance(body, dict) or not any(body.get(k) for k in _SAVE_KEYS):
+        raise HTTPException(400, "ไฟล์นี้ไม่ใช่ไฟล์สำรองข้อมูลของระบบ")
+    _apply_snapshot(body)
+    _save_state()
+    return {
+        "restored": {k: len(body.get(k) or []) for k in
+                     ("groups", "teachers", "subjects", "rooms", "requirements",
+                      "slots", "elective_pools")},
+        "saved_at": body.get("saved_at"),
+    }
+
+
+@app.get("/api/school/config")
+def get_school_config():
+    return SCHOOL_CONFIG
+
+
+@app.put("/api/school/config")
+def update_school_config(body: dict[str, Any]):
+    for k in ("schoolName", "term", "year", "directorName", "deputyName", "logoUrl"):
+        if k in body:
+            SCHOOL_CONFIG[k] = body[k]
+    return SCHOOL_CONFIG
+
+
+@app.get("/api/state/info")
+def state_info():
+    """What the data is and where it came from — shown on the backup screen."""
+    return {
+        "revision": REVISION["n"],
+        "source": _STATE_SOURCE,
+        "disk_snapshot": _os.path.exists(_STATE_PATH),
+        "counts": {
+            "groups": len(_flat_groups()), "teachers": len(TEACHERS),
+            "subjects": len(SUBJECTS), "rooms": len(ROOMS),
+            "requirements": len(REQUIREMENTS), "slots": len(SLOTS),
+            "elective_pools": len(ELECTIVE_POOLS),
+        },
+    }
+
+
+# Prefer what the school actually edited over the seed file.
+_STATE_SOURCE = "snapshot" if _load_state() else ("seed" if _LOADED_REAL_DATA else "demo")
 
 
 if __name__ == "__main__":
