@@ -1002,6 +1002,56 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         "skipped_requirement_ids": sorted(skipped_reqs),
         "max_consecutive": consec_hard,
         "prefer_consecutive": consec_soft,
+        "consecutive": _consecutive_report(),
+    }
+
+
+
+def _consecutive_report() -> dict[str, Any]:
+    """How long the teaching runs actually came out, measured on the clock.
+
+    The solver promises a ceiling; this is the check on that promise, shown
+    after a run so the school can see the shape of the week rather than take
+    it on trust. A gap shorter than a proper break does not end a run, so two
+    periods either side of a ten-minute break count as one stretch.
+    """
+    g_map = {g["id"]: g for g in _flat_groups()}
+    by_day: dict[tuple[int, int], set[tuple[int, int]]] = defaultdict(set)
+    for s in SLOTS:
+        lvl = _level_key(g_map.get(s["group_id"]))
+        row = _periods_for_level(lvl).get(s["period"])
+        if not row:
+            continue
+        span = (_hhmm(row.get("start_time")), _hhmm(row.get("end_time")))
+        if None in span:
+            continue
+        tids = {s["teacher_id"]} if s.get("teacher_id") else set()
+        tids |= _elective_option_teachers(s)
+        for tid in tids:
+            by_day[(tid, s["day"])].add(span)
+
+    lengths: dict[int, int] = defaultdict(int)
+    worst_teacher: int | None = None
+    worst = 0
+    for (tid, _day), spans in by_day.items():
+        ordered = sorted(spans)
+        run = 1
+        for a, b in zip(ordered, ordered[1:]):
+            if b[0] - a[1] < _GAP_IS_REST:
+                run += 1
+            else:
+                lengths[run] += 1
+                if run > worst:
+                    worst, worst_teacher = run, tid
+                run = 1
+        lengths[run] += 1
+        if run > worst:
+            worst, worst_teacher = run, tid
+    name = next((t["name"] for t in TEACHERS if t["id"] == worst_teacher), None)
+    return {
+        "runs": {str(k): lengths[k] for k in sorted(lengths)},
+        "longest": worst,
+        "longest_teacher": name,
     }
 
 
@@ -1503,6 +1553,8 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         "engine": "cp-sat",
         "unplaced_requirement_ids": sorted(unplaced_ids),
         "skipped_requirement_ids": sorted(skipped_reqs),
+        "max_consecutive": consec_hard,
+        "consecutive": _consecutive_report(),
     }
 
 

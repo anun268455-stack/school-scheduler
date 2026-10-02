@@ -238,8 +238,23 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
               <ResultRow label="วิชาที่ข้ามไว้" value={`${result.skipped_requirement_ids!.length} วิชา`} />
             )}
             <ResultRow label="เวลาที่ใช้"  value={`${result.solve_time_seconds.toFixed(1)} วิ`} />
-            {result.max_consecutive != null && (
-              <ResultRow label="สอนติดกันสูงสุด" value={`${result.max_consecutive} คาบ`} />
+            {result.consecutive && (
+              <>
+                <ResultRow
+                  label="สอนติดกันยาวสุดจริง"
+                  value={`${result.consecutive.longest} คาบ`} />
+                {/* The ceiling is a promise; this is what actually came out. */}
+                <div className="text-[10px] opacity-80 pt-0.5">
+                  {Object.entries(result.consecutive.runs)
+                    .map(([len, n]) => `${len} คาบ: ${n} ครั้ง`)
+                    .join("  ·  ")}
+                  {result.consecutive.longest_teacher && (
+                    <div className="opacity-70">
+                      ยาวสุดที่ {result.consecutive.longest_teacher}
+                    </div>
+                  )}
+                </div>
+              </>
             )}
             <ResultRow label="ตัวจัดตาราง" value={
               result.engine === "cp-sat" ? "CP-SAT (ดีที่สุด)" :

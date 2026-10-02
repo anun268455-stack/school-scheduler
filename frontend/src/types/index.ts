@@ -231,6 +231,12 @@ export interface SolverResult {
   /** The back-to-back limits this run applied. */
   max_consecutive?:    number;
   prefer_consecutive?: number;
+  /** How the teaching runs actually came out — the check on the ceiling. */
+  consecutive?: {
+    runs: Record<string, number>;     // run length → how many times it happened
+    longest: number;
+    longest_teacher: string | null;
+  };
 }
 
 /**
