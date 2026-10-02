@@ -9,6 +9,8 @@ import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
 import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal";
+import { ElectivePoolPanel } from "../components/timetable/ElectivePoolPanel";
+import { teachesSlot } from "../utils/teacherSlots";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
@@ -1097,7 +1099,12 @@ const ElectivesPanel: React.FC = () => {
   const managingSlot = managing != null ? slots.find((s) => s.id === managing) ?? null : null;
 
   return (
-    <Section title="วิชาเสรี — คาบล็อกที่เลือกวิชา/ครูได้หลายตัวเลือก">
+    <>
+    <Section title="กลุ่มวิชาเสรี — คาบเสรีที่หลายห้องเรียนพร้อมกัน (จากอัตรากำลัง)">
+      <ElectivePoolPanel />
+    </Section>
+
+    <Section title="วิชาเสรีรายห้อง — คาบล็อกที่เลือกวิชา/ครูได้หลายตัวเลือก">
       <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 mb-4 text-xs text-purple-800 leading-relaxed">
         <strong>วิชาเสรีคืออะไร?</strong> คือคาบที่นักเรียนห้องเดียวกันเลือกเรียนได้หลายอย่าง (เช่น บางคนเรียนดนตรี บางคนเรียนศิลปะ) ในเวลาเดียวกัน
         <br/><strong>วิธีใช้:</strong> 1) สร้างคาบของห้องเรียน + ใส่ "วงแรก" (วิชา+ครู+ห้อง)  2) กด <span className="bg-white border border-purple-200 rounded px-1">🎓 จัดการวง</span> เพื่อเพิ่มวงอื่น  3) สลับวงที่ใช้ได้ตลอดจากในตาราง
@@ -1242,6 +1249,7 @@ const ElectivesPanel: React.FC = () => {
         <ElectiveOptionModal slot={managingSlot} onClose={() => setManaging(null)} />
       )}
     </Section>
+    </>
   );
 };
 
@@ -1660,7 +1668,7 @@ const AnalyticsPanel: React.FC = () => {
   // ── Compute stats ────────────────────────────────────────────────────────
   // Teacher slots per day
   const teacherStats = teachers.map((t) => {
-    const tSlots = slots.filter((s) => s.teacher_id === t.id);
+    const tSlots = slots.filter((s) => teachesSlot(s, t.id));
     const byDay  = Array.from({ length: 5 }, (_, d) =>
       tSlots.filter((s) => s.day === d).length
     );
@@ -1692,7 +1700,9 @@ const AnalyticsPanel: React.FC = () => {
   // Subject dept distribution
   const deptSlots = departments.map((d) => {
     const dSubIds = subjects.filter((s) => s.department_id === d.id).map((s) => s.id);
-    const count   = slots.filter((s) => dSubIds.includes(s.subject_id)).length;
+    // A shared elective window has no single subject, so it counts for no
+    // department — its students are spread across several at once.
+    const count   = slots.filter((s) => s.subject_id != null && dSubIds.includes(s.subject_id)).length;
     return { dept: d, count };
   }).filter((x) => x.count > 0).sort((a, b) => b.count - a.count);
 

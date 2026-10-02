@@ -13,6 +13,7 @@ import React, { forwardRef } from "react";
 import type { Department, Period, SchoolConfig, StudentGroup, Teacher, TimetableSlot } from "../../types";
 import { DAYS } from "../../types";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
+import { teachesSlot, myElectiveOption } from "../../utils/teacherSlots";
 
 export type PrintMode = "group" | "teacher";
 export type PrintSort = "name" | "department" | "code";
@@ -189,10 +190,18 @@ function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
   if (slots.length === 0) return null;
   if (slots.length === 1) {
     const s = slots[0];
+    // A shared elective names no subject — the class scatters across its
+    // options — so the printed cell says so instead of coming out blank.
+    const sharedElective = s.is_elective && !s.selected_option_id;
     return (
       <div style={cellText(m)}>
-        <div style={{ fontWeight: 700 }}>{s.subject_code ?? s.subject_name ?? ""}</div>
-        <div style={{ fontSize: m.subFont }}>{s.teacher_name ?? ""}</div>
+        <div style={{ fontWeight: 700 }}>
+          {s.subject_code ?? s.subject_name ?? (sharedElective ? "วิชาเสรี" : "")}
+        </div>
+        <div style={{ fontSize: m.subFont }}>
+          {s.teacher_name
+            ?? (sharedElective ? `${s.elective_options?.length ?? 0} ตัวเลือก` : "")}
+        </div>
         <div style={{ fontSize: m.subFont, color: "#555" }}>{s.room_name ?? ""}</div>
       </div>
     );
@@ -210,13 +219,18 @@ function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
   );
 }
 
-function TeacherCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
+function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metrics; teacherId?: number }) {
   if (slots.length === 0) return null;
   const s = slots[0];
+  // In a shared elective the class cell names nobody, but THIS teacher does
+  // teach one of its options — print that subject, not an empty box.
+  const mine = teacherId != null ? myElectiveOption(s, teacherId) : null;
   return (
     <div style={cellText(m)}>
-      <div style={{ fontWeight: 700 }}>{s.subject_code ?? s.subject_name ?? ""}</div>
-      <div style={{ fontSize: m.subFont }}>{s.group_name ?? ""}</div>
+      <div style={{ fontWeight: 700 }}>
+        {s.subject_code ?? s.subject_name ?? mine?.code ?? (mine ? "วิชาเสรี" : "")}
+      </div>
+      <div style={{ fontSize: m.subFont }}>{mine?.label ?? s.group_name ?? ""}</div>
       <div style={{ fontSize: m.subFont, color: "#555" }}>{s.room_name ?? ""}</div>
     </div>
   );
@@ -245,7 +259,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
         });
 
       list.forEach((teacher, idx) => {
-        const grid = buildGrid(slots.filter((s) => s.teacher_id === teacher.id));
+        const grid = buildGrid(slots.filter((s) => teachesSlot(s, teacher.id)));
         const codePart = teacher.code ? `รหัส ${teacher.code}  ` : "";
         blocks.push(
           <TimetableBlock
@@ -254,7 +268,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             subtitle={`${termLabel}${deptName(teacher.department_id) ? `  ·  ${deptName(teacher.department_id)}` : ""}`}
             grid={grid} periods={periods} schoolConfig={schoolConfig}
             metrics={m} compact={compact}
-            renderCell={(cs) => <TeacherCell slots={cs} m={m} />}
+            renderCell={(cs) => <TeacherCell slots={cs} m={m} teacherId={teacher.id} />}
           />,
         );
       });

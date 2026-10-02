@@ -8,6 +8,7 @@ import { useReactToPrint } from "react-to-print";
 import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
+import { ClearTimetableModal } from "../timetable/ClearTimetableModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import type { PrintOptions } from "../print/PrintView";
 import type { ViewMode } from "../../types";
@@ -58,6 +59,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showCrud,    setShowCrud]    = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showPrintOpts, setShowPrintOpts] = useState(false);
+  const [showClear,   setShowClear]   = useState(false);
 
   // Toolbar popovers close when you click anywhere else, or press Esc.
   const solverRef = useRef<HTMLDivElement>(null);
@@ -230,6 +232,20 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           <button onClick={unlockAll} title="ปลดล็อกทั้งหมด" className="px-2 py-1 text-[10px] bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-gray-300">🔓 ปลด</button>
         </div>
       )}
+
+      {/* Clear the timetable — no more deleting one period at a time */}
+      {currentPage === "timetable" && totalSlots > 0 && (
+        <div className="flex items-center px-3 border-r border-gray-700 shrink-0">
+          <button
+            onClick={() => setShowClear(true)}
+            title="ล้างตารางให้ว่าง"
+            className="flex items-center gap-1 px-2.5 py-1 bg-red-900/60 hover:bg-red-700 border border-red-700 rounded text-xs font-semibold text-red-100 transition-colors"
+          >
+            🧹 ล้างตาราง
+          </button>
+        </div>
+      )}
+      {showClear && <ClearTimetableModal onClose={() => setShowClear(false)} />}
 
       {/* Solver */}
       <div ref={solverRef} className="relative px-3 border-r border-gray-700 shrink-0">

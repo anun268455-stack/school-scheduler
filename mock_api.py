@@ -123,6 +123,28 @@ REQUIREMENTS: list[dict[str, Any]] = [
 
 SLOTS: list[dict[str, Any]] = []
 
+
+def _elective_option_teachers(slot: dict[str, Any]) -> set[int]:
+    """Teachers occupied by a shared elective window.
+
+    An elective the class has already settled on (selected_option_id set) books
+    just that one teacher, and `teacher_id` already covers it. An unsettled
+    shared window runs every option simultaneously, so all of its teachers are
+    busy — that is what stops the solver handing them another class.
+    """
+    if not slot.get("is_elective") or slot.get("selected_option_id"):
+        return set()
+    return {o["teacher_id"] for o in slot.get("elective_options", []) if o.get("teacher_id")}
+
+
+# ── วิชาเสรี: pools ───────────────────────────────────────────────────────────
+# A pool is one elective WINDOW shared by several classes, holding the subject
+# options a student may pick inside it. The staffing sheet writes these as
+# "ม.1/7-12 กรีฑา 2 คาบ" — six classes, one window, กรีฑา being one of nine
+# options — so a pool is the unit the school actually schedules, and placing it
+# writes one elective slot per class at the same day/period.
+ELECTIVE_POOLS: list[dict[str, Any]] = []
+
 # ── Real school data (อัตรากำลัง) ─────────────────────────────────────────────
 # school_data.json holds the school's actual departments, classes, teachers,
 # subjects and teaching assignments, generated from the staffing workbook.
@@ -155,6 +177,11 @@ def _load_school_data() -> bool:
         for g in by_id.values():
             parent = by_id.get(g.get("parent_id")) if g.get("parent_id") else None
             (parent["children"] if parent else GROUPS).append(g)
+
+    pools = data.get("elective_pools")
+    if pools:
+        ELECTIVE_POOLS.clear()
+        ELECTIVE_POOLS.extend(pools)
     return True
 
 
@@ -177,6 +204,7 @@ _counters: dict[str, int] = {
     "requirement": _max_id(REQUIREMENTS),
     "slot": 0,
     "elective_option": 0,
+    "elective_pool": _max_id(ELECTIVE_POOLS),
 }
 def _next(key: str) -> int:
     _counters[key] += 1
@@ -225,6 +253,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # Activity periods (สาธารณประโยชน์ ฯลฯ) may have no assigned teacher.
         if s.get("teacher_id") is not None:
             teacher_busy.add((s["teacher_id"], s["day"], s["period"]))
+        # A shared elective runs every option at once, so each option's teacher
+        # is teaching in this window even though the class cell names none.
+        for tid in _elective_option_teachers(s):
+            teacher_busy.add((tid, s["day"], s["period"]))
         group_busy.add((s["group_id"],   s["day"], s["period"]))
         if s.get("room_id"):
             room_busy.add((s["room_id"], s["day"], s["period"]))
@@ -283,28 +315,25 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         """Pick a room, minimising how far students/teachers must walk.
 
         Priority:
-          1. If the subject needs a special/outdoor room (computer lab, music,
-             PE...), use that — this is the only time a "homeroom" class walks.
-          2. Otherwise keep students in their GROUP homeroom (ห้องประจำ/ห้องเพชร)
+          1. ห้องประจำวิชา — a room pinned to the subject itself.
+          2. A room reserved for the subject's own กลุ่มสาระ (computer lab,
+             science lab, music room). Those rooms exist because the lesson
+             cannot happen anywhere else, so they outrank the homeroom.
+          3. Otherwise keep students in their GROUP homeroom (ห้องประจำ/ห้องเพชร)
              if it's free — students stay put, the teacher comes to them.
-          3. Otherwise the TEACHER's fixed room (regular เดินเรียน: students walk
+          4. Otherwise the TEACHER's fixed room (regular เดินเรียน: students walk
              to the teacher).
-          4. Otherwise any eligible free room, ranked by type.
+          5. Otherwise any eligible free room, ranked by type.
         """
         t  = t_map.get(teacher_id, {})
         fr = t.get("fixed_room_id")
-        t_dept = t.get("department_id")
         subj = s_map.get(subject_id, {}) if subject_id is not None else {}
+        # Match specialised rooms against the SUBJECT's department — a maths
+        # teacher covering a computer period still needs the lab.
+        want_dept = subj.get("department_id") or t.get("department_id")
         wants_outdoor = subj.get("department_id") in outdoor_dept_ids
         grp = g_map.get(group_id, {}) if group_id is not None else {}
         home = grp.get("homeroom_room_id")
-
-        # Does this subject REQUIRE a specialised room? (dept has a matching
-        # specialized room, or the subject is outdoor.) If not, we can stay home.
-        needs_special = wants_outdoor or any(
-            r.get("specialized_dept_id") and r["specialized_dept_id"] == subj.get("department_id")
-            for r in ROOMS
-        )
 
         def eligible(r: dict) -> bool:
             if (r["id"], day, period) in room_busy:
@@ -314,7 +343,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 return False
             if r.get("reserved_teacher_id") and r["reserved_teacher_id"] != teacher_id:
                 return False
-            if r.get("specialized_dept_id") and r["specialized_dept_id"] != t_dept:
+            if r.get("specialized_dept_id") and r["specialized_dept_id"] != want_dept:
                 return False
             return True
 
@@ -327,13 +356,22 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if r:
                 return subj_room, r["name"], r["type"]
 
-        # 2. Stay in the group's homeroom for ordinary subjects.
-        if home and not needs_special and (home, day, period) not in room_busy:
+        # 2. A room this department owns. Several labs may serve one subject
+        #    (5 computer rooms for 156 periods a week), so pin by department
+        #    rather than by subject and take whichever is free.
+        if want_dept:
+            own = [r for r in ROOMS if r.get("specialized_dept_id") == want_dept and eligible(r)]
+            if own:
+                r = min(own, key=lambda r: (r["type"] != "special", r["id"]))
+                return r["id"], r["name"], r["type"]
+
+        # 3. Stay in the group's homeroom for ordinary subjects.
+        if home and not wants_outdoor and (home, day, period) not in room_busy:
             r = r_map.get(home)
             if r and (not r.get("reserved_teacher_id") or r["reserved_teacher_id"] == teacher_id):
                 return home, r["name"], r["type"]
 
-        # 3. Teacher's own fixed room (skip for outdoor subjects).
+        # 4. Teacher's own fixed room (skip for outdoor subjects).
         if fr and not wants_outdoor and (fr, day, period) not in room_busy:
             r = r_map.get(fr)
             if r:
@@ -600,6 +638,9 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     for s in SLOTS:
         if s.get("teacher_id") is not None:
             busy_teacher.add((s["teacher_id"], s["day"], s["period"]))
+        # Shared electives run all options at once — hold every option's teacher.
+        for tid in _elective_option_teachers(s):
+            busy_teacher.add((tid, s["day"], s["period"]))
         busy_group.add((s["group_id"], s["day"], s["period"]))
         if s.get("room_id"):
             busy_room.add((s["room_id"], s["day"], s["period"]))
@@ -652,7 +693,10 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         grp = g_map.get(occ["group_id"], {})
         size = grp.get("size", 40)
         wants_outdoor = subj.get("department_id") in dep_out
-        t_dept = teacher.get("department_id")
+        # A specialised room belongs to whoever teaches the subject, not to the
+        # teacher's own กลุ่มสาระ — a maths teacher taking a computer period
+        # still needs the lab.
+        t_dept = subj.get("department_id") or teacher.get("department_id")
         subj_room = subj.get("fixed_room_id")
         out = []
         for r in ROOMS:
@@ -685,6 +729,14 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     room_occ     = defaultdict(list)
     penalty_terms = []   # (weight, var) minimise sum(weight*var)
 
+    # Rooms each กลุ่มสาระ owns (ห้องเฉพาะกลุ่มสาระ). A lesson whose department
+    # owns rooms should land in one of them; there may be several (five computer
+    # labs serve one subject), so this is a per-department set, not one room.
+    dept_rooms: dict[int, set[int]] = defaultdict(set)
+    for r in ROOMS:
+        if r.get("specialized_dept_id"):
+            dept_rooms[r["specialized_dept_id"]].add(r["id"])
+
     for idx, occ in enumerate(occurrences):
         starts = valid_starts(occ["length"])
         rooms = compatible_rooms(occ)
@@ -693,6 +745,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         subj = s_map.get(occ["subject_id"], {})
         wants_outdoor = subj.get("department_id") in dep_out
         subj_room = subj.get("fixed_room_id")   # ห้องประจำวิชา
+        own_rooms = dept_rooms.get(subj.get("department_id") or -1, set())
 
         occ_start_list = []
         for (d, p) in starts:
@@ -724,6 +777,14 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                     # needs that facility, so anything else is heavily penalised.
                     if r["id"] != subj_room:
                         penalty_terms.append((60, rv))
+                elif own_rooms:
+                    # The department owns labs/studios. Use one if at all
+                    # possible; there may be fewer than the weekly load needs,
+                    # so this is a strong preference, not a hard rule.
+                    if r["id"] not in own_rooms:
+                        penalty_terms.append((40, rv))
+                        if homeroom and r["id"] != homeroom:
+                            penalty_terms.append((5, rv))
                 elif not wants_outdoor:
                     if homeroom and r["id"] != homeroom:
                         penalty_terms.append((5, rv))      # student leaves homeroom
@@ -864,6 +925,32 @@ def _flat_groups() -> list[dict]:
             _walk(g.get("children", []))
     _walk(GROUPS)
     return result
+
+
+def _find_group(gid: int) -> dict | None:
+    return next((g for g in _flat_groups() if g["id"] == gid), None)
+
+
+def _shares_students_fn():
+    """Build "do these two classes hold the same students?".
+
+    True for a class and itself, and for a class and any ancestor or descendant
+    of it (ม.4/6 vs ม.4/6ก). False between siblings — ม.4/6ก and ม.4/6ข are
+    different children and may well be taught at the same time.
+    """
+    parent_of = {g["id"]: g.get("parent_id") for g in _flat_groups()}
+
+    def chain(gid: int) -> set[int]:
+        out, cur = {gid}, parent_of.get(gid)
+        while cur is not None and cur not in out:
+            out.add(cur)
+            cur = parent_of.get(cur)
+        return out
+
+    def shares(a: int, b: int) -> bool:
+        return a == b or b in chain(a) or a in chain(b)
+
+    return shares
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1309,6 +1396,139 @@ def delete_level_activity(activity_key: str):
     return {"removed": before - len(SLOTS)}
 
 
+# ── วิชาเสรี: pools ───────────────────────────────────────────────────────────
+@app.get("/api/elective-pools")
+def get_elective_pools():
+    """Each pool, plus where (if anywhere) it currently sits in the timetable."""
+    out = []
+    for p in ELECTIVE_POOLS:
+        placed = [s for s in SLOTS if s.get("elective_pool_id") == p["id"]]
+        here = placed[0] if placed else None
+        out.append({
+            **p,
+            "placed_count": len({s["group_id"] for s in placed}),
+            "placed_day":    here["day"]    if here else None,
+            "placed_period": here["period"] if here else None,
+        })
+    return out
+
+@app.post("/api/elective-pools")
+def create_elective_pool(body: dict[str, Any]):
+    pool = {
+        "id": _next("elective_pool"),
+        "name": body.get("name") or "วิชาเสรีใหม่",
+        "raw_group": body.get("raw_group") or "",
+        "group_ids": body.get("group_ids") or [],
+        "weekly": body.get("weekly") or 2,
+        "is_double": bool(body.get("is_double", True)),
+        "options": body.get("options") or [],
+    }
+    ELECTIVE_POOLS.append(pool)
+    return pool
+
+@app.put("/api/elective-pools/{pool_id}")
+def update_elective_pool(pool_id: int, body: dict[str, Any]):
+    for p in ELECTIVE_POOLS:
+        if p["id"] == pool_id:
+            p.update({k: v for k, v in body.items() if k != "id"})
+            return p
+    raise HTTPException(404, "ไม่พบกลุ่มวิชาเสรีนี้")
+
+@app.delete("/api/elective-pools/{pool_id}")
+def delete_elective_pool(pool_id: int):
+    global SLOTS, ELECTIVE_POOLS
+    SLOTS = [s for s in SLOTS if s.get("elective_pool_id") != pool_id]
+    ELECTIVE_POOLS = [p for p in ELECTIVE_POOLS if p["id"] != pool_id]
+    return {}
+
+@app.delete("/api/elective-pools/{pool_id}/placement")
+def unplace_elective_pool(pool_id: int):
+    """Lift the pool back out of the timetable, leaving the pool itself intact."""
+    global SLOTS
+    before = len(SLOTS)
+    SLOTS = [s for s in SLOTS if s.get("elective_pool_id") != pool_id]
+    return {"deleted": before - len(SLOTS)}
+
+@app.post("/api/elective-pools/{pool_id}/place")
+def place_elective_pool(pool_id: int, body: dict[str, Any]):
+    """Drop a whole pool into the timetable at one day/period.
+
+    Every class in the pool gets its own elective slot carrying the same option
+    catalogue, so each class can settle on a different วงเรียน later. Returns
+    which classes were written and which had to be skipped, rather than failing
+    the lot — a single clash should not block the other eleven classes.
+    """
+    pool = next((p for p in ELECTIVE_POOLS if p["id"] == pool_id), None)
+    if not pool:
+        raise HTTPException(404, "ไม่พบกลุ่มวิชาเสรีนี้")
+    if not pool.get("options"):
+        raise HTTPException(400, "กลุ่มนี้ยังไม่มีตัวเลือกวิชา")
+
+    day    = body["day"]
+    period = body["period"]
+    is_double = bool(body.get("is_double", pool.get("is_double")))
+    replace = body.get("replace", True)
+
+    global SLOTS
+    if replace:
+        SLOTS = [s for s in SLOTS if s.get("elective_pool_id") != pool_id]
+
+    periods = [period]
+    if is_double:
+        p2 = _next_class_period(period)
+        if p2 is None:
+            raise HTTPException(400, "คาบนี้เป็นคาบสุดท้ายของวัน ทำคาบคู่ไม่ได้ กรุณาเลือกคาบอื่น")
+        periods.append(p2)
+
+    shares = _shares_students_fn()
+    created, skipped = [], []
+    for gid in pool["group_ids"]:
+        grp = _find_group(gid)
+        if not grp:
+            skipped.append({"group_id": gid, "reason": "ไม่พบห้องเรียน"})
+            continue
+        # A parent class and its subgroups hold the same students, so a lesson
+        # on either blocks this window for the other.
+        clash = next(
+            (s for s in SLOTS
+             if s["period"] in periods and s["day"] == day and shares(s["group_id"], gid)),
+            None,
+        )
+        if clash:
+            skipped.append({"group_id": gid, "group_name": grp.get("name"),
+                            "reason": "มีคาบอื่นอยู่แล้ว"})
+            continue
+
+        options = [{**o, "id": _next("elective_option")} for o in pool["options"]]
+        key = f"ELEC-POOL-{pool_id}-{gid}" if is_double else None
+        # No option is selected for the class. In a shared elective the class
+        # does not sit together — its students scatter across every option at
+        # once — so pinning one subject here would be a lie, and worse, it would
+        # book that one teacher into all N classrooms simultaneously. The cell
+        # reads "วิชาเสรี"; each option's teacher is held busy by the solver.
+        common = {
+            "group_id": gid, "room_id": None, "parallel_group_key": None,
+            "is_locked": True, "is_elective": True,
+            "elective_pool_id": pool_id,
+            "elective_label": pool.get("name") or "วิชาเสรี",
+            "selected_option_id": None,
+            "subject_id": None,
+            "teacher_id": None,
+        }
+        for i, p in enumerate(periods):
+            slot = {
+                **common, "id": _next("slot"), "day": day, "period": p,
+                "elective_options": [dict(o) for o in options],
+                "is_double_start": is_double and i == 0,
+                "double_group_key": key,
+                "is_double_cont": is_double and i > 0,
+            }
+            SLOTS.append(slot)
+            if i == 0:
+                created.append(_enrich_slot(slot))
+
+    return {"created": len(created), "skipped": skipped, "slots": created}
+
 @app.post("/api/timetable/elective-slots")
 def create_elective_slot(body: dict[str, Any]):
     is_double = bool(body.get("is_double"))
@@ -1461,10 +1681,28 @@ def delete_slot(slot_id: int):
     return {}
 
 @app.delete("/api/timetable/slots")
-def clear_slots():
+def clear_slots(scope: str = "unlocked", group_id: int | None = None,
+                teacher_id: int | None = None):
+    """Empty the timetable.
+
+    scope="unlocked" (default) keeps คาบที่ล็อกไว้ — the usual "start the
+    generator over" button. scope="all" wipes those too. Passing group_id or
+    teacher_id clears only that class's or that teacher's periods.
+    """
     global SLOTS
-    SLOTS = [s for s in SLOTS if s.get("is_locked")]
-    return {}
+    before = len(SLOTS)
+
+    def doomed(s: dict) -> bool:
+        if scope != "all" and s.get("is_locked"):
+            return False
+        if group_id is not None and s.get("group_id") != group_id:
+            return False
+        if teacher_id is not None and s.get("teacher_id") != teacher_id:
+            return False
+        return True
+
+    SLOTS = [s for s in SLOTS if not doomed(s)]
+    return {"deleted": before - len(SLOTS), "remaining": len(SLOTS)}
 
 # Bulk lock/unlock by filter criteria
 @app.post("/api/timetable/slots/bulk-lock")

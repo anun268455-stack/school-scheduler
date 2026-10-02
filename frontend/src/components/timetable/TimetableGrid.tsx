@@ -20,6 +20,7 @@ import { useTimetableStore } from "../../store/timetableStore";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
 import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
 import { buildSharesStudents } from "../../utils/groupHierarchy";
+import { teachesSlot } from "../../utils/teacherSlots";
 import { DAYS, GRID_PERIODS, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
@@ -193,7 +194,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   // Filtered slots for current view
   const viewSlots = useMemo(() => {
     if (selectedGroupId   != null) return slots.filter((s) => shares(s.group_id, selectedGroupId));
-    if (selectedTeacherId != null) return slots.filter((s) => s.teacher_id === selectedTeacherId);
+    if (selectedTeacherId != null) return slots.filter((s) => teachesSlot(s, selectedTeacherId));
     if (selectedRoomId    != null) return slots.filter((s) => s.room_id    === selectedRoomId);
     return [];
   }, [slots, shares, selectedGroupId, selectedTeacherId, selectedRoomId]);

@@ -110,6 +110,30 @@ export interface ElectiveOption {
   subject_id: number;
   teacher_id: number;
   label:      string;
+  /** Subject code, carried over when the option came from a กลุ่มวิชาเสรี. */
+  code?:      string;
+}
+
+/**
+ * กลุ่มวิชาเสรี — one elective window shared by several classes.
+ *
+ * The staffing sheet writes these as "ม.1/7-12 กรีฑา 2 คาบ": six classes, one
+ * window, and กรีฑา is one of nine options students pick between. So the pool,
+ * not the row, is the thing the school schedules — placing it drops the window
+ * into every one of its classes at the same day and period.
+ */
+export interface ElectivePool {
+  id:        number;
+  name:      string;
+  raw_group: string;         // the label as the staffing sheet wrote it
+  group_ids: number[];
+  weekly:    number;
+  is_double: boolean;
+  options:   { subject_id: number; teacher_id: number; label: string; code?: string }[];
+  // Filled in by the API: where this pool currently sits, if anywhere.
+  placed_count?:  number;
+  placed_day?:    number | null;
+  placed_period?: number | null;
 }
 
 export interface TimetableSlot {
@@ -119,7 +143,7 @@ export interface TimetableSlot {
   teacher_id:         number | null;   // null = คาบกิจกรรมที่ไม่มีครูเจาะจง
   group_id:           number;
   room_id:            number | null;
-  subject_id:         number;
+  subject_id:         number | null;
   is_double_start:    boolean;
   parallel_group_key: string | null;
   // คาบคู่ (double period) — two linked elective slots share a double_group_key;
@@ -135,6 +159,11 @@ export interface TimetableSlot {
   is_elective?:        boolean;
   elective_options?:   ElectiveOption[];
   selected_option_id?: number | null;
+  // Set when the slot came from a shared elective pool (กลุ่มวิชาเสรี). Such a
+  // slot deliberately has no selected option: the class splits across every
+  // option at once, so no single subject or teacher belongs in the cell.
+  elective_pool_id?:   number | null;
+  elective_label?:     string | null;
   // Enriched
   teacher_name:   string | null;
   group_name:     string | null;

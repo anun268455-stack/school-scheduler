@@ -95,7 +95,7 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       style={{ fontSize: compact ? "9px" : "11px" }}
       title={slot.subject_name ?? undefined}
     >
-      {slot.subject_code ?? slot.subject_name}
+      {slot.subject_code ?? slot.subject_name ?? (slot.is_elective ? "วิชาเสรี" : "")}
     </div>
 
     {/* ── Details ───────────────────────────────────────────────── */}
@@ -105,7 +105,12 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
         style={{ fontSize: "9px" }}
         title={slot.teacher_name ?? undefined}
       >
-        {slot.teacher_name}
+        {/* A shared elective the class hasn't settled on has no single teacher —
+            its students split across every option at once. Say how many. */}
+        {slot.teacher_name
+          ?? (slot.is_elective && slot.elective_options?.length
+                ? `${slot.elective_options.length} ตัวเลือก`
+                : null)}
       </div>
       {compact && slot.group_name && (
         <div
