@@ -4,12 +4,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
-import type { SubjectType, RoomType, PeriodType, Room, Period, StudentGroup } from "../types";
+import type { SubjectType, PeriodType, Room, Period, StudentGroup } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
 import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal";
 import { ElectivePoolPanel } from "../components/timetable/ElectivePoolPanel";
+import { RoomSettingsModal } from "../components/rooms/RoomSettingsModal";
 import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubjectModal";
 import { teachesSlot, slotLabel } from "../utils/teacherSlots";
 import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
@@ -739,62 +740,20 @@ const SubjectsPanel: React.FC = () => {
 
 // ─── Rooms ───────────────────────────────────────────────────────────────────
 
-/**
- * Pick any number of teachers for a room.
- *
- * A room can be shared — a department office with three desks, a lab two
- * people run between them. One dropdown could only name one of them, so the
- * others had no way to be recorded and the scheduler treated the room as
- * belonging to a single person.
- */
-const TeacherMultiPicker: React.FC<{
-  value: number[];
-  onChange: (ids: number[]) => void;
-  teachers: { id: number; name: string; code?: string | null }[];
-}> = ({ value, onChange, teachers }) => {
-  const [pick, setPick] = useState("");
-  const name = (id: number) => {
-    const t = teachers.find((x) => x.id === id);
-    return t ? `${t.code ? `${t.code} ` : ""}${t.name}` : String(id);
-  };
-  return (
-    <div className="space-y-1">
-      {value.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {value.map((id) => (
-            <span key={id} className="inline-flex items-center gap-1 text-[11px] bg-teal-50 text-teal-800 border border-teal-200 rounded px-1.5 py-0.5">
-              🏠 {name(id)}
-              <button onClick={() => onChange(value.filter((x) => x !== id))}
-                className="text-teal-500 hover:text-red-600">✕</button>
-            </span>
-          ))}
-        </div>
-      )}
-      <SearchableSelect
-        value={pick}
-        onChange={(v) => {
-          if (v) onChange([...new Set([...value, Number(v)])]);
-          setPick("");
-        }}
-        options={teachers
-          .filter((t) => !value.includes(t.id))
-          .map((t) => ({ value: String(t.id), label: `${t.code ? `${t.code} ` : ""}${t.name}` }))}
-        placeholder={value.length ? "+ เพิ่มครูอีกคน" : "– ห้องรวม (ใครใช้ก็ได้) –"} />
-    </div>
-  );
-};
-
 const RoomsPanel: React.FC = () => {
-  const { rooms, buildings, teachers, departments } = useTimetableStore();
-  const [form, setForm]     = useState({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40, reserved_teacher_ids: [] as number[], specialized_dept_id: "" });
-  const [editing, setEditing]   = useState<number | null>(null);
-  const [editForm, setEditForm] = useState<typeof form | null>(null);
-
-  const teacherName = (id: number | null | undefined) => id ? (teachers.find((t) => t.id === id)?.name ?? "–") : null;
+  const { rooms, teachers, departments } = useTimetableStore();
+  // Settings live in a dialog: a room carries enough of them that editing in
+  // the row made that row several lines tall and hid every other room.
+  const [settingsFor, setSettingsFor] = useState<Room | null>(null);
+  const [creating, setCreating]       = useState(false);
   const [q, setQ] = useState("");
   const [onlyBlocked, setOnlyBlocked] = useState(false);
 
-  /** Take a room out of the timetable, or put it back. */
+  const teacherName = (id: number) => teachers.find((t) => t.id === id)?.name ?? "–";
+  const deptName = (id: number | null | undefined) =>
+    id ? (departments.find((d) => d.id === id)?.name ?? "–") : null;
+
+  /** Take a room out of the timetable, or put it back — one click from the row. */
   const toggleUsable = async (r: Room) => {
     const usable = r.usable === false;
     useTimetableStore.setState((s) => ({
@@ -808,88 +767,21 @@ const RoomsPanel: React.FC = () => {
       }));
     }
   };
+
   const blockedCount = rooms.filter((r) => r.usable === false).length;
   const shownRooms = rooms.filter((r) =>
     (!onlyBlocked || r.usable === false) &&
-    matches(q, r.name, ROOM_TYPE_TH[r.type] ?? r.type,
-      r.building_name, r.floor, roomReservedFor(r).map(teacherName).join(" "),
+    matches(q, r.name, ROOM_TYPE_TH[r.type] ?? r.type, r.building_name, r.floor,
+      roomReservedFor(r).map(teacherName).join(" "), deptName(r.specialized_dept_id),
       r.usable === false ? "ห้ามใช้" : "ใช้ได้"));
-  const deptName    = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name ?? "–") : null;
-
-  const handleCreate = async () => {
-    const created = await api.createRoom({
-      ...form,
-      type:        form.type as RoomType,
-      building_id: form.building_id ? Number(form.building_id) : null,
-      floor:       Number(form.floor),
-      capacity:    Number(form.capacity),
-      specialized_dept_id: form.specialized_dept_id ? Number(form.specialized_dept_id) : null,
-      reserved_teacher_ids: form.reserved_teacher_ids,
-    });
-    useTimetableStore.setState((s) => ({ rooms: [...s.rooms, created] }));
-    setForm({ name: "", type: "physical", building_id: "", floor: 1, capacity: 40, reserved_teacher_ids: [], specialized_dept_id: "" });
-  };
-
-  const handleUpdate = async (id: number) => {
-    if (!editForm) return;
-    const updated = await api.updateRoom(id, {
-      name: editForm.name,
-      type: editForm.type as RoomType,
-      building_id: editForm.building_id ? Number(editForm.building_id) : null,
-      floor: Number(editForm.floor),
-      capacity: Number(editForm.capacity),
-      specialized_dept_id: editForm.specialized_dept_id ? Number(editForm.specialized_dept_id) : null,
-      reserved_teacher_ids: editForm.reserved_teacher_ids,
-    });
-    useTimetableStore.setState((s) => ({ rooms: s.rooms.map((r) => r.id === id ? { ...r, ...updated } : r) }));
-    setEditing(null); setEditForm(null);
-  };
 
   return (
     <Section title="ห้องสอน" action={<ImportButton entity="rooms" />}>
-      <div className="grid grid-cols-3 gap-2 mb-3">
-        <Field label="ชื่อห้อง *">
-          <input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ห้อง 101" />
-        </Field>
-        <Field label="ประเภท">
-          <select className={inputCls} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-            <option value="physical">ห้องเรียนทั่วไป</option>
-            <option value="special">ห้องพิเศษ</option>
-            <option value="outdoor">กลางแจ้ง</option>
-            <option value="floating">ห้องเวียน (ไม่ติดห้องเดิม)</option>
-          </select>
-        </Field>
-        <Field label="อาคาร">
-          <select className={inputCls} value={form.building_id} onChange={(e) => setForm({ ...form, building_id: e.target.value })}>
-            <option value="">– ไม่ระบุ –</option>
-            {buildings.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
-        </Field>
-        <Field label="ชั้น">
-          <input type="number" min={1} className={inputCls} value={form.floor} onChange={(e) => setForm({ ...form, floor: Number(e.target.value) })} />
-        </Field>
-        <Field label="ความจุ (คน)">
-          <input type="number" min={1} className={inputCls} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: Number(e.target.value) })} />
-        </Field>
-        <Field label="🏠 จองให้ครู (เลือกได้หลายคน)">
-          <TeacherMultiPicker value={form.reserved_teacher_ids} teachers={teachers}
-            onChange={(ids) => setForm({ ...form, reserved_teacher_ids: ids })} />
-        </Field>
-        <Field label="🧪 ห้องเฉพาะกลุ่มสาระ">
-          <select className={inputCls} value={form.specialized_dept_id} onChange={(e) => setForm({ ...form, specialized_dept_id: e.target.value })}>
-            <option value="">– ไม่จำกัด –</option>
-            {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
-        </Field>
-      </div>
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800 leading-relaxed">
-        💡 <strong>ห้องประจำครู</strong> ตั้งได้ 2 ทาง: ที่นี่เลือก "จองให้ครูประจำ" หรือไปที่หน้า <strong>ครูผู้สอน</strong> แล้วเลือก "🏠 ห้องประจำครู" — ระบบจะพยายามจัดครูให้สอนในห้องของตัวเองก่อนเสมอ และจะไม่เอาห้องที่จองไว้ไปให้ครูคนอื่น
-      </div>
-      <button onClick={handleCreate} disabled={!form.name} className={btnPrimary}>+ เพิ่มห้อง</button>
+      <button onClick={() => setCreating(true)} className={btnPrimary}>+ เพิ่มห้องสอน</button>
 
       <div className="mt-4">
         <TableSearch value={q} onChange={setQ} count={shownRooms.length} total={rooms.length}
-          placeholder="ค้นหาเลขห้อง / ชื่อห้อง / อาคาร">
+          placeholder="ค้นหาเลขห้อง / ชื่อห้อง / อาคาร / ครู / กลุ่มสาระ">
           <label className="flex items-center gap-1.5 text-xs text-gray-600 shrink-0 cursor-pointer">
             <input type="checkbox" checked={onlyBlocked}
               onChange={(e) => setOnlyBlocked(e.target.checked)} />
@@ -897,113 +789,88 @@ const RoomsPanel: React.FC = () => {
           </label>
         </TableSearch>
         <p className="text-[11px] text-gray-500 -mt-1 mb-2">
-          🚫 <strong>ห้ามใช้</strong> = ระบบจะไม่จัดคาบเรียนลงห้องนี้เลย — ใช้กับห้องพักครู
-          ห้องสำนักงาน หรือห้องที่ไม่ใช่ห้องเรียน · กดปุ่มในคอลัมน์ "ใช้จัดคาบ" เพื่อสลับ
+          กด <strong>ตั้งค่า</strong> เพื่อแก้ไขทุกอย่างของห้องในหน้าต่างใหม่ ·
+          🚫 <strong>ห้ามใช้</strong> = ระบบจะไม่จัดคาบลงห้องนี้เลย (ห้องพักครู ห้องสำนักงาน)
         </p>
       </div>
+
       <div className="border border-gray-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ชื่อ","ประเภท","อาคาร","ชั้น","ความจุ","🏠 จอง/เฉพาะ","ใช้จัดคาบ",""].map((h) => (
+              {["ชื่อห้อง","ประเภท","อาคาร/ชั้น","ความจุ","สงวนไว้ให้","ใช้จัดคาบ",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {rooms.length === 0 && (
-              <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
+            {shownRooms.length === 0 && (
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ไม่พบห้องที่ค้นหา</td></tr>
             )}
-            {shownRooms.map((r) => (
-              <tr key={r.id} className={clsx("hover:bg-gray-50", r.usable === false && "bg-red-50/40 text-gray-400")}>
-                {editing === r.id && editForm ? (
-                  <>
-                    <td className="px-2 py-1"><input className={inlineCls} value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></td>
-                    <td className="px-2 py-1">
-                      <select className={inlineCls} value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}>
-                        <option value="physical">ทั่วไป</option>
-                        <option value="special">พิเศษ</option>
-                        <option value="outdoor">กลางแจ้ง</option>
-                        <option value="floating">ห้องเวียน</option>
-                      </select>
-                    </td>
-                    <td className="px-2 py-1">
-                      <select className={inlineCls} value={editForm.building_id} onChange={(e) => setEditForm({ ...editForm, building_id: e.target.value })}>
-                        <option value="">– ไม่ระบุ –</option>
-                        {buildings.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                      </select>
-                    </td>
-                    <td className="px-2 py-1"><input type="number" className={inlineCls} style={{ width: 60 }} value={editForm.floor} onChange={(e) => setEditForm({ ...editForm, floor: Number(e.target.value) })} /></td>
-                    <td className="px-2 py-1"><input type="number" className={inlineCls} style={{ width: 70 }} value={editForm.capacity} onChange={(e) => setEditForm({ ...editForm, capacity: Number(e.target.value) })} /></td>
-                    <td className="px-2 py-1">
-                      <div className="flex flex-col gap-1" style={{ minWidth: 180 }}>
-                        <TeacherMultiPicker value={editForm.reserved_teacher_ids} teachers={teachers}
-                          onChange={(ids) => setEditForm({ ...editForm, reserved_teacher_ids: ids })} />
-                        <select className={inlineCls} value={editForm.specialized_dept_id} onChange={(e) => setEditForm({ ...editForm, specialized_dept_id: e.target.value })}>
-                          <option value="">🧪 ไม่จำกัด</option>
-                          {departments.map((d) => <option key={d.id} value={d.id}>🧪 {d.name}</option>)}
-                        </select>
-                      </div>
-                    </td>
-                    <td className="px-2 py-1 text-xs text-gray-400">
+            {shownRooms.map((r) => {
+              const kept = roomReservedFor(r);
+              return (
+                <tr key={r.id} className={clsx("hover:bg-gray-50", r.usable === false && "bg-red-50/40")}>
+                  <td className="px-3 py-2 font-medium text-gray-800">{r.name}</td>
+                  <td className="px-3 py-2 text-gray-600 text-xs">{ROOM_TYPE_TH[r.type] ?? r.type}</td>
+                  <td className="px-3 py-2 text-gray-500 text-xs">
+                    {r.building_name ?? "–"}{r.building_name ? ` · ชั้น ${r.floor}` : ""}
+                  </td>
+                  <td className="px-3 py-2 text-gray-600 text-xs">{r.capacity}</td>
+                  {/* One line, however many teachers or departments it names. */}
+                  <td className="px-3 py-2 text-xs">
+                    <span className="flex items-center gap-1 flex-wrap">
+                      {deptName(r.specialized_dept_id) && (
+                        <span className="bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded whitespace-nowrap">
+                          🧪 {deptName(r.specialized_dept_id)}
+                        </span>
+                      )}
+                      {kept.length > 0 && (
+                        <span className="bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded whitespace-nowrap"
+                          title={kept.map(teacherName).join(", ")}>
+                          🏠 {kept.length === 1 ? teacherName(kept[0]) : `ครู ${kept.length} คน`}
+                        </span>
+                      )}
+                      {kept.length === 0 && !r.specialized_dept_id && <span className="text-gray-400">ห้องรวม</span>}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">
+                    <button
+                      onClick={() => toggleUsable(r)}
+                      title={r.usable === false
+                        ? "ตอนนี้ห้ามใช้ — กดเพื่ออนุญาตให้จัดคาบลงห้องนี้"
+                        : "ตอนนี้ใช้ได้ — กดเพื่อห้ามไม่ให้จัดคาบลงห้องนี้"}
+                      className={clsx("px-2 py-1 rounded text-xs border whitespace-nowrap",
+                        r.usable === false
+                          ? "bg-red-50 border-red-200 text-red-700 hover:bg-red-100"
+                          : "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100")}
+                    >
                       {r.usable === false ? "🚫 ห้ามใช้" : "✓ ใช้ได้"}
-                    </td>
-                    <td className="px-2 py-1">
-                      <div className="flex gap-1">
-                        <button onClick={() => handleUpdate(r.id)} className={btnSave}>บันทึก</button>
-                        <button onClick={() => { setEditing(null); setEditForm(null); }} className={btnCancel}>ยกเลิก</button>
-                      </div>
-                    </td>
-                  </>
-                ) : (
-                  <>
-                    <td className="px-3 py-2 font-medium text-gray-800">{r.name}</td>
-                    <td className="px-3 py-2 text-gray-600">{ROOM_TYPE_TH[r.type] ?? r.type}</td>
-                    <td className="px-3 py-2 text-gray-500">{r.building_name ?? "–"}</td>
-                    <td className="px-3 py-2 text-gray-600">{r.floor}</td>
-                    <td className="px-3 py-2 text-gray-600">{r.capacity}</td>
-                    <td className="px-3 py-2 text-xs">
-                      <div className="flex flex-col gap-0.5">
-                        {roomReservedFor(r).map((id) => (
-                          <span key={id} className="bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded w-fit">
-                            🏠 {teacherName(id)}
-                          </span>
-                        ))}
-                        {deptName(r.specialized_dept_id) && (
-                          <span className="bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded w-fit">🧪 {deptName(r.specialized_dept_id)}</span>
-                        )}
-                        {roomReservedFor(r).length === 0 && !r.specialized_dept_id && <span className="text-gray-400">ห้องรวม</span>}
-                      </div>
-                    </td>
-                    {/* One click to take a room out of the timetable — a staff
-                        room or an office is not somewhere to put a class. */}
-                    <td className="px-3 py-2">
+                    </button>
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex gap-1">
+                      <button onClick={() => setSettingsFor(r)} className={btnEdit}>⚙ ตั้งค่า</button>
                       <button
-                        onClick={() => toggleUsable(r)}
-                        title={r.usable === false
-                          ? "ตอนนี้ห้ามใช้ — กดเพื่ออนุญาตให้จัดคาบลงห้องนี้"
-                          : "ตอนนี้ใช้ได้ — กดเพื่อห้ามไม่ให้จัดคาบลงห้องนี้ (เช่น ห้องพักครู)"}
-                        className={clsx("px-2 py-1 rounded text-xs border whitespace-nowrap",
-                          r.usable === false
-                            ? "bg-red-50 border-red-200 text-red-700 hover:bg-red-100"
-                            : "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100")}
-                      >
-                        {r.usable === false ? "🚫 ห้ามใช้" : "✓ ใช้ได้"}
-                      </button>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex gap-1">
-                        <button onClick={() => { setEditing(r.id); setEditForm({ name: r.name, type: r.type, building_id: r.building_id ? String(r.building_id) : "", floor: r.floor, capacity: r.capacity, reserved_teacher_ids: roomReservedFor(r), specialized_dept_id: r.specialized_dept_id ? String(r.specialized_dept_id) : "" }); }} className={btnEdit}>แก้ไข</button>
-                        <button onClick={async () => { await api.deleteRoom(r.id); useTimetableStore.setState((s) => ({ rooms: s.rooms.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
-                      </div>
-                    </td>
-                  </>
-                )}
-              </tr>
-            ))}
+                        onClick={async () => {
+                          await api.deleteRoom(r.id);
+                          useTimetableStore.setState((s) => ({ rooms: s.rooms.filter((x) => x.id !== r.id) }));
+                        }}
+                        className={btnDanger}>ลบ</button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+
+      {(settingsFor || creating) && (
+        <RoomSettingsModal
+          room={settingsFor}
+          onClose={() => { setSettingsFor(null); setCreating(false); }} />
+      )}
     </Section>
   );
 };
