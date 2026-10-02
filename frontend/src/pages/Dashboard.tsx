@@ -4,7 +4,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
-import type { SubjectType, PeriodType, Room, Period, StudentGroup } from "../types";
+import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
@@ -17,6 +17,7 @@ import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from ".
 import { flattenGroups } from "../utils/groupHierarchy";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
+import { TeacherSettingsModal } from "../components/teachers/TeacherSettingsModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
 import { SearchableSelect, teacherOptions, roomOptions, groupOptions } from "../components/common/SearchableSelect";
 import { TableSearch, matches } from "../components/common/TableSearch";
@@ -259,9 +260,6 @@ const GroupsPanel: React.FC = () => {
   );
 };
 
-// ─── Advanced Settings shared UI ─────────────────────────────────────────────
-const DAYS_TH = ["จันทร์","อังคาร","พุธ","พฤหัสบดี","ศุกร์"];
-
 // ─── Teachers ────────────────────────────────────────────────────────────────
 
 /** Update one class inside the nested group tree, leaving the rest alone. */
@@ -277,7 +275,7 @@ function patchGroupTree(
 }
 
 const TeachersPanel: React.FC = () => {
-  const { teachers, departments, rooms, requirements, groups } = useTimetableStore();
+  const { teachers, departments, rooms, requirements, groups, schoolConfig } = useTimetableStore();
   // How many classes this teacher is down to teach.
   const loadOf = (id: number) => requirements.filter((r) => r.teacher_id === id).length;
 
@@ -314,12 +312,10 @@ const TeachersPanel: React.FC = () => {
   const [form, setForm] = useState({ code: "", name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   const [editing, setEditing] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
-  const [advOpen, setAdvOpen] = useState<number | null>(null);  // id of teacher with open adv settings
+  const [settingsFor, setSettingsFor] = useState<number | null>(null);
   const [assigning, setAssigning] = useState<number | null>(null);
   const assigningTeacher = assigning != null ? teachers.find((t) => t.id === assigning) ?? null : null;
-  const [advForm, setAdvForm] = useState<{ ignore_consecutive_limit: boolean; require_ground_floor: boolean; days_off: number[]; note: string }>({
-    ignore_consecutive_limit: false, require_ground_floor: false, days_off: [], note: "",
-  });
+  const settingsTeacher  = settingsFor != null ? teachers.find((t) => t.id === settingsFor) ?? null : null;
 
   const handleCreate = async () => {
     const created = await api.createTeacher({
@@ -343,12 +339,6 @@ const TeachersPanel: React.FC = () => {
   };
 
   const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : "–";
-
-  const handleSaveAdv = async (id: number) => {
-    const updated = await api.updateTeacher(id, { advanced_settings: advForm });
-    useTimetableStore.setState((s) => ({ teachers: s.teachers.map((t) => t.id === id ? { ...t, ...updated } : t) }));
-    setAdvOpen(null);
-  };
 
   const deptName = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name ?? "–") : "–";
   const [q, setQ] = useState("");
@@ -480,50 +470,14 @@ const TeachersPanel: React.FC = () => {
                               <span className="ml-1 text-[10px] bg-indigo-600 text-white px-1 rounded-full">{loadOf(t.id)}</span>
                             )}
                           </button>
-                          <button onClick={() => { setAdvOpen(advOpen === t.id ? null : t.id); setAdvForm({ ignore_consecutive_limit: t.advanced_settings?.ignore_consecutive_limit ?? false, require_ground_floor: t.advanced_settings?.require_ground_floor ?? false, days_off: t.advanced_settings?.days_off ?? [], note: t.advanced_settings?.note ?? "" }); }} className="px-2 py-1 text-xs bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 border border-indigo-200">⚙ ขั้นสูง</button>
+                          <button onClick={() => setSettingsFor(t.id)}
+                            className="px-2 py-1 text-xs bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 border border-indigo-200">⚙ ตั้งค่า</button>
                           <button onClick={async () => { await api.deleteTeacher(t.id); useTimetableStore.setState((s) => ({ teachers: s.teachers.filter((x) => x.id !== t.id) })); }} className={btnDanger}>ลบ</button>
                         </div>
                       </td>
                     </>
                   )}
                 </tr>
-                {/* Advanced settings row */}
-                {advOpen === t.id && (
-                  <tr>
-                    <td colSpan={7} className="bg-indigo-50/60 border-b border-indigo-100 px-4 py-3">
-                      <p className="text-xs font-bold text-indigo-700 mb-2">⚙ ตั้งค่าขั้นสูง — {t.name}</p>
-                      <div className="grid grid-cols-2 gap-3 text-xs">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="checkbox" checked={advForm.ignore_consecutive_limit} onChange={(e) => setAdvForm({ ...advForm, ignore_consecutive_limit: e.target.checked })} className="w-3.5 h-3.5" />
-                          <span>ไม่จำกัดคาบต่อเนื่อง (ignore_consecutive_limit)</span>
-                        </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="checkbox" checked={advForm.require_ground_floor} onChange={(e) => setAdvForm({ ...advForm, require_ground_floor: e.target.checked })} className="w-3.5 h-3.5" />
-                          <span>ต้องสอนชั้น 1 เท่านั้น (เหตุสุขภาพ)</span>
-                        </label>
-                        <div>
-                          <p className="font-semibold text-gray-600 mb-1">วันที่ไม่สอน (days_off)</p>
-                          <div className="flex gap-2 flex-wrap">
-                            {DAYS_TH.map((d, i) => (
-                              <label key={i} className="flex items-center gap-1 cursor-pointer">
-                                <input type="checkbox" checked={advForm.days_off.includes(i)} onChange={(e) => setAdvForm({ ...advForm, days_off: e.target.checked ? [...advForm.days_off, i] : advForm.days_off.filter((x) => x !== i) })} className="w-3 h-3" />
-                                <span>{d}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                        <div>
-                          <p className="font-semibold text-gray-600 mb-1">หมายเหตุ</p>
-                          <input className={inlineCls + " w-full"} value={advForm.note} onChange={(e) => setAdvForm({ ...advForm, note: e.target.value })} placeholder="เช่น ลาป่วยวันอังคาร" />
-                        </div>
-                      </div>
-                      <div className="flex gap-2 mt-3">
-                        <button onClick={() => handleSaveAdv(t.id)} className={btnSave}>บันทึก</button>
-                        <button onClick={() => setAdvOpen(null)} className={btnCancel}>ยกเลิก</button>
-                      </div>
-                    </td>
-                  </tr>
-                )}
               </React.Fragment>
             ))}
           </tbody>
@@ -533,6 +487,14 @@ const TeachersPanel: React.FC = () => {
       {assigningTeacher && (
         <TeacherAssignModal teacher={assigningTeacher} onClose={() => setAssigning(null)} />
       )}
+      {settingsTeacher && (
+        <TeacherSettingsModal
+          teacher={settingsTeacher}
+          schoolMaxConsecutive={schoolConfig.max_consecutive ?? 3}
+          schoolMinLastPeriod={schoolConfig.min_last_period ?? 1}
+          onClose={() => setSettingsFor(null)}
+        />
+      )}
     </Section>
   );
 };
@@ -540,7 +502,7 @@ const TeachersPanel: React.FC = () => {
 // ─── Subjects ────────────────────────────────────────────────────────────────
 const SubjectsPanel: React.FC = () => {
   const { subjects, departments, requirements, rooms } = useTimetableStore();
-  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "" });
+  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "", prefer_morning: false });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [assigning, setAssigning] = useState<number | null>(null);
@@ -553,6 +515,19 @@ const SubjectsPanel: React.FC = () => {
 
   const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : null;
 
+  /** Flip "teach this one in the morning" straight from the table. */
+  const toggleMorning = async (s: Subject) => {
+    const next = !s.prefer_morning;
+    useTimetableStore.setState((st) => ({
+      subjects: st.subjects.map((x) => x.id === s.id ? { ...x, prefer_morning: next } : x),
+    }));
+    await api.updateSubject(s.id, { prefer_morning: next }).catch(() => {
+      useTimetableStore.setState((st) => ({   // put it back if the server refused
+        subjects: st.subjects.map((x) => x.id === s.id ? { ...x, prefer_morning: !next } : x),
+      }));
+    });
+  };
+
   const handleCreate = async () => {
     const created = await api.createSubject({
       ...form,
@@ -562,7 +537,7 @@ const SubjectsPanel: React.FC = () => {
       fixed_room_id: form.fixed_room_id ? Number(form.fixed_room_id) : null,
     });
     useTimetableStore.setState((s) => ({ subjects: [...s.subjects, created] }));
-    setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "" });
+    setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "", prefer_morning: false });
   };
 
   const handleUpdate = async (id: number) => {
@@ -573,6 +548,7 @@ const SubjectsPanel: React.FC = () => {
       duration: Number(editForm.duration) as 1 | 2,
       department_id: editForm.department_id ? Number(editForm.department_id) : null,
       is_activity: editForm.is_activity,
+      prefer_morning: editForm.prefer_morning,
       fixed_room_id: editForm.fixed_room_id ? Number(editForm.fixed_room_id) : null,
     });
     useTimetableStore.setState((s) => ({ subjects: s.subjects.map((x) => x.id === id ? { ...x, ...updated } : x) }));
@@ -622,6 +598,9 @@ const SubjectsPanel: React.FC = () => {
         </Field>
       </div>
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3 text-xs text-amber-900">
+        ☀️ <strong>คาบเช้า</strong> = วิชายากๆ (คณิต วิทย์) ที่อยากให้อยู่ช่วงเช้า กดรูปพระอาทิตย์ในตารางด้านล่างได้เลย
+        — เป็น<strong>แนวทาง</strong> ไม่ใช่กฎ ระบบจะลองวางในเช้าก่อน ถ้าไม่มีที่จริงๆ จึงลงบ่าย วิชาจะไม่หายไปจากตาราง
+        <br />
         🏟 <strong>ห้องประจำวิชา</strong> = วิชานี้ต้องเรียนที่ห้องนี้เสมอ (พละ → สนาม, คอมพิวเตอร์ → ห้องแล็บ, ดนตรี → ห้องดนตรี)
         — <strong>สำคัญกว่าห้องประจำชั้นของนักเรียน</strong> นักเรียนจะเดินมาเรียนที่ห้องนี้ ส่วนวิชาที่ไม่ได้ตั้งไว้จะเรียนในห้องประจำชั้นของตัวเอง
       </div>
@@ -635,14 +614,14 @@ const SubjectsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","🏟 ห้องประจำวิชา","ประเภท","คาบ",""].map((h) => (
+              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","🏟 ห้องประจำวิชา","ประเภท","คาบ","☀️ เช้า",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {subjects.length === 0 && (
-              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {shownSubjects.map((s) => (
               <tr key={s.id} className={clsx("hover:bg-gray-50", s.is_activity && "bg-purple-50/30")}>
@@ -674,6 +653,7 @@ const SubjectsPanel: React.FC = () => {
                     </td>
                     <td className="px-2 py-1">
                       <label className="flex items-center gap-1"><input type="checkbox" checked={editForm.is_activity} onChange={(e) => setEditForm({ ...editForm, is_activity: e.target.checked })} /> กิจกรรม</label>
+                      <label className="flex items-center gap-1"><input type="checkbox" checked={editForm.prefer_morning} onChange={(e) => setEditForm({ ...editForm, prefer_morning: e.target.checked })} /> ☀️ เช้า</label>
                     </td>
                     <td className="px-2 py-1">
                       <div className="flex gap-1">
@@ -698,6 +678,21 @@ const SubjectsPanel: React.FC = () => {
                     <td className="px-3 py-2 text-gray-600">{SUBJECT_TYPE_TH[s.type] ?? s.type}</td>
                     <td className="px-3 py-2 text-gray-600">{s.duration}</td>
                     <td className="px-3 py-2">
+                      <button
+                        onClick={() => toggleMorning(s)}
+                        title={s.prefer_morning
+                          ? "วิชานี้จะถูกลองวางในคาบเช้าก่อน — กดเพื่อปิด"
+                          : "กดเพื่อให้ระบบลองวางวิชานี้ในคาบเช้าก่อน"}
+                        className={clsx(
+                          "px-2 py-1 rounded-lg border text-xs transition-colors",
+                          s.prefer_morning
+                            ? "bg-amber-100 border-amber-300 text-amber-800 font-semibold"
+                            : "bg-white border-gray-200 text-gray-300 hover:border-amber-300 hover:text-amber-500")}
+                      >
+                        ☀️
+                      </button>
+                    </td>
+                    <td className="px-3 py-2">
                       <div className="flex gap-1">
                         <button
                           onClick={() => setAssigning(s.id)}
@@ -716,7 +711,7 @@ const SubjectsPanel: React.FC = () => {
                         >
                           🎓 ใส่คาบเสรี
                         </button>
-                        <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "" }); }} className={btnEdit}>แก้ไข</button>
+                        <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "", prefer_morning: s.prefer_morning ?? false }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>

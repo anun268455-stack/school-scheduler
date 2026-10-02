@@ -494,6 +494,71 @@ def _touches_lunch(period_rows: dict[int, dict[str, Any]], start: int, end: int)
             return True
     return False
 
+
+# ── What each teacher has asked for ───────────────────────────────────────────
+# Days off, periods to avoid and "ground floor only" were all settable in the
+# app and read by nothing: the solver never looked at advanced_settings beyond
+# the consecutive limit, so a teacher's day off was decoration. They are
+# honoured now, together with two new rules the school asked for.
+
+LAST_PERIOD_MIN = 1     # เวรคาบสุดท้าย: lessons each teacher takes in the last period
+
+def _teacher_prefs(teacher: dict[str, Any] | None) -> dict[str, Any]:
+    adv = (teacher or {}).get("advanced_settings") or {}
+    def num(key, default):
+        try:
+            v = adv.get(key)
+            return default if v in (None, "") else int(v)
+        except (TypeError, ValueError):
+            return default
+    return {
+        "days_off": {int(d) for d in (adv.get("days_off") or []) if str(d).isdigit() or isinstance(d, int)},
+        "avoid_periods": {int(p) for p in (adv.get("avoid_periods") or [])
+                          if str(p).isdigit() or isinstance(p, int)},
+        "ground_floor": bool(adv.get("require_ground_floor")),
+        # None = follow the school's figure; 0 = exempt this teacher.
+        "min_last_period": None if adv.get("min_last_period") in (None, "") else num("min_last_period", 0),
+    }
+
+
+def _school_min_last_period(body: dict[str, Any] | None = None) -> int:
+    for src in (body or {}, SCHOOL_CONFIG if isinstance(SCHOOL_CONFIG, dict) else {}):
+        v = src.get("min_last_period")
+        if v not in (None, ""):
+            try:
+                return max(0, int(v))
+            except (TypeError, ValueError):
+                pass
+    return LAST_PERIOD_MIN
+
+
+def _last_period_for(level: str) -> int | None:
+    """The final lesson period of the day for this level."""
+    nums = _class_periods_for_level(level)
+    return nums[-1] if nums else None
+
+
+# ── วิชายากควรอยู่ช่วงเช้า ────────────────────────────────────────────────────
+# Maths and science in the last period of the afternoon is a lesson half the
+# room sleeps through. This is a nudge, not a rule: a subject marked this way
+# is tried in the morning first and only drops into the afternoon when nothing
+# else fits, so it never costs a lesson its place in the timetable.
+
+def _morning_cutoff(level: str) -> int | None:
+    """The period a morning ends at — the last one starting before noon."""
+    rows = _periods_for_level(level)
+    best = None
+    for num in _class_periods_for_level(level):
+        start = _hhmm(rows.get(num, {}).get("start_time"))
+        if start is not None and start < 12 * 60:
+            best = num
+    return best
+
+
+def _prefers_morning(subject: dict[str, Any] | None) -> bool:
+    return bool((subject or {}).get("prefer_morning"))
+
+
 # ── Solver entry point: prefer CP-SAT (real optimiser), fall back to greedy ────
 def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     """Run the timetable solver.
@@ -548,6 +613,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     # Teachers and rooms are booked by the CLOCK, not by period number: the two
     # levels number their periods the same but sit them at different times.
+    # One ordinary room per class that has no ห้องประจำชั้น recorded, settled on
+    # the first time the class needs a room and reused for the rest of the week.
+    anchor_room: dict[int, int] = {}
+    # Rooms that already belong to a class. An anchor must not be chosen from
+    # these, or it takes a room another class is entitled to sit in all week.
+    homeroom_ids: set[int] = {g["homeroom_room_id"] for g in g_map.values()
+                              if g.get("homeroom_room_id")}
+
     def cell_buckets(gid: int, period: int) -> frozenset[int]:
         return _slot_buckets(g_map.get(gid), period)
 
@@ -661,7 +734,25 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         want_dept = subj.get("department_id") or t.get("department_id")
         wants_outdoor = subj.get("department_id") in outdoor_dept_ids
         grp = g_map.get(group_id, {}) if group_id is not None else {}
-        home = grp.get("homeroom_room_id")
+        # ห้องประจำชั้น, or the one this run has settled on for a class that has
+        # none. Forty of this school's classes have no homeroom recorded, which
+        # left 862 lessons with nothing to hold them in place — they took
+        # whatever was free and the class walked all week. Picking one ordinary
+        # room per class and coming back to it costs nothing and behaves like a
+        # homeroom until the school records a real one.
+        home = grp.get("homeroom_room_id") or anchor_room.get(group_id)
+        # สอนได้เฉพาะชั้น 1 — a teacher who cannot manage stairs. Honoured as a
+        # ranking, not a filter: a hard rule here would simply lose the lesson
+        # on a day the ground floor is full, which helps nobody.
+        ground_only = _teacher_prefs(t).get("ground_floor")
+
+        def upstairs(r: dict | None) -> bool:
+            if not ground_only or not r:
+                return False
+            try:
+                return int(r.get("floor") or 1) > 1
+            except (TypeError, ValueError):
+                return False
         # A room is taken if it is in use at this time of day — which, between
         # the two levels, is not the same thing as the same period number.
         bks = _slot_buckets(grp, period)
@@ -701,11 +792,60 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 r = min(own, key=lambda r: (r["type"] != "special", r["id"]))
                 return r["id"], r["name"], r["type"]
 
+        # 2b. Already in a room next door in time? Stay in it.
+        #     Walking is what happens BETWEEN back-to-back periods, so the
+        #     cheapest room is the one the class is in either side of this one —
+        #     and that is invisible to a rule that only knows about homerooms.
+        if group_id is not None and not wants_outdoor:
+            lvl_ = _level_key(grp)
+            nums = _class_periods_for_level(lvl_)
+            neighbours = []
+            if period in nums:
+                i = nums.index(period)
+                if i > 0:
+                    neighbours.append(nums[i - 1])
+                if i + 1 < len(nums):
+                    neighbours.append(nums[i + 1])
+            for n in neighbours:
+                near = next((x for x in SLOTS
+                             if x["group_id"] == group_id and x["day"] == day
+                             and x["period"] == n and x.get("room_id")), None)
+                if not near:
+                    continue
+                r = r_map.get(near["room_id"])
+                if r and not room_taken(r["id"]) and _room_usable(r) \
+                        and _room_free_for(r, teacher_id) and not upstairs(r) \
+                        and not (r.get("specialized_dept_id")
+                                 and r["specialized_dept_id"] != want_dept):
+                    return r["id"], r["name"], r["type"]
+
         # 3. Stay in the group's homeroom for ordinary subjects.
         if home and not wants_outdoor and not room_taken(home):
             r = r_map.get(home)
-            if r and _room_free_for(r, teacher_id):
+            if r and _room_free_for(r, teacher_id) and not upstairs(r):
                 return home, r["name"], r["type"]
+
+        # 3b. A class with no ห้องประจำชั้น gets one chosen for it now, BEFORE it
+        #     would otherwise be sent to the teacher's own room. Without this
+        #     the class follows a different teacher every period and walks all
+        #     day; one class staying put costs one teacher a walk instead of
+        #     forty students. Preferring a room no other class has claimed
+        #     keeps the classes from fighting over the same few rooms.
+        if (group_id is not None and not grp.get("homeroom_room_id")
+                and group_id not in anchor_room and not wants_outdoor):
+            taken_anchors = set(anchor_room.values())
+            free = [r for r in ROOMS
+                    if r["type"] in ("physical", "floating")
+                    and not r.get("specialized_dept_id")
+                    and r["id"] not in homeroom_ids and eligible(r)]
+            if free:
+                pick = min(free, key=lambda r: (
+                    r["id"] in taken_anchors,
+                    0 if r.get("capacity", 40) >= grp.get("size", 40) else 1,
+                    -int(r.get("capacity") or 0),
+                    r["id"]))
+                anchor_room[group_id] = pick["id"]
+                return pick["id"], pick["name"], pick["type"]
 
         # 4. Teacher's own fixed room (skip for outdoor subjects).
         if fr and not wants_outdoor and not room_taken(fr):
@@ -723,9 +863,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # Seat the class somewhere it fits when we can — but a tight room
             # still beats no room, so this orders rather than excludes.
             too_small = 1 if r.get("capacity", 40) < group_size else 0
-            return (too_small, pref.get(r["type"], 4), r["id"])
+            return (1 if upstairs(r) else 0, too_small, pref.get(r["type"], 4), r["id"])
 
         for r in sorted((r for r in ROOMS if eligible(r)), key=rank):
+            # First ordinary room this class gets becomes its anchor, so the
+            # rest of its week comes back here instead of wandering.
+            if (group_id is not None and not grp.get("homeroom_room_id")
+                    and group_id not in anchor_room
+                    and not wants_outdoor and r["type"] in ("physical", "floating")
+                    and not r.get("specialized_dept_id")):
+                anchor_room[group_id] = r["id"]
             return r["id"], r["name"], r["type"]
         return None, None, None
 
@@ -780,6 +927,42 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             teacher_spans[(tid, day)].append(sp)
         group_busy.add((gid, day, period))
 
+    def unbook(tid, gid, day, period, room_id=None) -> None:
+        """Release a cell, so a proposed move can be judged without the lesson
+        blocking itself. The exact inverse of book()."""
+        for b in cell_buckets(gid, period):
+            teacher_busy.discard((tid, day, b))
+            if room_id:
+                room_busy.discard((room_id, day, b))
+        group_busy.discard((gid, day, period))
+        sp = span_of(gid, period)
+        if sp and sp in teacher_spans[(tid, day)]:
+            teacher_spans[(tid, day)].remove(sp)
+
+    def rebook(tid, gid, day, period, room_id=None) -> None:
+        book(tid, gid, day, period)
+        if room_id:
+            for b in cell_buckets(gid, period):
+                room_busy.add((room_id, day, b))
+
+    # เวรคาบสุดท้าย — how many last-period lessons each teacher already has,
+    # and how many they still owe.
+    school_last_min = _school_min_last_period(body)
+    last_period_done: dict[int, int] = defaultdict(int)
+    for s_ in SLOTS:
+        if s_.get("teacher_id") is None:
+            continue
+        lvl_ = _level_key(g_map.get(s_["group_id"]))
+        if s_["period"] == _last_period_for(lvl_):
+            last_period_done[s_["teacher_id"]] += 1
+
+    def last_period_target(tid: int) -> int:
+        own = _teacher_prefs(t_map.get(tid))["min_last_period"]
+        return school_last_min if own is None else own
+
+    def last_period_shortfall(tid: int) -> int:
+        return max(0, last_period_target(tid) - last_period_done[tid])
+
     def run_if_placed(tid, gid, day, period) -> int:
         """Length of the back-to-back run this placement would create."""
         sp = span_of(gid, period)
@@ -802,23 +985,45 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     def place_single(req, gid, tid, needed):
         """Place up to `needed` single periods; returns how many placed.
 
-        Tried in three passes, each loosening what we will settle for:
-          1. keeps the teacher's run at or under CONSEC_SOFT and away from lunch
-          2. still under CONSEC_SOFT, but may sit against lunch
-          3. up to the teacher's hard ceiling
+        Tried in four passes, each loosening what we will settle for:
+          1. the teacher's own preferences AND a short run away from lunch
+          2. preferences honoured, run still short, lunch allowed
+          3. preferences honoured, up to the teacher's hard ceiling
+          4. preferences dropped — better a lesson placed than a lesson lost
         A lesson that cannot be placed even then is reported, rather than
         stacking a teacher up to seven periods in a row as it used to.
         """
         hard = _consec_limit(t_map.get(tid), consec_hard)
+        prefs = _teacher_prefs(t_map.get(tid))
+        lvl = _level_key(g_map.get(gid))
+        morning_end = _morning_cutoff(lvl)
+        wants_morning = _prefers_morning(s_map.get(req["subject_id"]))
         placed = 0
-        for attempt in range(3):
+        for attempt in range(4):
             if placed >= needed:
                 break
             cells = cells_for(gid)
             random.shuffle(cells)
+            # Teachers still short of their last-period duty get those cells
+            # first; a morning subject gets the morning first. Both are only an
+            # ordering — nothing is excluded by them.
+            needs_last = last_period_shortfall(tid) > 0
+            last_num = _last_period_for(lvl)
+            def rank(cell):
+                day, period = cell
+                morning = wants_morning and morning_end is not None and period <= morning_end
+                duty = needs_last and period == last_num
+                return (0 if duty else 1, 0 if morning or not wants_morning else 1)
+            cells.sort(key=rank)
+
             for day, period in cells:
                 if placed >= needed:
                     break
+                if attempt < 3:
+                    if day in prefs["days_off"]:
+                        continue            # the teacher does not work this day
+                    if period in prefs["avoid_periods"]:
+                        continue
                 if not teacher_free(tid, day, gid, period):
                     continue
                 if group_occupied(gid, day, period):
@@ -833,6 +1038,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 slot = make_slot(req, day, period)
                 SLOTS.append(slot)
                 book(tid, gid, day, period)
+                if period == last_num:
+                    last_period_done[tid] += 1
                 placed += 1
         return placed
 
@@ -988,6 +1195,140 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 f"(ห้อง: {', '.join(str(r['group_id']) for r in reqs)})"
             )
 
+
+    # ── เวรคาบสุดท้าย: a repair pass ──────────────────────────────────────────
+    # Preferring the last period while placing gets most teachers there, but a
+    # teacher whose lessons all happened to land early has no way back. So,
+    # afterwards, look for one of their lessons that could simply move into a
+    # free last period and move it. Nothing is created or deleted — a lesson
+    # changes cell, and only if every rule still holds at the new one.
+    def movable_of(tid: int) -> list[dict]:
+        return [x for x in SLOTS
+                if x.get("teacher_id") == tid and not x.get("is_locked")
+                and not x.get("is_elective") and not x.get("parallel_group_key")]
+
+    def reseat(slot: dict, day: int, period: int) -> None:
+        """Put a lesson in a new cell and give it a room there."""
+        tid, gid = slot["teacher_id"], slot["group_id"]
+        rid, rname, rtype = find_room(tid, day, period, slot.get("subject_id"), gid)
+        slot["day"], slot["period"] = day, period
+        slot["room_id"], slot["room_name"], slot["room_type"] = rid, rname, rtype
+        book(tid, gid, day, period)
+        if rid:
+            for b in cell_buckets(gid, period):
+                room_busy.add((rid, day, b))
+
+    def can_take(teacher: dict, gid: int, day: int, period: int) -> bool:
+        prefs = _teacher_prefs(teacher)
+        if day in prefs["days_off"] or period in prefs["avoid_periods"]:
+            return False
+        return (teacher_free(teacher["id"], day, gid, period)
+                and run_if_placed(teacher["id"], gid, day, period)
+                <= _consec_limit(teacher, consec_hard))
+
+    last_period_fixed = 0
+    last_period_swapped = 0
+    for teacher in TEACHERS:
+        tid = teacher["id"]
+        short = last_period_shortfall(tid)
+        if short <= 0:
+            continue
+        mine = movable_of(tid)
+        random.shuffle(mine)
+
+        # (a) The easy case: a free last period to move a lesson into.
+        for slot in mine:
+            if short <= 0:
+                break
+            gid = slot["group_id"]
+            target = _last_period_for(_level_key(g_map.get(gid)))
+            if target is None or slot["period"] == target:
+                continue
+            for day in random.sample(range(5), 5):
+                if group_occupied(gid, day, target):
+                    continue
+                # Free the lesson's current cell before judging the new one,
+                # or it collides with itself.
+                old_day, old_period = slot["day"], slot["period"]
+                unbook(tid, gid, old_day, old_period, slot.get("room_id"))
+                if not can_take(teacher, gid, day, target):
+                    rebook(tid, gid, old_day, old_period, slot.get("room_id"))
+                    continue
+                reseat(slot, day, target)
+                last_period_done[tid] += 1
+                last_period_fixed += 1
+                short -= 1
+                break
+
+        # (b) The real case. In this school the last period is the fullest of
+        #     the day — every class already has a lesson in it, so there is no
+        #     empty cell to move into and (a) can never fire. The only way to
+        #     give this teacher a last period is to trade one: take a class
+        #     they already teach, find whoever has that class's last period,
+        #     and exchange the two lessons. Both teachers must end up legal,
+        #     and the other one must not be left short of their own duty.
+        if short <= 0:
+            continue
+        for slot in mine:
+            if short <= 0:
+                break
+            gid = slot["group_id"]
+            target = _last_period_for(_level_key(g_map.get(gid)))
+            if target is None or slot["period"] == target:
+                continue
+            for day in random.sample(range(5), 5):
+                other = next((x for x in SLOTS
+                              if x["group_id"] == gid and x["day"] == day
+                              and x["period"] == target
+                              and x.get("teacher_id") not in (None, tid)
+                              and not x.get("is_locked") and not x.get("is_elective")
+                              and not x.get("parallel_group_key")), None)
+                if other is None:
+                    continue
+                o_teacher = t_map.get(other["teacher_id"])
+                if not o_teacher:
+                    continue
+                oid = o_teacher["id"]
+                # Don't rob a teacher who needs the duty themselves.
+                if last_period_done[oid] - 1 < last_period_target(oid):
+                    continue
+                a_day, a_period, a_room = slot["day"], slot["period"], slot.get("room_id")
+                b_room = other.get("room_id")
+                # Vacate both cells, then judge each teacher in the other's.
+                unbook(tid, gid, a_day, a_period, a_room)
+                unbook(oid, gid, day, target, b_room)
+                if can_take(teacher, gid, day, target) and can_take(o_teacher, gid, a_day, a_period):
+                    reseat(slot, day, target)
+                    reseat(other, a_day, a_period)
+                    last_period_done[tid] += 1
+                    last_period_done[oid] -= 1
+                    last_period_swapped += 1
+                    short -= 1
+                    break
+                rebook(tid, gid, a_day, a_period, a_room)
+                rebook(oid, gid, day, target, b_room)
+
+    # Only teachers who actually have lessons can be given a last period.
+    teaching = [t for t in TEACHERS if any(r["teacher_id"] == t["id"] for r in REQUIREMENTS)]
+    expected = [t for t in teaching if last_period_target(t["id"]) > 0]
+    last_period_stats = {
+        "teachers": len(expected),
+        "met": sum(1 for t in expected if last_period_shortfall(t["id"]) <= 0),
+        "moved": last_period_fixed,
+        "swapped": last_period_swapped,
+        "school_min": school_last_min,
+    }
+
+    missing_last = sorted(
+        t["name"] for t in teaching
+        if last_period_shortfall(t["id"]) > 0
+    )
+    if missing_last:
+        violations.append(
+            f"ครู {len(missing_last)} คนยังไม่ได้เวรคาบสุดท้ายครบ "
+            f"({', '.join(missing_last[:4])}{' …' if len(missing_last) > 4 else ''})"
+        )
+
     status = "FEASIBLE" if not violations else "INFEASIBLE"
     LAST_RUN["unplaced_requirement_ids"] = unplaced_ids
     LAST_RUN["skipped_requirement_ids"] = sorted(skipped_reqs)
@@ -1003,8 +1344,89 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         "max_consecutive": consec_hard,
         "prefer_consecutive": consec_soft,
         "consecutive": _consecutive_report(),
+        "walking": _walking_report(),
+        "last_period": last_period_stats,
     }
 
+
+
+
+def _walking_report() -> dict[str, Any]:
+    """How much walking the timetable actually asks for.
+
+    A room change between back-to-back periods is a walk; a change with a break
+    in between is not, so only adjacent pairs are counted. Reported for classes
+    and teachers separately, because the two are traded against each other —
+    keeping a class in its homeroom means the teacher comes to them instead.
+    """
+    g_map = {g["id"]: g for g in _flat_groups()}
+
+    def moves(key: str) -> tuple[int, int]:
+        by_day: dict[tuple, list[tuple[int, int, int | None]]] = defaultdict(list)
+        for s in SLOTS:
+            who = s.get(key)
+            if who is None:
+                continue
+            lvl = _level_key(g_map.get(s["group_id"]))
+            row = _periods_for_level(lvl).get(s["period"])
+            if not row:
+                continue
+            start, end = _hhmm(row.get("start_time")), _hhmm(row.get("end_time"))
+            if start is None or end is None:
+                continue
+            by_day[(who, s["day"])].append((start, end, s.get("room_id")))
+        walks = total = 0
+        for spans in by_day.values():
+            spans.sort()
+            for a, b in zip(spans, spans[1:]):
+                if b[0] - a[1] >= _GAP_IS_REST:
+                    continue              # a real break — not a dash between rooms
+                total += 1
+                if a[2] != b[2]:
+                    walks += 1
+        return walks, total
+
+    cls_walk, cls_pairs = moves("group_id")
+    tch_walk, tch_pairs = moves("teacher_id")
+
+    # How often a class is taught in its own homeroom at all.
+    home_hit = home_total = 0
+    for s in SLOTS:
+        home = g_map.get(s["group_id"], {}).get("homeroom_room_id")
+        if not home:
+            continue
+        home_total += 1
+        if s.get("room_id") == home:
+            home_hit += 1
+
+    def pct(a: int, b: int) -> int:
+        return round(a * 100 / b) if b else 0
+
+    # Why the walking is as high as it is. A class with no ห้องประจำชั้น has
+    # nothing holding it in place, so it goes wherever is free and walks all
+    # week. The solver settles on a room for such a class where it can, but it
+    # cannot invent classrooms: if there is no spare ordinary room, the class
+    # has to move whatever the solver does. Those two numbers are the honest
+    # answer to "why do the students walk so much", and both are the school's
+    # to fix, not the solver's — so they are reported rather than buried.
+    leaves = [g for g in g_map.values() if not g.get("children")]
+    homeroom_ids = {g["homeroom_room_id"] for g in leaves if g.get("homeroom_room_id")}
+    no_home = [g for g in leaves if not g.get("homeroom_room_id")]
+    spare = [r for r in ROOMS
+             if r.get("type") in ("physical", "floating")
+             and not r.get("specialized_dept_id")
+             and _room_usable(r) and r["id"] not in homeroom_ids]
+
+    return {
+        "class_moves": cls_walk, "class_pairs": cls_pairs,
+        "class_move_pct": pct(cls_walk, cls_pairs),
+        "teacher_moves": tch_walk, "teacher_pairs": tch_pairs,
+        "teacher_move_pct": pct(tch_walk, tch_pairs),
+        "homeroom_hits": home_hit, "homeroom_total": home_total,
+        "homeroom_pct": pct(home_hit, home_total),
+        "classes_without_homeroom": len(no_home),
+        "spare_ordinary_rooms": len(spare),
+    }
 
 
 def _consecutive_report() -> dict[str, Any]:
@@ -1555,6 +1977,8 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         "skipped_requirement_ids": sorted(skipped_reqs),
         "max_consecutive": consec_hard,
         "consecutive": _consecutive_report(),
+        "walking": _walking_report(),
+        "last_period": last_period_stats,
     }
 
 
@@ -2089,6 +2513,7 @@ def get_subjects():
 @app.post("/api/subjects/")
 def create_subject(body: dict[str, Any]):
     body["id"] = _next("subject")
+    body.setdefault("prefer_morning", False)
     SUBJECTS.append(body)
     return body
 
@@ -2113,6 +2538,7 @@ def bulk_create_subjects(body: list[dict[str, Any]]):
     for row in body:
         row["id"] = _next("subject")
         row.setdefault("type", "common")
+        row.setdefault("prefer_morning", False)
         row.setdefault("duration", 1)
         row.setdefault("fixed_room_id", None)
         SUBJECTS.append(row)
@@ -3266,6 +3692,8 @@ SCHOOL_CONFIG: dict[str, Any] = {
     "directorName": "", "deputyName": "", "logoUrl": "",
     # How many periods in a row a teacher may be given, and what to aim for.
     "max_consecutive": CONSEC_HARD, "prefer_consecutive": CONSEC_SOFT,
+    # เวรคาบสุดท้าย: how many last-period lessons each teacher should carry.
+    "min_last_period": LAST_PERIOD_MIN,
 }
 
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
@@ -3389,7 +3817,7 @@ def get_school_config():
 @app.put("/api/school/config")
 def update_school_config(body: dict[str, Any]):
     for k in ("schoolName", "term", "year", "directorName", "deputyName", "logoUrl",
-              "max_consecutive", "prefer_consecutive"):
+              "max_consecutive", "prefer_consecutive", "min_last_period"):
         if k in body:
             SCHOOL_CONFIG[k] = body[k]
     return SCHOOL_CONFIG

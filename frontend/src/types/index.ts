@@ -79,6 +79,10 @@ export interface StudentGroup {
 
 export interface TeacherAdvanced {
   ignore_consecutive_limit?: boolean;  // ไม่จำกัดคาบต่อเนื่อง
+  /** This teacher's own ceiling; omitted = follow the school's. */
+  max_consecutive?:          number;
+  /** เวรคาบสุดท้าย per week; omitted = follow the school's, 0 = exempt. */
+  min_last_period?:          number;
   require_ground_floor?:     boolean;  // ต้องสอนชั้น 1 เท่านั้น (เหตุสุขภาพ)
   days_off?:                 number[]; // วันที่ไม่สอน [0=จ, 1=อ, ... 4=ศ]
   avoid_periods?:            number[]; // คาบที่หลีกเลี่ยง
@@ -106,6 +110,8 @@ export interface Subject {
   department_id: number | null;
   is_activity:   boolean;       // true = ชุมนุม/ลูกเสือ/กิจกรรม
   fixed_room_id?: number | null; // ห้องประจำวิชา — สำคัญกว่าห้องประจำชั้นของนักเรียน
+  /** วิชายากควรอยู่ช่วงเช้า — a nudge the solver tries first, never a rule. */
+  prefer_morning?: boolean;
 }
 
 export interface LessonRequirement {
@@ -231,6 +237,19 @@ export interface SolverResult {
   /** The back-to-back limits this run applied. */
   max_consecutive?:    number;
   prefer_consecutive?: number;
+  /** How much walking the timetable asks for, measured afterwards. */
+  walking?: {
+    class_moves: number; class_pairs: number; class_move_pct: number;
+    teacher_moves: number; teacher_pairs: number; teacher_move_pct: number;
+    homeroom_hits: number; homeroom_total: number; homeroom_pct: number;
+    /** Why the walking is as high as it is — both the school's to fix. */
+    classes_without_homeroom: number;
+    spare_ordinary_rooms: number;
+  };
+  /** เวรคาบสุดท้าย: how many teachers ended up with their share. */
+  last_period?: {
+    teachers: number; met: number; moved: number; school_min: number;
+  };
   /** How the teaching runs actually came out — the check on the ceiling. */
   consecutive?: {
     runs: Record<string, number>;     // run length → how many times it happened
@@ -333,6 +352,8 @@ export interface SchoolConfig {
   /** Most periods in a row a teacher may be given, and what to aim for. */
   max_consecutive?:    number;
   prefer_consecutive?: number;
+  /** เวรคาบสุดท้าย: last-period lessons each teacher should carry per week. */
+  min_last_period?:    number;
 }
 
 // Drag item payload

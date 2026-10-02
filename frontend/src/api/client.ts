@@ -205,6 +205,8 @@ export const runSolver = (p: {
   max_consecutive?: number;
   /** What to aim for, below the ceiling. */
   prefer_consecutive?: number;
+  /** เวรคาบสุดท้าย: last-period lessons each teacher should carry per week. */
+  min_last_period?: number;
 }) => api.post<SolverResult>("/timetable/solve", p).then((r) => r.data);
 
 /** วิชาที่มีปัญหา — what cannot be scheduled, checked before a run. */

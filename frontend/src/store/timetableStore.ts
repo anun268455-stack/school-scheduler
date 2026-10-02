@@ -123,6 +123,7 @@ interface TimetableStore {
     skipProblems?: boolean | "blocking";
     maxConsecutive?: number;
     preferConsecutive?: number;
+    minLastPeriod?: number;
   }) => Promise<SolverResult>;
 
   // Bulk operations
@@ -480,6 +481,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         skip_problems: opts?.skipProblems,
         max_consecutive: opts?.maxConsecutive,
         prefer_consecutive: opts?.preferConsecutive,
+        min_last_period: opts?.minLastPeriod,
       });
       await get().loadSlots();
       return result;

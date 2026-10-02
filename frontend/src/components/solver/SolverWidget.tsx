@@ -20,6 +20,8 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   // How many periods in a row one teacher may be given. The school's rule is
   // never more than three, and two if the timetable can bear it.
   const [maxConsec, setMaxConsec] = useState(3);
+  // เวรคาบสุดท้าย: last-period lessons every teacher should carry each week.
+  const [minLast, setMinLast] = useState(1);
   const [result, setResult]               = useState<SolverResult | null>(null);
 
   // วิชาที่มีปัญหา — found before the run so they can be left out of it.
@@ -56,6 +58,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
         excludeRequirementIds: skippedIds,
         maxConsecutive: maxConsec,
         preferConsecutive: Math.min(2, maxConsec),
+        minLastPeriod: minLast,
       });
       setResult(r);
       await loadProblems();    // the run may have changed what fails
@@ -142,7 +145,30 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
                 : "ผ่อนที่สุด — ลงได้ครบกว่า แต่ครูจะสอนยาวขึ้น"}
             <br />
             ระบบยังพยายามไม่ให้คาบไปติดกับเวลากินข้าวด้วย ·
-            ครูที่ต้องการสอนยาวได้ ตั้งยกเว้นรายคนได้ที่หน้าครู → ขั้นสูง
+            ครูที่ต้องการสอนยาวได้ ตั้งยกเว้นรายคนได้ที่หน้าครู → ⚙ ตั้งค่า
+          </p>
+        </div>
+
+        {/* ── เวรคาบสุดท้าย ──────────────────────────────────────────────── */}
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+            เวรคาบสุดท้าย — ขั้นต่ำต่อสัปดาห์
+          </p>
+          <div className="flex gap-1.5">
+            {[0, 1, 2].map((n) => (
+              <button key={n} onClick={() => setMinLast(n)}
+                className={clsx("flex-1 px-2 py-1.5 rounded text-xs font-semibold border transition-colors",
+                  minLast === n
+                    ? "bg-indigo-600 border-indigo-500 text-white"
+                    : "bg-gray-800 border-gray-600 text-gray-300 hover:bg-gray-700")}>
+                {n === 0 ? "ไม่บังคับ" : `${n} คาบ`}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            ครูทุกคนควรมีคาบสอนในคาบสุดท้ายของวันอย่างน้อยเท่านี้
+            เพื่อให้เวรคาบเย็นกระจายทั่วถึง ไม่ตกกับคนเดิมๆ ·
+            ยกเว้นรายคนได้ที่หน้าครู → ⚙ ตั้งค่า
           </p>
         </div>
 
@@ -254,6 +280,47 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
                     </div>
                   )}
                 </div>
+              </>
+            )}
+            {result.last_period && result.last_period.teachers > 0 && (
+              <>
+                <ResultRow
+                  label="ครูที่ได้เวรคาบสุดท้ายครบ"
+                  value={`${result.last_period.met}/${result.last_period.teachers} คน`} />
+                {result.last_period.moved > 0 && (
+                  <div className="text-[10px] opacity-80 pt-0.5">
+                    ย้ายคาบให้ลงตัวเพิ่ม {result.last_period.moved} คาบ
+                  </div>
+                )}
+              </>
+            )}
+            {result.walking && (
+              <>
+                <ResultRow
+                  label="นักเรียนต้องย้ายห้อง"
+                  value={`${result.walking.class_move_pct}% ของคาบที่ต่อกัน`} />
+                <ResultRow
+                  label="ครูต้องย้ายห้อง"
+                  value={`${result.walking.teacher_move_pct}% ของคาบที่ต่อกัน`} />
+                <div className="text-[10px] opacity-80 pt-0.5">
+                  นักเรียนอยู่ห้องประจำชั้นตัวเอง {result.walking.homeroom_pct}% ของคาบ ·
+                  นับเฉพาะคาบที่ติดกันจริง (มีพักคั่นไม่นับว่าต้องรีบเดิน)
+                </div>
+                {result.walking.classes_without_homeroom > 0 && (
+                  <div className="mt-1.5 rounded border border-amber-400/40 bg-amber-400/10 p-2 text-[10px] leading-relaxed text-amber-200">
+                    💡 <strong>ทำไมยังเดินเยอะ:</strong> มี{" "}
+                    <strong>{result.walking.classes_without_homeroom} ชั้น</strong>{" "}
+                    ที่ยังไม่ได้ตั้งห้องประจำชั้น ชั้นพวกนี้ไม่มีห้องยึด
+                    จึงต้องย้ายไปเรื่อยๆ ตามห้องที่ว่าง
+                    {result.walking.spare_ordinary_rooms < result.walking.classes_without_homeroom && (
+                      <> — และตอนนี้เหลือห้องเรียนธรรมดาว่างอยู่เพียง{" "}
+                        <strong>{result.walking.spare_ordinary_rooms} ห้อง</strong>{" "}
+                        ซึ่งไม่พอให้ทุกชั้นมีห้องของตัวเอง</>)}
+                    <br />
+                    ตั้งห้องประจำชั้นได้ที่หน้า <strong>ห้องเรียน/ชั้นเรียน</strong> —
+                    ยิ่งตั้งครบ นักเรียนยิ่งเดินน้อยลง
+                  </div>
+                )}
               </>
             )}
             <ResultRow label="ตัวจัดตาราง" value={
