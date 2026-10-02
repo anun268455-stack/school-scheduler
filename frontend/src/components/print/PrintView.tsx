@@ -73,9 +73,9 @@ interface Metrics {
 }
 
 const METRICS: Record<1 | 2, Metrics> = {
-  1: { headFont: "11pt", timeFont: "8.5pt", cellFont: "15pt", subFont: "9.5pt", roomFont: "15pt",
+  1: { headFont: "11pt", timeFont: "8.5pt", cellFont: "13pt", subFont: "11pt", roomFont: "12pt",
        lineH: "8mm", rowH: "34mm", pad: "3px 4px", titleFont: "15pt", subtitleFont: "11.5pt", logo: 52 },
-  2: { headFont: "8.5pt", timeFont: "7pt", cellFont: "11pt", subFont: "7.5pt", roomFont: "11pt",
+  2: { headFont: "8.5pt", timeFont: "7pt", cellFont: "9.5pt", subFont: "8.5pt", roomFont: "9pt",
        lineH: "4.2mm", rowH: "15mm", pad: "2px 3px", titleFont: "11.5pt", subtitleFont: "9pt", logo: 34 },
 };
 
@@ -104,7 +104,7 @@ const TimetableBlock: React.FC<BlockProps> = ({
   level, title, subtitle, grid, periods, schoolConfig, metrics: m, compact, renderCell,
 }) => {
   const cols = getDisplayPeriods(periods, level);
-  const TH: React.CSSProperties = { ...borderCell(m), fontSize: m.headFont, fontWeight: 700, backgroundColor: "#fff" };
+  const TH: React.CSSProperties = { ...borderCell(m), fontSize: m.headFont, fontWeight: 600, backgroundColor: "#fff" };
   // A minimum, not a fixed height: the rows share whatever the sheet has left.
   const TD: React.CSSProperties = { ...borderCell(m), fontSize: m.cellFont, minHeight: m.rowH };
   const BREAK_TH: React.CSSProperties = { ...TH, backgroundColor: "#e5e7eb", fontSize: m.timeFont };
@@ -151,7 +151,7 @@ const TimetableBlock: React.FC<BlockProps> = ({
           <col style={{ width: compact ? "34px" : "46px" }} />
           {cols.map((p) =>
             p.type !== "class"
-              ? <col key={p.period_num} style={{ width: compact ? "16px" : "26px" }} />
+              ? <col key={p.period_num} style={{ width: compact ? "20px" : "30px" }} />
               : <col key={p.period_num} />)}
         </colgroup>
 
@@ -160,7 +160,7 @@ const TimetableBlock: React.FC<BlockProps> = ({
             <th style={TH}>คาบที่</th>
             {cols.map((p) => (
               <th key={p.period_num} style={p.type !== "class" ? BREAK_TH : TH}>
-                {p.type !== "class" ? "พัก" : p.label.replace(/^คาบ\s*/, "")}
+                {p.type !== "class" ? "" : p.label.replace(/^คาบ\s*/, "")}
               </th>
             ))}
           </tr>
@@ -178,11 +178,26 @@ const TimetableBlock: React.FC<BlockProps> = ({
         <tbody>
           {DAYS.map((dayName, dayIdx) => (
             <tr key={dayIdx}>
-              <td style={{ ...TD, fontWeight: 700, fontSize: m.headFont, backgroundColor: "#f9fafb" }}>
+              <td style={{ ...TD, fontWeight: 600, fontSize: m.headFont, backgroundColor: "#f9fafb" }}>
                 {compact ? DAYS_SHORT[dayIdx] : dayName}
               </td>
               {cols.map((p) => {
-                if (p.type !== "class") return <td key={p.period_num} style={BREAK_TD} />;
+                if (p.type !== "class") {
+                  // One cell spanning all five days, written once down the
+                  // column, rather than an empty box on every row.
+                  if (dayIdx > 0) return null;
+                  return (
+                    <td key={p.period_num} style={{ ...BREAK_TD, padding: 0 }} rowSpan={DAYS.length}>
+                      <div style={{
+                        writingMode: "vertical-rl", transform: "rotate(180deg)",
+                        margin: "0 auto", whiteSpace: "nowrap",
+                        fontSize: m.timeFont, color: "#374151", letterSpacing: "0.5px",
+                      }}>
+                        {breakLabel(p)}
+                      </div>
+                    </td>
+                  );
+                }
                 return (
                   <td key={p.period_num} style={TD}>
                     {/* A full-height wrapper, so the cell's three lines can
@@ -252,6 +267,19 @@ function roomNumber(room: string | null | undefined): string {
   return m ? m[1] : String(room).trim();
 }
 
+
+/** "ม.4/2" → "4/2". The "ม." is on every row and tells the reader nothing. */
+function shortClass(name: string | null | undefined): string {
+  return String(name ?? "").replace(/^ม\.?\s*/, "");
+}
+
+/** "พัก 10 นาที" → "พัก 10". Enough to name the column without filling it. */
+function breakLabel(p: { label?: string; type?: string }): string {
+  const raw = String(p.label ?? "").replace(/\s*\(.*?\)\s*/g, "").trim();
+  if (raw) return raw.replace(/\s*นาที$/, "");
+  return p.type === "lunch" ? "พักเที่ยง" : p.type === "homeroom" ? "โฮมรูม" : "พัก";
+}
+
 // ── Cell renderers ───────────────────────────────────────────────────────────
 const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.1, fontSize: m.cellFont });
 
@@ -276,9 +304,9 @@ function CellLines(
   };
   return (
     <div style={{ ...cellText(m), display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ ...line, fontSize: m.cellFont, fontWeight: 700 }}>{code}</div>
-      <div style={{ ...line, fontSize: m.subFont }}>{mid}</div>
-      <div style={{ ...line, fontSize: m.roomFont, fontWeight: 700 }}>{room}</div>
+      <div style={{ ...line, fontSize: m.cellFont, fontWeight: 600, color: "#111827" }}>{code}</div>
+      <div style={{ ...line, fontSize: m.subFont, color: "#4b5563" }}>{mid}</div>
+      <div style={{ ...line, fontSize: m.roomFont, fontWeight: 500, color: "#1f2937" }}>{room}</div>
     </div>
   );
 }
@@ -304,9 +332,9 @@ function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
     <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
       {slots.map((s) => (
         <div key={s.id} style={{ fontSize: m.subFont, lineHeight: 1.25, borderBottom: "1px dotted #ccc" }}>
-          <span style={{ fontWeight: 700 }}>{s.subject_code ?? ""}</span>{" "}
-          <span>{s.group_name ?? ""}</span>{" "}
-          <span style={{ fontWeight: 700 }}>{roomNumber(s.room_name)}</span>
+          <span style={{ fontWeight: 600 }}>{s.subject_code ?? ""}</span>{" "}
+          <span>{shortClass(s.group_name)}</span>{" "}
+          <span style={{ fontWeight: 500 }}>{roomNumber(s.room_name)}</span>
         </div>
       ))}
     </div>
@@ -323,7 +351,7 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
     <CellLines
       m={m}
       code={s.subject_code ?? s.subject_name ?? mine?.code ?? (mine ? "วิชาเสรี" : "")}
-      mid={mine?.label ?? s.group_name ?? ""}
+      mid={mine?.label ?? shortClass(s.group_name)}
       room={roomNumber(s.room_name)}
     />
   );
