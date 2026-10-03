@@ -104,6 +104,20 @@ const TimetableBlock: React.FC<BlockProps> = ({
   level, title, subtitle, grid, periods, schoolConfig, metrics: m, compact, renderCell,
 }) => {
   const cols = getDisplayPeriods(periods, level);
+
+  // What number each column is given at the top of the sheet.
+  //
+  // Not the stored period_num, and not the label: the school's rows number
+  // breaks and lessons in one series, so printing a break's own number next
+  // to a lesson's label put the same figure twice in a row ("… 3 3 … 5 5 …").
+  // The sheet is counted here instead, left to right: a lesson gets the next
+  // number and so does พักกินข้าว, which the school counts as a period of the
+  // day. A ten-minute break, โฮมรูม and เคารพธงชาติ get none — they are not
+  // periods, and numbering them is what pushed everything out of step.
+  const COUNTED = (t?: string) => t === "class" || t === "lunch";
+  const printedNum = new Map<number, number>();
+  let seq = 0;
+  for (const p of cols) if (COUNTED(p.type)) printedNum.set(p.period_num, ++seq);
   const TH: React.CSSProperties = { ...borderCell(m), fontSize: m.headFont, fontWeight: 600, backgroundColor: "#fff" };
   // A minimum, not a fixed height: the rows share whatever the sheet has left.
   const TD: React.CSSProperties = { ...borderCell(m), fontSize: m.cellFont, minHeight: m.rowH };
@@ -173,15 +187,9 @@ const TimetableBlock: React.FC<BlockProps> = ({
         <thead>
           <tr>
             <th style={TH}>คาบที่</th>
-            {/* A break column used to leave this blank, so the row read
-                1 2 _ 3 _ 5 6 7 8 9 and looked as if a period had gone
-                missing. The numbers are the school's own and the breaks are
-                part of the sequence, so they are printed like the rest. */}
             {cols.map((p) => (
               <th key={p.period_num} style={p.type !== "class" ? BREAK_TH : TH}>
-                {p.type !== "class"
-                  ? (p.period_num > 0 ? p.period_num : "")
-                  : p.label.replace(/^คาบ\s*/, "")}
+                {printedNum.get(p.period_num) ?? ""}
               </th>
             ))}
           </tr>
