@@ -229,6 +229,8 @@ export interface SolverResult {
   solve_time_seconds:  number;
   objective_value:     number | null;
   violations:          string[];
+  /** Worth saying, but not faults — these do not make a run INFEASIBLE. */
+  notes?:              string[];
   engine?:             string;   // "cp-sat" | "greedy" | "greedy-fallback"
   /** Requirements the run tried and failed to place. */
   unplaced_requirement_ids?: number[];
@@ -248,7 +250,7 @@ export interface SolverResult {
   };
   /** เวรคาบสุดท้าย: how many teachers ended up with their share. */
   last_period?: {
-    teachers: number; met: number; moved: number; school_min: number;
+    teachers: number; met: number; moved: number; swapped?: number; school_min: number;
   };
   /** How the teaching runs actually came out — the check on the ceiling. */
   consecutive?: {

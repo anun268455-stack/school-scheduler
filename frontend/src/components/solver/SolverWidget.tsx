@@ -168,9 +168,10 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
             ))}
           </div>
           <p className="text-[11px] text-gray-500 leading-relaxed">
-            ครูทุกคนควรมีคาบสอนในคาบสุดท้ายของวันอย่างน้อยเท่านี้
-            เพื่อให้เวรคาบเย็นกระจายทั่วถึง ไม่ตกกับคนเดิมๆ ·
-            ยกเว้นรายคนได้ที่หน้าครู → ⚙ ตั้งค่า
+            แบ่งเวรคาบสุดท้ายให้ทั่วถึง ไม่ตกกับคนเดิมๆ ·
+            <strong>นักเรียนมาก่อน</strong> — ระบบจะไม่เพิ่มคาบท้ายวันให้ห้องที่เลิกเรียนแล้ว
+            เพียงเพื่อให้ครูได้เวร แต่จะสลับครูกันในคาบที่มีอยู่แล้วเท่านั้น
+            ถ้าครูบางคนไม่ได้เวรก็ไม่เป็นไร · ยกเว้นรายคนได้ที่หน้าครู → ⚙ ตั้งค่า
           </p>
         </div>
 
@@ -287,13 +288,14 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
             {result.last_period && result.last_period.teachers > 0 && (
               <>
                 <ResultRow
-                  label="ครูที่ได้เวรคาบสุดท้ายครบ"
+                  label="ครูที่ได้เวรคาบสุดท้าย"
                   value={`${result.last_period.met}/${result.last_period.teachers} คน`} />
-                {result.last_period.moved > 0 && (
-                  <div className="text-[10px] opacity-80 pt-0.5">
-                    ย้ายคาบให้ลงตัวเพิ่ม {result.last_period.moved} คาบ
-                  </div>
-                )}
+                <div className="text-[10px] opacity-80 pt-0.5 leading-relaxed">
+                  {(result.last_period.swapped ?? 0) > 0 &&
+                    <>สลับครูให้ลงตัว {result.last_period.swapped} คาบ · </>}
+                  ไม่ครบไม่ถือว่าผิด — ระบบจัดให้นักเรียนเลิกเรียนเร็วไว้ก่อน
+                  แล้วค่อยแบ่งเวรคาบสุดท้ายจากคาบที่มีอยู่แล้ว
+                </div>
               </>
             )}
             {result.walking && (
@@ -324,6 +326,11 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
                   </div>
                 )}
               </>
+            )}
+            {(result.notes?.length ?? 0) > 0 && (
+              <div className="mt-1.5 rounded border border-sky-400/40 bg-sky-400/10 p-2 text-[10px] leading-relaxed text-sky-200">
+                {result.notes!.map((n, i) => <div key={i}>ℹ️ {n}</div>)}
+              </div>
             )}
             <ResultRow label="ตัวจัดตาราง" value={
               result.engine === "cp-sat" ? "CP-SAT (ดีที่สุด)" :

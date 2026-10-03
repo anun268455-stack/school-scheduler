@@ -706,6 +706,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     created    = 0
     violations = []
+    # Things worth saying that are not faults — a timetable with these is
+    # still a good one, so they must not turn the run INFEASIBLE.
+    notes: list[str] = []
 
     # Departments whose lessons belong outdoors (พลศึกษา etc.) — used to steer
     # room ranking so PE still lands on the field, not a classroom.
@@ -1271,39 +1274,23 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         mine = movable_of(tid)
         random.shuffle(mine)
 
-        # (a) The easy case: a free last period to move a lesson into.
-        for slot in mine:
-            if short <= 0:
-                break
-            gid = slot["group_id"]
-            target = _last_period_for(_level_key(g_map.get(gid)))
-            if target is None or slot["period"] == target:
-                continue
-            for day in random.sample(range(5), 5):
-                if group_occupied(gid, day, target):
-                    continue
-                # Free the lesson's current cell before judging the new one,
-                # or it collides with itself.
-                old_day, old_period = slot["day"], slot["period"]
-                unbook(tid, gid, old_day, old_period, slot.get("room_id"))
-                if not can_take(teacher, gid, day, target):
-                    rebook(tid, gid, old_day, old_period, slot.get("room_id"))
-                    continue
-                reseat(slot, day, target)
-                last_period_done[tid] += 1
-                last_period_fixed += 1
-                short -= 1
-                break
-
-        # (b) The real case. In this school the last period is the fullest of
-        #     the day — every class already has a lesson in it, so there is no
-        #     empty cell to move into and (a) can never fire. The only way to
-        #     give this teacher a last period is to trade one: take a class
-        #     they already teach, find whoever has that class's last period,
-        #     and exchange the two lessons. Both teachers must end up legal,
-        #     and the other one must not be left short of their own duty.
-        if short <= 0:
-            continue
+        # เวรคาบสุดท้าย is settled by TRADING, never by adding a lesson to the
+        # end of the day.
+        #
+        # There used to be an easier pass before this one: find a free cell in
+        # the last period and move one of the teacher's lessons into it. It
+        # worked — and it fired 82 times on the school's own data, which means
+        # it took 82 classes that had finished early and gave them one more
+        # period, purely so an adult could tick a box. The school's rule is
+        # that the students' day comes first and a teacher without a last
+        # period is no great matter, so that pass is gone.
+        #
+        # What is left changes nothing for any class. Take a class this teacher
+        # already teaches, find whoever has that class's last period, and
+        # exchange the two lessons: the same cell stays filled, the same class
+        # goes home at the same time, and only the name in it changes. Both
+        # teachers must end up legal, and the other must not be left short of
+        # their own duty.
         for slot in mine:
             if short <= 0:
                 break
@@ -1354,13 +1341,18 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         "school_min": school_last_min,
     }
 
+    # Not a violation. Nothing is wrong with a timetable in which a teacher
+    # has no last period — the school would rather that than keep a class
+    # back — so this is reported as a note and does not make the run
+    # INFEASIBLE the way an unplaced lesson does.
     missing_last = sorted(
         t["name"] for t in teaching
         if last_period_shortfall(t["id"]) > 0
     )
     if missing_last:
-        violations.append(
-            f"ครู {len(missing_last)} คนยังไม่ได้เวรคาบสุดท้ายครบ "
+        notes.append(
+            f"ครู {len(missing_last)} คนไม่ได้เวรคาบสุดท้าย — "
+            f"ไม่ใช่ข้อผิดพลาด ระบบจัดให้นักเรียนเลิกเรียนเร็วไว้ก่อน "
             f"({', '.join(missing_last[:4])}{' …' if len(missing_last) > 4 else ''})"
         )
 
@@ -1373,6 +1365,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         "solve_time_seconds": round(_time.perf_counter() - _t0, 2),
         "objective_value": float(created * 10),
         "violations": violations,
+        "notes": notes,
         "engine": "greedy",
         "unplaced_requirement_ids": unplaced_ids,
         "skipped_requirement_ids": sorted(skipped_reqs),
@@ -1956,6 +1949,9 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     ok = status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
     created = 0
     violations = []
+    # Things worth saying that are not faults — a timetable with these is
+    # still a good one, so they must not turn the run INFEASIBLE.
+    notes: list[str] = []
     unplaced_ids: set[int] = set()
 
     if ok:
@@ -2007,6 +2003,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         "solve_time_seconds": round(_time.time() - t0, 2),
         "objective_value": float(solver.ObjectiveValue()) if (ok and penalty_terms) else None,
         "violations": violations,
+        "notes": notes,
         "engine": "cp-sat",
         "unplaced_requirement_ids": sorted(unplaced_ids),
         "skipped_requirement_ids": sorted(skipped_reqs),
