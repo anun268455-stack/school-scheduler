@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
+import { ClearTimetableModal } from "../timetable/ClearTimetableModal";
 import type { RequirementProblem, SolverResult } from "../../types";
 
 /** How much of the problem list to leave out of a run. */
@@ -17,6 +18,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   const { slots, isSolving, solverError, runSolver, groups, teachers, subjects } = useTimetableStore();
 
   const [clearExisting, setClearExisting] = useState(true);
+  const [showClear, setShowClear] = useState(false);
   // How many periods in a row one teacher may be given. The school's rule is
   // never more than three, and two if the timetable can bear it.
   const [maxConsec, setMaxConsec] = useState(3);
@@ -388,6 +390,30 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
           <PipelineStep done={isSolving || !!result} label="3. หาคำตอบ (CP-SAT / สำรอง) กันชนครู/ห้อง/นักเรียน" />
           <PipelineStep done={!!result && !isSolving} label="4. บันทึกผลลัพธ์" />
         </div>
+
+        {/* ── ล้างตาราง ───────────────────────────────────────────────────────
+            Moved off the toolbar, which had wrapped to two lines and pushed
+            จัดการ out of easy reach. It belongs here anyway: emptying the
+            timetable is something done on the way to a run, not something to
+            keep one slip of the mouse away from the print button. */}
+        {slots.length > 0 && (
+          <div className="pt-3 border-t border-gray-700 space-y-2">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">ล้างตาราง</p>
+            <button
+              onClick={() => setShowClear(true)}
+              disabled={isSolving}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-red-900/50 hover:bg-red-800 border border-red-800 rounded-lg text-xs font-semibold text-red-100 transition-colors disabled:opacity-40"
+            >
+              🧹 ล้างตารางให้ว่าง ({slots.length} คาบ)
+            </button>
+            <p className="text-[10px] text-gray-500 leading-relaxed">
+              ลบคาบที่ลงไว้ทั้งหมดในครั้งเดียว เลือกได้ว่าจะเก็บคาบที่ล็อกไว้หรือไม่ ·
+              ถ้าจะจัดตารางใหม่อยู่แล้ว ไม่ต้องล้างก่อนก็ได้ —
+              ติ๊ก "ล้างคาบเดิมก่อนคำนวณใหม่" ด้านบนพอ
+            </p>
+          </div>
+        )}
+        {showClear && <ClearTimetableModal onClose={() => setShowClear(false)} />}
       </div>
     </div>
   );

@@ -8,7 +8,6 @@ import { useReactToPrint } from "react-to-print";
 import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
-import { ClearTimetableModal } from "../timetable/ClearTimetableModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
 import type { PrintOptions } from "../print/PrintView";
@@ -52,7 +51,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     selectedTeacherId, setSelectedTeacherId,
     selectedRoomId, setSelectedRoomId,
     preLockMode, setPreLockMode,
-    slots, lockAll, unlockAll,
+    lockAll, unlockAll,
     liveSync, setLiveSync, syncState, remoteUpdates,
   } = useTimetableStore();
 
@@ -60,7 +59,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showCrud,    setShowCrud]    = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showPrintOpts, setShowPrintOpts] = useState(false);
-  const [showClear,   setShowClear]   = useState(false);
 
   // Toolbar popovers close when you click anywhere else, or press Esc.
   const solverRef = useRef<HTMLDivElement>(null);
@@ -121,15 +119,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     }
   };
 
-  const lockedCount = slots.filter((s) => s.is_locked).length;
-  const totalSlots  = slots.length;
 
   return (
     <header className="no-print sticky top-0 z-50 flex flex-wrap items-center gap-y-1 bg-gray-900 text-white shadow-lg border-b border-gray-700 px-3 py-1 min-h-12 shrink-0">
 
       {/* Logo */}
       <div
-        className="flex items-center gap-1.5 pr-4 border-r border-gray-700 cursor-pointer shrink-0"
+        className="flex items-center gap-1.5 pr-3 border-r border-gray-700 cursor-pointer shrink-0"
         onClick={() => onCrudNav("timetable")}
       >
         <span className="text-lg">📐</span>
@@ -137,7 +133,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       </div>
 
       {/* View Tabs */}
-      <div className="flex items-center gap-0.5 px-3 border-r border-gray-700 shrink-0">
+      <div className="flex items-center gap-0.5 px-2 border-r border-gray-700 shrink-0">
         {VIEW_TABS.map((tab) => (
           <button
             key={tab.id}
@@ -160,7 +156,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           wraps to a second line when it must, which is the better way to lose
           space. */}
       {currentPage === "timetable" && (
-        <div className="px-3 border-r border-gray-700 w-[260px] shrink-0">
+        <div className="px-2 border-r border-gray-700 w-[252px] shrink-0">
           {/* Typing beats scrolling 143 teachers or 93 classes. */}
           <SearchableSelect
             tone="dark"
@@ -192,7 +188,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       <div className="flex-1 min-w-0" />
 
       {/* Live-sync indicator — shows that two people can edit at once */}
-      <div className="flex items-center px-3 border-r border-gray-700 shrink-0">
+      <div className="flex items-center px-2 border-r border-gray-700 shrink-0">
         <button
           onClick={() => setLiveSync(!liveSync)}
           title={
@@ -220,17 +216,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         </button>
       </div>
 
-      {/* Lock Counter */}
-      {currentPage === "timetable" && totalSlots > 0 && (
-        <div className="flex items-center gap-1 px-3 border-r border-gray-700 text-xs text-gray-300 shrink-0">
-          <span>🔒</span>
-          <span className="font-mono">{lockedCount}/{totalSlots}</span>
-        </div>
-      )}
-
       {/* Pre-Lock Toggle */}
       {currentPage === "timetable" && (
-        <div className="flex items-center gap-1.5 px-3 border-r border-gray-700 shrink-0">
+        <div className="flex items-center gap-1.5 px-2 border-r border-gray-700 shrink-0">
           <button
             onClick={() => setPreLockMode(!preLockMode)}
             className={clsx(
@@ -247,22 +235,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         </div>
       )}
 
-      {/* Clear the timetable — no more deleting one period at a time */}
-      {currentPage === "timetable" && totalSlots > 0 && (
-        <div className="flex items-center px-3 border-r border-gray-700 shrink-0">
-          <button
-            onClick={() => setShowClear(true)}
-            title="ล้างตารางให้ว่าง"
-            className="flex items-center gap-1 px-2.5 py-1 bg-red-900/60 hover:bg-red-700 border border-red-700 rounded text-xs font-semibold text-red-100 transition-colors"
-          >
-            🧹 ล้างตาราง
-          </button>
-        </div>
-      )}
-      {showClear && <ClearTimetableModal onClose={() => setShowClear(false)} />}
-
       {/* Solver */}
-      <div ref={solverRef} className="relative px-3 border-r border-gray-700 shrink-0">
+      <div ref={solverRef} className="relative px-2 border-r border-gray-700 shrink-0">
         <button
           onClick={() => { setShowSolver((v) => !v); setShowCrud(false); }}
           className="flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-semibold transition-colors"
@@ -277,7 +251,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       </div>
 
       {/* CRUD Menu */}
-      <div ref={crudRef} className="relative px-3 border-r border-gray-700 shrink-0">
+      <div ref={crudRef} className="relative px-2 border-r border-gray-700 shrink-0">
         <button
           onClick={() => { setShowCrud((v) => !v); setShowSolver(false); }}
           className="flex items-center gap-1 px-2.5 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-200 transition-colors border border-gray-600"
