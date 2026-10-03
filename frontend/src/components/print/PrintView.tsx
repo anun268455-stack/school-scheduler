@@ -107,8 +107,22 @@ const TimetableBlock: React.FC<BlockProps> = ({
   const TH: React.CSSProperties = { ...borderCell(m), fontSize: m.headFont, fontWeight: 600, backgroundColor: "#fff" };
   // A minimum, not a fixed height: the rows share whatever the sheet has left.
   const TD: React.CSSProperties = { ...borderCell(m), fontSize: m.cellFont, minHeight: m.rowH };
-  const BREAK_TH: React.CSSProperties = { ...TH, backgroundColor: "#e5e7eb", fontSize: m.timeFont };
-  const BREAK_TD: React.CSSProperties = { ...TD, backgroundColor: "#f3f4f6" };
+  // Printed in black and white, so these are true neutral greys (R=G=B),
+  // not the blue-tinted ones: a tinted grey shifts when the driver converts
+  // it. #f3f4f6 was only 1.10:1 against the white lesson cells — on paper the
+  // band was all but invisible, which is half of why the column was hard to
+  // read. These sit at 1.43:1 and 1.67:1, visible as a band, while black text
+  // on them is 14.7:1 and 12.6:1.
+  //
+  // They are deliberately LIGHT. A printer in true black-and-white mode
+  // thresholds around mid grey, and a darker band (anything from #808080
+  // down) flips to solid black and swallows the text. At 216 and 200 these
+  // are 88 and 72 steps clear of that, so the worst a 1-bit printer does is
+  // drop the tint and leave black text on white — still perfectly readable.
+  const BREAK_TH: React.CSSProperties = {
+    ...TH, backgroundColor: "#c8c8c8", color: "#000", fontSize: m.headFont,
+  };
+  const BREAK_TD: React.CSSProperties = { ...TD, backgroundColor: "#d8d8d8" };
 
   return (
     <div className="tt-block" style={{
@@ -152,16 +166,22 @@ const TimetableBlock: React.FC<BlockProps> = ({
           <col style={{ width: compact ? "34px" : "46px" }} />
           {cols.map((p) =>
             p.type !== "class"
-              ? <col key={p.period_num} style={{ width: compact ? "20px" : "30px" }} />
+              ? <col key={p.period_num} style={{ width: compact ? "30px" : "42px" }} />
               : <col key={p.period_num} />)}
         </colgroup>
 
         <thead>
           <tr>
             <th style={TH}>คาบที่</th>
+            {/* A break column used to leave this blank, so the row read
+                1 2 _ 3 _ 5 6 7 8 9 and looked as if a period had gone
+                missing. The numbers are the school's own and the breaks are
+                part of the sequence, so they are printed like the rest. */}
             {cols.map((p) => (
               <th key={p.period_num} style={p.type !== "class" ? BREAK_TH : TH}>
-                {p.type !== "class" ? "" : p.label.replace(/^คาบ\s*/, "")}
+                {p.type !== "class"
+                  ? (p.period_num > 0 ? p.period_num : "")
+                  : p.label.replace(/^คาบ\s*/, "")}
               </th>
             ))}
           </tr>
@@ -192,7 +212,8 @@ const TimetableBlock: React.FC<BlockProps> = ({
                       <div style={{
                         writingMode: "vertical-rl", transform: "rotate(180deg)",
                         margin: "0 auto", whiteSpace: "nowrap",
-                        fontSize: m.timeFont, color: "#374151", letterSpacing: "0.5px",
+                        fontSize: m.timeFont, color: "#000", fontWeight: 600,
+                        letterSpacing: "0.3px",
                       }}>
                         {breakLabel(p)}
                       </div>
