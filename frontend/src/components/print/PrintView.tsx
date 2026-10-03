@@ -319,10 +319,77 @@ function shortClass(name: string | null | undefined): string {
 }
 
 /** "พัก 10 นาที" → "พัก 10". Enough to name the column without filling it. */
-function breakLabel(p: { label?: string; type?: string }): string {
-  const raw = String(p.label ?? "").replace(/\s*\(.*?\)\s*/g, "").trim();
-  if (raw) return raw.replace(/\s*นาที$/, "");
-  return p.type === "lunch" ? "พักเที่ยง" : p.type === "homeroom" ? "โฮมรูม" : "พัก";
+/**
+ * The full story of a non-lesson column: what it is, how long, and when.
+ *
+ * This used to be cut down to one or two words — "พัก 10" with the "นาที"
+ * removed, and the "(ม.1-3)" taken off the lunch column, which left it
+ * reading simply "พัก". Two levels break at different times here, so a bare
+ * "พัก" is exactly the thing people have to ask about. The column is written
+ * down the page across all five days, so there is room to answer it.
+ *
+ * Reads: "พัก 10 นาที · 10:10–10:20", "กินข้าว ม.ต้น · 50 นาที · 12:00–12:50".
+ */
+function breakLabel(p: {
+  label?: string; type?: string; applies_to?: string;
+  start_time?: string | null; end_time?: string | null;
+}): string {
+  const parts: string[] = [];
+
+  // 1. The school's own wording, kept whole. "(ม.1-3)" becomes "ม.ต้น" —
+  //    same meaning, and it is how the staffroom says it.
+  let name = String(p.label ?? "").trim()
+    .replace(/\(\s*ม\.?\s*1\s*[-–]\s*3\s*\)/g, "ม.ต้น")
+    .replace(/\(\s*ม\.?\s*4\s*[-–]\s*6\s*\)/g, "ม.ปลาย")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!name) {
+    name = p.type === "lunch" ? "พักกินข้าว"
+      : p.type === "homeroom" ? "โฮมรูม"
+      : p.type === "assembly" ? "เคารพธงชาติ"
+      : "พัก";
+  }
+  // 2. Which level, when the label does not already say and the row is for
+  //    one of them only.
+  if (!/ม\.(ต้น|ปลาย)/.test(name)) {
+    if (p.applies_to === "lower") name += " ม.ต้น";
+    else if (p.applies_to === "upper") name += " ม.ปลาย";
+  }
+  parts.push(name);
+
+  // 3. How long, unless the label already counted the minutes itself.
+  const mins = minutesBetween(p.start_time, p.end_time);
+  if (mins != null && mins > 0 && !/\d\s*นาที/.test(name)) {
+    parts.push(`${mins} นาที`);
+  }
+
+  // 4. When — only if both ends are really times. A half-filled or mistyped
+  //    row otherwise prints its own garbage onto the sheet.
+  if (hhmm(p.start_time) && hhmm(p.end_time)) {
+    parts.push(`${hhmm(p.start_time)}–${hhmm(p.end_time)}`);
+  }
+
+  return parts.join("  ·  ");
+}
+
+/** "10:10" if it reads as a time, otherwise null. */
+function hhmm(t?: string | null): string | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(t ?? "").trim());
+  if (!m) return null;
+  const h = Number(m[1]), min = Number(m[2]);
+  return h < 24 && min < 60 ? `${m[1].padStart(2, "0")}:${m[2]}` : null;
+}
+
+/** Minutes from "10:10" to "10:20". null if either side is unreadable. */
+function minutesBetween(a?: string | null, b?: string | null): number | null {
+  const toMin = (t?: string | null) => {
+    const v = hhmm(t);
+    if (!v) return null;
+    return Number(v.slice(0, 2)) * 60 + Number(v.slice(3));
+  };
+  const s = toMin(a), e = toMin(b);
+  if (s == null || e == null) return null;
+  return e - s;
 }
 
 // ── Cell renderers ───────────────────────────────────────────────────────────
