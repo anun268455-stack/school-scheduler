@@ -1016,19 +1016,29 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # Teachers still short of their last-period duty get those cells
             # first; a morning subject gets the morning first. Both are only an
             # ordering — nothing is excluded by them.
-            needs_last = last_period_shortfall(tid) > 0
             last_num = _last_period_for(lvl)
             def rank(cell):
                 day, period = cell
                 morning = wants_morning and morning_end is not None and period <= morning_end
-                duty = needs_last and period == last_num
+                # เวรคาบสุดท้าย is NOT steered from here any more. Sending every
+                # teacher who still owes a last period straight to it filled
+                # the last period ahead of the one before it, which is exactly
+                # backwards: the leftover cells then landed in the middle of
+                # the afternoon instead of at the end of the day. The repair
+                # pass after placement gives each teacher their duty, and by
+                # then the last period has the free cells to do it with.
                 return (
-                    0 if duty else 1,
                     0 if morning or not wants_morning else 1,
-                    # Spread: this class's emptiest period first. Every period
-                    # then fills at about the same rate, so whatever slack the
-                    # timetable has is shared out instead of hollowing out one
-                    # column of the week.
+                    # Fill the class's day from the front. Some classes
+                    # finish at คาบ 7 and go home, so the empty cells belong at
+                    # the END of the day, not scattered through it: pack the
+                    # early periods, move to the next only when the one before
+                    # is full, and let คาบ 8 and 9 take whatever is left over.
+                    # (Ties within a period are already shuffled, so the five
+                    # days of คาบ 1 fill before คาบ 2 is touched.)
+                    period,
+                    # Among equals, the class's emptiest day for that period —
+                    # keeps one day from taking the lot.
                     class_period_load[(gid, period)],
                     # Sitting down straight after lunch is slightly worse than
                     # not; a tie-break, never a reason to skip the period.
