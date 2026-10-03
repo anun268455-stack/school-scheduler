@@ -515,6 +515,13 @@ const SubjectsPanel: React.FC = () => {
 
   const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : null;
 
+  // ── ตั้งช่วงเวลาหลายวิชาพร้อมกัน ──────────────────────────────────────────
+  // 271 subjects is too many to click one at a time, and a whole กลุ่มสาระ is
+  // how the school thinks about it ("วิชาวิทย์ทั้งหมดเรียนเช้า").
+  const [bulkTarget, setBulkTarget] = useState("search");
+  const [bulkMsg, setBulkMsg]       = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy]     = useState(false);
+
   /** Flip "teach this one in the morning" straight from the table. */
   const toggleMorning = async (s: Subject) => {
     const next = !s.prefer_morning;
@@ -558,6 +565,37 @@ const SubjectsPanel: React.FC = () => {
   const deptName = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name?.replace("กลุ่มสาระ","") ?? String(id)) : "–";
   const [q, setQ] = useState("");
   const shownSubjects = subjects.filter((x) => matches(q, x.code, x.name, deptName(x.department_id), roomName(x.fixed_room_id)));
+
+  /** The subjects the bulk buttons would touch, given the current choice. */
+  const bulkSubjects = bulkTarget === "all" ? subjects
+    : bulkTarget === "search" ? shownSubjects
+    : subjects.filter((x) => x.department_id === Number(bulkTarget));
+
+  const applyBulk = async (want: boolean) => {
+    if (bulkSubjects.length === 0 || bulkBusy) return;
+    setBulkBusy(true);
+    setBulkMsg(null);
+    try {
+      // Send the department, not a list of ids, when that is what was chosen:
+      // the server then works from its own data and cannot act on a stale list.
+      const res = await api.setPreferMorning({
+        prefer_morning: want,
+        ...(bulkTarget === "all" ? { all: true }
+          : bulkTarget === "search" ? { ids: bulkSubjects.map((x) => x.id) }
+          : { department_id: Number(bulkTarget) }),
+      });
+      const updated = new Map(res.subjects.map((r) => [r.id, r.prefer_morning]));
+      useTimetableStore.setState((st) => ({
+        subjects: st.subjects.map((x) =>
+          updated.has(x.id) ? { ...x, prefer_morning: updated.get(x.id)! } : x),
+      }));
+      setBulkMsg(res.changed === 0
+        ? `${res.matched} วิชานี้เป็น ${want ? "☀️ เช้า" : "🌙 ไม่ระบุ"} อยู่แล้ว ไม่มีอะไรเปลี่ยน`
+        : `ตั้ง ${want ? "☀️ เช้า" : "🌙 ไม่ระบุ"} ให้ ${res.matched} วิชา — เปลี่ยนจริง ${res.changed} วิชา`);
+    } catch {
+      setBulkMsg("บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
+    } finally { setBulkBusy(false); }
+  };
 
   return (
     <Section title="วิชาเรียน" action={<ImportButton entity="subjects" />}>
@@ -611,6 +649,52 @@ const SubjectsPanel: React.FC = () => {
         — <strong>สำคัญกว่าห้องประจำชั้นของนักเรียน</strong> นักเรียนจะเดินมาเรียนที่ห้องนี้ ส่วนวิชาที่ไม่ได้ตั้งไว้จะเรียนในห้องประจำชั้นของตัวเอง
       </div>
       <button onClick={handleCreate} disabled={!form.code || !form.name} className={btnPrimary}>+ เพิ่มวิชา</button>
+
+      {/* ตั้งหลายวิชาพร้อมกัน — กดทีละวิชาไม่ไหวเมื่อมี 271 วิชา */}
+      <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-semibold text-amber-900 shrink-0">
+            ⚡ ตั้งช่วงเวลาทีละหลายวิชา
+          </span>
+          <select
+            className="border border-amber-300 rounded-lg px-2.5 py-1.5 text-sm bg-white min-w-[230px]"
+            value={bulkTarget}
+            onChange={(e) => { setBulkTarget(e.target.value); setBulkMsg(null); }}
+          >
+            <option value="search">ผลการค้นหาด้านล่าง ({shownSubjects.length} วิชา)</option>
+            {departments.map((d) => {
+              const n = subjects.filter((x) => x.department_id === d.id).length;
+              return <option key={d.id} value={String(d.id)}>{d.name} ({n} วิชา)</option>;
+            })}
+            <option value="all">ทุกวิชา ({subjects.length} วิชา)</option>
+          </select>
+          <button
+            onClick={() => applyBulk(true)}
+            disabled={bulkBusy || bulkSubjects.length === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-bold bg-amber-400 border border-amber-500 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            ☀️ ตั้งเป็นเช้า
+          </button>
+          <button
+            onClick={() => applyBulk(false)}
+            disabled={bulkBusy || bulkSubjects.length === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            🌙 ล้างเป็นไม่ระบุ
+          </button>
+          {bulkBusy && <span className="text-xs text-amber-700">กำลังบันทึก…</span>}
+        </div>
+        <p className="text-[11px] text-amber-800 mt-2 leading-relaxed">
+          เลือกกลุ่มสาระแล้วกดปุ่มเดียว ตั้งได้ทั้งกลุ่ม เช่น ให้วิชาวิทยาศาสตร์ทั้งหมดเรียนช่วงเช้า ·
+          ถ้าอยากเลือกเองเฉพาะบางวิชา ให้พิมพ์ค้นหาในช่องด้านล่างก่อน แล้วเลือก
+          "ผลการค้นหาด้านล่าง"
+        </p>
+        {bulkMsg && (
+          <p className="text-xs font-semibold text-amber-900 bg-white border border-amber-300 rounded px-2.5 py-1.5 mt-2">
+            ✓ {bulkMsg}
+          </p>
+        )}
+      </div>
 
       <div className="mt-4">
         <TableSearch value={q} onChange={setQ} count={shownSubjects.length} total={subjects.length}

@@ -51,6 +51,17 @@ export const bulkCreateTeachers = (rows: Partial<Teacher>[]) => api.post<Teacher
 export const fetchSubjects      = () => api.get<Subject[]>("/subjects/").then((r) => r.data);
 export const createSubject      = (d: Partial<Subject>) => api.post<Subject>("/subjects/", d).then((r) => r.data);
 export const updateSubject      = (id: number, d: Partial<Subject>) => api.put<Subject>(`/subjects/${id}`, d).then((r) => r.data);
+/** ☀️ เช้า for a whole กลุ่มสาระ (or any set of subjects) in one request. */
+export const setPreferMorning = (p: {
+  prefer_morning: boolean;
+  ids?: number[];
+  department_id?: number;
+  all?: boolean;
+}) => api.post<{
+  changed: number; matched: number;
+  subjects: { id: number; prefer_morning: boolean }[];
+}>("/subjects/prefer-morning", p).then((r) => r.data);
+
 export const deleteSubject      = (id: number) => api.delete(`/subjects/${id}`);
 export const bulkCreateSubjects = (rows: Partial<Subject>[]) => api.post<Subject[]>("/subjects/bulk", rows).then((r) => r.data);
 

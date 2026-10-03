@@ -2545,6 +2545,45 @@ def bulk_create_subjects(body: list[dict[str, Any]]):
         created.append(row)
     return created
 
+@app.post("/api/subjects/prefer-morning")
+def set_prefer_morning(body: dict[str, Any]):
+    """Set ☀️ เช้า on many subjects at once.
+
+    This school has 271 subjects. Marking a whole กลุ่มสาระ one row at a time
+    is 40-odd clicks and 40-odd requests, so the choice is made once here.
+
+    Which subjects: explicit "ids" if given, otherwise every subject in
+    "department_id", otherwise — only when "all" is set — all of them. An
+    empty body changes nothing rather than quietly flagging the whole school.
+    """
+    want = bool(body.get("prefer_morning"))
+    ids = body.get("ids")
+
+    if isinstance(ids, list):
+        wanted = {int(x) for x in ids if str(x).lstrip("-").isdigit()}
+        targets = [s for s in SUBJECTS if s["id"] in wanted]
+    elif body.get("department_id") not in (None, ""):
+        dept = int(body["department_id"])
+        targets = [s for s in SUBJECTS if s.get("department_id") == dept]
+    elif body.get("all"):
+        targets = list(SUBJECTS)
+    else:
+        return {"changed": 0, "matched": 0, "subjects": []}
+
+    changed = 0
+    for s in targets:
+        if bool(s.get("prefer_morning")) != want:
+            s["prefer_morning"] = want
+            changed += 1
+    return {
+        "changed": changed,
+        "matched": len(targets),
+        # The rows as they now are, so the page can update without refetching.
+        "subjects": [{"id": s["id"], "prefer_morning": bool(s.get("prefer_morning"))}
+                     for s in targets],
+    }
+
+
 # ── Requirements ──────────────────────────────────────────────────────────────
 @app.get("/api/timetable/requirements")
 def get_requirements(group_id: int | None = None):
