@@ -919,6 +919,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     def teacher_free(tid, day, gid, period) -> bool:
         return not any((tid, day, b) in teacher_busy for b in cell_buckets(gid, period))
 
+    # How many of this class's five days already have a lesson in this period.
+    # Used to spread a class's lessons across its periods: without it the slack
+    # in a timetable all pools into whichever period is chosen last, leaving
+    # one column empty across the week while the rest run full.
+    class_period_load: dict[tuple[int, int], int] = defaultdict(int)
+
     def book(tid, gid, day, period) -> None:
         for b in cell_buckets(gid, period):
             teacher_busy.add((tid, day, b))
@@ -926,6 +932,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if sp:
             teacher_spans[(tid, day)].append(sp)
         group_busy.add((gid, day, period))
+        class_period_load[(gid, period)] += 1
 
     def unbook(tid, gid, day, period, room_id=None) -> None:
         """Release a cell, so a proposed move can be judged without the lesson
@@ -935,6 +942,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if room_id:
                 room_busy.discard((room_id, day, b))
         group_busy.discard((gid, day, period))
+        if class_period_load[(gid, period)] > 0:
+            class_period_load[(gid, period)] -= 1
         sp = span_of(gid, period)
         if sp and sp in teacher_spans[(tid, day)]:
             teacher_spans[(tid, day)].remove(sp)
@@ -1013,7 +1022,18 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 day, period = cell
                 morning = wants_morning and morning_end is not None and period <= morning_end
                 duty = needs_last and period == last_num
-                return (0 if duty else 1, 0 if morning or not wants_morning else 1)
+                return (
+                    0 if duty else 1,
+                    0 if morning or not wants_morning else 1,
+                    # Spread: this class's emptiest period first. Every period
+                    # then fills at about the same rate, so whatever slack the
+                    # timetable has is shared out instead of hollowing out one
+                    # column of the week.
+                    class_period_load[(gid, period)],
+                    # Sitting down straight after lunch is slightly worse than
+                    # not; a tie-break, never a reason to skip the period.
+                    1 if lunch_adjacent(gid, period) else 0,
+                )
             cells.sort(key=rank)
 
             for day, period in cells:
@@ -1029,7 +1049,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 if group_occupied(gid, day, period):
                     continue
                 run = run_if_placed(tid, gid, day, period)
-                if attempt == 0 and (run > consec_soft or lunch_adjacent(gid, period)):
+                # The run limit is a real rule and stays. "Next to lunch" is
+                # not: refusing it outright starved the one period that sits
+                # after lunch — 54% full against 97-100% everywhere else, with
+                # six classes free in it all week — so it is now only an
+                # ordering preference, applied in rank() above.
+                if attempt == 0 and run > consec_soft:
                     continue
                 if attempt == 1 and run > consec_soft:
                     continue
