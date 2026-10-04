@@ -12,6 +12,7 @@ import os as _os
 import json as _json
 import datetime as _dt
 from collections import defaultdict
+import substitution as _SUB
 
 app = FastAPI(title="School Scheduler Mock API v3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -28,6 +29,10 @@ async def _bump_revision(request, call_next):
     response = await call_next(request)
     if request.method in ("POST", "PUT", "PATCH", "DELETE") and response.status_code < 400:
         REVISION["n"] += 1
+        # The substitution engine caches who is busy when; any write may have
+        # changed that, and a stale cache would offer a teacher who has just
+        # been booked.
+        _SUB.invalidate()
     return response
 
 
@@ -254,7 +259,9 @@ _counters: dict[str, int] = {
     "elective_pool": _max_id(ELECTIVE_POOLS),
 }
 def _next(key: str) -> int:
-    _counters[key] += 1
+    # A new kind of row should not have to remember to register itself here;
+    # forgetting raised KeyError at the moment a teacher pressed save.
+    _counters[key] = _counters.get(key, 0) + 1
     return _counters[key]
 
 
@@ -3769,7 +3776,8 @@ SCHOOL_CONFIG: dict[str, Any] = {
 
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
 _SAVE_KEYS = ("departments", "buildings", "rooms", "teachers", "subjects",
-              "requirements", "periods", "slots", "elective_pools", "school_config")
+              "requirements", "periods", "slots", "elective_pools", "school_config",
+              "absences", "substitutions", "repayments")
 
 
 def _snapshot() -> dict[str, Any]:
@@ -3789,6 +3797,11 @@ def _snapshot() -> dict[str, Any]:
         "slots": SLOTS,
         "elective_pools": ELECTIVE_POOLS,
         "school_config": SCHOOL_CONFIG,
+        # สอนแทน — a teacher's arrangements must outlive a redeploy just as the
+        # timetable does; losing them silently is how people stop trusting it.
+        "absences": ABSENCES,
+        "substitutions": SUBSTITUTIONS,
+        "repayments": REPAYMENTS,
         "counters": _counters,
     }
 
@@ -3805,7 +3818,9 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
                         ("rooms", ROOMS), ("teachers", TEACHERS),
                         ("subjects", SUBJECTS), ("requirements", REQUIREMENTS),
                         ("periods", PERIODS), ("slots", SLOTS),
-                        ("elective_pools", ELECTIVE_POOLS)):
+                        ("elective_pools", ELECTIVE_POOLS),
+                        ("absences", ABSENCES), ("substitutions", SUBSTITUTIONS),
+                        ("repayments", REPAYMENTS)):
         rows = data.get(key)
         if rows is not None:
             rows = [dict(r) for r in rows]
@@ -3832,8 +3847,11 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
     for key, rows in (("room", ROOMS), ("teacher", TEACHERS), ("subject", SUBJECTS),
                       ("requirement", REQUIREMENTS), ("department", DEPARTMENTS),
                       ("period", PERIODS), ("slot", SLOTS),
-                      ("elective_pool", ELECTIVE_POOLS)):
+                      ("elective_pool", ELECTIVE_POOLS),
+                      ("absence", ABSENCES), ("substitution", SUBSTITUTIONS),
+                      ("repayment", REPAYMENTS)):
         _counters[key] = max(_counters.get(key, 0), _max_id(rows))
+    _SUB.invalidate()
     _counters["group"] = max(_counters.get("group", 0), _max_id(_flat_groups()))
 
 
@@ -3878,6 +3896,238 @@ def restore_backup(body: dict[str, Any]):
                       "slots", "elective_pools")},
         "saved_at": body.get("saved_at"),
     }
+
+
+# ── สอนแทน / แลกคาบ ───────────────────────────────────────────────────────────
+# Teachers arrange their own cover here. None of it writes to SLOTS: the master
+# timetable stays exactly as the academic office built it, and an arrangement
+# is recorded alongside it. That is deliberate — the people using this are not
+# the people who own the timetable.
+
+ABSENCES: list[dict[str, Any]] = []        # ครูแจ้งไปราชการ
+SUBSTITUTIONS: list[dict[str, Any]] = []   # คาบที่มีคนรับสอนแทนแล้ว
+REPAYMENTS: list[dict[str, Any]] = []      # คาบที่คืนแล้ว
+
+_SUB.bind(
+    slots=lambda: SLOTS,
+    teachers=lambda: TEACHERS,
+    requirements=lambda: REQUIREMENTS,
+    absences=lambda: ABSENCES,
+    substitutions=lambda: SUBSTITUTIONS,
+    repayments=lambda: REPAYMENTS,
+    teachers_by_id=lambda: {t["id"]: t for t in TEACHERS},
+    subjects_by_id=lambda: {s["id"]: s for s in SUBJECTS},
+    groups_by_id=lambda: {g["id"]: g for g in _flat_groups()},
+    slot_buckets=_slot_buckets,
+    elective_option_teachers=_elective_option_teachers,
+    teacher_prefs=_teacher_prefs,
+    level_key=_level_key,
+    class_periods_for_level=_class_periods_for_level,
+    next_class_period_for=_next_class_period_for,
+)
+
+
+def _enrich_lesson(s: dict[str, Any]) -> dict[str, Any]:
+    """A lesson as a teacher reads it, not as the database stores it."""
+    rows = _periods_for_level(_level_key({g["id"]: g for g in _flat_groups()}.get(s["group_id"])))
+    row = rows.get(s["period"], {})
+    return {
+        "slot_id": s["id"], "day": s["day"], "period": s["period"],
+        "period_label": row.get("label"),
+        "start_time": row.get("start_time"), "end_time": row.get("end_time"),
+        "group_id": s["group_id"], "group_name": s.get("group_name"),
+        "subject_id": s.get("subject_id"), "subject_code": s.get("subject_code"),
+        "subject_name": s.get("subject_name"),
+        "room_id": s.get("room_id"), "room_name": s.get("room_name"),
+        "teacher_id": s.get("teacher_id"), "teacher_name": s.get("teacher_name"),
+        "is_elective": bool(s.get("is_elective")),
+        "is_locked": bool(s.get("is_locked")),
+    }
+
+
+@app.get("/api/sub/day")
+def sub_day(teacher_id: int, date: str):
+    """What this teacher teaches on this date — the starting point for everything."""
+    day = _SUB.weekday_of(date)
+    if day is None:
+        return {"date": date, "day": None, "lessons": [],
+                "message": "วันที่เลือกเป็นวันหยุด ไม่มีคาบสอน"}
+    lessons = [_enrich_lesson(s) for s in _SUB.affected_lessons(teacher_id, date, None)]
+    return {"date": date, "day": day, "lessons": lessons}
+
+
+@app.post("/api/sub/options")
+def sub_options(body: dict[str, Any]):
+    """For one lesson: who can cover it, and who can swap for it.
+
+    Both are returned together because they are the same question asked twice —
+    the school decides between "someone takes it" and "someone takes it and I
+    owe them" when it sees the two lists side by side.
+    """
+    date = str(body.get("date") or "")
+    if _SUB.weekday_of(date) is None:
+        raise HTTPException(status_code=400, detail="วันที่เลือกเป็นวันหยุด")
+
+    # One lesson, or a คาบคู่ handed over whole. A block is judged together:
+    # a teacher free for the first period and busy for the second cannot take
+    # the pair, and the debt is one period per lesson handed over.
+    ids = [int(x) for x in (body.get("slot_ids") or []) if str(x).lstrip("-").isdigit()]
+    if not ids and body.get("slot_id"):
+        ids = [int(body["slot_id"])]
+    by_id = {s["id"]: s for s in SLOTS}
+    block = [by_id[i] for i in ids if i in by_id]
+    if not block:
+        raise HTTPException(status_code=404, detail="ไม่พบคาบนี้ในตาราง")
+
+    lesson = block[0]
+    absent = lesson.get("teacher_id")
+    owed = max(1, int(body.get("owed") or len(block)))
+    cover = (_SUB.cover_candidates_for_block(block, date) if len(block) > 1
+             else _SUB.cover_candidates(lesson, date))
+    return {
+        "lesson": _enrich_lesson(lesson),
+        "lessons": [_enrich_lesson(b) for b in block],
+        "owed": owed,
+        "cover": cover,
+        "swap": _SUB.swap_routes(lesson, date, absent, owed=owed, block=block) if absent else [],
+    }
+
+
+@app.get("/api/sub/absences")
+def list_absences(teacher_id: int | None = None):
+    rows = [a for a in ABSENCES if a.get("status") != "cancelled"]
+    if teacher_id is not None:
+        rows = [a for a in rows if a["teacher_id"] == teacher_id]
+    return sorted(rows, key=lambda a: a.get("date") or "")
+
+
+@app.post("/api/sub/absences")
+def create_absence(body: dict[str, Any]):
+    date = str(body.get("date") or "")
+    if _SUB.weekday_of(date) is None:
+        raise HTTPException(status_code=400, detail="วันที่ไม่ถูกต้อง หรือเป็นวันหยุด")
+    row = {
+        "id": _next("absence"),
+        "teacher_id": int(body["teacher_id"]),
+        "date": date,
+        "periods": [int(p) for p in (body.get("periods") or [])],
+        "reason": str(body.get("reason") or "").strip(),
+        "status": "open",
+    }
+    ABSENCES.append(row)
+    _SUB.invalidate()
+    return row
+
+
+@app.delete("/api/sub/absences/{i}")
+def delete_absence(i: int):
+    global ABSENCES, SUBSTITUTIONS
+    # The cover arranged for an absence has no meaning once the absence is
+    # withdrawn, so it goes too — along with any debt it created, which is
+    # why the repayments tied to it are cleared rather than left owing.
+    gone = [r["id"] for r in SUBSTITUTIONS if r.get("absence_id") == i]
+    REPAYMENTS[:] = [r for r in REPAYMENTS if r.get("substitution_id") not in gone]
+    SUBSTITUTIONS[:] = [r for r in SUBSTITUTIONS if r.get("absence_id") != i]
+    ABSENCES = [a for a in ABSENCES if a["id"] != i]
+    _SUB.invalidate()
+    return {"removed": len(gone)}
+
+
+@app.get("/api/sub/substitutions")
+def list_substitutions(teacher_id: int | None = None):
+    rows = [r for r in SUBSTITUTIONS if r.get("status") != "cancelled"]
+    if teacher_id is not None:
+        rows = [r for r in rows
+                if r["absent_teacher_id"] == teacher_id or r["cover_teacher_id"] == teacher_id]
+    return sorted(rows, key=lambda r: (r.get("date") or "", r.get("period") or 0))
+
+
+@app.post("/api/sub/substitutions")
+def create_substitution(body: dict[str, Any]):
+    """Record that somebody is taking a lesson, and any repayment agreed for it."""
+    slot_id = int(body.get("slot_id") or 0)
+    lesson = next((s for s in SLOTS if s["id"] == slot_id), None)
+    if lesson is None:
+        raise HTTPException(status_code=404, detail="ไม่พบคาบนี้ในตาราง")
+    date = str(body.get("date") or "")
+    if _SUB.weekday_of(date) is None:
+        raise HTTPException(status_code=400, detail="วันที่ไม่ถูกต้อง หรือเป็นวันหยุด")
+    cover = int(body.get("cover_teacher_id") or 0)
+
+    # Refuse a cover the teacher cannot actually give. The page only offers
+    # free teachers, but the page is not the only way in here, and a double
+    # booking printed on a cover sheet is worse than an error message.
+    busy = _SUB.busy_map(date)
+    if not _SUB.is_free(cover, lesson["group_id"], lesson["period"], busy):
+        raise HTTPException(status_code=409,
+                            detail="ครูท่านนี้ไม่ว่างในคาบนั้นแล้ว — มีคนจองไปก่อน ลองดูตัวเลือกใหม่อีกครั้ง")
+
+    row = {
+        "id": _next("substitution"),
+        "absence_id": body.get("absence_id"),
+        "slot_id": slot_id, "date": date,
+        "day": lesson["day"], "period": lesson["period"],
+        "group_id": lesson["group_id"], "group_name": lesson.get("group_name"),
+        "subject_id": lesson.get("subject_id"), "subject_code": lesson.get("subject_code"),
+        "subject_name": lesson.get("subject_name"), "room_name": lesson.get("room_name"),
+        "absent_teacher_id": lesson.get("teacher_id"),
+        "absent_teacher_name": lesson.get("teacher_name"),
+        "cover_teacher_id": cover,
+        "cover_teacher_name": {t["id"]: t for t in TEACHERS}.get(cover, {}).get("name"),
+        # แลกคาบ owes a period back; สอนแทน does not.
+        "creates_debt": bool(body.get("creates_debt")),
+        "note": str(body.get("note") or "").strip(),
+        "status": "agreed",
+    }
+    SUBSTITUTIONS.append(row)
+    _SUB.invalidate()
+
+    for rp in (body.get("repayments") or []):
+        _add_repayment(row, rp)
+    return row
+
+
+def _add_repayment(sub: dict[str, Any], rp: dict[str, Any]) -> dict[str, Any] | None:
+    slot = next((s for s in SLOTS if s["id"] == int(rp.get("slot_id") or 0)), None)
+    if slot is None:
+        return None
+    row = {
+        "id": _next("repayment"),
+        "substitution_id": sub["id"],
+        "slot_id": slot["id"], "date": str(rp.get("date") or ""),
+        "day": slot["day"], "period": slot["period"],
+        "group_id": slot["group_id"], "group_name": slot.get("group_name"),
+        "subject_code": slot.get("subject_code"), "subject_name": slot.get("subject_name"),
+        # The absent teacher pays the cover teacher back.
+        "teacher_id": sub["absent_teacher_id"],
+        "to_teacher_id": sub["cover_teacher_id"],
+        "status": "agreed",
+    }
+    REPAYMENTS.append(row)
+    _SUB.invalidate()
+    return row
+
+
+@app.delete("/api/sub/substitutions/{i}")
+def delete_substitution(i: int):
+    REPAYMENTS[:] = [r for r in REPAYMENTS if r.get("substitution_id") != i]
+    SUBSTITUTIONS[:] = [r for r in SUBSTITUTIONS if r["id"] != i]
+    _SUB.invalidate()
+    return {"ok": True}
+
+
+@app.get("/api/sub/repayments")
+def list_repayments(teacher_id: int | None = None):
+    rows = [r for r in REPAYMENTS if r.get("status") != "cancelled"]
+    if teacher_id is not None:
+        rows = [r for r in rows
+                if r["teacher_id"] == teacher_id or r["to_teacher_id"] == teacher_id]
+    return sorted(rows, key=lambda r: (r.get("date") or "", r.get("period") or 0))
+
+
+@app.get("/api/sub/ledger")
+def sub_ledger():
+    return {"rows": _SUB.ledger()}
 
 
 @app.get("/api/school/config")

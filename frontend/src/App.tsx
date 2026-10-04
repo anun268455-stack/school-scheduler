@@ -10,11 +10,29 @@ import { useTimetableStore } from "./store/timetableStore";
 import type { DashPage } from "./pages/Dashboard";
 
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
+// ระบบจัดการสอนแทน — the teachers' page, at #/substitute. Loaded only when
+// that link is opened, so the editor's bundle is not what a teacher downloads.
+const SubstituteApp = lazy(() => import("./pages/SubstituteApp"));
+
+/** True when the URL asks for the teachers' page rather than the editor. */
+function wantsSubstitute(): boolean {
+  return /^#\/?(substitute|sub|teacher)\b/i.test(window.location.hash);
+}
 
 type Page = "timetable" | DashPage;
 const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","requirements","electives","activities","periods","locks","settings","departments","analytics","help"];
 
 export default function App() {
+  // Decided before anything else: the two pages share data but no chrome, and
+  // a teacher following the link must never see the editor's toolbar flash up
+  // on the way. The hash is watched so moving between them needs no reload.
+  const [onSubstitute, setOnSubstitute] = useState(wantsSubstitute);
+  useEffect(() => {
+    const sync = () => setOnSubstitute(wantsSubstitute());
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+
   const [page, setPage] = useState<Page>("timetable");
   const {
     loadAll, slots, groups, teachers, departments, periods, schoolConfig,
@@ -23,13 +41,34 @@ export default function App() {
   const [printOptions, setPrintOptions] = useState<PrintOptions>(DEFAULT_PRINT_OPTIONS);
   const printRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
+  // The teachers' page fetches only what it needs through its own client, so
+  // neither the editor's full load nor its polling runs there. With the link
+  // going to every teacher in the school, that polling would otherwise be 143
+  // browsers asking a small server for the timetable every few seconds.
+  useEffect(() => {
+    if (onSubstitute) return;
+    loadAll();
+  }, [loadAll, onSubstitute]);
 
   // Keep the page in step with anyone else editing at the same time.
   useEffect(() => {
+    if (onSubstitute) return;
     startLiveSync();
     return () => stopLiveSync();
-  }, [startLiveSync, stopLiveSync]);
+  }, [startLiveSync, stopLiveSync, onSubstitute]);
+
+  if (onSubstitute) {
+    return (
+      <ErrorBoundary>
+        <Suspense fallback={
+          <div className="min-h-screen flex items-center justify-center text-slate-400 text-sm">
+            กำลังโหลด…
+          </div>}>
+          <SubstituteApp />
+        </Suspense>
+      </ErrorBoundary>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">
