@@ -11,7 +11,7 @@
  * it never writes to the timetable itself. So "ฉันคือ…" is a picker, and it is
  * remembered so nobody picks twice.
  */
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
 import * as sub from "../api/subClient";
 import { ArrangeCover } from "../components/sub/ArrangeCover";
