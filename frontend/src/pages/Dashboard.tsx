@@ -16,6 +16,8 @@ import { teachesSlot, slotLabel } from "../utils/teacherSlots";
 import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
 import { flattenGroups } from "../utils/groupHierarchy";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
+import { HomeroomModal } from "../components/groups/HomeroomModal";
+import { homeroomNames, classesAdvisedBy } from "../utils/homeroom";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { TeacherSettingsModal } from "../components/teachers/TeacherSettingsModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
@@ -108,8 +110,23 @@ function ImportButton({ entity }: { entity: "teachers"|"rooms"|"subjects"|"group
 // ─── Groups ──────────────────────────────────────────────────────────────────
 const GROUP_LEVELS = ["M1","M2","M3","M4","M5","M6","ห้องเวียน"];
 
+
+/** Write ครูประจำชั้น for one or more classes, and keep the page in step. */
+async function applyHomeroom(changes: { groupId: number; teacherIds: number[] }[]) {
+  await Promise.all(changes.map(async (c) => {
+    await api.updateGroup(c.groupId, { homeroom_teacher_ids: c.teacherIds });
+    useTimetableStore.setState((st) => ({
+      groups: patchGroupTree(st.groups, c.groupId, {
+        homeroom_teacher_ids: c.teacherIds,
+        homeroom_teacher_id: c.teacherIds[0] ?? null,
+      }),
+    }));
+  }));
+}
+
 const GroupsPanel: React.FC = () => {
   const { groups, rooms, teachers } = useTimetableStore();
+  const [homeroomFor, setHomeroomFor] = useState<number | null>(null);
   const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
@@ -144,7 +161,6 @@ const GroupsPanel: React.FC = () => {
   const [q, setQ] = useState("");
   const shownGroups = flat.filter((g) => matches(q, g.name, g.level, roomName(g.homeroom_room_id),
     teachers.find((t) => t.id === g.homeroom_teacher_id)?.name));
-  const hrTeacherName = (id: number | null | undefined) => id ? (teachers.find((t) => t.id === id)?.name ?? "–") : null;
 
   return (
     <Section title="ห้องเรียน" action={<ImportButton entity="groups" />}>
@@ -168,13 +184,15 @@ const GroupsPanel: React.FC = () => {
           <SearchableSelect value={form.homeroom_room_id} onChange={(v) => setForm({ ...form, homeroom_room_id: v })}
             options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่ระบุ –" />
         </Field>
-        <Field label="👩‍🏫 ครูประจำชั้น">
+        <Field label="👩‍🏫 ครูประจำชั้น (คนแรก)">
           <SearchableSelect value={form.homeroom_teacher_id} onChange={(v) => setForm({ ...form, homeroom_teacher_id: v })}
             options={teacherOptions(teachers)} emptyLabel="– ไม่ระบุ –" />
         </Field>
       </div>
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
-        💡 <strong>ครูประจำชั้น</strong> ใช้ตอนสร้าง "คาบกิจกรรมประจำระดับ" (เช่น สาธารณประโยชน์) — เลือกโหมดครูประจำชั้น แล้วแต่ละห้องจะได้ครูของตัวเองลงตารางสอนอัตโนมัติ
+        💡 <strong>ครูประจำชั้นใส่ได้ห้องละ 2 คน</strong> — สร้างห้องแล้วกดปุ่ม 👩‍🏫 ในตารางด้านล่างเพื่อเพิ่มคนที่สอง
+        <br />
+        ใช้ตอนสร้าง "คาบกิจกรรมประจำระดับ" (เช่น สาธารณประโยชน์) — เลือกโหมดครูประจำชั้น แล้วแต่ละห้องจะได้ครูของตัวเองลงตารางสอนอัตโนมัติ
       </div>
       <button onClick={handleCreate} disabled={!form.name} className={btnPrimary}>+ เพิ่มห้องเรียน</button>
 
@@ -216,9 +234,8 @@ const GroupsPanel: React.FC = () => {
                       <SearchableSelect value={editForm.homeroom_room_id} onChange={(v) => setEditForm({ ...editForm, homeroom_room_id: v })}
                         options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่ระบุ –" />
                     </td>
-                    <td className="px-2 py-1">
-                      <SearchableSelect value={editForm.homeroom_teacher_id} onChange={(v) => setEditForm({ ...editForm, homeroom_teacher_id: v })}
-                        options={teacherOptions(teachers)} emptyLabel="– ไม่ระบุ –" />
+                    <td className="px-2 py-1 text-[11px] text-gray-400">
+                      แก้ที่ปุ่ม 👩‍🏫
                     </td>
                     <td className="px-2 py-1">
                       <div className="flex gap-1">
@@ -239,9 +256,15 @@ const GroupsPanel: React.FC = () => {
                     <td className="px-3 py-2 text-gray-500">{g.parent_id ? flat.find((p) => p.id === g.parent_id)?.name ?? "–" : "–"}</td>
                     <td className="px-3 py-2 text-gray-500">{roomName(g.homeroom_room_id)}</td>
                     <td className="px-3 py-2 text-xs">
-                      {hrTeacherName(g.homeroom_teacher_id)
-                        ? <span className="bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded">👩‍🏫 {hrTeacherName(g.homeroom_teacher_id)}</span>
-                        : <span className="text-gray-400">–</span>}
+                      {/* A button, not a dropdown: 143 teachers do not belong
+                          in a table cell, and a class may hold two of them. */}
+                      <button onClick={() => setHomeroomFor(g.id)}
+                        className="flex items-center gap-1 px-2 py-1 rounded border text-xs bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 max-w-[220px]">
+                        👩‍🏫
+                        <span className="truncate">
+                          {homeroomNames(g, teachers).join(" · ") || "ยังไม่ได้ตั้ง"}
+                        </span>
+                      </button>
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
@@ -256,6 +279,16 @@ const GroupsPanel: React.FC = () => {
           </tbody>
         </table>
       </div>
+
+      {homeroomFor != null && (
+        <HomeroomModal
+          group={flat.find((g) => g.id === homeroomFor)}
+          groups={flat}
+          teachers={teachers}
+          onApply={applyHomeroom}
+          onClose={() => setHomeroomFor(null)}
+        />
+      )}
     </Section>
   );
 };
@@ -280,39 +313,13 @@ const TeachersPanel: React.FC = () => {
   const loadOf = (id: number) => requirements.filter((r) => r.teacher_id === id).length;
 
   const flat = useMemo(() => flattenGroups(groups), [groups]);
-  const teacherName = (id: number) => teachers.find((t) => t.id === id)?.name;
 
-  /** The class this teacher advises, if any. Stored on the class, not here. */
-  const advisorClassId = (teacherId: number) => {
-    const g = flat.find((x) => x.homeroom_teacher_id === teacherId);
-    return g ? String(g.id) : "";
-  };
-  const advisorClassNames = (teacherId: number) =>
-    flat.filter((x) => x.homeroom_teacher_id === teacherId).map((x) => x.name).join(", ");
 
-  /** Move the advisory: clear the teacher's old class, set the new one. */
-  const setAdvisorClass = async (teacherId: number, groupId: number | null) => {
-    const previous = flat.filter((g) => g.homeroom_teacher_id === teacherId);
-    const writes: Promise<unknown>[] = [];
-    for (const g of previous) {
-      if (g.id === groupId) continue;
-      writes.push(api.updateGroup(g.id, { homeroom_teacher_id: null }));
-      useTimetableStore.setState((st) => ({
-        groups: patchGroupTree(st.groups, g.id, { homeroom_teacher_id: null }),
-      }));
-    }
-    if (groupId != null) {
-      writes.push(api.updateGroup(groupId, { homeroom_teacher_id: teacherId }));
-      useTimetableStore.setState((st) => ({
-        groups: patchGroupTree(st.groups, groupId, { homeroom_teacher_id: teacherId }),
-      }));
-    }
-    await Promise.all(writes).catch(() => { /* reload will correct it */ });
-  };
   const [form, setForm] = useState({ code: "", name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   const [editing, setEditing] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [settingsFor, setSettingsFor] = useState<number | null>(null);
+  const [homeroomFor, setHomeroomFor] = useState<number | null>(null);
   const [assigning, setAssigning] = useState<number | null>(null);
   const assigningTeacher = assigning != null ? teachers.find((t) => t.id === assigning) ?? null : null;
   const settingsTeacher  = settingsFor != null ? teachers.find((t) => t.id === settingsFor) ?? null : null;
@@ -406,7 +413,7 @@ const TeachersPanel: React.FC = () => {
                         </select>
                       </td>
                       <td className="px-2 py-1 text-xs text-gray-400">
-                        {advisorClassNames(t.id) || "–"}
+                        {classesAdvisedBy(t.id, flat).map((g) => g.name).join(", ") || "–"}
                       </td>
                       <td className="px-2 py-1">
                         <SearchableSelect value={editForm.fixed_room_id} onChange={(v) => setEditForm({ ...editForm, fixed_room_id: v })}
@@ -433,22 +440,18 @@ const TeachersPanel: React.FC = () => {
                       {/* ครูประจำชั้น is a CLASS of students, not a room — it is
                           stored on the class, and shown here because this is
                           where you think about a teacher. */}
-                      <td className="px-3 py-2 text-xs" style={{ minWidth: 150 }}>
-                        <SearchableSelect
-                          value={advisorClassId(t.id)}
-                          onChange={(v) => setAdvisorClass(t.id, v === "" ? null : Number(v))}
-                          options={flat.map((g) => {
-                            const owner = g.homeroom_teacher_id;
-                            return {
-                              value: String(g.id),
-                              label: g.name,
-                              hint: owner && owner !== t.id ? teacherName(owner) ?? "มีครูแล้ว" : undefined,
-                              group: g.level ?? undefined,
-                              disabled: !!owner && owner !== t.id,
-                            };
-                          })}
-                          emptyLabel="– ไม่ได้เป็นครูประจำชั้น –"
-                          placeholder="– ไม่ได้เป็น –" />
+                      <td className="px-3 py-2 text-xs">
+                        {/* A button, not a select over all 93 classes. The old
+                            select also disabled every class that already had a
+                            teacher, so a teacher added later could never be
+                            made ครูประจำชั้น of anything. */}
+                        <button onClick={() => setHomeroomFor(t.id)}
+                          className="flex items-center gap-1 px-2 py-1 rounded border text-xs bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 max-w-[170px]">
+                          👩‍🏫
+                          <span className="truncate">
+                            {classesAdvisedBy(t.id, flat).map((g) => g.name).join(", ") || "ตั้งห้องประจำชั้น"}
+                          </span>
+                        </button>
                       </td>
                       <td className="px-3 py-2 text-xs">
                         {t.fixed_room_id
@@ -486,6 +489,15 @@ const TeachersPanel: React.FC = () => {
 
       {assigningTeacher && (
         <TeacherAssignModal teacher={assigningTeacher} onClose={() => setAssigning(null)} />
+      )}
+      {homeroomFor != null && (
+        <HomeroomModal
+          teacher={teachers.find((t) => t.id === homeroomFor)}
+          groups={flat}
+          teachers={teachers}
+          onApply={applyHomeroom}
+          onClose={() => setHomeroomFor(null)}
+        />
       )}
       {settingsTeacher && (
         <TeacherSettingsModal

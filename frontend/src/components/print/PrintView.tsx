@@ -14,6 +14,7 @@ import type { Department, Period, SchoolConfig, StudentGroup, Teacher, Timetable
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { teachesSlot, myElectiveOption } from "../../utils/teacherSlots";
+import { homeroomIds } from "../../utils/homeroom";
 import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
 
 export type PrintMode = "group" | "teacher";
@@ -547,9 +548,14 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
         const grid = buildGrid(slots.filter((s) => shares(s.group_id, group.id)));
         // Who to ask about this class's timetable — named on the sheet, with
         // the code, so a printed copy identifies itself without the system.
-        const advisor = teachers.find((t) => t.id === group.homeroom_teacher_id);
-        const advisorLabel = advisor
-          ? `  ·  ครูประจำชั้น ${advisor.code ? `${advisor.code} ` : ""}${advisor.name}`
+        // Both of them: a class may have two ครูประจำชั้น, and a sheet naming
+        // only the first sends parents to the wrong one half the time.
+        const advisors = homeroomIds(group)
+          .map((id) => teachers.find((t) => t.id === id))
+          .filter((t): t is NonNullable<typeof t> => !!t)
+          .map((t) => `${t.code ? `${t.code} ` : ""}${shortTeacher(t.name)}`);
+        const advisorLabel = advisors.length
+          ? `  ·  ครูประจำชั้น ${advisors.join(" , ")}`
           : "";
         blocks.push(
           <TimetableBlock

@@ -668,6 +668,37 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     # Each level has its own lesson periods — ม.1-3 are at lunch while ม.4-6
     # are in class — so the cells a lesson may use depend on whose lesson it is.
+    def tail_cost(level: str, period: int) -> int:
+        """How much this period is discouraged, so a class can finish early.
+
+        ONLY the final period. Discouraging the last two looked reasonable
+        until the day was counted: this school has four or five morning
+        periods and exactly two afternoon ones, so "the last two" and "the
+        whole afternoon" are the same thing. Penalising both is what pushed
+        79% of all teaching before noon. Leaving only the final period
+        discouraged still lets a class go home a period early, while คาบ 7
+        stays freely available to balance teachers' days.
+        """
+        nums = _class_periods_for_level(level)
+        try:
+            return 1 if nums.index(period) == len(nums) - 1 else 0
+        except ValueError:
+            return 0
+
+    def half_rate(tid: int, gid: int, period: int) -> float:
+        """How full this teacher's morning (or afternoon) already is, as a rate.
+
+        A rate, not a count: the halves are not the same size — four or five
+        periods against two — so comparing raw counts would chase a 50/50 split
+        that the timetable cannot give and drag everything into the afternoon.
+        """
+        lvl = _level_key(g_map.get(gid))
+        nums = _class_periods_for_level(lvl)
+        cut = _morning_cutoff(lvl)
+        h = _half(gid, period)
+        size = sum(1 for n in nums if (cut is not None and n <= cut) == (h == 0))
+        return teacher_half[(tid, h)] / max(1, size)
+
     def cells_for(gid: int):
         lvl = _level_key(g_map.get(gid))
         return [(d, p) for d in range(5) for p in _class_periods_for_level(lvl)]
@@ -935,6 +966,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # one column empty across the week while the rest run full.
     class_period_load: dict[tuple[int, int], int] = defaultdict(int)
 
+    # How much of each teacher's week sits in the morning against the
+    # afternoon. Filling every class's day from the front put 79% of all
+    # lessons before noon and left 53 teachers teaching mornings only, which
+    # is a worse day than the one it replaced.
+    teacher_half: dict[tuple[int, int], int] = defaultdict(int)   # (tid, 0=am 1=pm)
+
+    def _half(gid: int, period: int) -> int:
+        cut = _morning_cutoff(_level_key(g_map.get(gid)))
+        return 0 if (cut is not None and period <= cut) else 1
+
     def book(tid, gid, day, period) -> None:
         for b in cell_buckets(gid, period):
             teacher_busy.add((tid, day, b))
@@ -943,6 +984,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             teacher_spans[(tid, day)].append(sp)
         group_busy.add((gid, day, period))
         class_period_load[(gid, period)] += 1
+        teacher_half[(tid, _half(gid, period))] += 1
 
     def unbook(tid, gid, day, period, room_id=None) -> None:
         """Release a cell, so a proposed move can be judged without the lesson
@@ -954,6 +996,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         group_busy.discard((gid, day, period))
         if class_period_load[(gid, period)] > 0:
             class_period_load[(gid, period)] -= 1
+        if teacher_half[(tid, _half(gid, period))] > 0:
+            teacher_half[(tid, _half(gid, period))] -= 1
         sp = span_of(gid, period)
         if sp and sp in teacher_spans[(tid, day)]:
             teacher_spans[(tid, day)].remove(sp)
@@ -1039,14 +1083,18 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 # then the last period has the free cells to do it with.
                 return (
                     0 if morning or not wants_morning else 1,
-                    # Fill the class's day from the front. Some classes
-                    # finish at คาบ 7 and go home, so the empty cells belong at
-                    # the END of the day, not scattered through it: pack the
-                    # early periods, move to the next only when the one before
-                    # is full, and let คาบ 8 and 9 take whatever is left over.
-                    # (Ties within a period are already shuffled, so the five
-                    # days of คาบ 1 fill before คาบ 2 is touched.)
-                    period,
+                    # Keep the END of the day free so classes can go home, but
+                    # only the end. Ordering strictly by period number instead
+                    # packed everything into คาบ 1-4 and left teachers with
+                    # mornings only; what the school actually wanted was the
+                    # last periods empty, not the first ones full. So only the
+                    # final two periods are discouraged and the rest rank
+                    # equal, which leaves room for the two rules below.
+                    tail_cost(lvl, period),
+                    # Give the teacher a mix of mornings and afternoons by
+                    # sending each lesson to whichever half of their week is
+                    # lighter so far.
+                    round(half_rate(tid, gid, period), 3),
                     # Among equals, the class's emptiest day for that period —
                     # keeps one day from taking the lot.
                     class_period_load[(gid, period)],
@@ -2312,8 +2360,17 @@ def _purge_teacher(tid: int) -> dict[str, int]:
         if s.get("is_elective"):
             s["elective_options"] = [o for o in s.get("elective_options", [])
                                      if o.get("teacher_id") != tid]
+    # A deleted teacher must stop being anybody's ครูประจำชั้น, or the class
+    # keeps pointing at someone who is gone and the sheet prints a blank name.
+    homerooms = 0
+    for g in _flat_groups():
+        ids = _homeroom_ids(g)
+        if tid in ids:
+            g["homeroom_teacher_ids"] = [x for x in ids if x != tid]
+            _sync_homeroom(g)
+            homerooms += 1
     return {"slots": before_s - len(SLOTS), "requirements": before_r - len(REQUIREMENTS),
-            "elective_options": opts}
+            "elective_options": opts, "homerooms": homerooms}
 
 
 def _purge_subject(sid: int) -> dict[str, int]:
@@ -2468,12 +2525,50 @@ def del_department(i: int):
 def get_groups():
     return GROUPS
 
+# ครูประจำชั้น — a class may have two.
+#
+# It was one id, and the picker greyed out every class that already had a
+# teacher, so a newly added teacher could not be made ครูประจำชั้น of anything:
+# every class in the school was already taken. Two is what the school actually
+# wants, and it removes that dead end as a side effect.
+#
+# The list is the truth. The old single field is kept in step as the first of
+# them, so anything still reading it — the printed sheet, the activity blocks,
+# an older backup file — keeps working.
+HOMEROOM_MAX = 2
+
+
+def _homeroom_ids(g: dict[str, Any] | None) -> list[int]:
+    """This class's ครูประจำชั้น, however the row happens to store them."""
+    if not g:
+        return []
+    ids = g.get("homeroom_teacher_ids")
+    if isinstance(ids, list):
+        out = [int(x) for x in ids if str(x).lstrip("-").isdigit()]
+    elif g.get("homeroom_teacher_id"):
+        out = [int(g["homeroom_teacher_id"])]
+    else:
+        out = []
+    seen: list[int] = []
+    for x in out:                      # keep order, drop repeats
+        if x not in seen:
+            seen.append(x)
+    return seen[:HOMEROOM_MAX]
+
+
+def _sync_homeroom(g: dict[str, Any]) -> None:
+    ids = _homeroom_ids(g)
+    g["homeroom_teacher_ids"] = ids
+    g["homeroom_teacher_id"] = ids[0] if ids else None
+
+
 @app.post("/api/groups/")
 def create_group(body: dict[str, Any]):
     body["id"] = _next("group")
     body.setdefault("children", [])
     body.setdefault("homeroom_room_id", None)
     body.setdefault("homeroom_teacher_id", None)
+    _sync_homeroom(body)
     GROUPS.append(body)
     return body
 
@@ -2481,7 +2576,13 @@ def create_group(body: dict[str, Any]):
 def update_group(i: int, body: dict[str, Any]):
     for g in _flat_groups():
         if g["id"] == i:
+            # A caller that sends only the single field means to replace the
+            # whole list with it, not to add to what is there.
+            if "homeroom_teacher_ids" not in body and "homeroom_teacher_id" in body:
+                body = {**body, "homeroom_teacher_ids":
+                        [body["homeroom_teacher_id"]] if body["homeroom_teacher_id"] else []}
             g.update(body)
+            _sync_homeroom(g)
             return g
     return {}
 
@@ -2500,6 +2601,7 @@ def bulk_create_groups(body: list[dict[str, Any]]):
         row.setdefault("parent_id", None)
         row.setdefault("homeroom_room_id", None)
         row.setdefault("homeroom_teacher_id", None)
+        _sync_homeroom(row)
         GROUPS.append(row)
         created.append(row)
     return created

@@ -72,7 +72,10 @@ export interface StudentGroup {
   level:             string | null;   // "M1" … "M6" | "ห้องเวียน"
   size:              number;
   homeroom_room_id:  number | null;   // ห้องประจำชั้น
-  homeroom_teacher_id: number | null; // ครูประจำชั้น
+  /** ครูประจำชั้น — the first of them, kept in step for older readers. */
+  homeroom_teacher_id: number | null;
+  /** The real field: a class may have two. Read it via utils/homeroom. */
+  homeroom_teacher_ids?: number[];
   advanced_settings?: GroupAdvanced;
   children:          StudentGroup[];
 }

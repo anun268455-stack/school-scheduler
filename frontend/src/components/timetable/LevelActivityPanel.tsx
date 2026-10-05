@@ -11,6 +11,7 @@
 import React, { useMemo, useState } from "react";
 import * as api from "../../api/client";
 import { SearchableSelect, teacherOptions } from "../common/SearchableSelect";
+import { homeroomIds } from "../../utils/homeroom";
 import { useTimetableStore } from "../../store/timetableStore";
 import { DAYS, periodLabel, periodTime } from "../../types";
 
@@ -65,7 +66,7 @@ export const LevelActivityPanel: React.FC = () => {
   }, [slots]);
 
   const missingHomeroom = useMemo(
-    () => targetClasses.filter((g) => !g.homeroom_teacher_id),
+    () => targetClasses.filter((g) => homeroomIds(g).length === 0),
     [targetClasses],
   );
 
