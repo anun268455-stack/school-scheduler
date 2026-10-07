@@ -972,6 +972,15 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # is a worse day than the one it replaced.
     teacher_half: dict[tuple[int, int], int] = defaultdict(int)   # (tid, 0=am 1=pm)
 
+    # How many days this teacher already occupies this period.
+    #
+    # Spreading each CLASS across its periods is not the same thing, and the
+    # difference is what the staffroom noticed: a teacher with five different
+    # classes can sit in คาบ 1 on all five days while every one of those classes
+    # sees only a single คาบ 1 lesson, so nothing above objected. 52 teachers
+    # were teaching one period every day of the week.
+    teacher_period: dict[tuple[int, int], int] = defaultdict(int)
+
     def _half(gid: int, period: int) -> int:
         cut = _morning_cutoff(_level_key(g_map.get(gid)))
         return 0 if (cut is not None and period <= cut) else 1
@@ -985,6 +994,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         group_busy.add((gid, day, period))
         class_period_load[(gid, period)] += 1
         teacher_half[(tid, _half(gid, period))] += 1
+        teacher_period[(tid, period)] += 1
 
     def unbook(tid, gid, day, period, room_id=None) -> None:
         """Release a cell, so a proposed move can be judged without the lesson
@@ -998,6 +1008,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             class_period_load[(gid, period)] -= 1
         if teacher_half[(tid, _half(gid, period))] > 0:
             teacher_half[(tid, _half(gid, period))] -= 1
+        if teacher_period[(tid, period)] > 0:
+            teacher_period[(tid, period)] -= 1
         sp = span_of(gid, period)
         if sp and sp in teacher_spans[(tid, day)]:
             teacher_spans[(tid, day)].remove(sp)
@@ -1091,9 +1103,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     # final two periods are discouraged and the rest rank
                     # equal, which leaves room for the two rules below.
                     tail_cost(lvl, period),
-                    # Give the teacher a mix of mornings and afternoons by
-                    # sending each lesson to whichever half of their week is
-                    # lighter so far.
+                    # Spread the teacher across the periods of the day, so
+                    # their week is not the same hour five times over. This
+                    # also settles the morning/afternoon balance on its own —
+                    # levelling every period levels the halves with it — so the
+                    # separate half-rate rule it replaced is gone.
+                    teacher_period[(tid, period)],
                     round(half_rate(tid, gid, period), 3),
                     # Among equals, the class's emptiest day for that period —
                     # keeps one day from taking the lot.

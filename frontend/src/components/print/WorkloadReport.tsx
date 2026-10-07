@@ -1,16 +1,16 @@
 /**
- * อัตรากำลังการสอน — what each teacher carries, on paper.
+ * อัตรากำลังการสอน — one table per กลุ่มสาระ, every teacher in it a row.
  *
- * Not a timetable. A timetable answers "where am I at 10:10"; this answers
- * "what am I responsible for this term", which is the question the academic
- * office is asked for by the district: subject, code, which classes, which
- * rooms, how many periods a week, and a blank column to write in.
+ * It began as a page per teacher, which on this school's data meant 146
+ * sheets, most of them three lines and a lot of white paper. The academic
+ * office reads this department by department, so that is how it is printed:
+ * the teacher's name is a column, their subjects sit beside it, and the whole
+ * กลุ่มสาระ is one document that can be handed to its head.
  *
  * Built from the placed timetable rather than from the lesson requirements,
  * because the rooms only exist once the timetable is made, and a requirement
- * that failed to place should not be reported as teaching that is happening.
- * Requirements the timetable never placed are listed separately, as a
- * shortfall, instead of being quietly left out.
+ * that failed to place is not teaching that is happening. What did not place
+ * is reported as a shortfall rather than quietly left out.
  */
 import React from "react";
 import type {
@@ -29,12 +29,19 @@ const roomNumber = (n: string | null | undefined) => {
   return m ? m[1] : String(n ?? "").trim();
 };
 
-interface Row {
+interface SubjectRow {
   subjectCode: string;
   subjectName: string;
   classes: string[];
   rooms: string[];
   periods: number;
+}
+
+interface TeacherBlock {
+  teacher: Teacher;
+  rows: SubjectRow[];
+  total: number;
+  missing: number;
 }
 
 export interface WorkloadProps {
@@ -53,28 +60,18 @@ export interface WorkloadProps {
 
 export const WorkloadReport: React.FC<WorkloadProps> = ({
   teachers, departments, groups, subjects, requirements, slots,
-  schoolName, termLabel, selectedIds, sort,
+  schoolName, termLabel, selectedIds,
 }) => {
   const flat = flattenGroups(groups);
   const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? "";
   const subj = (id: number | null | undefined) => subjects.find((s) => s.id === id);
-  const deptName = (id: number | null | undefined) =>
-    departments.find((d) => d.id === id)?.name ?? "";
 
   const pick = new Set(selectedIds);
-  const list = teachers
-    .filter((t) => pick.size === 0 || pick.has(t.id))
-    .sort((a, b) => {
-      if (sort === "code") return (a.code ?? "").localeCompare(b.code ?? "", undefined, { numeric: true })
-        || compareNames(a.name, b.name);
-      if (sort === "department") return deptName(a.department_id).localeCompare(deptName(b.department_id))
-        || compareNames(a.name, b.name);
-      return compareNames(a.name, b.name);
-    });
+  const chosen = teachers.filter((t) => pick.size === 0 || pick.has(t.id));
 
   /** One row per subject this teacher actually teaches, classes merged. */
-  const rowsFor = (t: Teacher): Row[] => {
-    const by = new Map<number, Row>();
+  const rowsFor = (t: Teacher): SubjectRow[] => {
+    const by = new Map<number, SubjectRow>();
     for (const s of slots) {
       if (!teachesSlot(s, t.id)) continue;
       const sid = s.subject_id;
@@ -92,15 +89,14 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
       by.set(sid, row);
     }
     const rows = [...by.values()];
-    for (const r of rows) {
-      r.classes.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-      r.rooms.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    }
+    const natural = (a: string, b: string) =>
+      a.localeCompare(b, undefined, { numeric: true });
+    for (const r of rows) { r.classes.sort(natural); r.rooms.sort(natural); }
     return rows.sort((a, b) => a.subjectCode.localeCompare(b.subjectCode));
   };
 
   /** Periods asked for but never placed — said plainly rather than hidden. */
-  const shortfallFor = (t: Teacher) => {
+  const missingFor = (t: Teacher) => {
     const want = new Map<number, number>();
     for (const r of requirements) {
       if (r.teacher_id !== t.id) continue;
@@ -116,118 +112,167 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
     return missing;
   };
 
+  const blockFor = (t: Teacher): TeacherBlock => {
+    const rows = rowsFor(t);
+    return {
+      teacher: t, rows,
+      total: rows.reduce((n, r) => n + r.periods, 0),
+      missing: missingFor(t),
+    };
+  };
+
+  // Teachers with no department still have to appear somewhere, so they get a
+  // section of their own rather than being dropped off the report.
+  const sections: { name: string; blocks: TeacherBlock[] }[] = [];
+  for (const d of departments) {
+    const mine = chosen
+      .filter((t) => t.department_id === d.id)
+      .sort((a, b) =>
+        (a.code ?? "").localeCompare(b.code ?? "", undefined, { numeric: true })
+        || compareNames(a.name, b.name));
+    if (mine.length) sections.push({ name: d.name, blocks: mine.map(blockFor) });
+  }
+  const orphans = chosen
+    .filter((t) => !departments.some((d) => d.id === t.department_id))
+    .sort((a, b) => compareNames(a.name, b.name));
+  if (orphans.length) {
+    sections.push({ name: "ไม่ได้ระบุกลุ่มสาระ", blocks: orphans.map(blockFor) });
+  }
+
   const TH: React.CSSProperties = {
-    border: "1px solid #000", padding: "3px 5px", fontSize: "9pt",
-    fontWeight: 600, background: "#e8e8e8", color: "#000", textAlign: "center",
+    border: "1px solid #000", padding: "3px 4px", fontSize: "8.5pt",
+    fontWeight: 600, background: "#d8d8d8", color: "#000", textAlign: "center",
   };
   const TD: React.CSSProperties = {
-    border: "1px solid #000", padding: "3px 5px", fontSize: "9.5pt",
-    verticalAlign: "middle",
+    border: "1px solid #000", padding: "3px 4px", fontSize: "9pt",
+    verticalAlign: "top",
   };
+  const mid: React.CSSProperties = { ...TD, verticalAlign: "middle" };
 
   return (
     <>
-      {list.map((t, idx) => {
-        const rows = rowsFor(t);
-        const total = rows.reduce((n, r) => n + r.periods, 0);
-        const missing = shortfallFor(t);
-        return (
-          <div key={t.id} className="print-page">
-            <div className="tt-block" style={{ display: "flex", flexDirection: "column" }}>
-              <div style={{ textAlign: "center", marginBottom: "4mm" }}>
-                <div style={{ fontSize: "15pt", fontWeight: 700 }}>
-                  อัตรากำลังการสอน {String(idx + 1).padStart(3, "0")}
-                </div>
-                <div style={{ fontSize: "11.5pt", fontWeight: 600, marginTop: "1mm" }}>
-                  {t.code ? `${t.code}  ` : ""}{t.name}
-                  {deptName(t.department_id) ? `  ·  ${deptName(t.department_id)}` : ""}
-                </div>
-                <div style={{ fontSize: "10pt", marginTop: "0.5mm" }}>
-                  {termLabel}{schoolName ? `  ${schoolName}` : ""}
-                </div>
-              </div>
+      {/* The sheet flows instead of being locked to one page: a กลุ่มสาระ of
+          22 teachers is several pages, and the header repeats on each. */}
+      <style>{`
+        @media print {
+          .wl-section { break-before: page; page-break-before: always; }
+          .wl-section:first-child { break-before: auto; page-break-before: auto; }
+          .wl-section table { page-break-inside: auto; }
+          .wl-section thead { display: table-header-group; }
+          .wl-section tr { page-break-inside: avoid; }
+        }
+      `}</style>
 
-              <div className="tt-grid" style={{ border: "1.4px solid #000", boxSizing: "border-box" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
-                  <colgroup>
-                    <col style={{ width: "34px" }} />
-                    <col style={{ width: "88px" }} />
-                    <col />
-                    <col style={{ width: "150px" }} />
-                    <col style={{ width: "110px" }} />
-                    <col style={{ width: "58px" }} />
-                    <col style={{ width: "150px" }} />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th style={TH}>ที่</th>
-                      <th style={TH}>รหัสวิชา</th>
-                      <th style={TH}>ชื่อวิชา</th>
-                      <th style={TH}>ชั้นที่สอน</th>
-                      <th style={TH}>ห้องที่สอน</th>
-                      <th style={TH}>คาบ/สัปดาห์</th>
-                      <th style={TH}>หมายเหตุ</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.length === 0 && (
-                      <tr>
-                        <td style={{ ...TD, textAlign: "center" }} colSpan={7}>
-                          ยังไม่มีคาบสอนในตาราง
-                        </td>
-                      </tr>
-                    )}
-                    {rows.map((r, i) => (
-                      <tr key={i}>
-                        <td style={{ ...TD, textAlign: "center" }}>{i + 1}</td>
-                        <td style={{ ...TD, fontFamily: "monospace" }}>{r.subjectCode}</td>
-                        <td style={TD}>{r.subjectName}</td>
-                        <td style={TD}>{r.classes.join(", ")}</td>
-                        <td style={TD}>{r.rooms.join(", ") || "–"}</td>
-                        <td style={{ ...TD, textAlign: "center", fontWeight: 600 }}>{r.periods}</td>
+      {sections.length === 0 && (
+        <div style={{ padding: "20mm" }}><p>ไม่มีครูที่ตรงกับตัวเลือกการพิมพ์</p></div>
+      )}
+
+      {sections.map((sec) => {
+        const deptTotal = sec.blocks.reduce((n, b) => n + b.total, 0);
+        let seq = 0;
+        return (
+          <div key={sec.name} className="wl-section">
+            <div style={{ textAlign: "center", marginBottom: "3mm" }}>
+              <div style={{ fontSize: "14pt", fontWeight: 700 }}>อัตรากำลังการสอน</div>
+              <div style={{ fontSize: "12pt", fontWeight: 600, marginTop: "1mm" }}>
+                {sec.name}
+              </div>
+              <div style={{ fontSize: "9.5pt", marginTop: "0.5mm" }}>
+                {termLabel}{schoolName ? `  ${schoolName}` : ""}
+                {"  ·  ครู "}{sec.blocks.length}{" คน  ·  รวม "}{deptTotal}{" คาบ/สัปดาห์"}
+              </div>
+            </div>
+
+            <table style={{
+              width: "100%", borderCollapse: "collapse", tableLayout: "fixed",
+              border: "1.4px solid #000",
+            }}>
+              <colgroup>
+                <col style={{ width: "26px" }} />
+                <col style={{ width: "140px" }} />
+                <col style={{ width: "74px" }} />
+                <col />
+                <col style={{ width: "132px" }} />
+                <col style={{ width: "92px" }} />
+                <col style={{ width: "40px" }} />
+                <col style={{ width: "104px" }} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th style={TH}>ที่</th>
+                  <th style={TH}>ชื่อครูผู้สอน</th>
+                  <th style={TH}>รหัสวิชา</th>
+                  <th style={TH}>ชื่อวิชา</th>
+                  <th style={TH}>ชั้นที่สอน</th>
+                  <th style={TH}>ห้องที่สอน</th>
+                  <th style={TH}>คาบ</th>
+                  <th style={TH}>หมายเหตุ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sec.blocks.map((b) => {
+                  seq += 1;
+                  const span = Math.max(1, b.rows.length);
+                  const nameCell = (
+                    <td style={mid} rowSpan={span}>
+                      <div style={{ fontWeight: 600 }}>{b.teacher.name}</div>
+                      <div style={{ fontSize: "8pt", color: "#444" }}>
+                        {b.teacher.code ? `รหัส ${b.teacher.code}` : ""}
+                        {b.total ? `  ·  รวม ${b.total} คาบ` : ""}
+                      </div>
+                      {b.missing > 0 && (
+                        <div style={{ fontSize: "7.5pt", color: "#444" }}>
+                          * ยังลงตารางไม่ได้ {b.missing} คาบ
+                        </div>
+                      )}
+                    </td>
+                  );
+                  if (b.rows.length === 0) {
+                    return (
+                      <tr key={b.teacher.id}>
+                        <td style={{ ...mid, textAlign: "center" }} rowSpan={1}>{seq}</td>
+                        {nameCell}
+                        <td style={TD} colSpan={5}>ยังไม่มีคาบสอนในตาราง</td>
                         <td style={TD} />
                       </tr>
-                    ))}
-                    {/* Blank lines, so anything decided after printing can be
-                        written straight onto the sheet. */}
-                    {rows.length > 0 && Array.from({ length: 3 }).map((_, i) => (
-                      <tr key={`blank-${i}`}>
-                        <td style={{ ...TD, textAlign: "center", color: "#999" }}>{rows.length + i + 1}</td>
-                        <td style={TD} /><td style={TD} /><td style={TD} />
-                        <td style={TD} /><td style={TD} /><td style={TD} />
-                      </tr>
-                    ))}
-                    <tr>
-                      <td style={{ ...TD, fontWeight: 700, textAlign: "right" }} colSpan={5}>
-                        รวมคาบสอนทั้งสิ้น
-                      </td>
-                      <td style={{ ...TD, textAlign: "center", fontWeight: 700 }}>{total}</td>
+                    );
+                  }
+                  return b.rows.map((r, i) => (
+                    <tr key={`${b.teacher.id}-${i}`}>
+                      {i === 0 && (
+                        <td style={{ ...mid, textAlign: "center" }} rowSpan={span}>{seq}</td>
+                      )}
+                      {i === 0 && nameCell}
+                      <td style={{ ...TD, fontFamily: "monospace" }}>{r.subjectCode}</td>
+                      <td style={TD}>{r.subjectName}</td>
+                      <td style={TD}>{r.classes.join(", ")}</td>
+                      <td style={TD}>{r.rooms.join(", ") || "–"}</td>
+                      <td style={{ ...TD, textAlign: "center", fontWeight: 600 }}>{r.periods}</td>
                       <td style={TD} />
                     </tr>
-                  </tbody>
-                </table>
+                  ));
+                })}
+                <tr>
+                  <td style={{ ...TD, fontWeight: 700, textAlign: "right" }} colSpan={6}>
+                    รวมทั้งกลุ่มสาระ
+                  </td>
+                  <td style={{ ...TD, textAlign: "center", fontWeight: 700 }}>{deptTotal}</td>
+                  <td style={TD} />
+                </tr>
+              </tbody>
+            </table>
+
+            <div style={{
+              marginTop: "8mm", display: "flex", justifyContent: "space-between",
+              fontSize: "9.5pt",
+            }}>
+              <div style={{ textAlign: "center", minWidth: "40%" }}>
+                <div>ลงชื่อ................................</div>
+                <div>หัวหน้ากลุ่มสาระการเรียนรู้</div>
               </div>
-
-              {missing > 0 && (
-                <p style={{ fontSize: "9pt", marginTop: "2mm" }}>
-                  * มีคาบที่กำหนดไว้แต่ยังจัดลงตารางไม่ได้อีก {missing} คาบ
-                  — ตัวเลขข้างบนนับเฉพาะคาบที่อยู่ในตารางจริง
-                </p>
-              )}
-
-              <div style={{
-                marginTop: "10mm", display: "flex", justifyContent: "space-between",
-                fontSize: "10pt",
-              }}>
-                <div style={{ textAlign: "center", minWidth: "40%" }}>
-                  <div>ลงชื่อ................................</div>
-                  <div>({t.name})</div>
-                  <div>ครูผู้สอน</div>
-                </div>
-                <div style={{ textAlign: "center", minWidth: "40%" }}>
-                  <div>ลงชื่อ................................</div>
-                  <div>ผู้อำนวยการโรงเรียน</div>
-                </div>
+              <div style={{ textAlign: "center", minWidth: "40%" }}>
+                <div>ลงชื่อ................................</div>
+                <div>ผู้อำนวยการโรงเรียน</div>
               </div>
             </div>
           </div>

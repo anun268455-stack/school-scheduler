@@ -91,7 +91,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
             <p className="text-xs font-semibold text-gray-700 mb-1.5">พิมพ์อะไร</p>
             <div className="flex gap-2">
               {([["group", "👥 ตารางเรียน (รายห้อง)"], ["teacher", "👨‍🏫 ตารางสอน (รายครู)"],
-                 ["workload", "📋 อัตรากำลังการสอน"]] as [PrintMode, string][]).map(([k, label]) => (
+                 ["workload", "📋 อัตรากำลัง (ตามกลุ่มสาระ)"]] as [PrintMode, string][]).map(([k, label]) => (
                 <button key={k}
                   onClick={() => set({ mode: k, selectedIds: [], sort: k === "group" ? "name" : "code" })}
                   className={clsx(
@@ -106,8 +106,10 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
 
           {/* Order + sheets */}
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <p className="text-xs font-semibold text-gray-700 mb-1.5">เรียงลำดับ</p>
+            <div className={opt.mode === "workload" ? "opacity-40 pointer-events-none" : ""}>
+              <p className="text-xs font-semibold text-gray-700 mb-1.5">
+                เรียงลำดับ{opt.mode === "workload" && " (อัตรากำลังเรียงตามรหัสในกลุ่มสาระ)"}
+              </p>
               <select className="w-full border border-gray-400 bg-white text-gray-900 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                 value={opt.sort} onChange={(e) => set({ sort: e.target.value as PrintSort })}>
                 <option value="name">ตามชื่อ</option>
@@ -117,7 +119,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
             </div>
             <div className={opt.mode === "workload" ? "opacity-40 pointer-events-none" : ""}>
               <p className="text-xs font-semibold text-gray-700 mb-1.5">
-                จำนวนต่อแผ่น A4{opt.mode === "workload" && " (อัตรากำลังใช้ 1 คนต่อแผ่น)"}
+                จำนวนต่อแผ่น A4{opt.mode === "workload" && " (อัตรากำลังจัดเองตามกลุ่มสาระ)"}
               </p>
               <select className="w-full border border-gray-400 bg-white text-gray-900 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                 value={opt.perPage} onChange={(e) => set({ perPage: Number(e.target.value) as 1 | 2 })}>
@@ -170,7 +172,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
         <div className="px-5 py-3 border-t border-gray-100 bg-gray-50 flex items-center gap-2 shrink-0">
           <p className="text-[11px] text-gray-500 flex-1">
             {opt.mode === "workload"
-              ? <>จะได้ <strong>{countSel}</strong> แผ่น (อัตรากำลัง 1 คนต่อแผ่น)</>
+              ? <>พิมพ์ <strong>{countSel}</strong> คน แยกเป็นตารางตามกลุ่มสาระ (ขึ้นหน้าใหม่ทุกกลุ่มสาระ)</>
               : <>จะได้ <strong>{sheets}</strong> แผ่น ({countSel} ตาราง × {opt.perPage} ต่อแผ่น)</>}
           </p>
           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-lg font-medium">ยกเลิก</button>
