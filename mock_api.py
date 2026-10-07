@@ -666,6 +666,38 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             for b in bks:
                 room_busy.add((s["room_id"], s["day"], b))
 
+    # The school eats in two shifts — ม.1-3 break at 11:10 while ม.4-6 are in
+    # class, then the other way round. So "lunch" is not one window but two,
+    # and a teacher who takes a lesson in both of them eats in neither. That
+    # is the trap in filling คาบ 4 and คาบ 5 harder: they are the two shifts.
+    # Read off the period rows rather than hard-coded, because the shifts are
+    # the school's to move.
+    lunch_windows: list[frozenset[int]] = []
+    _seen_lunch: set[tuple[int, int]] = set()
+    for _lvl in ("lower", "upper"):
+        for _row in _periods_for_level(_lvl).values():
+            if _row.get("type") != "lunch":
+                continue
+            _a, _b = _hhmm(_row.get("start_time")), _hhmm(_row.get("end_time"))
+            if _a is None or _b is None or _b <= _a or (_a, _b) in _seen_lunch:
+                continue
+            _seen_lunch.add((_a, _b))
+            lunch_windows.append(
+                frozenset(range(_a // _BUCKET, (_b + _BUCKET - 1) // _BUCKET)))
+
+    def keeps_a_lunch(tid: int, gid: int, day: int, period: int) -> bool:
+        """Would this teacher still get one of the lunch shifts to themselves?"""
+        if len(lunch_windows) < 2:
+            return True        # a single shift — there is nothing to choose
+        taking = cell_buckets(gid, period)
+        for win in lunch_windows:
+            if taking & win:
+                continue       # the shift this lesson would eat into
+            if any((tid, day, b) in teacher_busy for b in win):
+                continue       # already teaching through this one
+            return True        # this shift stays free
+        return False
+
     # Each level has its own lesson periods — ม.1-3 are at lunch while ม.4-6
     # are in class — so the cells a lesson may use depend on whose lesson it is.
     def tail_cost(level: str, period: int) -> int:
@@ -1131,49 +1163,68 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     # not; a tie-break, never a reason to skip the period.
                     1 if lunch_adjacent(gid, period) else 0,
                 )
-            cells.sort(key=rank)
-
-            for day, period in cells:
-                if placed >= needed:
-                    break
-                if attempt < 3:
-                    if day in prefs["days_off"]:
-                        continue            # the teacher does not work this day
-                    if period in prefs["avoid_periods"]:
+            # Ranked again after every placement rather than sorted once.
+            # Sorting once and then walking the list handed every lesson of a
+            # requirement the same winner: each placement raised that period's
+            # counter, but the frozen order never saw it, so the cell that
+            # ranked best for the first lesson still ranked best for the
+            # second and the third. That is how a teacher ended up teaching
+            # one period all week while คาบ 4 and คาบ 5 stayed empty. Choosing
+            # the best remaining cell each time is what actually spreads them.
+            pool = list(cells)
+            while placed < needed and pool:
+                pool.sort(key=rank)
+                taken = -1
+                for idx, (day, period) in enumerate(pool):
+                    if attempt < 3:
+                        if day in prefs["days_off"]:
+                            continue        # the teacher does not work this day
+                        if period in prefs["avoid_periods"]:
+                            continue
+                    if not teacher_free(tid, day, gid, period):
                         continue
-                if not teacher_free(tid, day, gid, period):
-                    continue
-                if group_occupied(gid, day, period):
-                    continue
-                run = run_if_placed(tid, gid, day, period)
-                # The run limit is a real rule and stays. "Next to lunch" is
-                # not: refusing it outright starved the one period that sits
-                # after lunch — 54% full against 97-100% everywhere else, with
-                # six classes free in it all week — so it is now only an
-                # ordering preference, applied in rank() above.
-                if attempt == 0 and run > consec_soft:
-                    continue
+                    if group_occupied(gid, day, period):
+                        continue
+                    run = run_if_placed(tid, gid, day, period)
+                    # The run limit is a real rule and stays. "Next to lunch"
+                    # is not: refusing it outright starved the one period that
+                    # sits after lunch — 54% full against 97-100% everywhere
+                    # else, with six classes free in it all week — so it is now
+                    # only an ordering preference, applied in rank() above.
+                    if attempt == 0 and run > consec_soft:
+                        continue
 
-                # One period of a subject per day, unless it is a คาบคู่ — a
-                # class should not sit through the same subject twice in a day.
-                # Held for the first three passes and released on the last,
-                # because a subject needing more periods a week than there are
-                # days has no other way to fit, and a lesson placed twice in a
-                # day still beats a lesson not placed at all.
-                if (attempt < 3 and duration == 1
-                        and subj_day[(gid, req.get("subject_id"), day)] > 0):
-                    continue
-                if attempt == 1 and run > consec_soft:
-                    continue
-                if run > hard:
-                    continue
-                slot = make_slot(req, day, period)
-                SLOTS.append(slot)
-                note_subject(gid, req.get("subject_id"), day)
-                book(tid, gid, day, period)
-                if period == last_num:
-                    last_period_done[tid] += 1
-                placed += 1
+                    # One period of a subject per day, unless it is a คาบคู่ —
+                    # a class should not sit through the same subject twice in
+                    # a day. Held for the first three passes and released on
+                    # the last, because a subject needing more periods a week
+                    # than there are days has no other way to fit, and a lesson
+                    # placed twice in a day still beats one not placed at all.
+                    if (attempt < 3 and duration == 1
+                            and subj_day[(gid, req.get("subject_id"), day)] > 0):
+                        continue
+
+                    # Leave the teacher one of the two lunch shifts. Without
+                    # this, spreading lessons into คาบ 4 and คาบ 5 quietly
+                    # buys the coverage with somebody's lunch hour.
+                    if attempt < 3 and not keeps_a_lunch(tid, gid, day, period):
+                        continue
+                    if attempt == 1 and run > consec_soft:
+                        continue
+                    if run > hard:
+                        continue
+                    slot = make_slot(req, day, period)
+                    SLOTS.append(slot)
+                    note_subject(gid, req.get("subject_id"), day)
+                    book(tid, gid, day, period)
+                    if period == last_num:
+                        last_period_done[tid] += 1
+                    placed += 1
+                    taken = idx
+                    break
+                if taken < 0:
+                    break           # nothing left this pass can take
+                pool.pop(taken)
         return placed
 
     # ── Place solo requirements ──
