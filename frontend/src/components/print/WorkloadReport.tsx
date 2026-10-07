@@ -23,17 +23,9 @@ import { teachesSlot } from "../../utils/teacherSlots";
 const shortClass = (n: string | null | undefined) =>
   String(n ?? "").replace(/^ม\.?\s*/, "");
 
-/** "131 ห้องคอมฯ3" → "131". The number is what is on the door. */
-const roomNumber = (n: string | null | undefined) => {
-  const m = String(n ?? "").trim().match(/^([0-9][0-9.\-/]*)\b/);
-  return m ? m[1] : String(n ?? "").trim();
-};
-
 interface SubjectRow {
   subjectCode: string;
-  subjectName: string;
   classes: string[];
-  rooms: string[];
   periods: number;
 }
 
@@ -78,20 +70,17 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
       if (sid == null) continue;
       const row = by.get(sid) ?? {
         subjectCode: subj(sid)?.code ?? s.subject_code ?? "",
-        subjectName: subj(sid)?.name ?? s.subject_name ?? "",
-        classes: [], rooms: [], periods: 0,
+        classes: [], periods: 0,
       };
       const cls = shortClass(s.group_name ?? gName(s.group_id));
       if (cls && !row.classes.includes(cls)) row.classes.push(cls);
-      const rm = roomNumber(s.room_name);
-      if (rm && !row.rooms.includes(rm)) row.rooms.push(rm);
       row.periods += 1;
       by.set(sid, row);
     }
     const rows = [...by.values()];
     const natural = (a: string, b: string) =>
       a.localeCompare(b, undefined, { numeric: true });
-    for (const r of rows) { r.classes.sort(natural); r.rooms.sort(natural); }
+    for (const r of rows) r.classes.sort(natural);
     return rows.sort((a, b) => a.subjectCode.localeCompare(b.subjectCode));
   };
 
@@ -139,15 +128,22 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
     sections.push({ name: "ไม่ได้ระบุกลุ่มสาระ", blocks: orphans.map(blockFor) });
   }
 
+  // The school prints this with "background graphics" switched off, so a grey
+  // fill is simply not there on paper. Everything that separates one thing
+  // from another is therefore a line or a weight, never a tint: the header is
+  // bold and sits on a heavy rule, and each teacher's block opens with one.
   const TH: React.CSSProperties = {
-    border: "1px solid #000", padding: "3px 4px", fontSize: "8.5pt",
-    fontWeight: 600, background: "#d8d8d8", color: "#000", textAlign: "center",
+    border: "1px solid #000", borderBottom: "1.4px solid #000",
+    padding: "5px 6px", fontSize: "9.5pt", fontWeight: 700,
+    color: "#000", textAlign: "center",
   };
   const TD: React.CSSProperties = {
-    border: "1px solid #000", padding: "3px 4px", fontSize: "9pt",
-    verticalAlign: "top",
+    border: "1px solid #000", padding: "3px 6px", fontSize: "10pt",
+    verticalAlign: "top", lineHeight: 1.35,
   };
   const mid: React.CSSProperties = { ...TD, verticalAlign: "middle" };
+  /** The rule that opens a teacher's block, so rows group by eye. */
+  const topRule = "1.4px solid #000";
 
   return (
     <>
@@ -160,6 +156,10 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
           .wl-section table { page-break-inside: auto; }
           .wl-section thead { display: table-header-group; }
           .wl-section tr { page-break-inside: avoid; }
+          /* A signature line and the title underneath it must not be split
+             across a page break — the first print put "ลงชื่อ" at the foot of
+             one sheet and "ผู้อำนวยการโรงเรียน" alone at the top of the next. */
+          .wl-sign { break-inside: avoid; page-break-inside: avoid; }
         }
       `}</style>
 
@@ -188,23 +188,19 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
               border: "1.4px solid #000",
             }}>
               <colgroup>
-                <col style={{ width: "26px" }} />
-                <col style={{ width: "140px" }} />
-                <col style={{ width: "74px" }} />
-                <col />
-                <col style={{ width: "132px" }} />
+                <col style={{ width: "30px" }} />
+                <col style={{ width: "190px" }} />
                 <col style={{ width: "92px" }} />
-                <col style={{ width: "40px" }} />
-                <col style={{ width: "104px" }} />
+                <col />
+                <col style={{ width: "46px" }} />
+                <col style={{ width: "150px" }} />
               </colgroup>
               <thead>
                 <tr>
                   <th style={TH}>ที่</th>
                   <th style={TH}>ชื่อครูผู้สอน</th>
                   <th style={TH}>รหัสวิชา</th>
-                  <th style={TH}>ชื่อวิชา</th>
                   <th style={TH}>ชั้นที่สอน</th>
-                  <th style={TH}>ห้องที่สอน</th>
                   <th style={TH}>คาบ</th>
                   <th style={TH}>หมายเหตุ</th>
                 </tr>
@@ -213,15 +209,21 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
                 {sec.blocks.map((b) => {
                   seq += 1;
                   const span = Math.max(1, b.rows.length);
+                  // Only the first row of a block carries the rule, so the
+                  // teacher's own subjects stay visually tied together.
+                  const open = (s: React.CSSProperties): React.CSSProperties =>
+                    ({ ...s, borderTop: topRule });
                   const nameCell = (
-                    <td style={mid} rowSpan={span}>
-                      <div style={{ fontWeight: 600 }}>{b.teacher.name}</div>
-                      <div style={{ fontSize: "8pt", color: "#444" }}>
+                    <td style={open(mid)} rowSpan={span}>
+                      <div style={{ fontWeight: 700, fontSize: "10pt" }}>
+                        {b.teacher.name}
+                      </div>
+                      <div style={{ fontSize: "8.5pt", marginTop: "1px" }}>
                         {b.teacher.code ? `รหัส ${b.teacher.code}` : ""}
                         {b.total ? `  ·  รวม ${b.total} คาบ` : ""}
                       </div>
                       {b.missing > 0 && (
-                        <div style={{ fontSize: "7.5pt", color: "#444" }}>
+                        <div style={{ fontSize: "8pt", marginTop: "1px" }}>
                           * ยังลงตารางไม่ได้ {b.missing} คาบ
                         </div>
                       )}
@@ -230,47 +232,64 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
                   if (b.rows.length === 0) {
                     return (
                       <tr key={b.teacher.id}>
-                        <td style={{ ...mid, textAlign: "center" }} rowSpan={1}>{seq}</td>
+                        <td style={open({ ...mid, textAlign: "center" })}>{seq}</td>
                         {nameCell}
-                        <td style={TD} colSpan={5}>ยังไม่มีคาบสอนในตาราง</td>
-                        <td style={TD} />
+                        <td style={open(TD)} colSpan={3}>ยังไม่มีคาบสอนในตาราง</td>
+                        <td style={open(TD)} />
                       </tr>
                     );
                   }
-                  return b.rows.map((r, i) => (
-                    <tr key={`${b.teacher.id}-${i}`}>
-                      {i === 0 && (
-                        <td style={{ ...mid, textAlign: "center" }} rowSpan={span}>{seq}</td>
-                      )}
-                      {i === 0 && nameCell}
-                      <td style={{ ...TD, fontFamily: "monospace" }}>{r.subjectCode}</td>
-                      <td style={TD}>{r.subjectName}</td>
-                      <td style={TD}>{r.classes.join(", ")}</td>
-                      <td style={TD}>{r.rooms.join(", ") || "–"}</td>
-                      <td style={{ ...TD, textAlign: "center", fontWeight: 600 }}>{r.periods}</td>
-                      <td style={TD} />
-                    </tr>
-                  ));
+                  return b.rows.map((r, i) => {
+                    const cell = (s: React.CSSProperties) => (i === 0 ? open(s) : s);
+                    return (
+                      <tr key={`${b.teacher.id}-${i}`}>
+                        {i === 0 && (
+                          <td style={open({ ...mid, textAlign: "center" })} rowSpan={span}>
+                            {seq}
+                          </td>
+                        )}
+                        {i === 0 && nameCell}
+                        <td style={cell({
+                          ...TD, textAlign: "center", whiteSpace: "nowrap",
+                        })}>
+                          {r.subjectCode}
+                        </td>
+                        <td style={cell(TD)}>{r.classes.join(", ")}</td>
+                        <td style={cell({ ...TD, textAlign: "center", fontWeight: 700 })}>
+                          {r.periods}
+                        </td>
+                        <td style={cell(TD)} />
+                      </tr>
+                    );
+                  });
                 })}
                 <tr>
-                  <td style={{ ...TD, fontWeight: 700, textAlign: "right" }} colSpan={6}>
+                  <td style={{
+                    ...TD, fontWeight: 700, textAlign: "right",
+                    borderTop: topRule,
+                  }} colSpan={4}>
                     รวมทั้งกลุ่มสาระ
                   </td>
-                  <td style={{ ...TD, textAlign: "center", fontWeight: 700 }}>{deptTotal}</td>
-                  <td style={TD} />
+                  <td style={{
+                    ...TD, textAlign: "center", fontWeight: 700,
+                    borderTop: topRule,
+                  }}>
+                    {deptTotal}
+                  </td>
+                  <td style={{ ...TD, borderTop: topRule }} />
                 </tr>
               </tbody>
             </table>
 
-            <div style={{
-              marginTop: "8mm", display: "flex", justifyContent: "space-between",
+            <div className="wl-sign" style={{
+              marginTop: "5mm", display: "flex", justifyContent: "space-between",
               fontSize: "9.5pt",
             }}>
-              <div style={{ textAlign: "center", minWidth: "40%" }}>
+              <div className="wl-sign" style={{ textAlign: "center", minWidth: "40%" }}>
                 <div>ลงชื่อ................................</div>
                 <div>หัวหน้ากลุ่มสาระการเรียนรู้</div>
               </div>
-              <div style={{ textAlign: "center", minWidth: "40%" }}>
+              <div className="wl-sign" style={{ textAlign: "center", minWidth: "40%" }}>
                 <div>ลงชื่อ................................</div>
                 <div>ผู้อำนวยการโรงเรียน</div>
               </div>
