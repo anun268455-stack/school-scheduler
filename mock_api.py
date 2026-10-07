@@ -917,6 +917,18 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             return r["id"], r["name"], r["type"]
         return None, None, None
 
+    # How many periods of one subject a class already has on one day.
+    #
+    # A subject that is not a คาบคู่ should not come round twice in a day: the
+    # class sits through สังคม in คาบ 7 and again in คาบ 8, which is the shape
+    # the school asked to stop. Counted here rather than scanned out of SLOTS,
+    # because the question is asked of every candidate cell.
+    subj_day: dict[tuple[int, int, int], int] = defaultdict(int)
+
+    def note_subject(gid: int, sid: int | None, day: int, delta: int = 1) -> None:
+        if sid is not None:
+            subj_day[(gid, sid, day)] += delta
+
     def make_slot(req: dict, day: int, period: int) -> dict:
         rid, rname, rtype = find_room(req["teacher_id"], day, period, req["subject_id"], req["group_id"])
         subj    = s_map.get(req["subject_id"], {})
@@ -1073,6 +1085,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         lvl = _level_key(g_map.get(gid))
         morning_end = _morning_cutoff(lvl)
         wants_morning = _prefers_morning(s_map.get(req["subject_id"]))
+        # A คาบคู่ is meant to sit twice in a day; everything else is not.
+        duration = (s_map.get(req["subject_id"], {}) or {}).get("duration", 1) or 1
         placed = 0
         for attempt in range(4):
             if placed >= needed:
@@ -1139,12 +1153,23 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 # ordering preference, applied in rank() above.
                 if attempt == 0 and run > consec_soft:
                     continue
+
+                # One period of a subject per day, unless it is a คาบคู่ — a
+                # class should not sit through the same subject twice in a day.
+                # Held for the first three passes and released on the last,
+                # because a subject needing more periods a week than there are
+                # days has no other way to fit, and a lesson placed twice in a
+                # day still beats a lesson not placed at all.
+                if (attempt < 3 and duration == 1
+                        and subj_day[(gid, req.get("subject_id"), day)] > 0):
+                    continue
                 if attempt == 1 and run > consec_soft:
                     continue
                 if run > hard:
                     continue
                 slot = make_slot(req, day, period)
                 SLOTS.append(slot)
+                note_subject(gid, req.get("subject_id"), day)
                 book(tid, gid, day, period)
                 if period == last_num:
                     last_period_done[tid] += 1
@@ -1196,6 +1221,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     s1["is_double_start"] = True
                     s2 = make_slot(req, day, p2)
                     SLOTS.append(s1); SLOTS.append(s2)
+                    note_subject(gid, req.get("subject_id"), day, 2)
                     for pp in (p, p2):
                         book(tid, gid, day, pp)
                     created      += 2
@@ -1260,6 +1286,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     if i == 0 and len(periods_to_fill) > 1:
                         slot["is_double_start"] = True
                     SLOTS.append(slot)
+                    note_subject(req["group_id"], req.get("subject_id"), day_)
                     book(req["teacher_id"], req["group_id"], day_, per_)
 
         placed = 0
@@ -1285,15 +1312,29 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if remaining > 0:
             cells = cells_for(reqs[0]["group_id"])
             random.shuffle(cells)
-            for day, period in cells:
+
+            def already_today(day_: int) -> bool:
+                return any(subj_day[(r["group_id"], r.get("subject_id"), day_)] > 0
+                           for r in reqs)
+
+            # Same rule as an ordinary lesson: one period of the subject a day
+            # for every class in the block. Tried first with the rule on and
+            # again with it off, so a subject that cannot spread any further
+            # still gets placed rather than being dropped.
+            for spread in (True, False):
+                for day, period in cells:
+                    if remaining <= 0:
+                        break
+                    if spread and already_today(day):
+                        continue
+                    if not all_free([(day, period)]):
+                        continue
+                    place_block(day, [period])
+                    created_here += len(reqs)
+                    placed       += 1
+                    remaining    -= 1
                 if remaining <= 0:
                     break
-                if not all_free([(day, period)]):
-                    continue
-                place_block(day, [period])
-                created_here += len(reqs)
-                placed       += 1
-                remaining    -= 1
 
         created += created_here
 
