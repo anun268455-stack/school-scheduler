@@ -10,6 +10,7 @@ import { SolverWidget } from "../solver/SolverWidget";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
+import { byTeacherCode } from "../../utils/teacherOrder";
 import type { PrintOptions } from "../print/PrintView";
 import type { ViewMode } from "../../types";
 
@@ -69,7 +70,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const entityOptions = viewMode === "group"
     ? groups.flatMap((g) => [g, ...(g.children ?? [])])
     : viewMode === "teacher"
-    ? teachers
+    ? byTeacherCode(teachers)   // same order as the ครูผู้สอน page
     : rooms;
 
   const selectedId = viewMode === "group" ? selectedGroupId

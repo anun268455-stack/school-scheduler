@@ -15,6 +15,7 @@ import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubj
 import { teachesSlot, slotLabel } from "../utils/teacherSlots";
 import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
 import { flattenGroups } from "../utils/groupHierarchy";
+import { byTeacherCode } from "../utils/teacherOrder";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
@@ -350,7 +351,10 @@ const TeachersPanel: React.FC = () => {
 
   const deptName = (id: number | null | undefined) => id ? (departments.find((d) => d.id === id)?.name ?? "–") : "–";
   const [q, setQ] = useState("");
-  const shownTeachers = teachers.filter((t) => matches(q, t.code, t.name, deptName(t.department_id), roomName(t.fixed_room_id)));
+  // Listed by รหัสประจำตัวครู — see utils/teacherOrder.
+  const shownTeachers = byTeacherCode(
+    teachers.filter((t) => matches(q, t.code, t.name,
+      deptName(t.department_id), roomName(t.fixed_room_id))));
 
   return (
     <Section title="ครูผู้สอน" action={<ImportButton entity="teachers" />}>
