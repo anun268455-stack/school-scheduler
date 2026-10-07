@@ -18,6 +18,15 @@ export const createDepartment  = (d: Partial<Department>) => api.post<Department
 export const updateDepartment  = (id: number, d: Partial<Department>) => api.put<Department>(`/departments/${id}`, d).then((r) => r.data);
 export const deleteDepartment  = (id: number) => api.delete(`/departments/${id}`);
 
+/** รหัสประจำตัวครูตามกลุ่มสาระ — write the dragged order and the codes it implies. */
+export const renumberDepartment = (id: number, p: {
+  code_base?: number; teacher_ids: number[];
+}) => api.post<{
+  code_base: number; count: number;
+  changed: { id: number; name: string | null; was: string | null; now: string }[];
+  teachers: { id: number; name: string | null; code: string | null; dept_order: number }[];
+}>(`/departments/${id}/renumber`, p).then((r) => r.data);
+
 // ── Periods ──────────────────────────────────────────────────────────────────
 export const fetchPeriods   = () => api.get<Period[]>("/periods/").then((r) => r.data);
 export const createPeriod   = (d: Partial<Period>) => api.post<Period>("/periods/", d).then((r) => r.data);

@@ -95,6 +95,8 @@ export interface TeacherAdvanced {
 export interface Teacher {
   id:                   number;
   code?:                string | null;   // รหัสประจำตัวครู (ใช้ในหัวกระดาษตอนพิมพ์)
+  /** ลำดับในกลุ่มสาระ — รหัสเรียงตามลำดับนี้ ตั้งได้ที่หน้ากลุ่มสาระ */
+  dept_order?:          number | null;
   name:                 string;
   fixed_room_id:        number | null;
   department_id:        number | null;
@@ -344,6 +346,8 @@ export function periodTime(periodNum: number, periods: Period[] = GRID_PERIODS):
 export interface Department {
   id:   number;
   name: string;   // "กลุ่มสาระคณิตศาสตร์", "กลุ่มสาระวิทยาศาสตร์", …
+  /** รหัสประจำตัวครูคนแรกของกลุ่มสาระนี้ — ภาษาไทย = 101, คนถัดไป 102 … */
+  code_base?: number;
 }
 
 export interface SchoolConfig {

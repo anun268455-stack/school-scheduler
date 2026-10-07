@@ -33,7 +33,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
   // The list of things you can tick, already in the chosen order.
   const items = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (opt.mode === "teacher") {
+    if (opt.mode !== "group") {
       return [...teachers]
         .sort((a, b) => {
           if (opt.sort === "code") return (a.code ?? "").localeCompare(b.code ?? "") || compareNames(a.name, b.name);
@@ -51,7 +51,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
 
   // Every id that exists, ignoring the search box, so counts stay honest.
   const universe = useMemo(
-    () => (opt.mode === "teacher" ? teachers.map((t) => t.id) : flat.map((g) => g.id)),
+    () => (opt.mode !== "group" ? teachers.map((t) => t.id) : flat.map((g) => g.id)),
     [opt.mode, teachers, flat],
   );
   const allIds   = universe;
@@ -90,9 +90,10 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
           <div>
             <p className="text-xs font-semibold text-gray-700 mb-1.5">พิมพ์อะไร</p>
             <div className="flex gap-2">
-              {([["group", "👥 ตารางเรียน (รายห้อง)"], ["teacher", "👨‍🏫 ตารางสอน (รายครู)"]] as [PrintMode, string][]).map(([k, label]) => (
+              {([["group", "👥 ตารางเรียน (รายห้อง)"], ["teacher", "👨‍🏫 ตารางสอน (รายครู)"],
+                 ["workload", "📋 อัตรากำลังการสอน"]] as [PrintMode, string][]).map(([k, label]) => (
                 <button key={k}
-                  onClick={() => set({ mode: k, selectedIds: [], sort: k === "teacher" ? "code" : "name" })}
+                  onClick={() => set({ mode: k, selectedIds: [], sort: k === "group" ? "name" : "code" })}
                   className={clsx(
                     "flex-1 px-3 py-2 text-sm rounded-lg border transition-colors",
                     opt.mode === k ? "border-gray-800 bg-gray-800 text-white font-medium" : "border-gray-300 hover:border-gray-500",
@@ -110,12 +111,14 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
               <select className="w-full border border-gray-400 bg-white text-gray-900 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                 value={opt.sort} onChange={(e) => set({ sort: e.target.value as PrintSort })}>
                 <option value="name">ตามชื่อ</option>
-                {opt.mode === "teacher" && <option value="code">ตามรหัสประจำตัวครู</option>}
-                {opt.mode === "teacher" && <option value="department">ตามกลุ่มสาระฯ</option>}
+                {opt.mode !== "group" && <option value="code">ตามรหัสประจำตัวครู</option>}
+                {opt.mode !== "group" && <option value="department">ตามกลุ่มสาระฯ</option>}
               </select>
             </div>
-            <div>
-              <p className="text-xs font-semibold text-gray-700 mb-1.5">จำนวนต่อแผ่น A4</p>
+            <div className={opt.mode === "workload" ? "opacity-40 pointer-events-none" : ""}>
+              <p className="text-xs font-semibold text-gray-700 mb-1.5">
+                จำนวนต่อแผ่น A4{opt.mode === "workload" && " (อัตรากำลังใช้ 1 คนต่อแผ่น)"}
+              </p>
               <select className="w-full border border-gray-400 bg-white text-gray-900 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                 value={opt.perPage} onChange={(e) => set({ perPage: Number(e.target.value) as 1 | 2 })}>
                 <option value={2}>2 ตาราง/แผ่น (ประหยัดกระดาษ)</option>
@@ -128,7 +131,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
           <div>
             <div className="flex items-center gap-2 mb-1.5">
               <p className="text-xs font-semibold text-gray-700">
-                เลือก{opt.mode === "teacher" ? "ครู" : "ห้องเรียน"}
+                เลือก{opt.mode === "group" ? "ห้องเรียน" : "ครู"}
               </p>
               <span className="text-[11px] text-gray-600">เลือกแล้ว {countSel} / {allIds.length}</span>
               <div className="ml-auto flex gap-2">
@@ -138,7 +141,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
             </div>
             <input
               className="w-full border border-gray-400 bg-white text-gray-900 placeholder-gray-500 rounded px-2 py-1.5 text-sm mb-2 focus:ring-1 focus:ring-blue-500 outline-none"
-              placeholder={opt.mode === "teacher" ? "ค้นหาชื่อครู หรือรหัสครู" : "ค้นหาห้องเรียน"}
+              placeholder={opt.mode === "group" ? "ค้นหาห้องเรียน" : "ค้นหาชื่อครู หรือรหัสครู"}
               value={search} onChange={(e) => setSearch(e.target.value)}
             />
             <div className="border border-gray-200 rounded-lg max-h-56 overflow-y-auto divide-y divide-gray-50">
@@ -166,7 +169,9 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
 
         <div className="px-5 py-3 border-t border-gray-100 bg-gray-50 flex items-center gap-2 shrink-0">
           <p className="text-[11px] text-gray-500 flex-1">
-            จะได้ <strong>{sheets}</strong> แผ่น ({countSel} ตาราง × {opt.perPage} ต่อแผ่น)
+            {opt.mode === "workload"
+              ? <>จะได้ <strong>{countSel}</strong> แผ่น (อัตรากำลัง 1 คนต่อแผ่น)</>
+              : <>จะได้ <strong>{sheets}</strong> แผ่น ({countSel} ตาราง × {opt.perPage} ต่อแผ่น)</>}
           </p>
           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-lg font-medium">ยกเลิก</button>
           <button

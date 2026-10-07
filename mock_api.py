@@ -2514,6 +2514,92 @@ def update_department(i: int, body: dict[str, Any]):
             return d
     raise HTTPException(404)
 
+# ── รหัสประจำตัวครูตามกลุ่มสาระ ──────────────────────────────────────────────
+# ภาษาไทย starts at 101, so its first teacher is 101, the second 102, and so on.
+# Each กลุ่มสาระ sets its own starting number; the tail always runs in order.
+# The order is the school's to decide — seniority, not the alphabet — so it is
+# stored per teacher and set by dragging the list about, not computed here.
+
+DEPT_CODE_BASE_DEFAULT = 101
+
+
+def _dept_teachers(dept_id: int) -> list[dict[str, Any]]:
+    """This department's teachers in the order the school put them in.
+
+    Anyone without an order yet goes to the end rather than to the front, so
+    adding a teacher does not renumber everybody above them.
+    """
+    rows = [t for t in TEACHERS if t.get("department_id") == dept_id]
+    return sorted(rows, key=lambda t: (t.get("dept_order") is None,
+                                       t.get("dept_order") or 0,
+                                       t.get("name") or ""))
+
+
+@app.get("/api/departments/{i}/teachers")
+def dept_teachers(i: int):
+    dept = next((d for d in DEPARTMENTS if d["id"] == i), None)
+    if dept is None:
+        raise HTTPException(404, "ไม่พบกลุ่มสาระนี้")
+    base = int(dept.get("code_base") or DEPT_CODE_BASE_DEFAULT)
+    rows = _dept_teachers(i)
+    return {
+        "department": dept,
+        "code_base": base,
+        "teachers": [{"id": t["id"], "name": t.get("name"), "code": t.get("code"),
+                      "dept_order": t.get("dept_order"),
+                      "would_be": str(base + n)} for n, t in enumerate(rows)],
+    }
+
+
+@app.post("/api/departments/{i}/renumber")
+def dept_renumber(i: int, body: dict[str, Any]):
+    """Write the order the school dragged into place, and the codes it implies."""
+    dept = next((d for d in DEPARTMENTS if d["id"] == i), None)
+    if dept is None:
+        raise HTTPException(404, "ไม่พบกลุ่มสาระนี้")
+
+    base_raw = body.get("code_base")
+    if base_raw not in (None, ""):
+        try:
+            base = int(base_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "รหัสเริ่มต้นต้องเป็นตัวเลข")
+        if base < 0:
+            raise HTTPException(400, "รหัสเริ่มต้นต้องไม่ติดลบ")
+        dept["code_base"] = base
+    base = int(dept.get("code_base") or DEPT_CODE_BASE_DEFAULT)
+
+    by_id = {t["id"]: t for t in TEACHERS}
+    wanted = [int(x) for x in (body.get("teacher_ids") or [])
+              if str(x).lstrip("-").isdigit() and int(x) in by_id]
+    # Only this department's teachers, and only once each. A list that has
+    # drifted — a teacher moved department in another tab — must not drag a
+    # stranger's code along with it.
+    seen: list[int] = []
+    for tid in wanted:
+        if by_id[tid].get("department_id") == i and tid not in seen:
+            seen.append(tid)
+    # Anyone the caller left out keeps their place, at the end.
+    for t in _dept_teachers(i):
+        if t["id"] not in seen:
+            seen.append(t["id"])
+
+    changed = []
+    for n, tid in enumerate(seen):
+        t = by_id[tid]
+        code = str(base + n)
+        if t.get("code") != code or t.get("dept_order") != n:
+            changed.append({"id": tid, "name": t.get("name"),
+                            "was": t.get("code"), "now": code})
+        t["dept_order"] = n
+        t["code"] = code
+
+    return {"code_base": base, "count": len(seen), "changed": changed,
+            "teachers": [{"id": by_id[x]["id"], "name": by_id[x].get("name"),
+                          "code": by_id[x].get("code"),
+                          "dept_order": by_id[x].get("dept_order")} for x in seen]}
+
+
 @app.delete("/api/departments/{i}")
 def del_department(i: int):
     global DEPARTMENTS

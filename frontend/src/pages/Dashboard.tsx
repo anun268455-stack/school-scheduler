@@ -17,6 +17,7 @@ import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from ".
 import { flattenGroups } from "../utils/groupHierarchy";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
+import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
 import { homeroomNames, classesAdvisedBy } from "../utils/homeroom";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { TeacherSettingsModal } from "../components/teachers/TeacherSettingsModal";
@@ -1891,7 +1892,9 @@ const BulkLockPanel: React.FC = () => {
 
 // ─── Departments Panel ────────────────────────────────────────────────────────
 const DepartmentsPanel: React.FC = () => {
-  const { departments } = useTimetableStore();
+  const { departments, teachers } = useTimetableStore();
+  const [codesFor, setCodesFor] = useState<number | null>(null);
+  const countOf = (id: number) => teachers.filter((t) => t.department_id === id).length;
   const [form, setForm]     = useState({ name: "" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<{ name: string } | null>(null);
@@ -1913,6 +1916,10 @@ const DepartmentsPanel: React.FC = () => {
     <Section title="กลุ่มสาระการเรียนรู้">
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-800">
         กลุ่มสาระฯ ใช้จัดหมวดหมู่ครูและวิชา ช่วยให้ Analytics แสดงสถิติแยกตามหมวด
+        <br />
+        🔢 <strong>รหัสประจำตัวครู</strong> — กดปุ่มรหัสครูของแต่ละกลุ่มสาระ
+        ตั้งรหัสเริ่มต้นได้ (เช่น ภาษาไทยเริ่ม 101) แล้ว<strong>ลากชื่อครูขึ้นลง</strong>เพื่อจัดลำดับ
+        รหัสจะไล่เลขท้ายให้เอง 101, 102, 103 …
       </div>
       <div className="flex gap-2 mb-3">
         <Field label="ชื่อกลุ่มสาระฯ *">
@@ -1926,14 +1933,14 @@ const DepartmentsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["#","ชื่อกลุ่มสาระฯ",""].map((h) => (
+              {["#","ชื่อกลุ่มสาระฯ","🔢 รหัสประจำตัวครู",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {departments.length === 0 && (
-              <tr><td colSpan={3} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {departments.map((d) => (
               <tr key={d.id} className="hover:bg-gray-50">
@@ -1941,6 +1948,7 @@ const DepartmentsPanel: React.FC = () => {
                   <>
                     <td className="px-3 py-2 text-gray-400 text-xs">{d.id}</td>
                     <td className="px-2 py-1"><input className={inlineCls} value={editForm.name} onChange={(e) => setEditForm({ name: e.target.value })} /></td>
+                    <td className="px-2 py-1 text-[11px] text-gray-400">แก้ที่ปุ่ม 🔢</td>
                     <td className="px-2 py-1">
                       <div className="flex gap-1">
                         <button onClick={() => handleUpdate(d.id)} className={btnSave}>บันทึก</button>
@@ -1952,6 +1960,16 @@ const DepartmentsPanel: React.FC = () => {
                   <>
                     <td className="px-3 py-2 text-gray-400 text-xs font-mono">{d.id}</td>
                     <td className="px-3 py-2 font-medium text-gray-800">{d.name}</td>
+                    <td className="px-3 py-2">
+                      <button onClick={() => setCodesFor(d.id)}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100 whitespace-nowrap">
+                        🔢
+                        <span className="font-mono font-bold">
+                          {d.code_base ?? 101}–{(d.code_base ?? 101) + Math.max(0, countOf(d.id) - 1)}
+                        </span>
+                        <span className="text-emerald-600">· ครู {countOf(d.id)} คน</span>
+                      </button>
+                    </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
                         <button onClick={() => { setEditing(d.id); setEditForm({ name: d.name }); }} className={btnEdit}>แก้ไข</button>
@@ -1965,6 +1983,13 @@ const DepartmentsPanel: React.FC = () => {
           </tbody>
         </table>
       </div>
+
+      {codesFor != null && (
+        <DeptTeacherCodesModal
+          department={departments.find((d) => d.id === codesFor)!}
+          onClose={() => setCodesFor(null)}
+        />
+      )}
     </Section>
   );
 };

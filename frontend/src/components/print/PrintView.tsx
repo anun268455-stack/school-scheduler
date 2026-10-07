@@ -10,14 +10,15 @@
  * or by teacher code). Teacher sheets carry the teacher's code in the header.
  */
 import React, { forwardRef } from "react";
-import type { Department, Period, SchoolConfig, StudentGroup, Teacher, TimetableSlot } from "../../types";
+import type { Department, LessonRequirement, Period, SchoolConfig, StudentGroup, Subject, Teacher, TimetableSlot } from "../../types";
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { teachesSlot, myElectiveOption } from "../../utils/teacherSlots";
 import { homeroomIds } from "../../utils/homeroom";
+import { WorkloadReport } from "./WorkloadReport";
 import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
 
-export type PrintMode = "group" | "teacher";
+export type PrintMode = "group" | "teacher" | "workload";
 export type PrintSort = "name" | "department" | "code";
 
 export interface PrintOptions {
@@ -37,6 +38,8 @@ interface PrintViewProps {
   groups:       StudentGroup[];
   teachers?:    Teacher[];
   departments?: Department[];
+  subjects?:    Subject[];
+  requirements?: LessonRequirement[];
   periods:      Period[];
   schoolConfig: SchoolConfig;
   options:      PrintOptions;
@@ -501,7 +504,8 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
 
 // ── Main export ──────────────────────────────────────────────────────────────
 export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
-  ({ slots, groups, teachers = [], departments = [], periods, schoolConfig, options }, ref) => {
+  ({ slots, groups, teachers = [], departments = [], subjects = [],
+     requirements = [], periods, schoolConfig, options }, ref) => {
     const termLabel = `ภาคเรียนที่ ${schoolConfig.term}/${schoolConfig.year}  โรงเรียน${schoolConfig.schoolName}`;
     const m = METRICS[options.perPage];
     const compact = options.perPage === 2;
@@ -510,7 +514,9 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
     // Build one block per class / teacher, in the requested order.
     const blocks: React.ReactNode[] = [];
 
-    if (options.mode === "teacher") {
+    if (options.mode === "workload") {
+      // handled below, outside the sheet packer
+    } else if (options.mode === "teacher") {
       const deptName = (id: number | null | undefined) =>
         departments.find((d) => d.id === id)?.name ?? "";
       const list = teachers
@@ -613,7 +619,16 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
           @media screen { .print-wrapper { display: none; } }
         `}</style>
 
-        {sheets.length > 0 ? (
+        {/* อัตรากำลัง is a different document, not a timetable laid out
+            differently — one page per teacher, listing what they carry. */}
+        {options.mode === "workload" ? (
+          <WorkloadReport
+            teachers={teachers} departments={departments} groups={groups}
+            subjects={subjects} requirements={requirements} slots={slots}
+            schoolName={schoolConfig.schoolName} termLabel={termLabel}
+            selectedIds={options.selectedIds} sort={options.sort}
+          />
+        ) : sheets.length > 0 ? (
           sheets.map((sheet, i) => (
             <div key={i} className="print-page">{sheet}</div>
           ))
