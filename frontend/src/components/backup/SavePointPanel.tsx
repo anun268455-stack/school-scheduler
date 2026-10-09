@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../../api/client";
+import { useTimetableStore } from "../../store/timetableStore";
 import {
   putSavePoint, listSavePoints, getSavePoint, deleteSavePoint,
   storageAvailable, formatSavedAt, formatBytes, AUTO_KEEP,
@@ -26,6 +27,8 @@ export const SavePointPanel = ({ onRestored }: Props) => {
   const [err, setErr] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
+  /** Set when a save would shrink the pinned copy; holds the warning text. */
+  const [shrink, setShrink] = useState<string | null>(null);
   const usable = storageAvailable();
 
   const refresh = useCallback(() => {
@@ -33,10 +36,41 @@ export const SavePointPanel = ({ onRestored }: Props) => {
   }, []);
   useEffect(() => { if (usable) refresh(); }, [usable, refresh]);
 
-  const saveMain = async () => {
-    setBusy("save"); setNote(null); setErr(null);
+  /**
+   * Save over the pinned copy.
+   *
+   * Saving is the one button here that can destroy data, and the moment it is
+   * most likely to be pressed is the moment it must not be: the school opens
+   * the page, sees an empty timetable, and reaches for the save button. That
+   * would replace a good copy with the empty one. Two things stand in the way
+   * — the reset flag when we know the server restarted, and a size check for
+   * when we do not, since a copy holding a fraction of what the last one held
+   * is a loss, not an edit.
+   */
+  const saveMain = async (force = false) => {
+    setBusy("save"); setNote(null); setErr(null); setShrink(null);
     try {
+      if (!force && useTimetableStore.getState().serverReset) {
+        setErr("ตอนนี้ข้อมูลบนเซิร์ฟเวอร์หายอยู่ — ถ้าบันทึกตอนนี้จะเอาข้อมูลเปล่าไปทับเซฟหลักที่มีอยู่"
+          + " กรุณากู้คืนให้ข้อมูลกลับมาก่อน แล้วค่อยบันทึก");
+        return;
+      }
       const snap = await api.downloadBackup();
+      const prev = points.find((p) => p.kind === "main");
+      const now = {
+        teachers: Array.isArray(snap["teachers"]) ? (snap["teachers"] as unknown[]).length : 0,
+        slots: Array.isArray(snap["slots"]) ? (snap["slots"] as unknown[]).length : 0,
+      };
+      if (!force && prev
+          && (now.teachers < prev.counts.teachers * 0.6
+              || now.slots < prev.counts.slots * 0.6)) {
+        setShrink(
+          `ข้อมูลตอนนี้น้อยกว่าเซฟหลักเดิมมาก — ตอนนี้ ครู ${now.teachers} · คาบ ${now.slots}`
+          + ` แต่เซฟเดิมมี ครู ${prev.counts.teachers} · คาบ ${prev.counts.slots}`
+          + ` (เซฟเมื่อ ${formatSavedAt(prev.saved_at)})`,
+        );
+        return;
+      }
       const meta = await putSavePoint("main", snap, label.trim() || undefined);
       setNote(`บันทึกเป็นเซฟหลักแล้ว — ครู ${meta.counts.teachers} · `
         + `ห้องเรียน ${meta.counts.groups} · คาบในตาราง ${meta.counts.slots}`);
@@ -128,11 +162,32 @@ export const SavePointPanel = ({ onRestored }: Props) => {
           placeholder="ชื่อเซฟ (ไม่ใส่ก็ได้) เช่น ก่อนจัดตารางใหม่"
           className="flex-1 min-w-[200px] px-3 py-2 text-sm border border-gray-300 rounded-lg"
         />
-        <button onClick={saveMain} disabled={busy !== null}
+        <button onClick={() => { void saveMain(); }} disabled={busy !== null}
           className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-40">
           {busy === "save" ? "กำลังบันทึก…" : "💾 บันทึกเป็นเซฟหลัก"}
         </button>
       </div>
+
+      {/* The save that would have thrown the good copy away. */}
+      {shrink && (
+        <div className="bg-red-50 border border-red-300 rounded-lg px-3 py-2 space-y-2">
+          <p className="text-xs text-red-900 font-semibold">⚠️ หยุดไว้ก่อน — {shrink}</p>
+          <p className="text-[11px] text-red-800">
+            ถ้าข้อมูลเพิ่งหายไป <strong>อย่าบันทึกทับ</strong> ให้กด “↩ กู้คืน” ที่เซฟหลักด้านล่างแทน
+            จะบันทึกทับก็ต่อเมื่อคุณตั้งใจลบข้อมูลออกเองจริงๆ
+          </p>
+          <div className="flex gap-2">
+            <button onClick={() => setShrink(null)}
+              className="px-3 py-1 text-xs bg-emerald-600 text-white rounded-md font-semibold">
+              ยกเลิก (ปลอดภัยกว่า)
+            </button>
+            <button onClick={() => { void saveMain(true); }}
+              className="px-3 py-1 text-xs border border-red-400 text-red-700 rounded-md">
+              ยืนยันบันทึกทับ
+            </button>
+          </div>
+        </div>
+      )}
 
       {main ? <Row p={main} /> : (
         <p className="text-xs text-gray-500 px-1">
