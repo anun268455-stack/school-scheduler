@@ -79,6 +79,24 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // ── Thai label helpers ────────────────────────────────────────────────────────
 const SUBJECT_TYPE_TH: Record<string, string> = { common: "ทั่วไป", parallel: "คู่ขนาน" };
 const ROOM_TYPE_TH: Record<string, string> = { physical: "ห้องเรียนทั่วไป", special: "ห้องพิเศษ", outdoor: "กลางแจ้ง", floating: "ห้องเวียน" };
+
+/**
+ * A server timestamp as the reader's own clock shows it.
+ *
+ * The server runs on UTC, so a save made a minute ago printed as seven hours
+ * earlier — which reads as "this stopped working last night" rather than
+ * "this just worked". An older server sends no offset; that string is left
+ * alone rather than guessed at.
+ */
+const localTime = (iso: string): string => {
+  const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(iso);
+  const d = new Date(iso);
+  if (!hasZone || Number.isNaN(d.getTime())) return iso.replace("T", " ");
+  return d.toLocaleString("th-TH", {
+    day: "numeric", month: "short", year: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+};
 const PERIOD_TYPE_TH: Record<string, string> = { class: "คาบเรียน", break: "พัก", lunch: "กินข้าว", assembly: "เคารพธง", homeroom: "โฮมรูม" };
 const APPLIES_TO_TH: Record<string, string> = { all: "ทุกระดับ", lower: "ม.1-3", upper: "ม.4-6" };
 
@@ -2394,7 +2412,7 @@ const SettingsPanel: React.FC = () => {
                 <span className="text-emerald-900">
                   ✅ <strong>ข้อมูลเก็บในฐานข้อมูลถาวรแล้ว</strong> — ไม่หายเวลาเซิร์ฟเวอร์รีสตาร์ท
                   {info.last_saved_at
-                    ? ` · บันทึกล่าสุด ${info.last_saved_at.replace("T", " ")}`
+                    ? ` · บันทึกล่าสุด ${localTime(info.last_saved_at)}`
                     : " · ยังไม่มีการบันทึกหลังเปิดเครื่องนี้"}
                 </span>
               ) : info.store_configured ? (

@@ -4236,6 +4236,13 @@ _pending_lock = _threading.Lock()
 _pending_signal = _threading.Event()
 
 
+def _mark_state_saved() -> None:
+    """Record that what is stored is now the school's own data, not the seed."""
+    global _STATE_SOURCE
+    if globals().get("_STATE_SOURCE") != "snapshot":
+        _STATE_SOURCE = "snapshot"
+
+
 def _flush_pending(blocking: bool = False) -> None:
     """Send whatever is queued. Called by the writer thread and at shutdown."""
     global _pending_blob, _STORE_ERROR, _LAST_SAVED_AT
@@ -4246,7 +4253,14 @@ def _flush_pending(blocking: bool = False) -> None:
     try:
         _db_write(blob)
         _STORE_ERROR = None
-        _LAST_SAVED_AT = _dt.datetime.now().isoformat(timespec="seconds")
+        # With the offset attached, so the browser can show it in the reader's
+        # own time. Bare local time reads as hours stale to anyone not sitting
+        # in the server's timezone, which is everybody.
+        _LAST_SAVED_AT = _dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        # The copy in the database is now the school's own data, whatever this
+        # process happened to start from. Leaving this at "seed" told them they
+        # were working on the shipped data while it was being kept properly.
+        _mark_state_saved()
     except Exception as exc:                       # noqa: BLE001
         _STORE_ERROR = f"{type(exc).__name__}: {exc}"[:200]
         # Put it back so the next pass retries, unless something newer is
