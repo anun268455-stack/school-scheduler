@@ -862,7 +862,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if want_dept:
             own = [r for r in ROOMS if r.get("specialized_dept_id") == want_dept and eligible(r)]
             if own:
-                r = min(own, key=lambda r: (r["type"] != "special", r["id"]))
+                # Five computer rooms serve one subject, and picking by id sent
+                # a class to whichever happened to be numbered lowest — across
+                # the school from where they were sitting. Among the labs that
+                # will do, take one in the building the class is already in.
+                here = room_building((grp.get("homeroom_room_id")
+                                      or anchor_room.get(group_id)) if group_id else None)
+                r = min(own, key=lambda r: (
+                    r["type"] != "special",
+                    0 if (here is not None and r.get("building_id") == here) else 1,
+                    r["id"]))
                 return r["id"], r["name"], r["type"]
 
         # 2b. Already in a room next door in time? Stay in it.
@@ -963,6 +972,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     def make_slot(req: dict, day: int, period: int) -> dict:
         rid, rname, rtype = find_room(req["teacher_id"], day, period, req["subject_id"], req["group_id"])
+        if rid:                       # so the next cell knows where they are
+            teacher_room[(req["teacher_id"], day, period)] = rid
         subj    = s_map.get(req["subject_id"], {})
         teacher = t_map.get(req["teacher_id"], {})
         group   = g_map.get(req["group_id"],   {})
@@ -1025,6 +1036,53 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # were teaching one period every day of the week.
     teacher_period: dict[tuple[int, int], int] = defaultdict(int)
 
+    # How many lessons each teacher already has on each DAY, which is a
+    # different question from which period of the day they sit in. A week of
+    # 3, 4, 1, 4, 5 is what the staffroom noticed: a Wednesday worth coming in
+    # for one lesson, and a Friday with five. Nothing above was counting it —
+    # spreading a teacher across the periods of a day says nothing about how
+    # many land on each day.
+    teacher_day: dict[tuple[int, int], int] = defaultdict(int)
+
+    # Which room each teacher ends up in, by cell, so the next placement can
+    # see where they will be walking from.
+    #
+    # Not one teacher in this school has a room of their own: they go to the
+    # students, so two back-to-back lessons with two different classes mean a
+    # walk whatever we do — 280 of the 402 walks are exactly that, and no
+    # amount of scheduling removes them. What can be removed is the LENGTH of
+    # the walk. Crossing from อาคาร 1 to อาคาร 3 in the ten minutes between two
+    # periods is a different thing from stepping along a corridor, and that is
+    # the part this makes cheaper.
+    teacher_room: dict[tuple[int, int, int], int] = {}
+
+    def room_building(rid: int | None) -> int | None:
+        r = r_map.get(rid) if rid else None
+        return r.get("building_id") if r else None
+
+    def group_building(gid: int) -> int | None:
+        """Where a class sits when nothing drags it elsewhere."""
+        g = g_map.get(gid, {})
+        return room_building(g.get("homeroom_room_id") or anchor_room.get(gid))
+
+    def building_hop(tid: int, gid: int, day: int, period: int) -> int:
+        """Would taking this cell make the teacher cross buildings on the bell?"""
+        here = group_building(gid)
+        if here is None:
+            return 0
+        lvl_ = _level_key(g_map.get(gid))
+        nums = _class_periods_for_level(lvl_)
+        if period not in nums:
+            return 0
+        i = nums.index(period)
+        for j in (i - 1, i + 1):
+            if not (0 <= j < len(nums)):
+                continue
+            there = room_building(teacher_room.get((tid, day, nums[j])))
+            if there is not None and there != here:
+                return 1
+        return 0
+
     def _half(gid: int, period: int) -> int:
         cut = _morning_cutoff(_level_key(g_map.get(gid)))
         return 0 if (cut is not None and period <= cut) else 1
@@ -1039,6 +1097,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         class_period_load[(gid, period)] += 1
         teacher_half[(tid, _half(gid, period))] += 1
         teacher_period[(tid, period)] += 1
+        teacher_day[(tid, day)] += 1
 
     def unbook(tid, gid, day, period, room_id=None) -> None:
         """Release a cell, so a proposed move can be judged without the lesson
@@ -1054,6 +1113,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             teacher_half[(tid, _half(gid, period))] -= 1
         if teacher_period[(tid, period)] > 0:
             teacher_period[(tid, period)] -= 1
+        if teacher_day[(tid, day)] > 0:
+            teacher_day[(tid, day)] -= 1
         sp = span_of(gid, period)
         if sp and sp in teacher_spans[(tid, day)]:
             teacher_spans[(tid, day)].remove(sp)
@@ -1149,6 +1210,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     # final two periods are discouraged and the rest rank
                     # equal, which leaves room for the two rules below.
                     tail_cost(lvl, period),
+                    # Level the teacher's WEEK before levelling their day. A
+                    # teacher with one lesson on Wednesday and five on Friday
+                    # has a bad week however neatly those five are spread
+                    # across the hours, and the five are what makes the day
+                    # hard. Ahead of the period rule because the period rule
+                    # cannot see days at all, so left to itself it will keep
+                    # filling the day that is already full.
+                    teacher_day[(tid, day)],
                     # Spread the teacher across the periods of the day, so
                     # their week is not the same hour five times over. This
                     # also settles the morning/afternoon balance on its own —
@@ -1159,6 +1228,21 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     # Among equals, the class's emptiest day for that period —
                     # keeps one day from taking the lot.
                     class_period_load[(gid, period)],
+                    # Don't send a teacher across the school on the bell when
+                    # an otherwise equal cell keeps them in the building they
+                    # are already in. Ranked below the fairness rules on
+                    # purpose: a short walk is worth having, but not worth
+                    # giving somebody a five-lesson day to get.
+                    #
+                    # Switched off for a period this teacher does not yet
+                    # teach at all. Left on, it argued against the very cells
+                    # that fill คาบ 4 and คาบ 5 — the staggered-lunch periods,
+                    # whose classes are the ones most likely to sit in another
+                    # building — and three more teachers a week ended up with
+                    # that column blank. A hole in the day is worse than a
+                    # longer walk between two lessons.
+                    building_hop(tid, gid, day, period)
+                    if teacher_period[(tid, period)] else 0,
                     # Sitting down straight after lunch is slightly worse than
                     # not; a tie-break, never a reason to skip the period.
                     1 if lunch_adjacent(gid, period) else 0,
@@ -1208,6 +1292,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     # this, spreading lessons into คาบ 4 and คาบ 5 quietly
                     # buys the coverage with somebody's lunch hour.
                     if attempt < 3 and not keeps_a_lunch(tid, gid, day, period):
+                        continue
+
+                    # Never let a teacher end up in the same period all five
+                    # days. The ranking prefers the period they use least, but
+                    # a preference only holds while nothing else is pulling:
+                    # add a rule about buildings underneath it and the week
+                    # quietly slides back into คาบ 2 every single day, which is
+                    # the complaint that rule was meant to live alongside, not
+                    # undo. Said outright here it cannot be traded away.
+                    if attempt < 3 and teacher_period[(tid, period)] >= 4:
                         continue
                     if attempt == 1 and run > consec_soft:
                         continue
