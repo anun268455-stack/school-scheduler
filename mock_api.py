@@ -4155,8 +4155,123 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
     _counters["group"] = max(_counters.get("group", 0), _max_id(_flat_groups()))
 
 
-def _save_state() -> None:
-    """Write the snapshot to disk. Never let a failed save break a request."""
+# ── Where the data actually lives ─────────────────────────────────────────────
+# The file beside this code is not storage on a host with no permanent disk: the
+# server sleeps when nobody is using it and comes back a different machine, with
+# the file gone and the school's timetable with it. When DATABASE_URL is set the
+# snapshot goes to Postgres instead and survives that, and the file stays as the
+# fallback for running this locally or if the database cannot be reached.
+_DB_URL = _os.environ.get("DATABASE_URL", "").strip()
+# What is actually in use, which is not the same as what was configured —
+# reported by /api/state/info so a silent fallback cannot look like success.
+_STORE_KIND = "file"
+_STORE_ERROR: str | None = None
+_LAST_SAVED_AT: str | None = None
+
+# Gzip, because the snapshot is 1.2 MB of JSON that compresses to about 70 KB,
+# and every save crosses a network now rather than going to a local disk.
+import gzip as _gzip
+import threading as _threading
+import time as _time
+import atexit as _atexit
+
+
+def _pack(snapshot: dict[str, Any]) -> bytes:
+    return _gzip.compress(_json.dumps(snapshot, ensure_ascii=False).encode("utf-8"), 6)
+
+
+def _unpack(blob: bytes) -> dict[str, Any]:
+    return _json.loads(_gzip.decompress(bytes(blob)).decode("utf-8"))
+
+
+def _db_connect():
+    import psycopg
+    return psycopg.connect(_DB_URL, connect_timeout=15)
+
+
+_DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_state (
+    id       integer PRIMARY KEY,
+    data     bytea NOT NULL,
+    saved_at timestamptz NOT NULL DEFAULT now()
+)
+"""
+_DB_UPSERT = """
+INSERT INTO app_state (id, data, saved_at) VALUES (1, %s, now())
+ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, saved_at = now()
+"""
+
+
+def _db_write(blob: bytes) -> None:
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_DB_SCHEMA)
+            cur.execute(_DB_UPSERT, (blob,))
+        conn.commit()
+
+
+def _db_read() -> bytes | None:
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_DB_SCHEMA)
+            cur.execute("SELECT data FROM app_state WHERE id = 1")
+            row = cur.fetchone()
+        conn.commit()
+    return bytes(row[0]) if row else None
+
+
+# The newest snapshot waiting to go out, and the thread that sends it.
+#
+# Saving runs after every edit, and a save now means a network round trip to
+# another continent. Doing that inside the request would put it between the
+# teacher dragging a lesson and the lesson landing. So the snapshot is built
+# and compressed in the request — where the data is guaranteed to be sitting
+# still — and only the sending is handed to this thread. A burst of edits
+# collapses into one write because each new snapshot replaces the one still
+# queued; the whole state goes out every time, so an overtaken save loses
+# nothing.
+_FLUSH_DELAY = 1.5                      # seconds to coalesce a burst of edits
+_pending_blob: bytes | None = None
+_pending_lock = _threading.Lock()
+_pending_signal = _threading.Event()
+
+
+def _flush_pending(blocking: bool = False) -> None:
+    """Send whatever is queued. Called by the writer thread and at shutdown."""
+    global _pending_blob, _STORE_ERROR, _LAST_SAVED_AT
+    with _pending_lock:
+        blob, _pending_blob = _pending_blob, None
+    if blob is None:
+        return
+    try:
+        _db_write(blob)
+        _STORE_ERROR = None
+        _LAST_SAVED_AT = _dt.datetime.now().isoformat(timespec="seconds")
+    except Exception as exc:                       # noqa: BLE001
+        _STORE_ERROR = f"{type(exc).__name__}: {exc}"[:200]
+        # Put it back so the next pass retries, unless something newer is
+        # already waiting — that one is the better copy to send.
+        with _pending_lock:
+            if _pending_blob is None:
+                _pending_blob = blob
+        _save_state_to_file()                      # a local copy is still worth having
+        if blocking:
+            raise
+
+
+def _writer_loop() -> None:
+    while True:
+        _pending_signal.wait()
+        _pending_signal.clear()
+        _time.sleep(_FLUSH_DELAY)
+        try:
+            _flush_pending()
+        except Exception:                          # noqa: BLE001
+            pass
+
+
+def _save_state_to_file() -> None:
+    """The original on-disk save, now the fallback rather than the plan."""
     try:
         tmp = _STATE_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -4166,7 +4281,37 @@ def _save_state() -> None:
         pass
 
 
+def _save_state() -> None:
+    """Keep the data. Never let a failed save break a request."""
+    global _pending_blob
+    if _STORE_KIND != "postgres":
+        _save_state_to_file()
+        return
+    try:
+        blob = _pack(_snapshot())           # built here, where the data is still
+        with _pending_lock:
+            _pending_blob = blob
+        _pending_signal.set()
+    except Exception:
+        _save_state_to_file()
+
+
 def _load_state() -> bool:
+    """Bring the data back, preferring the copy that survives a restart."""
+    global _STORE_KIND, _STORE_ERROR
+    if _DB_URL:
+        try:
+            blob = _db_read()
+            _STORE_KIND, _STORE_ERROR = "postgres", None
+            _threading.Thread(target=_writer_loop, daemon=True).start()
+            if blob:
+                _apply_snapshot(_unpack(blob))
+                return True
+            # Connected, but nothing stored yet — a fresh database. Anything
+            # the file still holds is seeded into it by the first save.
+        except Exception as exc:                   # noqa: BLE001
+            _STORE_ERROR = f"{type(exc).__name__}: {exc}"[:200]
+            _STORE_KIND = "file"
     if not _os.path.exists(_STATE_PATH):
         return False
     try:
@@ -4457,6 +4602,14 @@ def state_info():
         "revision": REVISION["n"],
         "source": _STATE_SOURCE,
         "disk_snapshot": _os.path.exists(_STATE_PATH),
+        # Which store is really in use. A database that was configured but
+        # could not be reached falls back to the file and keeps working, and
+        # without this that failure would look exactly like success until the
+        # next restart threw the data away again.
+        "store": _STORE_KIND,
+        "store_configured": bool(_DB_URL),
+        "store_error": _STORE_ERROR,
+        "last_saved_at": _LAST_SAVED_AT,
         "counts": {
             "groups": len(_flat_groups()), "teachers": len(TEACHERS),
             "subjects": len(SUBJECTS), "rooms": len(ROOMS),
@@ -4468,6 +4621,16 @@ def state_info():
 
 # Prefer what the school actually edited over the seed file.
 _STATE_SOURCE = "snapshot" if _load_state() else ("seed" if _LOADED_REAL_DATA else "demo")
+
+# A queued save must not die with the process. Render stops a service by
+# signalling it, and the second or so of edits still waiting to go out is
+# exactly the work somebody just did.
+_atexit.register(lambda: _flush_pending())
+
+
+@app.on_event("shutdown")
+def _flush_on_shutdown() -> None:
+    _flush_pending()
 
 
 if __name__ == "__main__":

@@ -268,6 +268,12 @@ export const fetchStateInfo = () =>
     revision: number;
     source: "snapshot" | "seed" | "demo";
     disk_snapshot: boolean;
+    /** Where the data is really being kept right now. */
+    store?: "postgres" | "file";
+    /** Whether a database was configured at all, which is a different thing. */
+    store_configured?: boolean;
+    store_error?: string | null;
+    last_saved_at?: string | null;
     counts: Record<string, number>;
   }>("/state/info").then((r) => r.data);
 

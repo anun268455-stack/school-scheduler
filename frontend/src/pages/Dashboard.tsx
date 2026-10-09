@@ -2378,6 +2378,40 @@ const SettingsPanel: React.FC = () => {
             </div>
           )}
 
+          {/* Where the data is actually being kept. A database that was set up
+              but cannot be reached keeps the site working off the file, and
+              without saying so that failure looks exactly like success until
+              the next restart throws the work away again. */}
+          {info && (
+            <div className="text-xs rounded-lg px-3 py-2 border"
+              style={{
+                background: info.store === "postgres" ? "#ecfdf5"
+                  : info.store_configured ? "#fef2f2" : "#fffbeb",
+                borderColor: info.store === "postgres" ? "#a7f3d0"
+                  : info.store_configured ? "#fecaca" : "#fde68a",
+              }}>
+              {info.store === "postgres" ? (
+                <span className="text-emerald-900">
+                  ✅ <strong>ข้อมูลเก็บในฐานข้อมูลถาวรแล้ว</strong> — ไม่หายเวลาเซิร์ฟเวอร์รีสตาร์ท
+                  {info.last_saved_at
+                    ? ` · บันทึกล่าสุด ${info.last_saved_at.replace("T", " ")}`
+                    : " · ยังไม่มีการบันทึกหลังเปิดเครื่องนี้"}
+                </span>
+              ) : info.store_configured ? (
+                <span className="text-red-800">
+                  ⚠️ <strong>ตั้งค่าฐานข้อมูลไว้ แต่ต่อไม่ได้</strong> ระบบกำลังเก็บลงไฟล์ชั่วคราว
+                  ซึ่ง<strong>จะหายเมื่อเซิร์ฟเวอร์รีสตาร์ท</strong> — กรุณาตรวจค่า DATABASE_URL ใน Render
+                  {info.store_error ? <><br /><span className="font-mono text-[10px]">{info.store_error}</span></> : null}
+                </span>
+              ) : (
+                <span className="text-amber-900">
+                  ⚠️ <strong>ยังไม่ได้ตั้งค่าฐานข้อมูลถาวร</strong> — ข้อมูลเก็บลงไฟล์บนเซิร์ฟเวอร์
+                  และจะหายทุกครั้งที่เซิร์ฟเวอร์รีสตาร์ท
+                </span>
+              )}
+            </div>
+          )}
+
           <div className="flex gap-2 flex-wrap">
             <button onClick={doBackup} disabled={busy !== null}
               className="px-4 py-2 text-sm bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-40">
