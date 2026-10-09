@@ -2822,7 +2822,11 @@ def get_groups():
 # The list is the truth. The old single field is kept in step as the first of
 # them, so anything still reading it — the printed sheet, the activity blocks,
 # an older backup file — keeps working.
-HOMEROOM_MAX = 2
+# Two at first, because that is what the school asked for; three now, since
+# their bigger classes are advised by a team and the third name was being
+# dropped on the way in. Raising it is safe in both directions: a class that
+# already has two keeps them, and the cap only ever trims a longer list.
+HOMEROOM_MAX = 3
 
 
 def _homeroom_ids(g: dict[str, Any] | None) -> list[int]:

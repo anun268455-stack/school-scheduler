@@ -8,7 +8,15 @@
  */
 import type { StudentGroup, Teacher } from "../types";
 
-export const HOMEROOM_MAX = 2;
+/**
+ * How many ครูประจำชั้น a class may have.
+ *
+ * Two at first, because that is what the school asked for. Three now: the
+ * bigger classes here are advised by a team, and a list that could only hold
+ * two left the third advisor off the printed sheet — which is where parents
+ * read who to ask.
+ */
+export const HOMEROOM_MAX = 3;
 
 export function homeroomIds(g: StudentGroup | null | undefined): number[] {
   if (!g) return [];

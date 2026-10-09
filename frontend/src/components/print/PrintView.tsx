@@ -554,8 +554,8 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
         const grid = buildGrid(slots.filter((s) => shares(s.group_id, group.id)));
         // Who to ask about this class's timetable — named on the sheet, with
         // the code, so a printed copy identifies itself without the system.
-        // Both of them: a class may have two ครูประจำชั้น, and a sheet naming
-        // only the first sends parents to the wrong one half the time.
+        // All of them: a class may have up to three ครูประจำชั้น, and a sheet
+        // naming only the first sends parents to the wrong one.
         const advisors = homeroomIds(group)
           .map((id) => teachers.find((t) => t.id === id))
           .filter((t): t is NonNullable<typeof t> => !!t)

@@ -21,7 +21,7 @@ import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
-import { homeroomNames, classesAdvisedBy } from "../utils/homeroom";
+import { homeroomNames, classesAdvisedBy, HOMEROOM_MAX } from "../utils/homeroom";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { TeacherSettingsModal } from "../components/teachers/TeacherSettingsModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
@@ -213,7 +213,7 @@ const GroupsPanel: React.FC = () => {
         </Field>
       </div>
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
-        💡 <strong>ครูประจำชั้นใส่ได้ห้องละ 2 คน</strong> — สร้างห้องแล้วกดปุ่ม 👩‍🏫 ในตารางด้านล่างเพื่อเพิ่มคนที่สอง
+        💡 <strong>ครูประจำชั้นใส่ได้ห้องละ {HOMEROOM_MAX} คน</strong> — สร้างห้องแล้วกดปุ่ม 👩‍🏫 ในตารางด้านล่างเพื่อเพิ่มคนถัดไป
         <br />
         ใช้ตอนสร้าง "คาบกิจกรรมประจำระดับ" (เช่น สาธารณประโยชน์) — เลือกโหมดครูประจำชั้น แล้วแต่ละห้องจะได้ครูของตัวเองลงตารางสอนอัตโนมัติ
       </div>

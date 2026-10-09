@@ -179,7 +179,7 @@ export const HomeroomModal: React.FC<Props> = ({
       <div className="px-5 py-3 border-t border-gray-100 bg-gray-50 flex items-center gap-2 shrink-0">
         <p className="text-[11px] text-gray-500 flex-1 leading-relaxed">
           {byClass
-            ? "ห้องหนึ่งมีครูประจำชั้นได้ 2 คน · ครูที่ประจำห้องอื่นอยู่แล้วก็เลือกซ้ำได้"
+            ? `ห้องหนึ่งมีครูประจำชั้นได้ ${HOMEROOM_MAX} คน · ครูที่ประจำห้องอื่นอยู่แล้วก็เลือกซ้ำได้`
             : `ห้องที่มีครูประจำชั้นครบ ${HOMEROOM_MAX} คนแล้วจะเลือกไม่ได้ ต้องไปเอาคนเดิมออกก่อน`}
         </p>
         <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">ยกเลิก</button>
