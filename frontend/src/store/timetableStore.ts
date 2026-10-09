@@ -8,6 +8,7 @@ import { DEFAULT_PERIODS } from "../types";
 import { buildImpactMap } from "../utils/conflictAnalyzer";
 import { buildSharesStudents } from "../utils/groupHierarchy";
 import * as api from "../api/client";
+import { putSavePoint, storageAvailable } from "../utils/savePoints";
 
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
@@ -85,9 +86,18 @@ interface TimetableStore {
   lastSyncedAt:  number | null;             // epoch ms of last successful poll
   syncState:     "connecting" | "live" | "offline";
   remoteUpdates: number;                    // how many times someone else's edit arrived
+  /**
+   * The server came back with LESS history than we have already seen, which
+   * only happens when it restarted and lost the lot. Set here, cleared when
+   * the data is recovered or the warning is dismissed.
+   */
+  serverReset:   boolean;
   setLiveSync:   (on: boolean) => void;
   startLiveSync: () => void;
   stopLiveSync:  () => void;
+  /** Take the current revision as the truth again and resume pulling. */
+  acceptServerState: () => Promise<void>;
+  dismissServerReset: () => void;
   addLesson: (d: {
     group_id: number; day: number; period: number;
     subject_id: number; teacher_id: number; room_id?: number | null;
@@ -166,6 +176,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   lastSyncedAt:      null,
   syncState:         "connecting",
   remoteUpdates:     0,
+  serverReset:       false,
 
   schoolConfig: {
     schoolName: "โรงเรียน",
@@ -227,6 +238,23 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
   },
 
+  /** Take whatever the server now holds, losing anything only we still have. */
+  acceptServerState: async () => {
+    await get().loadAll();
+    try {
+      const { revision } = await api.fetchStateVersion();
+      set({ lastRevision: revision });
+    } catch { /* the next poll will pick the revision up */ }
+    set({ serverReset: false, syncState: "live" });
+  },
+
+  /**
+   * Carry on without deciding. The revision is forgotten rather than adopted,
+   * so the next poll simply records where the server is now instead of
+   * reading the gap as another reset and asking again every few seconds.
+   */
+  dismissServerReset: () => set({ serverReset: false, lastRevision: -1 }),
+
   startLiveSync: () => {
     get().stopLiveSync();
     const tick = async () => {
@@ -235,12 +263,27 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       if (!st.liveSync) return;
       if (st.draggingSlot || st.isSolving || st.isLoading) return;
       if (typeof document !== "undefined" && document.hidden) return;
+      // Once the server is known to have reset, stop pulling from it. Every
+      // poll after that would pull the same empty server over the work that
+      // is still on screen — which is the one copy of it left.
+      if (st.serverReset) return;
       try {
         const { revision } = await api.fetchStateVersion();
         const prev = get().lastRevision;
         set({ syncState: "live", lastSyncedAt: Date.now() });
         if (revision === prev) return;
         if (prev === -1) { set({ lastRevision: revision }); return; }  // first poll: just record
+        // A revision that went BACKWARDS is not an edit. The counter only
+        // ever climbs while the server is up, so a smaller number means the
+        // process restarted — and on this host that means it lost the saved
+        // file with it and is back on the data it was first shipped with.
+        // Pulling that would overwrite the school's real timetable with the
+        // demo one, which is exactly the "it jumped back to the old system"
+        // the staffroom kept reporting. Hold what we have and raise it.
+        if (revision < prev) {
+          set({ serverReset: true, syncState: "live" });
+          return;
+        }
         // Someone (possibly us) changed the data — pull a fresh copy quietly,
         // without flipping isLoading so the table doesn't flash a spinner.
         await quietRefresh(set, get);
@@ -471,6 +514,20 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
 
   runSolver: async (opts) => {
     set({ isSolving: true, solverError: null });
+    // Keep a copy of everything as it stands before the solve. This is the
+    // heaviest thing the server is ever asked to do and the one most likely
+    // to take it down with it — and a solve replaces the whole timetable, so
+    // a server that dies here is a server that comes back with neither the
+    // old timetable nor the new one. Best effort: a failed copy must not
+    // stop the school from building their timetable.
+    try {
+      if (storageAvailable()) {
+        const before = await api.downloadBackup();
+        if (Array.isArray(before["teachers"]) && before["teachers"].length) {
+          await putSavePoint("auto", before);
+        }
+      }
+    } catch { /* no copy taken; carry on */ }
     try {
       const lockedIds = get().slots.filter((s) => s.is_locked).map((s) => s.id);
       const result = await api.runSolver({

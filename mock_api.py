@@ -4080,6 +4080,11 @@ def _snapshot() -> dict[str, Any]:
     return {
         "version": 1,
         "saved_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        # Carried so a restore can land ABOVE the number the browsers polling
+        # this server have already seen. Without it a restore after a restart
+        # sets the counter to 1, every open tab reads that as "older than what
+        # I have" and none of them pick the recovered data up.
+        "revision": REVISION["n"],
         "departments": DEPARTMENTS,
         "buildings": BUILDINGS,
         "rooms": ROOMS,
@@ -4184,6 +4189,12 @@ def restore_backup(body: dict[str, Any]):
     if not isinstance(body, dict) or not any(body.get(k) for k in _SAVE_KEYS):
         raise HTTPException(400, "ไฟล์นี้ไม่ใช่ไฟล์สำรองข้อมูลของระบบ")
     _apply_snapshot(body)
+    # Put the counter past whatever the backup was taken at, so every browser
+    # still holding a higher number sees this restore as newer and pulls it.
+    # The middleware adds one more on the way out of this request.
+    was = body.get("revision")
+    if isinstance(was, int):
+        REVISION["n"] = max(REVISION["n"], was)
     _save_state()
     return {
         "restored": {k: len(body.get(k) or []) for k in

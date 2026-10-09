@@ -6,6 +6,8 @@ import { TopNavbar }     from "./components/layout/TopNavbar";
 import { PrintView, DEFAULT_PRINT_OPTIONS, type PrintOptions } from "./components/print/PrintView";
 import { TimetableGrid } from "./components/timetable/TimetableGrid";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ServerResetBanner } from "./components/backup/ServerResetBanner";
+import { useAutoSavePoints, useServerDataCheck } from "./utils/useAutoSavePoints";
 import { useTimetableStore } from "./store/timetableStore";
 import type { DashPage } from "./pages/Dashboard";
 
@@ -58,6 +60,11 @@ export default function App() {
     return () => stopLiveSync();
   }, [startLiveSync, stopLiveSync, onSubstitute]);
 
+  // A rolling copy in this browser, for the nights the server wakes up empty,
+  // and a check on arrival for the morning after one of those nights.
+  useAutoSavePoints(!onSubstitute);
+  useServerDataCheck(!onSubstitute);
+
   if (onSubstitute) {
     return (
       <ErrorBoundary>
@@ -80,6 +87,10 @@ export default function App() {
         printOptions={printOptions}
         onPrintOptionsChange={setPrintOptions}
       />
+
+      {/* Stands above everything: if the server has thrown its data away, the
+          copy on screen is the only one left and a reload would end it. */}
+      <ServerResetBanner />
 
       <main className="flex-1 overflow-hidden flex flex-col">
         <ErrorBoundary>

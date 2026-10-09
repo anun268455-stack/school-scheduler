@@ -16,6 +16,7 @@ import { teachesSlot, slotLabel } from "../utils/teacherSlots";
 import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
 import { flattenGroups } from "../utils/groupHierarchy";
 import { byTeacherCode } from "../utils/teacherOrder";
+import { SavePointPanel } from "../components/backup/SavePointPanel";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
@@ -2397,6 +2398,18 @@ const SettingsPanel: React.FC = () => {
             ไฟล์สำรองมีครบทุกอย่าง — ห้องเรียน ครู วิชา ห้องสอน การสอน คาบเสรี ตารางที่จัดไว้
             ตั้งค่าโรงเรียน และโลโก้ · การกู้คืนจะ<strong>แทนที่ข้อมูลทั้งหมด</strong>ที่มีอยู่ตอนนี้
           </p>
+
+          {/* จุดบันทึกในเครื่อง — the one-click copy that a server restart
+              cannot reach, since the server has no permanent disk. */}
+          <div className="pt-3 mt-1 border-t border-amber-200">
+            <p className="text-sm font-bold text-emerald-900 mb-2">
+              ⭐ จุดบันทึก (เซฟหลัก) — กดปุ่มเดียวกลับมาได้
+            </p>
+            <SavePointPanel onRestored={async () => {
+              await loadAll();
+              setInfo(await api.fetchStateInfo().catch(() => info));
+            }} />
+          </div>
         </div>
       </div>
     </Section>
