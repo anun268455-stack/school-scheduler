@@ -19,6 +19,7 @@ import { byTeacherCode } from "../utils/teacherOrder";
 import { SavePointPanel } from "../components/backup/SavePointPanel";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
+import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
 import { homeroomNames, classesAdvisedBy } from "../utils/homeroom";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
@@ -148,6 +149,7 @@ async function applyHomeroom(changes: { groupId: number; teacherIds: number[] }[
 const GroupsPanel: React.FC = () => {
   const { groups, rooms, teachers } = useTimetableStore();
   const [homeroomFor, setHomeroomFor] = useState<number | null>(null);
+  const [importingHomeroom, setImportingHomeroom] = useState(false);
   const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
@@ -215,7 +217,15 @@ const GroupsPanel: React.FC = () => {
         <br />
         ใช้ตอนสร้าง "คาบกิจกรรมประจำระดับ" (เช่น สาธารณประโยชน์) — เลือกโหมดครูประจำชั้น แล้วแต่ละห้องจะได้ครูของตัวเองลงตารางสอนอัตโนมัติ
       </div>
-      <button onClick={handleCreate} disabled={!form.name} className={btnPrimary}>+ เพิ่มห้องเรียน</button>
+      <div className="flex gap-2 flex-wrap">
+        <button onClick={handleCreate} disabled={!form.name} className={btnPrimary}>+ เพิ่มห้องเรียน</button>
+        {/* Ninety-three classes one dialog at a time is an afternoon; the
+            office already keeps this list somewhere. */}
+        <button onClick={() => setImportingHomeroom(true)}
+          className="px-4 py-2 text-sm border border-emerald-400 text-emerald-800 rounded-lg font-semibold hover:bg-emerald-50">
+          👩‍🏫 นำเข้าครูประจำชั้นทั้งหมด
+        </button>
+      </div>
 
       <div className="mt-4">
         <TableSearch value={q} onChange={setQ} count={shownGroups.length} total={flat.length}
@@ -308,6 +318,13 @@ const GroupsPanel: React.FC = () => {
           teachers={teachers}
           onApply={applyHomeroom}
           onClose={() => setHomeroomFor(null)}
+        />
+      )}
+
+      {importingHomeroom && (
+        <HomeroomImportModal
+          onApply={applyHomeroom}
+          onClose={() => setImportingHomeroom(false)}
         />
       )}
     </Section>
