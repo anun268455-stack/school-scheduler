@@ -190,7 +190,9 @@ export interface ElectiveOption {
 export interface ElectivePoolOption {
   key:        number;        // stable id for editing/removing this option
   subject_id: number;
-  teacher_id: number;
+  // null while nobody is recorded as teaching it. An elective list imported
+  // before the teaching is shared out arrives this way.
+  teacher_id: number | null;
   label:      string;
   code?:      string;
   // Filled in by the API.
@@ -216,6 +218,7 @@ export interface ElectivePool {
   placed_count?:    number;
   unplaced_groups?: { group_id: number; group_name: string | null }[];
   conflict_count?:  number;
+  missing_teacher_count?: number;   // options with no teacher chosen yet
 }
 
 /** A teacher who could take a subject in a window, and whether they are free. */

@@ -265,32 +265,56 @@ def _slot_teachers(slot: dict[str, Any]) -> set[int]:
     return out | _elective_option_teachers(slot)
 
 
-def _same_activity(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    """Two slots of one activity — ลูกเสือ in ม.1/1 and ลูกเสือ in ม.1/2.
+def _shared_lesson_key(s: dict[str, Any]) -> str | None:
+    """What makes several classes' cells ONE lesson for the teacher in it.
 
-    Its ครูผู้ดูแล are listed on every classroom of it, because the school
-    divides the หมู่ among themselves rather than through the timetable. So a
-    name appearing in both is one teacher at one activity, not a teacher in
-    two rooms, and anything hunting for double-bookings has to know that or it
-    reports fourteen clashes for a period that has none.
+    Two shapes do this, and they do it for the same reason: the cell belongs to
+    a class, but the teaching does not.
+
+      คาบกิจกรรม — ลูกเสือ runs in fourteen classrooms at once and its
+      ครูผู้ดูแล are listed on all fourteen, because the school divides the
+      หมู่ among themselves rather than through the timetable.
+
+      คาบเสรี — a window across ten classes, where the students scatter across
+      twenty subjects. Each subject's teacher takes one group drawn from all ten
+      rooms, so her name sits on all ten cells and she teaches one lesson.
+
+    Anything counting a teacher's hours, or hunting for double-bookings, has to
+    know this or it reports ten clashes for a period that has none and bills her
+    for ten hours she did not work.
+
+    None means an ordinary lesson, which belongs to its class alone.
     """
-    k = a.get("activity_key")
-    return bool(k) and k == b.get("activity_key")
+    k = s.get("activity_key")
+    if k:
+        return f"ACT:{k}"
+    pool = s.get("elective_pool_id")
+    # The two halves of a double are two real hours, so the period is part of it.
+    if pool:
+        return f"POOL:{pool}:{s.get('day')}:{s.get('period')}"
+    return None
+
+
+def _same_activity(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Two cells of one shared lesson — ลูกเสือ in ม.1/1 and ลูกเสือ in ม.1/2."""
+    k = _shared_lesson_key(a)
+    return bool(k) and k == _shared_lesson_key(b)
 
 
 def _teacher_view(slots: list[dict[str, Any]], teacher_id: int) -> list[dict[str, Any]]:
     """One teacher's own week: what they teach, each thing once.
 
     ลูกเสือ across fourteen classrooms is one hour of this teacher's Monday,
-    so it appears once. The classroom kept is simply the first — which room
-    of the fourteen they end up with is theirs to sort out, and the sheet
-    says the scope rather than pretending to know.
+    so it appears once — and so does her subject in a คาบเสรี spanning ten
+    classes. The classroom kept is simply the first: which room they end up
+    with is theirs to sort out, and the sheet says the scope rather than
+    pretending to know.
     """
     out, seen = [], set()
     for s in slots:
         if teacher_id not in _slot_teachers(s):
             continue
-        k = s.get("activity_key")
+        k = _shared_lesson_key(s)
         if k:
             if k in seen:
                 continue
@@ -4163,6 +4187,10 @@ def _decorate_pool(p: dict[str, Any]) -> dict[str, Any]:
         "placed_count": len({s["group_id"] for s in placed}),
         "unplaced_groups": skipped,
         "conflict_count": sum(1 for o in options if o["conflicts"]),
+        # Subjects in this window with nobody recorded as teaching them. An
+        # imported elective list starts this way, and it is the one thing left
+        # to do before the window is finished.
+        "missing_teacher_count": sum(1 for o in options if not o.get("teacher_id")),
     }
 
 
@@ -4176,6 +4204,48 @@ def _find_pool(pool_id: int) -> dict[str, Any]:
     if not pool:
         raise HTTPException(404, "ไม่พบคาบเสรีนี้")
     return pool
+
+
+def _who_teaches(subject_id: int) -> int | None:
+    """Who the staffing data says takes this subject, if anybody does.
+
+    The ordinary lesson assignments first, then any other elective window that
+    already offers it — an elective subject has no ordinary lessons, so for the
+    newly-arrived ones that second source is the only one there is.
+    """
+    teaches = [r["teacher_id"] for r in REQUIREMENTS if r["subject_id"] == subject_id]
+    teaches += [o["teacher_id"] for q in ELECTIVE_POOLS for o in q.get("options", [])
+                if o.get("subject_id") == subject_id and o.get("teacher_id")]
+    return max(set(teaches), key=teaches.count) if teaches else None
+
+
+def _clean_pool_options(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Subjects handed to a window all at once, as an import does.
+
+    Adding them one at a time refuses a subject nobody is recorded as teaching,
+    which is right for a single click — but a whole year's elective list arrives
+    before the teaching is shared out, and stopping on the first unstaffed
+    subject would mean none of the other hundred got in either. So the option is
+    kept with no teacher and counted as outstanding (missing_teacher_count), for
+    the school to fill in from the window itself.
+    """
+    s_map = {s["id"]: s for s in SUBJECTS}
+    out: list[dict[str, Any]] = []
+    for o in raw:
+        subj = s_map.get(o.get("subject_id"))
+        if not subj:
+            continue                      # a subject that isn't there teaches nobody
+        tid = o.get("teacher_id") or _who_teaches(subj["id"])
+        if any(x["subject_id"] == subj["id"] and x.get("teacher_id") == tid for x in out):
+            continue                      # the same row twice in one sheet
+        out.append({
+            "key": _next("elective_option"),
+            "subject_id": subj["id"],
+            "teacher_id": tid,
+            "label": o.get("label") or subj["name"],
+            "code": subj.get("code"),
+        })
+    return out
 
 
 @app.post("/api/elective-pools")
@@ -4192,9 +4262,7 @@ def create_elective_pool(body: dict[str, Any]):
         "is_double": bool(body.get("is_double", True)),
         "day": body.get("day"),
         "period": body.get("period"),
-        "options": [
-            {**o, "key": _next("elective_option")} for o in (body.get("options") or [])
-        ],
+        "options": _clean_pool_options(body.get("options") or []),
     }
     ELECTIVE_POOLS.append(pool)
     _sync_pool_slots(pool)
@@ -4243,13 +4311,7 @@ def add_pool_option(pool_id: int, body: dict[str, Any]):
     # ordinary lesson assignments first, then any other elective window that
     # already offers this subject (elective subjects have no ordinary lessons,
     # so for them this second source is the only one).
-    teacher_id = body.get("teacher_id")
-    if not teacher_id:
-        teaches = [r["teacher_id"] for r in REQUIREMENTS if r["subject_id"] == subject_id]
-        teaches += [o["teacher_id"] for q in ELECTIVE_POOLS for o in q.get("options", [])
-                    if o.get("subject_id") == subject_id and o.get("teacher_id")]
-        if teaches:
-            teacher_id = max(set(teaches), key=teaches.count)
+    teacher_id = body.get("teacher_id") or _who_teaches(subject_id)
     if not teacher_id:
         raise HTTPException(
             400, f"ยังไม่มีข้อมูลว่าใครสอน {subj.get('code', '')} {subj.get('name', '')} "

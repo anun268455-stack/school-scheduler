@@ -275,7 +275,10 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   const handleSwapRoomClick = useCallback((slot: TimetableSlot) => setRoomSwapSlot(slot), []);
   const handleOpenElective  = useCallback((slot: TimetableSlot) => setElectiveSlotId(slot.id), []);
 
-  // Adding a lesson needs a class to add it to, so it's offered in group view only.
+  // An empty cell can be filled from any of the three timetables. Whichever one
+  // you are looking at is already decided, and the modal asks for the rest —
+  // a teacher's free Tuesday is filled from the teacher's own sheet, which is
+  // where anyone noticing the gap is actually standing.
   const handleAddLesson = useCallback((d: number, p: number) => setAddCell({ day: d, period: p }), []);
 
   const handleApplyRoute = useCallback((route: SwapRoute) => {
@@ -401,10 +404,12 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       />
     )}
 
-    {/* Add-lesson Modal (click an empty cell) */}
-    {addCell && selectedGroupId != null && (
+    {/* Add-lesson Modal (click an empty cell, in any of the three views) */}
+    {addCell && (
       <AddLessonModal
         groupId={selectedGroupId}
+        fixedTeacherId={selectedTeacherId}
+        fixedRoomId={selectedRoomId}
         day={addCell.day}
         period={addCell.period}
         onClose={() => setAddCell(null)}
@@ -576,7 +581,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                             preLockMode={preLockMode}
                             onPreLockClick={handlePreLockClick}
                             isDragging={isDragActive}
-                            onAddLesson={selectedGroupId != null ? handleAddLesson : undefined}
+                            onAddLesson={handleAddLesson}
                           />
                         </div>
                       </td>

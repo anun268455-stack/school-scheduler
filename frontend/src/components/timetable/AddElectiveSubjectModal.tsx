@@ -75,7 +75,11 @@ export const AddElectiveSubjectModal: React.FC<Props> = ({ subjectId, onClose, o
     }
     for (const p of pools) {
       for (const o of p.options) {
-        if (o.subject_id === subj.id) counts.set(o.teacher_id, (counts.get(o.teacher_id) ?? 0) + 1);
+        // An option imported before the teaching was shared out has no teacher
+        // yet, and an empty answer is not a vote for anybody.
+        if (o.subject_id === subj.id && o.teacher_id) {
+          counts.set(o.teacher_id, (counts.get(o.teacher_id) ?? 0) + 1);
+        }
       }
     }
     let best: number | null = null, n = 0;

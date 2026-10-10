@@ -1,11 +1,22 @@
 /**
  * AddLessonModal — click an empty cell to put a lesson in it.
  *
- * Left  : pick a subject. Subjects this class still owes periods for (from the
- *         requirements list) float to the top with a "ขาดอีก N คาบ" badge.
- * Right : the lesson's details — teacher and room — plus a "สร้างวิชาใหม่" tab
- *         for typing in a brand-new subject (code, name, type, length) without
- *         leaving the timetable.
+ * The cell can be empty in any of the three timetables, and which one you were
+ * looking at decides what is already settled:
+ *
+ *   ตารางห้องเรียน  the class is known; choose a subject and who teaches it
+ *   ตารางครู        the teacher is known; choose which class they go to
+ *   ตารางห้องสอน    the room is known; choose the class and the teacher
+ *
+ * Whichever is known fills itself in, so the gap in front of you is the thing
+ * you fill — a head of department looking at one teacher's empty Tuesday should
+ * not have to work out which class view to open in order to use it.
+ *
+ * Left  : pick a subject. Subjects still owed periods — by this class, or by
+ *         this teacher when the teacher is the known one — float to the top
+ *         with a "ขาดอีก N คาบ" badge, and picking one fills in the rest.
+ * Right : the lesson's details, plus a "สร้างวิชาใหม่" tab for typing in a
+ *         brand-new subject without leaving the timetable.
  *
  * Conflicts are checked live: a busy teacher or a class that already has a
  * lesson at this cell blocks saving; a busy room only warns, since the room can
@@ -17,61 +28,115 @@ import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
-import { SearchableSelect, roomOptions } from "../common/SearchableSelect";
+import { SearchableSelect, roomOptions, groupOptions } from "../common/SearchableSelect";
 import { DAYS, periodLabel, periodTime } from "../../types";
 import type { Subject, SubjectType } from "../../types";
-import { slotLabel } from "../../utils/teacherSlots";
+import { slotLabel, teachesSlot } from "../../utils/teacherSlots";
+import { levelKeyOf, periodsForLevel } from "../../utils/levels";
 
 interface AddLessonModalProps {
-  groupId: number;
+  /** Known from ตารางห้องเรียน. Left out, the modal asks for it. */
+  groupId?:       number | null;
+  /** Known from ตารางครู. */
+  fixedTeacherId?: number | null;
+  /** Known from ตารางห้องสอน. */
+  fixedRoomId?:    number | null;
   day:     number;
   period:  number;
   onClose: () => void;
 }
 
-export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, period, onClose }) => {
+export const AddLessonModal: React.FC<AddLessonModalProps> = ({
+  groupId: fixedGroupId, fixedTeacherId, fixedRoomId, day, period, onClose,
+}) => {
   const { subjects, teachers, rooms, slots, requirements, groups, periods, addLesson } = useTimetableStore();
 
   const [tab, setTab]             = useState<"pick" | "new">("pick");
   const [search, setSearch]       = useState("");
   const [subjectId, setSubjectId] = useState<number | null>(null);
-  const [teacherId, setTeacherId] = useState<string>("");
-  const [roomId, setRoomId]       = useState<string>("");
+  const [teacherId, setTeacherId] = useState<string>(
+    fixedTeacherId != null ? String(fixedTeacherId) : "");
+  const [roomId, setRoomId]       = useState<string>(
+    fixedRoomId != null ? String(fixedRoomId) : "");
+  const [groupSel, setGroupSel]   = useState<string>(
+    fixedGroupId != null ? String(fixedGroupId) : "");
   const [busy, setBusy]           = useState(false);
   const [error, setError]         = useState<string | null>(null);
   const [newSubject, setNewSubject] = useState({ code: "", name: "", type: "common" as SubjectType, duration: 1 });
 
   const flat      = useMemo(() => flattenGroups(groups), [groups]);
   const shares    = useMemo(() => buildSharesStudents(groups), [groups]);
-  const groupName = flat.find((g) => g.id === groupId)?.name ?? `ห้อง ${groupId}`;
+  const groupId   = groupSel ? Number(groupSel) : null;
+  const groupName = groupId != null
+    ? flat.find((g) => g.id === groupId)?.name ?? `ห้อง ${groupId}`
+    : "ยังไม่ได้เลือกห้องเรียน";
 
   // ── What is already happening in this cell (across the whole school) ───────
   const atCell = useMemo(
     () => slots.filter((s) => s.day === day && s.period === period),
     [slots, day, period],
   );
-  const busyTeacherIds = useMemo(() => new Set(atCell.map((s) => s.teacher_id)), [atCell]);
+  // Everyone standing in a room this period, สอนร่วม and คาบกิจกรรม included —
+  // a teacher on duty with ลูกเสือ is not free, however the cell names her.
+  const busyTeacherIds = useMemo(() => {
+    const out = new Set<number>();
+    for (const t of teachers) if (atCell.some((s) => teachesSlot(s, t.id))) out.add(t.id);
+    return out;
+  }, [atCell, teachers]);
   const busyRoomIds    = useMemo(
     () => new Set(atCell.map((s) => s.room_id).filter((r): r is number => r != null)),
     [atCell],
   );
   // A class is blocked if it, its parent, or one of its subgroups is already busy.
   const groupBlocker = useMemo(
-    () => atCell.find((s) => shares(s.group_id, groupId)) ?? null,
+    () => (groupId == null ? null : atCell.find((s) => shares(s.group_id, groupId)) ?? null),
     [atCell, shares, groupId],
   );
+  const busyGroupIds = useMemo(() => {
+    const out = new Set<number>();
+    for (const g of flat) if (atCell.some((s) => shares(s.group_id, g.id))) out.add(g.id);
+    return out;
+  }, [atCell, shares, flat]);
 
-  // ── Subjects this class still owes periods for ────────────────────────────
+  // ม.ต้น and ม.ปลาย eat at different times, so คาบ 4 exists for one of them
+  // and is lunch for the other. A teacher's grid shows both columns, so the
+  // class picker has to rule out the classes for whom this is not a period at
+  // all — otherwise the gap in her Tuesday looks fillable by any class.
+  const wrongLevelGroupIds = useMemo(() => {
+    const out = new Set<number>();
+    for (const g of flat) {
+      const p = periodsForLevel(periods, levelKeyOf(g)).find((x) => x.period_num === period);
+      if (!p || p.type !== "class") out.add(g.id);
+    }
+    return out;
+  }, [flat, periods, period]);
+
+  // ── What is still owed, and by whom ───────────────────────────────────────
+  // With a class in hand that is "what this class still needs". From ตารางครู
+  // with no class yet it is "what this teacher still owes, and to which class"
+  // — so one click on the list fills in the subject AND the class, which is the
+  // whole reason for filling a teacher's gap from their own timetable.
   const remainingBySubject = useMemo(() => {
-    const m = new Map<number, { remaining: number; teacherId: number }>();
+    const m = new Map<number, { remaining: number; teacherId: number; groupId: number; groupName?: string }>();
     for (const r of requirements) {
-      if (!shares(r.group_id, groupId)) continue;
+      if (groupId != null ? !shares(r.group_id, groupId)
+                          : r.teacher_id !== fixedTeacherId) continue;
       const placed = slots.filter((s) => s.group_id === r.group_id && s.subject_id === r.subject_id).length;
       const remaining = (r.weekly_count ?? 0) - placed;
-      if (remaining > 0) m.set(r.subject_id, { remaining, teacherId: r.teacher_id });
+      if (remaining <= 0) continue;
+      // A class already busy this period cannot be the answer to this gap.
+      if (groupId == null
+          && (busyGroupIds.has(r.group_id) || wrongLevelGroupIds.has(r.group_id))) continue;
+      const cur = m.get(r.subject_id);
+      if (!cur || cur.remaining < remaining) {
+        m.set(r.subject_id, {
+          remaining, teacherId: r.teacher_id, groupId: r.group_id,
+          groupName: flat.find((g) => g.id === r.group_id)?.name,
+        });
+      }
     }
     return m;
-  }, [requirements, slots, shares, groupId]);
+  }, [requirements, slots, shares, groupId, fixedTeacherId, busyGroupIds, wrongLevelGroupIds, flat]);
 
   const visibleSubjects = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -87,20 +152,27 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
   // ── Suggested room, strongest claim first: the subject's own room
   //    (ห้องประจำวิชา) → the class's homeroom → the teacher's room ───────────
   const suggestedRoomId = useMemo(() => {
+    // Opened from ตารางห้องสอน the room is the whole point of the click.
+    if (fixedRoomId != null) return fixedRoomId;
     const subj = subjects.find((x) => x.id === subjectId);
     if (subj?.fixed_room_id && !busyRoomIds.has(subj.fixed_room_id)) return subj.fixed_room_id;
     const t = teachers.find((x) => x.id === Number(teacherId));
-    const home = flat.find((g) => g.id === groupId)?.homeroom_room_id ?? null;
+    const home = groupId != null
+      ? flat.find((g) => g.id === groupId)?.homeroom_room_id ?? null : null;
     if (home && !busyRoomIds.has(home)) return home;
     if (t?.fixed_room_id && !busyRoomIds.has(t.fixed_room_id)) return t.fixed_room_id;
     return null;
-  }, [subjects, subjectId, teachers, teacherId, flat, groupId, busyRoomIds]);
+  }, [fixedRoomId, subjects, subjectId, teachers, teacherId, flat, groupId, busyRoomIds]);
 
   const pickSubject = (s: Subject) => {
     setSubjectId(s.id);
     setError(null);
     const req = remainingBySubject.get(s.id);
-    if (req && !teacherId) setTeacherId(String(req.teacherId));
+    if (!req) return;
+    if (!teacherId) setTeacherId(String(req.teacherId));
+    // From ตารางครู the list is "what this teacher still owes", so the class
+    // comes with the subject.
+    if (!groupSel) setGroupSel(String(req.groupId));
   };
 
   const effectiveRoomId = roomId ? Number(roomId) : suggestedRoomId;
@@ -109,6 +181,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
 
   const canSave =
     !busy &&
+    groupId != null &&
     !groupBlocker &&
     !teacherConflict &&
     !!teacherId &&
@@ -134,6 +207,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
         useSubjectId = created.id;
       }
       if (useSubjectId == null) { setError("กรุณาเลือกวิชา"); return; }
+      if (groupId == null) { setError("กรุณาเลือกห้องเรียน"); return; }
 
       await addLesson({
         group_id: groupId, day, period,
@@ -142,8 +216,12 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
         room_id: effectiveRoomId,
       });
       onClose();
-    } catch {
-      setError("บันทึกไม่สำเร็จ กรุณาลองใหม่");
+    } catch (e) {
+      // The server knows exactly why — "คาบ 4 ไม่ใช่คาบเรียนของ ม.1-3", "ครู …
+      // สอนคาบนี้อยู่แล้ว" — and from ตารางครู or ตารางห้องสอน that is the
+      // whole answer. "ลองใหม่" would just send them round the same loop.
+      const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(d || "บันทึกไม่สำเร็จ กรุณาลองใหม่");
     } finally {
       setBusy(false);
     }
@@ -159,8 +237,14 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
           <span className="text-2xl">➕</span>
           <div className="flex-1 min-w-0">
             <h2 className="text-white font-bold text-base leading-tight">เพิ่มคาบเรียน</h2>
-            <p className="text-emerald-100 text-xs mt-0.5">
-              {groupName} · {DAYS[day]} · {periodLabel(period, periods)} {periodTime(period, periods)}
+            <p className="text-emerald-100 text-xs mt-0.5 truncate">
+              {/* What the view you came from has already settled. */}
+              {fixedTeacherId != null
+                ? `ครู ${teachers.find((t) => t.id === fixedTeacherId)?.name ?? ""}`
+                : fixedRoomId != null
+                ? `ห้อง ${rooms.find((r) => r.id === fixedRoomId)?.name ?? ""}`
+                : groupName}
+              {" · "}{DAYS[day]} · {periodLabel(period, periods)} {periodTime(period, periods)}
             </p>
           </div>
           <button onClick={onClose} className="text-emerald-200 hover:text-white text-lg leading-none shrink-0">✕</button>
@@ -179,7 +263,11 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
           {/* ── Left: choose a subject ─────────────────────────────────────── */}
           <div className="col-span-2 border-r border-gray-200 flex flex-col min-h-0">
             <div className="px-4 pt-3 pb-2 shrink-0">
-              <p className="text-xs font-semibold text-gray-500 mb-2">เลือกวิชา</p>
+              <p className="text-xs font-semibold text-gray-500 mb-2">
+                {groupId == null && fixedTeacherId != null
+                  ? "วิชาที่ครูคนนี้ยังสอนไม่ครบ — เลือกแล้วห้องเรียนจะถูกใส่ให้"
+                  : "เลือกวิชา"}
+              </p>
               <input
                 className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
                 placeholder="ค้นหารหัส/ชื่อวิชา"
@@ -214,7 +302,12 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
                         </span>
                       )}
                     </div>
-                    <p className="text-[11px] text-gray-500 truncate">{s.name}</p>
+                    <p className="text-[11px] text-gray-500 truncate">
+                      {s.name}
+                      {groupId == null && req?.groupName && (
+                        <span className="text-emerald-700"> · {req.groupName}</span>
+                      )}
+                    </p>
                   </button>
                 );
               })}
@@ -239,6 +332,26 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
             </div>
 
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+              {/* The class, when the view did not already say which one. A class
+                  busy this period is shown but cannot be picked, so the reason
+                  it is missing is visible rather than guessed at. */}
+              {fixedGroupId == null && (
+                <Field label="ห้องเรียน *">
+                  <SearchableSelect
+                    value={groupSel} onChange={(v) => { setGroupSel(v); setError(null); }}
+                    placeholder="เลือกห้องเรียน"
+                    options={groupOptions(flat).map((o) => {
+                      const id = Number(o.value);
+                      if (wrongLevelGroupIds.has(id))
+                        return { ...o, label: `${o.label} (คาบนี้ไม่ใช่คาบเรียนของชั้นนี้)`, disabled: true };
+                      if (busyGroupIds.has(id))
+                        return { ...o, label: `${o.label} (มีคาบอื่นแล้ว)`, disabled: true };
+                      return o;
+                    })}
+                  />
+                </Field>
+              )}
+
               {tab === "new" ? (
                 <div className="grid grid-cols-2 gap-2">
                   <Field label="รหัสวิชา *">
@@ -306,6 +419,19 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({ groupId, day, pe
 
               {/* Conflict feedback */}
               <div className="space-y-1">
+                {groupId == null && (
+                  <p className="text-xs text-amber-600">เลือกห้องเรียนก่อนจึงจะบันทึกได้</p>
+                )}
+                {fixedTeacherId != null && teacherId !== String(fixedTeacherId) && (
+                  <p className="text-xs text-amber-600">
+                    เปลี่ยนครูแล้ว — คาบนี้จะไปอยู่ในตารางของครูคนใหม่ ไม่ใช่ตารางที่เปิดอยู่
+                  </p>
+                )}
+                {fixedRoomId != null && effectiveRoomId !== fixedRoomId && (
+                  <p className="text-xs text-amber-600">
+                    เปลี่ยนห้องแล้ว — คาบนี้จะไม่อยู่ในตารางห้องที่เปิดอยู่
+                  </p>
+                )}
                 {teacherConflict && (
                   <p className="text-xs text-red-600">⛔ ครูคนนี้สอนคาบอื่นอยู่แล้วในเวลานี้</p>
                 )}

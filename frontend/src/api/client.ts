@@ -148,6 +148,11 @@ export const fetchElectivePools = () =>
 export const createElectivePool = (d: {
   name?: string; group_ids: number[];
   day?: number | null; period?: number | null; is_double?: boolean;
+  // Used by the วิชาเสรี import, which builds a whole window at once. Options
+  // added this way may have no teacher yet — a term's elective list arrives
+  // before the teaching is shared out.
+  raw_group?: string; weekly?: number;
+  options?: { subject_id: number; teacher_id?: number | null; label?: string }[];
 }) => api.post<ElectivePool>("/elective-pools", d).then((r) => r.data);
 
 export const updateElectivePool = (id: number, d: {

@@ -341,6 +341,8 @@ const PoolCard: React.FC<{
 
   const pinned = pool.day != null && pool.period != null;
   const conflicts = pool.conflict_count ?? 0;
+  const unstaffed = pool.missing_teacher_count
+    ?? pool.options.filter((o) => !o.teacher_id).length;
   const unplaced = pool.unplaced_groups ?? [];
 
   const applyMove = async () => {
@@ -412,6 +414,15 @@ const PoolCard: React.FC<{
         {conflicts > 0 && (
           <span className="text-[11px] text-red-700 bg-red-100 border border-red-200 rounded px-2 py-1 shrink-0">
             ⚠ ครูชน {conflicts}
+          </span>
+        )}
+        {/* An imported elective list has its subjects but not yet its teachers.
+            Saying so here is the difference between a window that is finished
+            and one that only looks finished. */}
+        {unstaffed > 0 && (
+          <span className="text-[11px] text-amber-800 bg-amber-100 border border-amber-300 rounded px-2 py-1 shrink-0"
+            title="วิชาที่ยังไม่ได้เลือกครูผู้สอน — กด 'เลือกครู' ที่บรรทัดนั้น">
+            ยังไม่มีครู {unstaffed}
           </span>
         )}
         <button onClick={() => { setWhen({ day: pool.day, period: pool.period, isDouble: pool.is_double }); setMoving((v) => !v); }}
@@ -493,11 +504,16 @@ const PoolCard: React.FC<{
                       {o.subject_name ?? o.label}
                     </span>
                     <span className={clsx("text-xs truncate max-w-[34%] shrink-0",
-                      (o.conflicts?.length ?? 0) > 0 ? "text-red-700 font-medium" : "text-gray-600")}>
-                      {o.teacher_code ? `${o.teacher_code} ` : ""}{o.teacher_name ?? "— ไม่มีครู —"}
+                      (o.conflicts?.length ?? 0) > 0 ? "text-red-700 font-medium"
+                        : !o.teacher_id ? "text-amber-700 font-medium" : "text-gray-600")}>
+                      {o.teacher_code ? `${o.teacher_code} ` : ""}
+                      {o.teacher_name ?? "— ยังไม่ได้เลือกครู —"}
                     </span>
                     <button onClick={() => (swapping === o.key ? setSwapping(null) : openSwap(o))}
-                      className="text-[10px] text-blue-600 hover:underline shrink-0">เปลี่ยนครู</button>
+                      className={clsx("text-[10px] hover:underline shrink-0",
+                        o.teacher_id ? "text-blue-600" : "text-amber-700 font-semibold")}>
+                      {o.teacher_id ? "เปลี่ยนครู" : "เลือกครู"}
+                    </button>
                     <button onClick={() => removeOption(o)} disabled={busy}
                       className="text-xs text-red-400 hover:text-red-600 shrink-0" title="เอาวิชานี้ออก">✕</button>
                   </div>
@@ -566,6 +582,8 @@ export const ElectivePoolPanel: React.FC = () => {
 
   const pinnedCount = pools.filter((p) => p.day != null).length;
   const clashCount  = pools.reduce((n, p) => n + (p.conflict_count ?? 0), 0);
+  const noTeacher   = pools.reduce((n, p) => n + (p.missing_teacher_count
+    ?? p.options.filter((o) => !o.teacher_id).length), 0);
 
   return (
     <div className="space-y-3">
@@ -586,6 +604,7 @@ export const ElectivePoolPanel: React.FC = () => {
         <span>ทั้งหมด <strong>{pools.length}</strong> คาบเสรี</span>
         <span>· ลงตารางแล้ว <strong className="text-purple-700">{pinnedCount}</strong></span>
         {clashCount > 0 && <span className="text-red-700">· ⚠ ครูชนกัน {clashCount} จุด</span>}
+        {noTeacher > 0 && <span className="text-amber-700">· ยังไม่ได้เลือกครู {noTeacher} วิชา</span>}
         <button
           onClick={() => setAddingSubject(true)}
           disabled={pinnedCount === 0}

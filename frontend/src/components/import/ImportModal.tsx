@@ -11,9 +11,10 @@ import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { flattenGroups } from "../../utils/groupHierarchy";
+import { planElectiveImport } from "../../utils/electiveImport";
 
 // ── Entity definitions ────────────────────────────────────────────────────────
-type EntityType = "teachers" | "rooms" | "subjects" | "groups" | "requirements";
+type EntityType = "teachers" | "rooms" | "subjects" | "groups" | "requirements" | "electives";
 
 interface ColDef {
   key:       string;    // field name in the API payload
@@ -111,6 +112,31 @@ const ENTITY_CONFIGS: Record<EntityType, EntityCfg> = {
       { group_id: "ม.4/6ก", subject_id: "COM101", teacher_id: "ครูคอมพ์ เก่ง", weekly_count: 2, parallel_group_key: "" },
     ],
   },
+  // วิชาเสรี — one row per subject on offer, grouped into windows by the
+  // ชุดวิชาเสรี column. A new elective list arrives as a page per level listing
+  // twenty-odd subjects for a dozen classes to choose from, which by hand is a
+  // window and then twenty "add subject" clicks, times eight levels. Subjects
+  // the system has never seen are created from the same sheet, because a brand
+  // new elective list is mostly brand new subjects.
+  electives: {
+    label: "วิชาเสรี",
+    icon: "🎓",
+    cols: [
+      { key: "pool_name",   label: "ชุดวิชาเสรี",  aliases: ["pool","ชุด","ชุดวิชาเสรี","คาบเสรี","กลุ่ม"], required: true,  hint: "เช่น วิชาเสรี ม.1/7-12 (แถวที่ชุดเดียวกันจะรวมเป็นคาบเดียว)" },
+      { key: "class_names", label: "ห้องเรียน",    aliases: ["ห้องเรียน","ห้อง","classes","group"],          required: true,  hint: "ม.1/7, ม.1/8, ม.1/9 (คั่นด้วยจุลภาค)" },
+      { key: "subject_code",label: "รหัสวิชา",     aliases: ["รหัสวิชา","รหัส","code"],                       required: true,  hint: "พ20203" },
+      { key: "subject_name",label: "ชื่อวิชา",      aliases: ["ชื่อวิชา","subject_name","ชื่อ","name"],         required: false, hint: "ฟุตบอล (ใช้ตอนที่ยังไม่มีวิชานี้ในระบบ)" },
+      { key: "dept_name",   label: "กลุ่มสาระ",     aliases: ["กลุ่มสาระ","สาระ","department"],                required: false, hint: "ใช้ตอนสร้างวิชาใหม่" },
+      { key: "teacher_name",label: "ครูผู้สอน",     aliases: ["ครูผู้สอน","ครู","teacher"],                     required: false, hint: "เว้นว่างได้ — ไปเลือกในคาบเสรีทีหลัง" },
+      { key: "day_name",    label: "วัน",           aliases: ["วัน","day"],                                      required: false, hint: "จันทร์ (เว้นว่าง = ยังไม่กำหนด)" },
+      { key: "period_num",  label: "คาบ",           aliases: ["คาบที่","คาบ","period"],                         required: false, hint: "7" },
+      { key: "is_double",   label: "คาบคู่",        aliases: ["คาบคู่","double","ควบ"],                          required: false, hint: "ใช่ / ไม่ (ว่าง = ใช่)" },
+    ],
+    sample: [
+      { pool_name: "วิชาเสรี ม.1/7-12", class_names: "ม.1/7, ม.1/8, ม.1/9", subject_code: "พ20203", subject_name: "ฟุตบอล",   dept_name: "กลุ่มสาระสุขศึกษาและพลศึกษา", teacher_name: "", day_name: "", period_num: "", is_double: "ใช่" },
+      { pool_name: "วิชาเสรี ม.1/7-12", class_names: "ม.1/7, ม.1/8, ม.1/9", subject_code: "ศ21205", subject_name: "จิตรกรรม", dept_name: "กลุ่มสาระศิลปะ",             teacher_name: "", day_name: "", period_num: "", is_double: "ใช่" },
+    ],
+  },
 };
 
 // ── Helper: parse file → row objects ──────────────────────────────────────────
@@ -147,7 +173,7 @@ function autoMap(headers: string[], cols: ColDef[]): Record<string, string> {
 
 // Convert raw row to typed payload. Resolve columns (name→id) keep their raw
 // string here and are converted in a later pass.
-const NUMERIC_KEYS = ["floor","capacity","outdoor_score","max_slots_per_day","max_outdoor_per_week","building_id","size","duration","weekly_count"];
+const NUMERIC_KEYS = ["floor","capacity","outdoor_score","max_slots_per_day","max_outdoor_per_week","building_id","size","duration","weekly_count","period_num"];
 function mapRow(row: Record<string, string>, mapping: Record<string, string>, cols: ColDef[]): Record<string, unknown> {
   const resolveKeys = new Set(cols.filter((c) => c.resolve).map((c) => c.key));
   const out: Record<string, unknown> = {};
@@ -190,6 +216,11 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
   const [status,   setStatus]   = useState<"idle"|"parsed"|"importing"|"done"|"error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [imported, setImported] = useState(0);
+  // The วิชาเสรี import creates three kinds of thing at once, so "นำเข้า 8
+  // รายการ" would not say what happened. This is what it did, and what is left.
+  const [electiveNote, setElectiveNote] = useState<{
+    pools: number; options: number; subjects: number; noTeacher: number; problems: string[];
+  } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const cfg = ENTITY_CONFIGS[entity];
@@ -199,6 +230,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
     if (!file) return;
     setStatus("idle");
     setRows([]);
+    setElectiveNote(null);
     try {
       const parsed  = await parseFile(file);
       const hdrs    = parsed.length ? Object.keys(parsed[0]) : [];
@@ -219,11 +251,13 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
     setHeaders([]);
     setMapping({});
     setStatus("idle");
+    setElectiveNote(null);
     if (fileRef.current) fileRef.current.value = "";
   };
 
   const handleImport = async () => {
     setStatus("importing");
+    setElectiveNote(null);
     try {
       // Lookup maps for name → id resolution (ห้องประจำ, กลุ่มสาระ, ห้องแม่ ฯลฯ).
       const st = useTimetableStore.getState();
@@ -255,7 +289,55 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
       });
 
       let count = 0;
-      if (entity === "teachers") {
+      if (entity === "electives") {
+        // Read as a whole rather than row by row: rows sharing a ชุดวิชาเสรี
+        // make one window, and a subject the system has never seen is created
+        // from the row that names it.
+        const subjByCode = new Map(st.subjects.map((s) => [norm(s.code).toUpperCase(), s.id]));
+        const plan = planElectiveImport(rows.map((r) => mapRow(r, mapping, cfg.cols)), {
+          subjectByCode: (c) => subjByCode.get(c) as number | undefined,
+          groupByName:   (n) => groupByName.get(n) as number | undefined,
+          teacherByName: (n) => teacherByName.get(n) as number | undefined,
+          deptByName:    (n) => deptByName.get(n) as number | undefined,
+        });
+
+        if (plan.pools.length === 0) {
+          setStatus("error");
+          setErrorMsg("ไม่มีชุดวิชาเสรีที่นำเข้าได้ — "
+            + (plan.problems[0] ?? "ตรวจสอบคอลัมน์ ชุดวิชาเสรี / ห้องเรียน / รหัสวิชา"));
+          return;
+        }
+
+        // The new subjects first: a window's options are named by code, and a
+        // code with no subject behind it is dropped by the API.
+        if (plan.newSubjects.length > 0) {
+          const made = await api.bulkCreateSubjects(
+            plan.newSubjects as Parameters<typeof api.bulkCreateSubjects>[0]);
+          for (const s of made) {
+            subjByCode.set(norm(s.code).toUpperCase(), s.id);
+          }
+        }
+
+        for (const p of plan.pools) {
+          await api.createElectivePool({
+            name: p.name, group_ids: p.group_ids, raw_group: p.raw_group,
+            day: p.day, period: p.period, is_double: p.is_double, weekly: p.weekly,
+            options: p.options.flatMap((o) => {
+              const sid = subjByCode.get(o.code) as number | undefined;
+              return sid === undefined ? [] : [{ subject_id: sid, teacher_id: o.teacher_id }];
+            }),
+          });
+          count++;
+        }
+        setElectiveNote({
+          pools: plan.pools.length,
+          options: plan.pools.reduce((n, p) => n + p.options.length, 0),
+          subjects: plan.newSubjects.length,
+          noTeacher: plan.pools.reduce(
+            (n, p) => n + p.options.filter((o) => o.teacher_id === null).length, 0),
+          problems: plan.problems,
+        });
+      } else if (entity === "teachers") {
         const res = await api.bulkCreateTeachers(payload as Parameters<typeof api.bulkCreateTeachers>[0]);
         count = res.length;
       } else if (entity === "rooms") {
@@ -460,13 +542,48 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
           )}
 
           {/* Done */}
-          {status === "done" && (
+          {status === "done" && !electiveNote && (
             <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700 flex items-center gap-2">
               <span className="text-xl">✅</span>
               <div>
                 <p className="font-semibold">นำเข้าสำเร็จ!</p>
                 <p>เพิ่มข้อมูล {imported} รายการเข้าสู่ระบบเรียบร้อยแล้ว</p>
               </div>
+            </div>
+          )}
+
+          {status === "done" && electiveNote && (
+            <div className="space-y-2">
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800">
+                <p className="font-semibold mb-1">✅ นำเข้าวิชาเสรีสำเร็จ</p>
+                <ul className="text-xs space-y-0.5 list-disc list-inside">
+                  <li>สร้างคาบเสรี <strong>{electiveNote.pools}</strong> ชุด ·
+                      วิชาให้เลือกรวม <strong>{electiveNote.options}</strong> รายการ</li>
+                  {electiveNote.subjects > 0 && (
+                    <li>สร้างรายวิชาใหม่ที่ยังไม่มีในระบบ <strong>{electiveNote.subjects}</strong> วิชา</li>
+                  )}
+                </ul>
+              </div>
+              {/* What is left to do, said here rather than discovered later. */}
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 space-y-1">
+                <p className="font-semibold">ขั้นต่อไป (ที่หน้า “คาบเสรี”)</p>
+                <p>1) กด <strong>กำหนดคาบ</strong> ของแต่ละชุด เพื่อเลือกวัน/คาบที่จะเรียน —
+                   ตารางยังไม่ถูกจองจนกว่าจะกำหนด</p>
+                {electiveNote.noTeacher > 0 && (
+                  <p>2) ยังมี <strong>{electiveNote.noTeacher}</strong> วิชาที่ไม่มีครูผู้สอน —
+                     กด <strong>เลือกครู</strong> ที่บรรทัดนั้น (ระบบจะบอกว่าใครว่างคาบนั้น)</p>
+                )}
+              </div>
+              {electiveNote.problems.length > 0 && (
+                <div className="bg-white border border-red-200 rounded-lg p-3 text-xs text-red-800">
+                  <p className="font-semibold mb-1">
+                    ข้อที่ต้องดู {electiveNote.problems.length} รายการ
+                  </p>
+                  <ul className="space-y-0.5 list-disc list-inside max-h-40 overflow-y-auto">
+                    {electiveNote.problems.map((p, i) => <li key={i}>{p}</li>)}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>

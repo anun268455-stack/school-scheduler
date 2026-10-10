@@ -33,14 +33,25 @@ export function teachingTogether(slot: TimetableSlot): boolean {
 }
 
 /**
- * One teacher's own week.
+ * What makes several classes' cells one lesson for the teacher standing in it.
  *
  * A คาบกิจกรรม is one hour of their Monday however many classrooms take part:
  * the ครูผู้ดูแล list belongs to the activity, and the school splits the หมู่
- * between themselves. Filtering on teachesSlot alone returns it once per
- * classroom, which stacks fourteen copies into one cell of their timetable
- * and counts fourteen periods against them in อัตรากำลัง.
+ * between themselves. A คาบเสรี is the same story told the other way round —
+ * the window covers ten classes, the students scatter across twenty subjects,
+ * and each subject's teacher takes one group drawn from all ten rooms.
+ *
+ * Either way, counting the cells instead of the lesson stacks ten copies into
+ * one square of her timetable and bills her for ten hours she did not work.
  */
+function sharedLessonKey(s: TimetableSlot): string | null {
+  if (s.activity_key) return `ACT:${s.activity_key}`;
+  // Both halves of a double are real hours, so the period is part of the key.
+  if (s.elective_pool_id) return `POOL:${s.elective_pool_id}:${s.day}:${s.period}`;
+  return null;
+}
+
+/** One teacher's own week, each thing she teaches appearing once. */
 export function slotsForTeacher(
   slots: TimetableSlot[], teacherId: number,
 ): TimetableSlot[] {
@@ -48,7 +59,7 @@ export function slotsForTeacher(
   const out: TimetableSlot[] = [];
   for (const s of slots) {
     if (!teachesSlot(s, teacherId)) continue;
-    const k = s.activity_key;
+    const k = sharedLessonKey(s);
     if (k) {
       if (seen.has(k)) continue;
       seen.add(k);
