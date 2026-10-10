@@ -129,6 +129,24 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
             </div>
           </div>
 
+          {/* นับคาบกิจกรรมไหม — อัตรากำลังเท่านั้น */}
+          {opt.mode === "workload" && (
+            <label className="flex items-start gap-2 bg-teal-50 border border-teal-200 rounded-lg p-2.5 cursor-pointer">
+              <input type="checkbox" className="mt-0.5"
+                checked={opt.countActivities !== false}
+                onChange={(e) => set({ countActivities: e.target.checked })} />
+              <span className="text-xs text-teal-900 leading-relaxed">
+                <strong>นับคาบกิจกรรมด้วย</strong> — ลูกเสือ เนตรนารี ชุมนุม และคาบกิจกรรมอื่นที่ตั้งไว้
+                <br/>
+                <span className="text-teal-700/80">
+                  {opt.countActivities !== false
+                    ? "คาบที่ครูไปคุมกิจกรรมจะรวมอยู่ในจำนวนคาบ/สัปดาห์ของครูแต่ละคน"
+                    : "จะนับเฉพาะคาบสอนรายวิชา — หัวกระดาษจะระบุว่า “ไม่นับคาบกิจกรรม”"}
+                </span>
+              </span>
+            </label>
+          )}
+
           {/* Pick which ones */}
           <div>
             <div className="flex items-center gap-2 mb-1.5">

@@ -1,6 +1,7 @@
 import React from "react";
 import clsx from "clsx";
 import type { TimetableSlot } from "../../types";
+import { slotTeacherNames } from "../../utils/teacherSlots";
 
 interface SlotCellProps {
   slots:       TimetableSlot[];
@@ -61,7 +62,12 @@ interface LayerProps {
   onOpenElective?: (slot: TimetableSlot) => void;
 }
 
-const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRoom, onOpenElective }) => (
+const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRoom, onOpenElective }) => {
+  // สอนร่วม and a คาบกิจกรรม duty roster both put more than one teacher in the
+  // room. The line truncates, so the count goes in a badge that cannot.
+  const names = slotTeacherNames(slot);
+  const extra = names.length - 1;
+  return (
   <div
     className={clsx(
       "relative flex flex-col h-full p-1 group border-0 overflow-hidden",
@@ -87,15 +93,12 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
           🔗{slot.is_double_cont ? "ต่อ" : "คู่"}
         </span>
       )}
-      {/* สอนร่วม — two teachers in the room at once. The badge is here because
-          the name line truncates: on a narrow cell "ครูก + ครูข" loses the
-          second name, and then the cell looks like an ordinary lesson. */}
-      {slot.co_teacher_id != null && (
+      {extra > 0 && (
         <span
           className="shrink-0 inline-block bg-sky-500 text-white text-[7px] px-0.5 rounded-sm leading-tight"
-          title={`สอนร่วม: ${slot.teacher_name ?? "—"} + ${slot.co_teacher_name ?? "—"}`}
+          title={`${slot.is_activity_block ? "ครูผู้ดูแล" : "สอนร่วม"}: ${names.join(" · ")}`}
         >
-          👥
+          👥{extra > 1 ? names.length : ""}
         </span>
       )}
     </div>
@@ -114,16 +117,12 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       <div
         className="overflow-hidden whitespace-nowrap text-ellipsis opacity-80"
         style={{ fontSize: "9px" }}
-        title={
-          slot.co_teacher_name
-            ? `${slot.teacher_name ?? "—"} + ${slot.co_teacher_name}`
-            : slot.teacher_name ?? undefined
-        }
+        title={names.length ? names.join(" · ") : undefined}
       >
         {/* A shared elective the class hasn't settled on has no single teacher —
             its students split across every option at once. Say how many. */}
-        {slot.teacher_name
-          ? [slot.teacher_name, slot.co_teacher_name].filter(Boolean).join(" + ")
+        {names.length
+          ? names.join(" + ")
           : (slot.is_elective && slot.elective_options?.length
                 ? `${slot.elective_options.length} ตัวเลือก`
                 : null)}
@@ -196,4 +195,5 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       )}
     </div>
   </div>
-);
+  );
+};

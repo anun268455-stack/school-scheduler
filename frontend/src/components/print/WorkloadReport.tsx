@@ -48,12 +48,24 @@ export interface WorkloadProps {
   /** Empty = every teacher. */
   selectedIds: number[];
   sort: "name" | "code" | "department";
+  /**
+   * นับคาบกิจกรรมด้วยหรือไม่ — ลูกเสือ เนตรนารี ชุมนุม
+   *
+   * Supervising a parade is real time on a teacher's week, but not every
+   * school counts it as teaching load, so the report says which it did.
+   */
+  countActivities?: boolean;
 }
 
 export const WorkloadReport: React.FC<WorkloadProps> = ({
-  teachers, departments, groups, subjects, requirements, slots,
-  schoolName, termLabel, selectedIds,
+  teachers, departments, groups, subjects, requirements, slots: allSlots,
+  schoolName, termLabel, selectedIds, countActivities = true,
 }) => {
+  // Dropped once, here, rather than at each of the places that count a slot —
+  // a rule applied in three places is a rule that will hold in two of them.
+  const slots = countActivities
+    ? allSlots
+    : allSlots.filter((s) => !s.is_activity_block);
   const flat = flattenGroups(groups);
   const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? "";
   const subj = (id: number | null | undefined) => subjects.find((s) => s.id === id);
@@ -180,6 +192,10 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
               <div style={{ fontSize: "9.5pt", marginTop: "0.5mm" }}>
                 {termLabel}{schoolName ? `  ${schoolName}` : ""}
                 {"  ·  ครู "}{sec.blocks.length}{" คน  ·  รวม "}{deptTotal}{" คาบ/สัปดาห์"}
+                {/* Printed, not just chosen: two copies of this sheet with
+                    different totals and nothing on the page to tell them
+                    apart is how a number gets argued about for an hour. */}
+                {!countActivities && "  ·  ไม่นับคาบกิจกรรม"}
               </div>
             </div>
 

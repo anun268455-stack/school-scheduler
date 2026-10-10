@@ -13,7 +13,7 @@ import React, { forwardRef } from "react";
 import type { Department, LessonRequirement, Period, SchoolConfig, StudentGroup, Subject, Teacher, TimetableSlot } from "../../types";
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
-import { teachesSlot, myElectiveOption } from "../../utils/teacherSlots";
+import { teachesSlot, myElectiveOption, slotTeacherNames } from "../../utils/teacherSlots";
 import { effectiveHomeroomIds } from "../../utils/homeroom";
 import { WorkloadReport } from "./WorkloadReport";
 import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
@@ -27,10 +27,17 @@ export interface PrintOptions {
   selectedIds: number[];
   sort:        PrintSort;
   perPage:     1 | 2;
+  /**
+   * นับคาบกิจกรรม (ลูกเสือ เนตรนารี ชุมนุม) ในอัตรากำลังหรือไม่
+   *
+   * Some schools count supervising ลูกเสือ towards a teacher's load and some
+   * report only subject teaching, so this is the school's call, not ours.
+   */
+  countActivities: boolean;
 }
 
 export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
-  mode: "group", selectedIds: [], sort: "name", perPage: 2,
+  mode: "group", selectedIds: [], sort: "name", perPage: 2, countActivities: true,
 };
 
 interface PrintViewProps {
@@ -305,6 +312,21 @@ const WESTERN_TITLE = /^(mr|mrs|miss|ms|dr|prof|master|sir)\.?$/i;
 /** The same titles written hard against the name: "Mr.Charles", "Mr.Hu". */
 const WESTERN_GLUED = /^(mr|mrs|miss|ms|dr|prof)\.\s*(?=\S)/i;
 
+/**
+ * The teacher line inside one printed cell.
+ *
+ * A lesson has one name, สอนร่วม has two, and a ลูกเสือ period can have four
+ * standing with the same class. Four names do not fit a timetable cell: set
+ * side by side they shrink the subject code to nothing or spill over the
+ * border, and a printed sheet has no tooltip to recover them from. So past
+ * two the cell counts instead, and the group sheet stays readable.
+ */
+function teacherLine(s: TimetableSlot): string {
+  const names = slotTeacherNames(s).map(shortTeacher).filter(Boolean);
+  if (names.length <= 2) return names.join(" + ");
+  return `${names[0]} +${names.length - 1} คน`;
+}
+
 function shortTeacher(name: string | null | undefined): string {
   if (!name) return "";
   const parts = String(name).trim().split(/\s+/).filter(Boolean);
@@ -467,9 +489,7 @@ function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
       <CellLines
         m={m}
         code={s.subject_code ?? s.subject_name ?? (sharedElective ? "วิชาเสรี" : "")}
-        mid={[shortTeacher(s.teacher_name), shortTeacher(s.co_teacher_name)]
-          .filter(Boolean).join(" + ")
-          || (sharedElective ? `${s.elective_options?.length ?? 0} ตัวเลือก` : "")}
+        mid={teacherLine(s) || (sharedElective ? `${s.elective_options?.length ?? 0} ตัวเลือก` : "")}
         room={roomNumber(s.room_name)}
       />
     );
@@ -630,6 +650,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             subjects={subjects} requirements={requirements} slots={slots}
             schoolName={schoolConfig.schoolName} termLabel={termLabel}
             selectedIds={options.selectedIds} sort={options.sort}
+            countActivities={options.countActivities !== false}
           />
         ) : sheets.length > 0 ? (
           sheets.map((sheet, i) => (

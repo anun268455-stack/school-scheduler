@@ -193,6 +193,9 @@ def _slot_teachers(slot: dict[str, Any]) -> set[int]:
         out.add(slot["teacher_id"])
     if slot.get("co_teacher_id") is not None:
         out.add(slot["co_teacher_id"])
+    # ครูผู้ดูแลคาบกิจกรรม — ลูกเสือ, เนตรนารี, ชุมนุม. A class on parade with
+    # four teachers watching it has four teachers who are not free.
+    out |= {t for t in (slot.get("activity_teacher_ids") or []) if t}
     return out | _elective_option_teachers(slot)
 
 
@@ -3316,6 +3319,13 @@ def _enrich_slot(s: dict[str, Any]) -> dict[str, Any]:
     subj    = s_map.get(s.get("subject_id"), {})
     room    = r_map.get(s.get("room_id")) if s.get("room_id") else None
     s["teacher_name"] = teacher.get("name")
+    # สอนร่วม and the supervisors of an activity block are teachers too, and a
+    # slot re-enriched after an edit used to come back with their names gone
+    # while their ids stayed — the cell then showed one name and booked two.
+    co = s.get("co_teacher_id")
+    s["co_teacher_name"] = t_map.get(co, {}).get("name") if co else None
+    sup = s.get("activity_teacher_ids") or []
+    s["activity_teacher_names"] = [t_map[i]["name"] for i in sup if i in t_map]
     s["group_name"]   = group.get("name")
     s["subject_name"] = subj.get("name")
     s["subject_code"] = subj.get("code")
@@ -3476,7 +3486,6 @@ def _sync_doubles(slot: dict[str, Any]) -> None:
 
 @app.post("/api/timetable/level-activity")
 def create_level_activity(body: dict[str, Any]):
-    level      = body["level"]
     day        = int(body["day"])
     period     = int(body["period"])
     subject_id = int(body["subject_id"])
@@ -3489,16 +3498,53 @@ def create_level_activity(body: dict[str, Any]):
     teacher_id   = int(teacher_id) if teacher_id not in (None, "") else None
     if teacher_id is not None and teacher_mode == "none":
         teacher_mode = "single"
+    # ครูผู้ดูแลรายห้อง — {group_id: [teacher_id, …]}, which is what the
+    # ผู้ดูแล screen sends once the school has picked who watches which class.
+    # It sits on top of teacher_mode rather than replacing it, so the simple
+    # "ครูประจำชั้นของแต่ละห้อง" case still needs no roster at all.
+    roster_in = body.get("supervisors") or {}
+    roster: dict[int, list[int]] = {}
+    known = {t["id"] for t in TEACHERS}
+    for gid_s, ids in roster_in.items():
+        clean, seen_t = [], set()
+        for t in (ids or []):
+            t = int(t)
+            if t in known and t not in seen_t:
+                seen_t.add(t); clean.append(t)
+        roster[int(gid_s)] = clean
 
-    # Whole-class activity → target top-level classes of that level, never the
-    # subgroups (ก/ข/ค), so the parent and its children can't double-book.
-    targets = [g for g in _flat_groups()
-               if g.get("level") == level and not g.get("parent_id")]
+    # Which classes. The school names them outright now: ลูกเสือ is ม.1–3 but
+    # ชุมนุม is everybody, and no level ever described either of them well.
+    # `level` is still accepted so activities saved by the old screen reload.
+    by_id = {g["id"]: g for g in _flat_groups()}
+    if body.get("group_ids"):
+        targets = [by_id[int(i)] for i in body["group_ids"] if int(i) in by_id]
+        label = body.get("label") or ""
+    else:
+        level = body.get("level") or ""
+        # Whole-class activity → top-level classes only, never the subgroups
+        # (ก/ข/ค), so the parent and its children can't double-book.
+        targets = [g for g in _flat_groups()
+                   if g.get("level") == level and not g.get("parent_id")]
+        label = level
     if not targets:
-        raise HTTPException(400, f"ไม่พบห้องเรียนในระดับ {level}")
+        raise HTTPException(400, "ยังไม่ได้เลือกห้องเรียน")
 
     t_names = {t["id"]: t["name"] for t in TEACHERS}
-    key = f"ACT-{level}-{day}-{period}"
+
+    # One teacher cannot watch two classes at once. Caught here rather than at
+    # the per-class check below, because that one only sees slots already
+    # saved and would happily put the same teacher in every class of the run.
+    doubled: dict[int, list[str]] = defaultdict(list)
+    for g in targets:
+        for t in roster.get(g["id"], []):
+            doubled[t].append(g["name"])
+    clash_msgs = [f"ครู {t_names.get(t, t)} ถูกใส่ไว้ {len(v)} ห้องในคาบเดียวกัน ({', '.join(v)})"
+                  for t, v in doubled.items() if len(v) > 1]
+    if clash_msgs:
+        raise HTTPException(400, " · ".join(clash_msgs))
+
+    key = f"ACT-{label or 'ห้องที่เลือก'}-{day}-{period}-{_next('activity')}"
     created, skipped, warnings = [], [], []
     for g in targets:
         # Skip classrooms that already have something in this cell.
@@ -3510,34 +3556,52 @@ def create_level_activity(body: dict[str, Any]):
                             "reason": clash.get("subject_code") or "มีคาบอยู่แล้ว"})
             continue
 
-        # Work out who supervises this particular class.
-        if teacher_mode == "homeroom":
+        # Work out who supervises this particular class. A roster entry wins:
+        # it is the school naming names, which beats any rule.
+        picked = list(roster.get(g["id"], []))
+        if picked:
+            slot_teacher, extra = picked[0], picked[1:]
+        elif teacher_mode == "homeroom":
             # Sub-classes take theirs from the class above, so ม.4/6ก gets
             # ม.4/6's advisor instead of being skipped for having none.
             ids = _effective_homeroom_ids(g)
-            slot_teacher = ids[0] if ids else None
+            slot_teacher, extra = (ids[0] if ids else None), ids[1:]
             if slot_teacher is None:
                 warnings.append(f"{g['name']}: ยังไม่ได้ตั้งครูประจำชั้น (สร้างคาบให้แล้วแต่ไม่มีครู)")
         elif teacher_mode == "single":
-            slot_teacher = teacher_id
+            slot_teacher, extra = teacher_id, []
         else:
-            slot_teacher = None
+            slot_teacher, extra = None, []
 
         # A teacher can't supervise while teaching elsewhere at the same time.
-        if slot_teacher is not None and any(
-                s["day"] == day and s["period"] == period
-                and slot_teacher in _slot_teachers(s)
-                for s in SLOTS):
+        # Dropped one by one, so one busy teacher does not cost the class the
+        # rest of its supervisors.
+        def busy(tid: int) -> bool:
+            return any(s["day"] == day and s["period"] == period
+                       and tid in _slot_teachers(s) for s in SLOTS)
+
+        if slot_teacher is not None and busy(slot_teacher):
             warnings.append(
                 f"{g['name']}: ครู {t_names.get(slot_teacher, slot_teacher)} ติดสอนคาบนี้อยู่ "
-                f"จึงสร้างคาบให้โดยไม่ใส่ครู")
+                f"จึงไม่ได้ใส่ให้")
             slot_teacher = None
+        kept = []
+        for t in extra:
+            if busy(t):
+                warnings.append(f"{g['name']}: ครู {t_names.get(t, t)} ติดสอนคาบนี้อยู่ จึงไม่ได้ใส่ให้")
+            else:
+                kept.append(t)
+        # With the lead dropped, one of the others steps up, so the cell still
+        # shows a name instead of looking unsupervised.
+        if slot_teacher is None and kept:
+            slot_teacher, kept = kept[0], kept[1:]
 
         slot = {
             "id": _next("slot"),
             "day": day, "period": period,
             "group_id": g["id"],
             "teacher_id": slot_teacher,
+            "activity_teacher_ids": kept,
             "subject_id": subject_id,
             "room_id": g.get("homeroom_room_id") if room_mode == "homeroom" else None,
             "is_double_start": False,
@@ -3545,7 +3609,7 @@ def create_level_activity(body: dict[str, Any]):
             "is_locked": True,
             "is_activity_block": True,
             "activity_key": key,
-            "activity_level": level,
+            "activity_level": g.get("level") or label,
         }
         SLOTS.append(slot)
         created.append(_enrich_slot(slot))

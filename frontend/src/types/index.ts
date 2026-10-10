@@ -220,6 +220,12 @@ export interface TimetableSlot {
   is_activity_block?: boolean;
   activity_key?:      string | null;   // ใช้ลบทั้งระดับพร้อมกัน
   activity_level?:    string | null;
+  /**
+   * ครูผู้ดูแลคนที่ 2 เป็นต้นไป (คนแรกอยู่ที่ teacher_id ตามปกติ) — ลูกเสือ
+   * เนตรนารี ชุมนุม มักมีครูหลายคนคุมห้องเดียวกัน ทุกคนถือว่าไม่ว่างในคาบนี้
+   */
+  activity_teacher_ids?:   number[];
+  activity_teacher_names?: string[];
   is_locked:          boolean;    // pre-lock flag
   // วิชาเสรี — pinned slot with a swappable catalog of subject+teacher choices
   is_elective?:        boolean;

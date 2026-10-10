@@ -13,8 +13,23 @@ export function teachesSlot(slot: TimetableSlot, teacherId: number): boolean {
   // สอนร่วม — the second teacher is in the room, so the lesson belongs on
   // their timetable too, and they are busy for it like anyone else.
   if (slot.co_teacher_id === teacherId) return true;
+  // ครูผู้ดูแลคาบกิจกรรม — ลูกเสือ, เนตรนารี, ชุมนุม. Standing with a class on
+  // parade is duty, and duty belongs on the duty teacher's own sheet.
+  if ((slot.activity_teacher_ids ?? []).includes(teacherId)) return true;
   if (!slot.is_elective || slot.selected_option_id) return false;
   return (slot.elective_options ?? []).some((o) => o.teacher_id === teacherId);
+}
+
+/**
+ * Everyone standing in the room, in the order they should be read.
+ *
+ * One lesson, one teacher is still the normal case; สอนร่วม adds a partner and
+ * a คาบกิจกรรม can add a whole duty roster. Callers that only read
+ * `teacher_name` show the first of four names and quietly lose the rest.
+ */
+export function slotTeacherNames(slot: TimetableSlot): string[] {
+  return [slot.teacher_name, slot.co_teacher_name, ...(slot.activity_teacher_names ?? [])]
+    .filter((n): n is string => !!n);
 }
 
 /** The option this teacher runs inside a shared elective window, if any. */

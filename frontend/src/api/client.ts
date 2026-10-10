@@ -192,9 +192,17 @@ export const bulkLockSlots = (params: {
 
 // ── Level-wide activity periods (คาบกิจกรรมประจำระดับชั้น) ───────────────────
 export const createLevelActivity = (d: {
-  level: string; day: number; period: number; subject_id: number;
+  /** The classes to pin the activity onto — ลูกเสือ is ม.1–3, ชุมนุม is everyone. */
+  group_ids?: number[];
+  /** What to call the set on screen, e.g. "ม.1–ม.3" or "ทุกห้อง". */
+  label?: string;
+  /** Kept for activities created by the old per-level screen. */
+  level?: string;
+  day: number; period: number; subject_id: number;
   teacher_mode?: "homeroom" | "single" | "none";
   teacher_id?: number | null;
+  /** ครูผู้ดูแลรายห้อง — {group_id: [teacher_id, …]}, overrides teacher_mode. */
+  supervisors?: Record<number, number[]>;
   room_mode?: "homeroom" | "none";
 }) => api.post<{
   created: TimetableSlot[];
