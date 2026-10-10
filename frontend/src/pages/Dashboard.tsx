@@ -562,9 +562,15 @@ const TeachersPanel: React.FC = () => {
 };
 
 // ─── Subjects ────────────────────────────────────────────────────────────────
+/** The dropdown's three states as the API's tri-state boolean. */
+const outdoorValue = (v: string) => v === "yes" ? true : v === "no" ? false : null;
+/** And back, for the edit row. */
+const outdoorChoice = (v: boolean | null | undefined) =>
+  v === true ? "yes" : v === false ? "no" : "";
+
 const SubjectsPanel: React.FC = () => {
   const { subjects, departments, requirements, rooms } = useTimetableStore();
-  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "", prefer_morning: false });
+  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "", prefer_morning: false, allow_outdoor: "" as "" | "yes" | "no", room_rule: "" as "" | "subject" | "homeroom" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [assigning, setAssigning] = useState<number | null>(null);
@@ -604,9 +610,11 @@ const SubjectsPanel: React.FC = () => {
       duration:      Number(form.duration) as 1 | 2,
       department_id: form.department_id ? Number(form.department_id) : null,
       fixed_room_id: form.fixed_room_id ? Number(form.fixed_room_id) : null,
+      allow_outdoor: outdoorValue(form.allow_outdoor),
+      room_rule: form.room_rule || null,
     });
     useTimetableStore.setState((s) => ({ subjects: [...s.subjects, created] }));
-    setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "", prefer_morning: false });
+    setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "", prefer_morning: false, allow_outdoor: "" as "" | "yes" | "no", room_rule: "" as "" | "subject" | "homeroom" });
   };
 
   const handleUpdate = async (id: number) => {
@@ -619,6 +627,8 @@ const SubjectsPanel: React.FC = () => {
       is_activity: editForm.is_activity,
       prefer_morning: editForm.prefer_morning,
       fixed_room_id: editForm.fixed_room_id ? Number(editForm.fixed_room_id) : null,
+      allow_outdoor: outdoorValue(editForm.allow_outdoor),
+      room_rule: editForm.room_rule || null,
     });
     useTimetableStore.setState((s) => ({ subjects: s.subjects.map((x) => x.id === id ? { ...x, ...updated } : x) }));
     setEditing(null); setEditForm(null);
@@ -696,6 +706,29 @@ const SubjectsPanel: React.FC = () => {
             <span className="text-sm text-gray-600">เป็นชุมนุม/ลูกเสือ/กิจกรรม</span>
           </label>
         </Field>
+        <Field label="🌳 เรียนที่ลานได้ไหม">
+          <select className={inputCls} value={form.allow_outdoor}
+            onChange={(e) => setForm({ ...form, allow_outdoor: e.target.value as "" | "yes" | "no" })}>
+            <option value="">– ไม่ระบุ (ไม่ลงลาน) –</option>
+            <option value="yes">✅ ลงลานได้ ถ้าห้องเต็ม</option>
+            <option value="no">🚫 ห้ามลงลาน</option>
+          </select>
+        </Field>
+        <Field label="📍 เรียนที่ไหน">
+          <select className={inputCls} value={form.room_rule}
+            onChange={(e) => setForm({ ...form, room_rule: e.target.value as "" | "subject" | "homeroom" })}>
+            <option value="">– ปกติ (ตามกฎการจัดห้อง) –</option>
+            <option value="subject">🏟 ห้องประจำวิชาเท่านั้น</option>
+            <option value="homeroom">🎒 ห้องของนักเรียน (ครูเดินไป)</option>
+          </select>
+        </Field>
+      </div>
+      <div className="bg-teal-50 border border-teal-200 rounded-lg p-2.5 mb-3 text-xs text-teal-900 leading-relaxed">
+        <strong>🌳 ลาน</strong> ใช้เป็นที่รองรับคาบที่ล้นเท่านั้น — วิชาที่ติ๊ก "ลงลานได้"
+        จะถูกจัดลงลานก็ต่อเมื่อห้องในอาคารเต็มแล้วจริง ๆ วิชาที่ไม่ได้ติ๊กจะไม่ลงลานเลย
+        <br/><strong>📍 ห้องประจำวิชาเท่านั้น</strong> — พละ นาฏศิลป์ ถ้าสนาม/ห้องไม่ว่างจะรอคาบอื่น
+        ไม่ยอมลงห้องเรียนธรรมดา · <strong>ห้องของนักเรียน</strong> — แนะแนว โฮมรูม
+        ครูเดินไปหานักเรียน ต่อให้ครูมีห้องประจำของตัวเอง
       </div>
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3 text-xs text-amber-900">
         <span className="inline-flex items-center gap-1 bg-amber-400 text-white font-bold rounded px-1.5 py-0.5">☀️ เช้า</span>{" "}
@@ -790,6 +823,20 @@ const SubjectsPanel: React.FC = () => {
                     <td className="px-2 py-1" style={{ minWidth: 130 }}>
                       <SearchableSelect value={editForm.fixed_room_id} onChange={(v) => setEditForm({ ...editForm, fixed_room_id: v })}
                         options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่มี –" />
+                      <div className="flex gap-1 mt-1">
+                        <select className={inlineCls} value={editForm.room_rule}
+                          onChange={(e) => setEditForm({ ...editForm, room_rule: e.target.value as "" | "subject" | "homeroom" })}>
+                          <option value="">ห้อง: ปกติ</option>
+                          <option value="subject">🏟 ห้องวิชาเท่านั้น</option>
+                          <option value="homeroom">🎒 ห้องนักเรียน</option>
+                        </select>
+                        <select className={inlineCls} value={editForm.allow_outdoor}
+                          onChange={(e) => setEditForm({ ...editForm, allow_outdoor: e.target.value as "" | "yes" | "no" })}>
+                          <option value="">ลาน: ไม่ระบุ</option>
+                          <option value="yes">🌳 ลานได้</option>
+                          <option value="no">🚫 ห้ามลาน</option>
+                        </select>
+                      </div>
                     </td>
                     <td className="px-2 py-1">
                       <select className={inlineCls} value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}>
@@ -823,9 +870,27 @@ const SubjectsPanel: React.FC = () => {
                     </td>
                     <td className="px-3 py-2 text-gray-500 text-xs">{deptName(s.department_id)}</td>
                     <td className="px-3 py-2 text-xs">
-                      {roomName(s.fixed_room_id)
-                        ? <span className="bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded">🏟 {roomName(s.fixed_room_id)}</span>
-                        : <span className="text-gray-400">–</span>}
+                      <div className="flex flex-wrap items-center gap-1">
+                        {roomName(s.fixed_room_id)
+                          ? <span className="bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded">🏟 {roomName(s.fixed_room_id)}</span>
+                          : <span className="text-gray-400">–</span>}
+                        {s.room_rule === "subject" && (
+                          <span title="ต้องเรียนที่ห้องประจำวิชาเท่านั้น ถ้าไม่ว่างจะรอคาบอื่น"
+                            className="bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.5 rounded">เท่านั้น</span>
+                        )}
+                        {s.room_rule === "homeroom" && (
+                          <span title="เรียนที่ห้องของนักเรียน ครูเดินไปหา"
+                            className="bg-indigo-50 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded">🎒 ห้องนักเรียน</span>
+                        )}
+                        {s.allow_outdoor === true && (
+                          <span title="ลงลานได้เมื่อห้องในอาคารเต็ม"
+                            className="bg-green-50 text-green-800 border border-green-200 px-1.5 py-0.5 rounded">🌳 ลานได้</span>
+                        )}
+                        {s.allow_outdoor === false && (
+                          <span title="ห้ามลงลาน"
+                            className="bg-gray-100 text-gray-600 border border-gray-300 px-1.5 py-0.5 rounded">🚫 ไม่ลงลาน</span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-gray-600">{SUBJECT_TYPE_TH[s.type] ?? s.type}</td>
                     <td className="px-3 py-2 text-gray-600">{s.duration}</td>
@@ -867,7 +932,7 @@ const SubjectsPanel: React.FC = () => {
                         >
                           🎓 ใส่คาบเสรี
                         </button>
-                        <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "", prefer_morning: s.prefer_morning ?? false }); }} className={btnEdit}>แก้ไข</button>
+                        <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "", prefer_morning: s.prefer_morning ?? false, allow_outdoor: outdoorChoice(s.allow_outdoor) as "" | "yes" | "no", room_rule: (s.room_rule ?? "") as "" | "subject" | "homeroom" }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>

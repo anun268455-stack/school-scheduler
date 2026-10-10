@@ -24,6 +24,10 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   const [maxConsec, setMaxConsec] = useState(3);
   // เวรคาบสุดท้าย: last-period lessons every teacher should carry each week.
   const [minLast, setMinLast] = useState(1);
+  // …and the most any one of them should be given. A real trade, so it is
+  // offered rather than chosen: tighter spreads the late afternoons around
+  // but leaves a few lessons with nowhere to go.
+  const [maxLast, setMaxLast] = useState(3);
   const [result, setResult]               = useState<SolverResult | null>(null);
 
   // วิชาที่มีปัญหา — found before the run so they can be left out of it.
@@ -61,6 +65,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
         maxConsecutive: maxConsec,
         preferConsecutive: Math.min(2, maxConsec),
         minLastPeriod: minLast,
+        maxLastPeriod: maxLast,
       });
       setResult(r);
       await loadProblems();    // the run may have changed what fails
@@ -167,6 +172,25 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
               </button>
             ))}
           </div>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider pt-1">
+            เวรคาบสุดท้าย — สูงสุดต่อสัปดาห์
+          </p>
+          <div className="flex gap-1.5">
+            {[2, 3, 4, 0].map((n) => (
+              <button key={n} onClick={() => setMaxLast(n)}
+                className={clsx("flex-1 px-2 py-1.5 rounded text-xs font-semibold border transition-colors",
+                  maxLast === n
+                    ? "bg-indigo-600 border-indigo-500 text-white"
+                    : "bg-gray-800 border-gray-600 text-gray-300 hover:bg-gray-700")}>
+                {n === 0 ? "ไม่จำกัด" : `${n} วัน`}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            กันไม่ให้ครูคนเดิมอยู่คาบสุดท้ายหลายวันติด — เป็นการแลก ไม่ใช่ของฟรี
+            ยิ่งเข้มยิ่งมีบางคาบที่หาที่ลงไม่ได้ (ข้อมูลโรงเรียนนี้: 3 วัน ลงได้ 2,157 คาบ ·
+            2 วัน ลงได้ 2,125 · ไม่จำกัด ลงได้ 2,180 แต่มีครูอยู่คาบสุดท้ายถึง 5 วัน)
+          </p>
           <p className="text-[11px] text-gray-500 leading-relaxed">
             แบ่งเวรคาบสุดท้ายให้ทั่วถึง ไม่ตกกับคนเดิมๆ ·
             <strong>นักเรียนมาก่อน</strong> — ระบบจะไม่เพิ่มคาบท้ายวันให้ห้องที่เลิกเรียนแล้ว

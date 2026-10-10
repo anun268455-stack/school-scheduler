@@ -30,7 +30,10 @@ interface Props {
 }
 
 export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
-  const { buildings, teachers, departments } = useTimetableStore();
+  const { buildings, teachers, departments, groups } = useTimetableStore();
+  const flatGroups = groups.flatMap((g) => [g, ...(g.children ?? [])]);
+  const groupLabel = (id: number) =>
+    flatGroups.find((g) => g.id === id)?.name ?? String(id);
 
   const [name, setName]         = useState(room?.name ?? "");
   const [type, setType]         = useState<RoomType>(room?.type ?? "physical");
@@ -40,6 +43,9 @@ export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
   const [usable, setUsable]     = useState(room?.usable !== false);
   const [deptId, setDeptId]     = useState(room?.specialized_dept_id ? String(room.specialized_dept_id) : "");
   const [keptFor, setKeptFor]   = useState<number[]>(room ? roomReservedFor(room) : []);
+  // ห้องเรียนพิเศษของชั้นไหน — empty means any class may be seated here.
+  const [forGroups, setForGroups] = useState<number[]>(
+    Array.isArray(room?.reserved_group_ids) ? [...room!.reserved_group_ids!] : []);
   const [busy, setBusy]         = useState(false);
   const [error, setError]       = useState<string | null>(null);
 
@@ -60,6 +66,7 @@ export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
       usable,
       specialized_dept_id: deptId ? Number(deptId) : null,
       reserved_teacher_ids: keptFor,
+      reserved_group_ids: forGroups,
     };
     try {
       if (room) {
@@ -173,6 +180,39 @@ export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
           <p className="text-[11px] text-gray-400 mt-1">
             กลุ่มสาระอื่นจะใช้ห้องนี้ไม่ได้เลย และวิชาของกลุ่มสาระนี้จะถูกพามาเรียนที่นี่ก่อนห้องประจำชั้น
             — ใช้กับห้องคอมฯ แล็บวิทย์ ห้องดนตรี
+            {keptFor.length > 0 && (
+              <><br/><span className="text-teal-600">
+                หมายเหตุ: ห้องนี้จองให้ครูไว้แล้ว ระบบจะดูที่ชื่อครูอย่างเดียว ไม่บังคับให้ตรงกลุ่มสาระด้วย
+              </span></>
+            )}
+          </p>
+        </div>
+
+        {/* ชั้นเรียนที่ใช้ห้องนี้ได้ */}
+        <div>
+          <label className={label}>🎒 กันไว้ให้ชั้นเรียน (เลือกได้หลายห้อง)</label>
+          {forGroups.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-1.5">
+              {forGroups.map((id) => (
+                <span key={id} className="inline-flex items-center gap-1 text-xs bg-indigo-50 text-indigo-800 border border-indigo-200 rounded-lg px-2 py-1">
+                  {groupLabel(id)}
+                  <button onClick={() => setForGroups(forGroups.filter((x) => x !== id))}
+                    className="text-indigo-500 hover:text-red-600 ml-0.5">✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <SearchableSelect
+            value=""
+            onChange={(v) => { if (v) setForGroups([...new Set([...forGroups, Number(v)])]); }}
+            options={flatGroups.filter((g) => !forGroups.includes(g.id)).map((g) => ({
+              value: String(g.id), label: g.name, group: g.level ?? undefined,
+            }))}
+            placeholder={forGroups.length ? "+ เพิ่มชั้นอีกห้อง" : "– ชั้นไหนก็ใช้ได้ –"} />
+          <p className="text-[11px] text-gray-400 mt-1">
+            เว้นว่าง = ชั้นไหนก็มาเรียนได้ · ใส่ชื่อไว้ = เฉพาะชั้นเหล่านั้นเท่านั้นที่ระบบจะจัดคาบลงห้องนี้
+            — ใช้กับห้องที่ยกให้ห้องเรียนใดห้องเรียนหนึ่งไปเลย เช่น 247 เป็นของ ม.5/1
+            <br/>ห้องย่อย (ก/ข/ค) นับรวมกับห้องแม่อยู่แล้ว ไม่ต้องใส่ซ้ำ
           </p>
         </div>
 

@@ -50,6 +50,13 @@ export interface Room {
    * teacher once, so `reserved_teacher_id` is still read from older data.
    */
   reserved_teacher_ids?: number[];
+  /**
+   * ชั้นเรียนที่ใช้ห้องนี้ได้ — empty means any class.
+   *
+   * A school short of rooms gives one to a class outright: 247 is ม.5/1's
+   * and nobody else's. A sub-class counts as its parent.
+   */
+  reserved_group_ids?: number[];
   reserved_teacher_id?: number | null;
   /**
    * ห้ามใช้ — false keeps the scheduler out of this room entirely.
@@ -117,6 +124,18 @@ export interface Subject {
   fixed_room_id?: number | null; // ห้องประจำวิชา — สำคัญกว่าห้องประจำชั้นของนักเรียน
   /** วิชายากควรอยู่ช่วงเช้า — a nudge the solver tries first, never a rule. */
   prefer_morning?: boolean;
+  /**
+   * เรียนที่ลานได้ไหม — true ได้, false ห้าม, undefined ไม่ได้ระบุ.
+   *
+   * Open ground is overflow, never a first choice: a ticked subject goes out
+   * only once the classrooms are full.
+   */
+  allow_outdoor?: boolean | null;
+  /**
+   * เรียนที่ไหน — "subject" ห้องประจำวิชาเท่านั้น (พละ, นาฏศิลป์),
+   * "homeroom" ห้องของนักเรียน ครูเดินมาหา (แนะแนว), undefined = ปกติ.
+   */
+  room_rule?: "subject" | "homeroom" | null;
 }
 
 export interface LessonRequirement {
@@ -382,6 +401,8 @@ export interface SchoolConfig {
   prefer_consecutive?: number;
   /** เวรคาบสุดท้าย: last-period lessons each teacher should carry per week. */
   min_last_period?:    number;
+  /** เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 = ไม่จำกัด */
+  max_last_period?:    number;
 }
 
 // Drag item payload

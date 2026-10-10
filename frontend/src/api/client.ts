@@ -239,6 +239,8 @@ export const runSolver = (p: {
   prefer_consecutive?: number;
   /** เวรคาบสุดท้าย: last-period lessons each teacher should carry per week. */
   min_last_period?: number;
+  /** เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 = ไม่จำกัด */
+  max_last_period?: number;
 }) => api.post<SolverResult>("/timetable/solve", p).then((r) => r.data);
 
 /** วิชาที่มีปัญหา — what cannot be scheduled, checked before a run. */
