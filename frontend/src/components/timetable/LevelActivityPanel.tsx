@@ -278,6 +278,11 @@ export const LevelActivityPanel: React.FC = () => {
             <div className="flex items-center gap-2 border border-teal-300 bg-teal-50 rounded px-2 py-1.5">
               <span className="flex-1 text-sm text-teal-900 truncate">
                 👥 จัดไว้แล้ว {rosterCount} คน ใน {Object.keys(roster).length} ห้อง
+                {Object.keys(roster).length < picked.length && (
+                  <span className="text-teal-700/70 text-xs">
+                    {" "}(อีก {picked.length - Object.keys(roster).length} ห้องใช้ครูประจำชั้น)
+                  </span>
+                )}
               </span>
               <button onClick={() => setShowRoster(true)}
                 className="px-2 py-0.5 text-xs border border-teal-400 text-teal-800 rounded hover:bg-white">แก้ไข</button>
