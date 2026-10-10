@@ -1054,12 +1054,50 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 room_busy.add((rid, day, b))
         return slot
 
+    # สอนร่วมที่เขียนไว้สองแถว — one lesson, written from each teacher's side.
+    #
+    # An imported teaching plan has a row per teacher, so a Thai teacher and a
+    # foreign teacher who share ม.2/1 ค22102 arrive as two rows of three
+    # periods. Taken at face value the class gets six periods of the subject
+    # and the pair are never in the room together. Where the two rows name
+    # each other, they are folded into one here: three periods, both teachers
+    # booked, which is what the school meant and what สอนร่วม on a single row
+    # already does. Rows that do NOT name each other are left alone and the
+    # ตรวจสอบวิชาซ้ำ warning stands.
+    wanted = [r for r in REQUIREMENTS if r["id"] not in skipped_reqs]
+    by_cell: dict[tuple, list] = defaultdict(list)
+    for r in wanted:
+        by_cell[(r["group_id"], r["subject_id"])].append(r)
+    folded: set[int] = set()
+    pair_count: dict[int, int] = {}
+    for rows in by_cell.values():
+        for i, a in enumerate(rows):
+            if a["id"] in folded:
+                continue
+            for b in rows[i + 1:]:
+                if b["id"] in folded:
+                    continue
+                if a.get("co_teacher_id") == b["teacher_id"] or \
+                   b.get("co_teacher_id") == a["teacher_id"]:
+                    folded.add(b["id"])
+                    pair_count[a["id"]] = max(a.get("weekly_count") or 0,
+                                              b.get("weekly_count") or 0)
+                    break
+
     # Separate parallel vs solo
     parallel: dict[str, list] = {}
     solo: list[dict] = []
-    for req in REQUIREMENTS:
-        if req["id"] in skipped_reqs:
-            continue          # วิชาที่ผู้ใช้สั่งไม่ให้นำมาลงตาราง
+    for req in wanted:
+        if req["id"] in folded:
+            continue          # the other half of a สอนร่วม pair
+        if req["id"] in pair_count:
+            # A copy, so the fold never reaches the school's saved rows: the
+            # partner and the agreed period count live only in this solve.
+            req = {**req, "weekly_count": pair_count[req["id"]],
+                   "co_teacher_id": next(
+                       (o["teacher_id"] for o in by_cell[(req["group_id"], req["subject_id"])]
+                        if o["id"] in folded and o["teacher_id"] != req["teacher_id"]),
+                       req.get("co_teacher_id"))}
         pgk = req.get("parallel_group_key")
         if pgk:
             parallel.setdefault(pgk, []).append(req)
@@ -1627,10 +1665,22 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # afterwards, look for one of their lessons that could simply move into a
     # free last period and move it. Nothing is created or deleted — a lesson
     # changes cell, and only if every rule still holds at the new one.
+    # A lesson this pass is allowed to pick up and move.
+    #
+    # สอนร่วม is excluded for the same reason คู่ขนาน is: the cell holds two
+    # people's time, and everything below — unbook, can_take, reseat — is
+    # written around the one teacher_id. Moved by this pass, the partner went
+    # with the lesson without anyone checking they were free, and their own
+    # lessons then stacked up on the hour they had just been moved onto.
+    # Spreading เวรคาบสุดท้าย is worth having, but not at that price.
+    def swappable(x: dict) -> bool:
+        return (not x.get("is_locked") and not x.get("is_elective")
+                and not x.get("parallel_group_key")
+                and x.get("co_teacher_id") is None
+                and not x.get("activity_teacher_ids"))
+
     def movable_of(tid: int) -> list[dict]:
-        return [x for x in SLOTS
-                if x.get("teacher_id") == tid and not x.get("is_locked")
-                and not x.get("is_elective") and not x.get("parallel_group_key")]
+        return [x for x in SLOTS if x.get("teacher_id") == tid and swappable(x)]
 
     def reseat(slot: dict, day: int, period: int) -> None:
         """Put a lesson in a new cell and give it a room there."""
@@ -1690,8 +1740,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                               if x["group_id"] == gid and x["day"] == day
                               and x["period"] == target
                               and x.get("teacher_id") not in (None, tid)
-                              and not x.get("is_locked") and not x.get("is_elective")
-                              and not x.get("parallel_group_key")), None)
+                              and swappable(x)), None)
                 if other is None:
                     continue
                 o_teacher = t_map.get(other["teacher_id"])

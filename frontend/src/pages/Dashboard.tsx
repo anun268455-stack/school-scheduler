@@ -4,7 +4,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
-import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject } from "../types";
+import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject, LessonRequirement } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
@@ -19,6 +19,7 @@ import { byTeacherCode } from "../utils/teacherOrder";
 import { SavePointPanel } from "../components/backup/SavePointPanel";
 import { clashesByRequirement } from "../utils/teachingConflicts";
 import { findSubjectDuplicates } from "../utils/duplicateCheck";
+import { indexRequirements, partnerOf, mismatchedPairs } from "../utils/coTeaching";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
@@ -1055,8 +1056,31 @@ const RequirementsPanel: React.FC = () => {
       co_teacher_id: coOf(form.teacher_id, form.co_teacher_id),
     });
     useTimetableStore.setState((s) => ({ requirements: [...s.requirements, created] }));
+    await mirrorPairing(created);
     setForm({ group_id: "", subject_id: "", teacher_id: "", weekly_count: 1,
               parallel_group_key: "", co_teacher_id: "" });
+  };
+
+  /**
+   * Say the pairing on the partner's row too.
+   *
+   * The plan holds both halves of a co-taught lesson, so naming the partner
+   * on one row and not the other leaves the second teacher's own row looking
+   * like a duplicate of somebody else's work — which is exactly what it was
+   * being reported as. Only a row that has no partner yet is touched, so this
+   * never overwrites a pairing the school set deliberately.
+   */
+  const mirrorPairing = async (row: LessonRequirement) => {
+    if (row.co_teacher_id == null) return;
+    const mate = requirements.find((o) =>
+      o.id !== row.id && o.group_id === row.group_id &&
+      o.subject_id === row.subject_id && o.teacher_id === row.co_teacher_id &&
+      o.co_teacher_id == null);
+    if (!mate) return;
+    const back = await api.updateRequirement(mate.id, { co_teacher_id: row.teacher_id });
+    useTimetableStore.setState((st) => ({
+      requirements: st.requirements.map((r) => r.id === mate.id ? { ...r, ...back } : r),
+    }));
   };
 
   const handleUpdate = async (id: number) => {
@@ -1070,6 +1094,7 @@ const RequirementsPanel: React.FC = () => {
       co_teacher_id: coOf(editForm.teacher_id, editForm.co_teacher_id),
     });
     useTimetableStore.setState((s) => ({ requirements: s.requirements.map((r) => r.id === id ? { ...r, ...updated } : r) }));
+    await mirrorPairing(updated);
     setEditing(null); setEditForm(null);
   };
 
@@ -1102,6 +1127,23 @@ const RequirementsPanel: React.FC = () => {
 
   // หนึ่งห้อง หนึ่งวิชา หนึ่งครู — see utils/teachingConflicts.
   const clashes = useMemo(() => clashesByRequirement(requirements), [requirements]);
+  /**
+   * The สอนร่วม partner of every row, including the ones that never set it.
+   *
+   * An imported plan lists the pair as two rows, one per teacher. Setting
+   * สอนร่วม on the Thai teacher's row left the foreign teacher's own row
+   * saying nothing about a partner, so whoever opened it saw a bare duplicate.
+   */
+  const partners = useMemo(() => {
+    const idx = indexRequirements(requirements);
+    const m = new Map<number, number>();
+    for (const r of requirements) {
+      const p = partnerOf(r, idx);
+      if (p != null) m.set(r.id, p);
+    }
+    return m;
+  }, [requirements]);
+  const mismatched = useMemo(() => mismatchedPairs(requirements), [requirements]);
 
   // 1,200+ rows: filter first, then draw only a slice so the page stays quick.
   const [q, setQ] = useState("");
@@ -1134,6 +1176,22 @@ const RequirementsPanel: React.FC = () => {
             — ถ้าใส่ผิดให้ลบแถวที่เกินออก ถ้า<strong>ตั้งใจให้สอนคู่กัน</strong> ให้เหลือแถวเดียว
             แล้วใส่ครูคนที่สองในช่อง <strong>👥 สอนร่วม</strong> แทน
           </p>
+        </div>
+      )}
+
+      {mismatched.length > 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 mb-4 text-xs text-amber-900 space-y-1">
+          <p className="font-bold">⚠️ คู่สอนร่วมที่จำนวนคาบไม่ตรงกัน {mismatched.length} คู่</p>
+          <p className="leading-relaxed">
+            คู่สอนร่วมคือคาบเดียวกัน จำนวนคาบ/สัปดาห์ของทั้งสองแถวจึงต้องเท่ากัน
+            ระบบจะใช้ตัวเลขที่มากกว่าไปก่อน
+          </p>
+          {mismatched.slice(0, 8).map(({ a, b }) => (
+            <p key={a.id}>
+              • <strong>{gName(a.group_id)} {sCode(a.subject_id)}</strong>{" — "}
+              {tName(a.teacher_id)} {a.weekly_count} คาบ · {tName(b.teacher_id)} {b.weekly_count} คาบ
+            </p>
+          ))}
         </div>
       )}
 
@@ -1263,9 +1321,16 @@ const RequirementsPanel: React.FC = () => {
                     )}
                   </td>
                   <td className="px-3 py-2 text-gray-600">
-                    {r.co_teacher_id ? (
-                      <span className="px-1.5 py-0.5 rounded border text-[11px] bg-indigo-50 border-indigo-200 text-indigo-800">
-                        👥 {tName(r.co_teacher_id)}
+                    {partners.has(r.id) ? (
+                      <span
+                        title={r.co_teacher_id
+                          ? undefined
+                          : "มาจากแถวของครูอีกคนที่ระบุว่าสอนร่วมกับแถวนี้ — นับเป็นคาบเดียวกัน"}
+                        className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                          r.co_teacher_id
+                            ? "bg-indigo-50 border-indigo-200 text-indigo-800"
+                            : "bg-indigo-50/60 border-indigo-200 border-dashed text-indigo-700"}`}>
+                        👥 {tName(partners.get(r.id)!)}{r.co_teacher_id ? "" : " (จากแถวคู่)"}
                       </span>
                     ) : <span className="text-gray-300">–</span>}
                   </td>
