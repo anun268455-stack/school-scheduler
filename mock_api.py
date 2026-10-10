@@ -190,6 +190,19 @@ def _subject_outdoor(subj: dict[str, Any]) -> bool | None:
     return v if isinstance(v, bool) else None
 
 
+def _may_use_outdoor(subj: dict[str, Any]) -> bool:
+    """Open ground is a room like any other, unless the school says no.
+
+    It was the other way round at first — nothing outdoors unless ticked —
+    and the yards stayed empty all week while the school was short of rooms,
+    because nobody had been through 271 subjects ticking boxes. The school
+    asked for the opposite: put lessons out there the way you would in any
+    room, and they will mark the few subjects that cannot. Classrooms still
+    fill first; see `rank`, where a ลาน sits below every indoor room.
+    """
+    return _subject_outdoor(subj) is not False
+
+
 def _room_usable(room: dict[str, Any]) -> bool:
     """May a lesson be scheduled in this room?
 
@@ -895,7 +908,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     outdoor_dept_ids = {d["id"] for d in DEPARTMENTS if "พลศึกษา" in d.get("name", "")}
 
     def find_room(teacher_id: int, day: int, period: int, subject_id: int | None = None,
-                  group_id: int | None = None):
+                  group_id: int | None = None, also_period: int | None = None):
         """Pick a room, minimising how far students/teachers must walk.
 
         Priority:
@@ -922,7 +935,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         allow_out = _subject_outdoor(subj)
         wants_outdoor = (subj.get("department_id") in outdoor_dept_ids
                          and allow_out is not False)
-        may_outdoor = wants_outdoor or allow_out is True
+        may_outdoor = wants_outdoor or _may_use_outdoor(subj)
         grp = g_map.get(group_id, {}) if group_id is not None else {}
         # ห้องประจำชั้น, or the one this run has settled on for a class that has
         # none. Forty of this school's classes have no homeroom recorded, which
@@ -946,6 +959,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # A room is taken if it is in use at this time of day — which, between
         # the two levels, is not the same thing as the same period number.
         bks = _slot_buckets(grp, period)
+        # A คาบคู่ asks for one room for two periods running. Taking the first
+        # half's room and reusing it for the second without asking put a class
+        # into a room somebody else had already booked for that hour, so the
+        # pair is judged against both periods here, before either is taken.
+        if also_period is not None:
+            bks = frozenset(bks) | _slot_buckets(grp, also_period)
 
         def room_taken(rid: int) -> bool:
             return any((rid, day, b) in room_busy for b in bks)
@@ -1187,8 +1206,18 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if sid is not None:
             subj_day[(gid, sid, day)] += delta
 
-    def make_slot(req: dict, day: int, period: int) -> dict:
-        rid, rname, rtype = find_room(req["teacher_id"], day, period, req["subject_id"], req["group_id"])
+    def make_slot(req: dict, day: int, period: int,
+                  room: tuple | None = None, also_period: int | None = None) -> dict:
+        """One lesson in one cell. `room` pins it to a room already chosen.
+
+        A คาบคู่ is one lesson two periods long, so both halves belong in the
+        same room: chosen separately they came out as ราชวินิตภิรมย์4 then
+        ราชวินิตภิรมย์3, and the class packed up and moved halfway through
+        its own double.
+        """
+        rid, rname, rtype = room if room else find_room(
+            req["teacher_id"], day, period, req["subject_id"], req["group_id"],
+            also_period)
         if rid:                       # so the next cell knows where they are
             teacher_room[(req["teacher_id"], day, period)] = rid
         subj    = s_map.get(req["subject_id"], {})
@@ -1699,6 +1728,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         return placed
 
     # ── Place solo requirements ──
+    #
+    # คาบคู่ first. A double needs two free periods in a row AND one room that
+    # is free for both of them; by the time the singles have taken their pick
+    # there may be no such pair left, and the double breaks into two halves in
+    # two rooms. Everything else can fit around them afterwards.
+    solo.sort(key=lambda r: 0 if (s_map.get(r["subject_id"], {}) or {}).get("duration") == 2 else 1)
     for req in solo:
         gid, tid = req["group_id"], req["teacher_id"]
         subj     = s_map.get(req["subject_id"], {})
@@ -1741,9 +1776,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                             continue
                         if run > hard:
                             continue
-                    s1 = make_slot(req, day, p)
+                    s1 = make_slot(req, day, p, also_period=p2)
                     s1["is_double_start"] = True
-                    s2 = make_slot(req, day, p2)
+                    # The second half stays put. find_room would be asked
+                    # again and could answer differently — the first half has
+                    # just booked the room, so the second would be told it is
+                    # busy and sent somewhere else.
+                    s2 = make_slot(req, day, p2,
+                                   (s1.get("room_id"), s1.get("room_name"), s1.get("room_type")))
                     SLOTS.append(s1); SLOTS.append(s2)
                     note_subject(gid, req.get("subject_id"), day, 2)
                     for pp in (p, p2):

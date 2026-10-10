@@ -58,14 +58,17 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
 
   const [showSolver,  setShowSolver]  = useState(false);
   const [showCrud,    setShowCrud]    = useState(false);
+  const [showTools,   setShowTools]   = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showPrintOpts, setShowPrintOpts] = useState(false);
 
   // Toolbar popovers close when you click anywhere else, or press Esc.
   const solverRef = useRef<HTMLDivElement>(null);
   const crudRef   = useRef<HTMLDivElement>(null);
+  const toolsRef  = useRef<HTMLDivElement>(null);
   useDismissOnOutside(solverRef, showSolver, useCallback(() => setShowSolver(false), []));
   useDismissOnOutside(crudRef,   showCrud,   useCallback(() => setShowCrud(false), []));
+  useDismissOnOutside(toolsRef,  showTools,  useCallback(() => setShowTools(false), []));
 
   const entityOptions = viewMode === "group"
     ? groups.flatMap((g) => [g, ...(g.children ?? [])])
@@ -217,24 +220,61 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         </button>
       </div>
 
-      {/* Pre-Lock Toggle */}
-      {currentPage === "timetable" && (
-        <div className="flex items-center gap-1.5 px-2 border-r border-gray-700 shrink-0">
-          <button
-            onClick={() => setPreLockMode(!preLockMode)}
-            className={clsx(
-              "flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold transition-all border",
-              preLockMode
-                ? "bg-amber-500 border-amber-400 text-white shadow-amber-500/30 shadow-md"
-                : "bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600",
+      {/* เครื่องมือ — one button.
+          Lock mode, lock-all, unlock-all, print and PDF were five buttons in
+          a row competing with the three that matter (the view tabs, the
+          picker, สร้างตาราง). Four of them are things you reach for now and
+          then, so they live behind one ⋯ and the bar stays readable. Lock
+          mode keeps a lit state on the button itself, because while it is on
+          every click in the grid does something different. */}
+      <div ref={toolsRef} className="relative px-2 border-r border-gray-700 shrink-0">
+        <button
+          onClick={() => { setShowTools((v) => !v); setShowSolver(false); setShowCrud(false); }}
+          className={clsx(
+            "flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold transition-all border",
+            preLockMode
+              ? "bg-amber-500 border-amber-400 text-white shadow-amber-500/30 shadow-md"
+              : "bg-gray-700 border-gray-600 text-gray-200 hover:bg-gray-600",
+          )}
+          title="เครื่องมือ — ล็อกคาบ พิมพ์ และ PDF"
+        >
+          {preLockMode ? "🔒 กำลังล็อก" : "⋯ เครื่องมือ"} <span className="text-[10px]">▾</span>
+        </button>
+        {showTools && (
+          <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-50 min-w-[230px] py-1">
+            {currentPage === "timetable" && (
+              <>
+                <button
+                  onClick={() => { setPreLockMode(!preLockMode); setShowTools(false); }}
+                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors",
+                    preLockMode ? "bg-amber-600 text-white" : "text-gray-200 hover:bg-gray-700")}>
+                  {preLockMode ? "🔒" : "🔓"}
+                  <span className="flex-1">โหมดล็อก — คลิกคาบเพื่อล็อก</span>
+                  {preLockMode && <span className="text-[10px]">กำลังเปิด</span>}
+                </button>
+                <button onClick={() => { lockAll(); setShowTools(false); }}
+                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+                  🔒 <span>ล็อกทุกคาบ</span>
+                </button>
+                <button onClick={() => { unlockAll(); setShowTools(false); }}
+                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+                  🔓 <span>ปลดล็อกทุกคาบ</span>
+                </button>
+                <div className="border-t border-gray-700 my-1" />
+              </>
             )}
-          >
-            {preLockMode ? "🔒 กำลังล็อก" : "🔓 โหมดล็อก"}
-          </button>
-          <button onClick={lockAll}   title="ล็อกทั้งหมด" className="px-2 py-1 text-[10px] bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-gray-300">🔒 ทั้งหมด</button>
-          <button onClick={unlockAll} title="ปลดล็อกทั้งหมด" className="px-2 py-1 text-[10px] bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-gray-300">🔓 ปลด</button>
-        </div>
-      )}
+            <button
+              onClick={() => { setShowPrintOpts(true); setShowTools(false); setShowSolver(false); setShowCrud(false); }}
+              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+              🖨 <span>พิมพ์…</span>
+            </button>
+            <button onClick={() => { setShowTools(false); handlePDF(); }} disabled={isExporting}
+              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700 disabled:text-gray-500">
+              📥 <span>{isExporting ? "กำลังบันทึก…" : "บันทึกเป็น PDF"}</span>
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Solver */}
       <div ref={solverRef} className="relative px-2 border-r border-gray-700 shrink-0">
@@ -279,20 +319,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         )}
       </div>
 
-      {/* Print & PDF */}
-      <div className="flex items-center gap-1.5 pl-3 shrink-0 ml-auto">
-        <button onClick={() => { setShowPrintOpts(true); setShowSolver(false); setShowCrud(false); }}
-          className="flex items-center gap-1 px-2.5 py-1 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-xs text-gray-200">
-          🖨 พิมพ์
-        </button>
-        <button onClick={handlePDF} disabled={isExporting}
-          className={clsx(
-            "flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium",
-            isExporting ? "bg-gray-600 text-gray-400 cursor-not-allowed" : "bg-red-600 hover:bg-red-500 text-white",
-          )}>
-          {isExporting ? "⏳..." : "📥 PDF"}
-        </button>
-      </div>
+      <div className="ml-auto" />
       {/* Print options */}
       {showPrintOpts && (
         <PrintOptionsModal

@@ -709,7 +709,7 @@ const SubjectsPanel: React.FC = () => {
         <Field label="🌳 เรียนที่ลานได้ไหม">
           <select className={inputCls} value={form.allow_outdoor}
             onChange={(e) => setForm({ ...form, allow_outdoor: e.target.value as "" | "yes" | "no" })}>
-            <option value="">– ไม่ระบุ (ไม่ลงลาน) –</option>
+            <option value="">– ปกติ (ลงลานได้ถ้าห้องเต็ม) –</option>
             <option value="yes">✅ ลงลานได้ ถ้าห้องเต็ม</option>
             <option value="no">🚫 ห้ามลงลาน</option>
           </select>
@@ -724,8 +724,9 @@ const SubjectsPanel: React.FC = () => {
         </Field>
       </div>
       <div className="bg-teal-50 border border-teal-200 rounded-lg p-2.5 mb-3 text-xs text-teal-900 leading-relaxed">
-        <strong>🌳 ลาน</strong> ใช้เป็นที่รองรับคาบที่ล้นเท่านั้น — วิชาที่ติ๊ก "ลงลานได้"
-        จะถูกจัดลงลานก็ต่อเมื่อห้องในอาคารเต็มแล้วจริง ๆ วิชาที่ไม่ได้ติ๊กจะไม่ลงลานเลย
+        <strong>🌳 ลาน</strong> ใช้เหมือนห้องเรียนห้องหนึ่ง แต่<strong>อยู่ท้ายสุดเสมอ</strong> —
+        ระบบจะจัดเข้าห้องในอาคารให้หมดก่อน เหลือเท่าไรจึงลงลาน
+        ไม่ต้องติ๊กทุกวิชา ให้ติ๊ก <strong>🚫 ห้ามลงลาน</strong> เฉพาะวิชาที่ออกไปข้างนอกไม่ได้
         <br/><strong>📍 ห้องประจำวิชาเท่านั้น</strong> — พละ นาฏศิลป์ ถ้าสนาม/ห้องไม่ว่างจะรอคาบอื่น
         ไม่ยอมลงห้องเรียนธรรมดา · <strong>ห้องของนักเรียน</strong> — แนะแนว โฮมรูม
         ครูเดินไปหานักเรียน ต่อให้ครูมีห้องประจำของตัวเอง
@@ -832,7 +833,7 @@ const SubjectsPanel: React.FC = () => {
                         </select>
                         <select className={inlineCls} value={editForm.allow_outdoor}
                           onChange={(e) => setEditForm({ ...editForm, allow_outdoor: e.target.value as "" | "yes" | "no" })}>
-                          <option value="">ลาน: ไม่ระบุ</option>
+                          <option value="">ลาน: ปกติ</option>
                           <option value="yes">🌳 ลานได้</option>
                           <option value="no">🚫 ห้ามลาน</option>
                         </select>
@@ -883,7 +884,7 @@ const SubjectsPanel: React.FC = () => {
                             className="bg-indigo-50 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded">🎒 ห้องนักเรียน</span>
                         )}
                         {s.allow_outdoor === true && (
-                          <span title="ลงลานได้เมื่อห้องในอาคารเต็ม"
+                          <span title="ลงลานได้เมื่อห้องในอาคารเต็ม (เหมือนค่าปกติ)"
                             className="bg-green-50 text-green-800 border border-green-200 px-1.5 py-0.5 rounded">🌳 ลานได้</span>
                         )}
                         {s.allow_outdoor === false && (
