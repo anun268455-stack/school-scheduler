@@ -193,6 +193,23 @@ export const teacherOptions = (
     group: departments?.find((d) => d.id === t.department_id)?.name,
   }));
 
+/**
+ * Subjects by code, searchable by name.
+ *
+ * The code is what fits a table column and what the school writes on a
+ * timetable, but nobody recalls that ค22102 is the ม.2 maths one — so the
+ * name rides along as the hint, and the search box reads hints too.
+ */
+export const subjectOptions = (
+  subjects: { id: number; code: string; name: string; is_activity?: boolean }[],
+): Option[] =>
+  subjects.map((s) => ({
+    value: String(s.id),
+    label: s.code,
+    hint: s.name,
+    group: s.is_activity ? "กิจกรรม" : undefined,
+  }));
+
 export const roomOptions = (
   rooms: { id: number; name: string; type?: string; capacity?: number }[],
   typeLabels?: Record<string, string>,

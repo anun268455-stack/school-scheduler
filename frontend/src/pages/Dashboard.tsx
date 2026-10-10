@@ -29,7 +29,7 @@ import {
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { TeacherSettingsModal } from "../components/teachers/TeacherSettingsModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
-import { SearchableSelect, teacherOptions, roomOptions, groupOptions } from "../components/common/SearchableSelect";
+import { SearchableSelect, teacherOptions, roomOptions, groupOptions, subjectOptions } from "../components/common/SearchableSelect";
 import { TableSearch, matches } from "../components/common/TableSearch";
 
 export type DashPage =
@@ -1158,10 +1158,9 @@ const RequirementsPanel: React.FC = () => {
             options={groupOptions(flat)} placeholder="เลือกห้อง" />
         </Field>
         <Field label="วิชา *">
-          <select className={inputCls} value={form.subject_id} onChange={(e) => setForm({ ...form, subject_id: e.target.value })}>
-            <option value="">เลือกวิชา</option>
-            {subjects.map((s) => <option key={s.id} value={s.id}>{s.code} – {s.name}</option>)}
-          </select>
+          <SearchableSelect value={form.subject_id}
+            onChange={(v) => setForm({ ...form, subject_id: v })}
+            options={subjectOptions(subjects)} placeholder="เลือกวิชา" />
         </Field>
         <Field label="ครูผู้สอน *">
           <SearchableSelect value={form.teacher_id} onChange={(v) => setForm({ ...form, teacher_id: v })}
@@ -1196,7 +1195,9 @@ const RequirementsPanel: React.FC = () => {
         <TableSearch value={q} onChange={setQ} count={matchedReqs.length} total={requirements.length}
           shown={shownReqs.length} placeholder="ค้นหาห้องเรียน / รหัสวิชา / ชื่อครู" />
       </div>
-      <div className="border border-gray-200 rounded-lg overflow-hidden">
+      {/* overflow-hidden rounds the table's corners, but it also cuts off the
+          search panel of a picker opened in the row being edited. */}
+      <div className={`border border-gray-200 rounded-lg ${editing ? "" : "overflow-hidden"}`}>
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
@@ -1211,29 +1212,31 @@ const RequirementsPanel: React.FC = () => {
             )}
             {shownReqs.map((r) => (
               editing === r.id && editForm ? (
+                /* Typing beats scrolling: a plain <select> of 153 teachers or
+                   271 subjects is a list you hunt through, and the เพิ่ม form
+                   above this table has had a search box all along. */
                 <tr key={r.id} className="bg-yellow-50">
                   <td className="px-2 py-1">
-                    <select className={inlineCls} value={editForm.group_id} onChange={(e) => setEditForm({ ...editForm, group_id: e.target.value })}>
-                      {flat.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-                    </select>
+                    <SearchableSelect value={editForm.group_id}
+                      onChange={(v) => setEditForm({ ...editForm, group_id: v })}
+                      options={groupOptions(flat)} placeholder="ห้องเรียน" />
                   </td>
                   <td className="px-2 py-1">
-                    <select className={inlineCls} value={editForm.subject_id} onChange={(e) => setEditForm({ ...editForm, subject_id: e.target.value })}>
-                      {subjects.map((s) => <option key={s.id} value={s.id}>{s.code}</option>)}
-                    </select>
+                    <SearchableSelect value={editForm.subject_id}
+                      onChange={(v) => setEditForm({ ...editForm, subject_id: v })}
+                      options={subjectOptions(subjects)} placeholder="วิชา" />
                   </td>
                   <td className="px-2 py-1">
-                    <select className={inlineCls} value={editForm.teacher_id} onChange={(e) => setEditForm({ ...editForm, teacher_id: e.target.value })}>
-                      {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                    </select>
+                    <SearchableSelect value={editForm.teacher_id}
+                      onChange={(v) => setEditForm({ ...editForm, teacher_id: v })}
+                      options={teacherOptions(teachers, departments)} placeholder="ครูผู้สอน" />
                   </td>
                   <td className="px-2 py-1">
-                    <select className={inlineCls} value={editForm.co_teacher_id}
-                      onChange={(e) => setEditForm({ ...editForm, co_teacher_id: e.target.value })}>
-                      <option value="">– ไม่มี –</option>
-                      {teachers.filter((t) => String(t.id) !== editForm.teacher_id)
-                        .map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                    </select>
+                    <SearchableSelect value={editForm.co_teacher_id}
+                      onChange={(v) => setEditForm({ ...editForm, co_teacher_id: v })}
+                      options={teacherOptions(
+                        teachers.filter((t) => String(t.id) !== editForm.teacher_id), departments)}
+                      emptyLabel="– ไม่มี –" placeholder="– ไม่มี –" />
                   </td>
                   <td className="px-2 py-1"><input type="number" min={1} max={20} className={inlineCls} style={{ width: 55 }} value={editForm.weekly_count} onChange={(e) => setEditForm({ ...editForm, weekly_count: Number(e.target.value) })} /></td>
                   <td className="px-2 py-1"><input className={inlineCls} list="parallel-keys" style={{ width: 100 }} value={editForm.parallel_group_key} onChange={(e) => setEditForm({ ...editForm, parallel_group_key: e.target.value })} /></td>
@@ -1291,7 +1294,7 @@ const RequirementsPanel: React.FC = () => {
 
 // ─── Electives (วิชาเสรี) ───────────────────────────────────────────────────────
 const ElectivesPanel: React.FC = () => {
-  const { slots, groups, teachers, subjects, periods, rooms, loadSlots } = useTimetableStore();
+  const { slots, groups, teachers, subjects, periods, rooms, departments, loadSlots } = useTimetableStore();
   const [form, setForm] = useState({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "", room_id: "", is_double: false });
   const [managing, setManaging]   = useState<number | null>(null);
   const [copyingId, setCopyingId] = useState<number | null>(null);
@@ -1382,10 +1385,9 @@ const ElectivesPanel: React.FC = () => {
 
       <div className="grid grid-cols-3 gap-2 mb-3">
         <Field label="ห้องเรียน *">
-          <select className={inputCls} value={form.group_id} onChange={(e) => setForm({ ...form, group_id: e.target.value })}>
-            <option value="">เลือกห้อง</option>
-            {flat.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-          </select>
+          <SearchableSelect value={form.group_id}
+            onChange={(v) => setForm({ ...form, group_id: v })}
+            options={groupOptions(flat)} placeholder="เลือกห้อง" />
         </Field>
         <Field label="วัน *">
           <select className={inputCls} value={form.day} onChange={(e) => setForm({ ...form, day: e.target.value })}>
@@ -1399,22 +1401,22 @@ const ElectivesPanel: React.FC = () => {
           </select>
         </Field>
         <Field label="วิชา (วงแรก) *">
-          <select className={inputCls} value={form.subject_id} onChange={(e) => setForm({ ...form, subject_id: e.target.value })}>
-            <option value="">เลือกวิชา</option>
-            {subjects.map((s) => <option key={s.id} value={s.id}>{s.code} – {s.name}</option>)}
-          </select>
+          <SearchableSelect value={form.subject_id}
+            onChange={(v) => setForm({ ...form, subject_id: v })}
+            options={subjectOptions(subjects)} placeholder="เลือกวิชา" />
         </Field>
         <Field label="ครูผู้สอน (วงแรก) *">
-          <select className={inputCls} value={form.teacher_id} onChange={(e) => setForm({ ...form, teacher_id: e.target.value })}>
-            <option value="">เลือกครู</option>
-            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+          <SearchableSelect value={form.teacher_id}
+            onChange={(v) => setForm({ ...form, teacher_id: v })}
+            options={teacherOptions(teachers, departments)} placeholder="เลือกครู" />
         </Field>
         <Field label="ห้องสอน">
-          <select className={inputCls} value={form.room_id} onChange={(e) => setForm({ ...form, room_id: e.target.value })}>
-            <option value="">{suggestedRoomId ? `🏠 ห้องประจำครู (${rooms.find((r) => r.id === suggestedRoomId)?.name ?? "-"})` : "– เลือกห้อง –"}</option>
-            {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
+          <SearchableSelect value={form.room_id}
+            onChange={(v) => setForm({ ...form, room_id: v })}
+            options={roomOptions(rooms)}
+            emptyLabel={suggestedRoomId
+              ? `🏠 ห้องประจำครู (${rooms.find((r) => r.id === suggestedRoomId)?.name ?? "-"})`
+              : "– เลือกห้อง –"} />
         </Field>
         <Field label="ชื่อวง">
           <input className={inputCls} value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="เช่น วงดนตรี" />
@@ -1918,11 +1920,9 @@ const BulkLockPanel: React.FC = () => {
           </select>
         </Field>
         <Field label="วิชา">
-          <select className={inputCls} value={filter.subject_id}
-            onChange={(e) => setFilter({ ...filter, subject_id: e.target.value })}>
-            <option value="">ทุกวิชา</option>
-            {subjects.map((s) => <option key={s.id} value={s.id}>{s.code} – {s.name}</option>)}
-          </select>
+          <SearchableSelect value={filter.subject_id}
+            onChange={(v) => setFilter({ ...filter, subject_id: v })}
+            options={subjectOptions(subjects)} emptyLabel="ทุกวิชา" />
         </Field>
       </div>
 
