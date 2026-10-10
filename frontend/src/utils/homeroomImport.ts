@@ -10,6 +10,7 @@
  * it is handed back for a person to look at.
  */
 import type { StudentGroup, Teacher } from "../types";
+import { familyRootId } from "./homeroom";
 
 /** Titles that carry no identity, so they are not part of the comparison. */
 const TITLES = [
@@ -159,6 +160,36 @@ export interface Conflict {
   names: string[];
 }
 
+export interface DoubleBooked {
+  teacherName: string;
+  classNames: string[];
+}
+
+/**
+ * Teachers the list hands more than one class.
+ *
+ * One teacher advises one class. A parent and its sub-classes are one class,
+ * so a list naming the same teacher for ม.4/6 and ม.4/6ก is not a clash — it
+ * is the same assignment written twice, and it collapses to one.
+ */
+export function findDoubleBooked(
+  rows: ParsedRow[], flatGroups: StudentGroup[],
+): DoubleBooked[] {
+  const by = new Map<number, { name: string; roots: Map<number, string> }>();
+  for (const r of rows) {
+    if (r.status !== "ok" || !r.group || !r.teacher) continue;
+    const root = familyRootId(r.group, flatGroups) ?? r.group.id;
+    const e = by.get(r.teacher.id) ?? { name: r.teacher.name, roots: new Map() };
+    if (!e.roots.has(root)) {
+      e.roots.set(root, flatGroups.find((g) => g.id === root)?.name ?? r.group.name);
+    }
+    by.set(r.teacher.id, e);
+  }
+  return [...by.values()]
+    .filter((e) => e.roots.size > 1)
+    .map((e) => ({ teacherName: e.name, classNames: [...e.roots.values()] }));
+}
+
 /**
  * Classes the list gives more than the system allows.
  *
@@ -166,29 +197,42 @@ export interface Conflict {
  * is a staffroom fact, and silently dropping the third would be a decision
  * made by whichever order the lines happened to be in.
  */
-export function findOverfilled(rows: ParsedRow[], max: number): Conflict[] {
+export function findOverfilled(
+  rows: ParsedRow[], max: number, flatGroups: StudentGroup[],
+): Conflict[] {
   const by = new Map<string, string[]>();
   for (const r of rows) {
     if (r.status !== "ok" || !r.group || !r.teacher) continue;
-    const list = by.get(r.group.name) ?? [];
+    const root = familyRootId(r.group, flatGroups) ?? r.group.id;
+    const key = flatGroups.find((g) => g.id === root)?.name ?? r.group.name;
+    const list = by.get(key) ?? [];
     if (!list.includes(r.teacher.name)) list.push(r.teacher.name);
-    by.set(r.group.name, list);
+    by.set(key, list);
   }
   return [...by.entries()]
     .filter(([, names]) => names.length > max)
     .map(([groupName, names]) => ({ groupName, names }));
 }
 
-/** One update per class, with its advisors in the order they were listed. */
+/**
+ * One update per class, with its advisors in the order they were listed.
+ *
+ * Written to the class the advisors belong on — the parent, for a line naming
+ * a sub-class, since the sub-classes read theirs from it. A list that names
+ * both ม.4/6 and ม.4/6ก therefore lands as one entry rather than two that
+ * disagree.
+ */
 export function buildChanges(
-  rows: ParsedRow[], max: number,
+  rows: ParsedRow[], max: number, flatGroups: StudentGroup[],
 ): { groupId: number; teacherIds: number[]; groupName: string }[] {
   const by = new Map<number, { name: string; ids: number[] }>();
   for (const r of rows) {
     if (r.status !== "ok" || !r.group || !r.teacher) continue;
-    const e = by.get(r.group.id) ?? { name: r.group.name, ids: [] };
+    const root = familyRootId(r.group, flatGroups) ?? r.group.id;
+    const name = flatGroups.find((g) => g.id === root)?.name ?? r.group.name;
+    const e = by.get(root) ?? { name, ids: [] };
     if (!e.ids.includes(r.teacher.id)) e.ids.push(r.teacher.id);
-    by.set(r.group.id, e);
+    by.set(root, e);
   }
   return [...by.entries()].map(([groupId, e]) => ({
     groupId, groupName: e.name, teacherIds: e.ids.slice(0, max),

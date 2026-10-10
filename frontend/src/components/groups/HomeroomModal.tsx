@@ -16,7 +16,9 @@ import clsx from "clsx";
 import { ModalShell } from "../common/ModalShell";
 import { matches } from "../common/TableSearch";
 import type { StudentGroup, Teacher } from "../../types";
-import { homeroomIds, HOMEROOM_MAX } from "../../utils/homeroom";
+import {
+  homeroomIds, HOMEROOM_MAX, familyRootId, inheritsHomeroom,
+} from "../../utils/homeroom";
 
 interface Props {
   /** Opened from a class: choose up to two teachers for it. */
@@ -90,8 +92,35 @@ export const HomeroomModal: React.FC<Props> = ({
   const chosenHere = group ? (draft[group.id] ?? []) : [];
   const full = chosenHere.length >= HOMEROOM_MAX;
 
+  /** Root class id → the teachers advising that family, from the draft. */
+  const familyOf = useMemo(() => {
+    const m = new Map<number, number[]>();
+    for (const g of groups) {
+      const ids = draft[g.id] ?? [];
+      if (!ids.length) continue;
+      const r = familyRootId(g, groups) ?? g.id;
+      m.set(r, [...(m.get(r) ?? []), ...ids]);
+    }
+    return m;
+  }, [draft, groups]);
+
+  /** The other family this teacher already belongs to, if any. */
+  const otherFamily = (tid: number, forGroup: StudentGroup) => {
+    const mine = familyRootId(forGroup, groups);
+    for (const [root, ids] of familyOf) {
+      if (root !== mine && ids.includes(tid)) {
+        return groups.find((g) => g.id === root)?.name ?? null;
+      }
+    }
+    return null;
+  };
+
   const shownTeachers = teachers.filter((t) => matches(q, t.code, t.name));
-  const shownGroups = groups.filter((g) => matches(q, g.name, g.level));
+  // Sub-classes take their advisors from the class above, so they are not
+  // picked here; showing them as choices would offer a setting that the
+  // inheritance immediately overrules.
+  const shownGroups = groups.filter(
+    (g) => matches(q, g.name, g.level) && !g.parent_id);
 
   return (
     <ModalShell onClose={onClose} maxWidth="max-w-2xl">
@@ -105,7 +134,7 @@ export const HomeroomModal: React.FC<Props> = ({
           <p className="text-blue-100 text-xs mt-0.5">
             {byClass
               ? `เลือกได้สูงสุด ${HOMEROOM_MAX} คนต่อห้อง · เลือกแล้ว ${chosenHere.length}`
-              : "เลือกห้องที่ครูท่านนี้เป็นครูประจำชั้น"}
+              : "เลือกห้องที่ครูท่านนี้เป็นครูประจำชั้น (ได้ห้องเดียว)"}
           </p>
         </div>
         <button onClick={onClose} className="text-blue-200 hover:text-white text-lg leading-none shrink-0">✕</button>
@@ -120,28 +149,35 @@ export const HomeroomModal: React.FC<Props> = ({
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-3 space-y-1">
+        {byClass && inheritsHomeroom(group!, groups) && (
+          <p className="text-xs bg-amber-50 border border-amber-200 text-amber-900 rounded-lg px-3 py-2">
+            {group!.name} เป็นห้องลูก — ครูประจำชั้นตามห้องแม่
+            <strong> {groups.find((g) => g.id === group!.parent_id)?.name}</strong> โดยอัตโนมัติ
+            ถ้าต้องการเปลี่ยน ให้ไปตั้งที่ห้องแม่
+          </p>
+        )}
+
         {byClass && shownTeachers.map((t) => {
           const on = chosenHere.includes(t.id);
-          // Where else this teacher already advises — worth seeing before
-          // handing them a second class.
-          const elsewhere = groups
-            .filter((g) => g.id !== group!.id && (draft[g.id] ?? []).includes(t.id))
-            .map((g) => g.name);
+          // One teacher, one class. A parent and its sub-classes count as the
+          // one class they are, so advising ม.4/6 does not also use up the
+          // teacher on ม.4/6ก.
+          const taken = otherFamily(t.id, group!);
+          const blocked = !on && (full || !!taken);
           return (
-            <button key={t.id} onClick={() => toggleTeacher(t.id)}
-              disabled={!on && full}
+            <button key={t.id} onClick={() => !taken && toggleTeacher(t.id)}
+              disabled={blocked}
+              title={taken ? `เป็นครูประจำชั้น ${taken} อยู่แล้ว — ครู 1 คนประจำได้ห้องเดียว` : undefined}
               className={clsx("w-full flex items-center gap-2 p-2.5 rounded-lg border text-left transition-colors",
                 on ? "bg-blue-600 border-blue-700 text-white"
-                   : full ? "bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed"
+                   : blocked ? "bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed"
                           : "bg-white border-gray-200 hover:border-blue-400")}>
               <span className="text-sm font-medium flex-1 min-w-0 truncate">
                 {t.code ? `${t.code} ` : ""}{t.name}
               </span>
-              {elsewhere.length > 0 && (
-                <span className={clsx("text-[10px] px-1.5 py-0.5 rounded border shrink-0",
-                  on ? "bg-blue-500 border-blue-400 text-white"
-                     : "bg-amber-50 border-amber-200 text-amber-700")}>
-                  เป็นครูประจำชั้น {elsewhere.join(", ")} อยู่แล้ว
+              {taken && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded border shrink-0 bg-amber-50 border-amber-200 text-amber-700">
+                  ประจำ {taken} อยู่แล้ว
                 </span>
               )}
               {on && <span className="text-xs shrink-0">✓</span>}
@@ -154,15 +190,37 @@ export const HomeroomModal: React.FC<Props> = ({
           const on = ids.includes(teacher!.id);
           const others = ids.filter((x) => x !== teacher!.id);
           const classFull = !on && ids.length >= HOMEROOM_MAX;
+          // Already advising somewhere else: picking a second class is the
+          // thing this rule exists to prevent, so the rest are closed off
+          // until that one is released.
+          const elsewhere = !on && [...familyOf.entries()]
+            .find(([root, list]) => root !== g.id && list.includes(teacher!.id));
+          const takenName = elsewhere
+            ? groups.find((x) => x.id === elsewhere[0])?.name ?? null : null;
+          const blocked = classFull || !!takenName;
+          const kids = groups.filter((x) => x.parent_id === g.id).map((x) => x.name);
           return (
-            <button key={g.id} onClick={() => toggleClass(g.id)}
-              disabled={classFull}
+            <button key={g.id} onClick={() => !blocked && toggleClass(g.id)}
+              disabled={blocked}
+              title={takenName ? `ประจำ ${takenName} อยู่แล้ว — ครู 1 คนประจำได้ห้องเดียว` : undefined}
               className={clsx("w-full flex items-center gap-2 p-2.5 rounded-lg border text-left transition-colors",
                 on ? "bg-blue-600 border-blue-700 text-white"
-                   : classFull ? "bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed"
+                   : blocked ? "bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed"
                                : "bg-white border-gray-200 hover:border-blue-400")}>
-              <span className="text-sm font-medium flex-1 min-w-0 truncate">{g.name}</span>
-              {others.length > 0 && (
+              <span className="text-sm font-medium flex-1 min-w-0 truncate">
+                {g.name}
+                {kids.length > 0 && (
+                  <span className={clsx("ml-1 text-[10px]", on ? "text-blue-100" : "text-gray-400")}>
+                    (รวมห้องลูก {kids.join(", ")})
+                  </span>
+                )}
+              </span>
+              {takenName && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded border shrink-0 bg-amber-50 border-amber-200 text-amber-700">
+                  ประจำ {takenName} อยู่แล้ว
+                </span>
+              )}
+              {!takenName && others.length > 0 && (
                 <span className={clsx("text-[10px] px-1.5 py-0.5 rounded border shrink-0",
                   on ? "bg-blue-500 border-blue-400 text-white"
                      : "bg-gray-100 border-gray-200 text-gray-600")}>
@@ -179,8 +237,8 @@ export const HomeroomModal: React.FC<Props> = ({
       <div className="px-5 py-3 border-t border-gray-100 bg-gray-50 flex items-center gap-2 shrink-0">
         <p className="text-[11px] text-gray-500 flex-1 leading-relaxed">
           {byClass
-            ? `ห้องหนึ่งมีครูประจำชั้นได้ ${HOMEROOM_MAX} คน · ครูที่ประจำห้องอื่นอยู่แล้วก็เลือกซ้ำได้`
-            : `ห้องที่มีครูประจำชั้นครบ ${HOMEROOM_MAX} คนแล้วจะเลือกไม่ได้ ต้องไปเอาคนเดิมออกก่อน`}
+            ? `ห้องหนึ่งมีครูประจำชั้นได้ ${HOMEROOM_MAX} คน · แต่ครู 1 คนประจำได้ห้องเดียว`
+            : "ครู 1 คนประจำได้ห้องเดียว · ห้องแม่ครอบคลุมห้องลูกให้เอง"}
         </p>
         <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">ยกเลิก</button>
         <button onClick={save} disabled={busy}

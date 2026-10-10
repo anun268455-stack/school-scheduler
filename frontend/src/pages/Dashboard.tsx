@@ -21,7 +21,10 @@ import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
-import { homeroomNames, classesAdvisedBy, HOMEROOM_MAX } from "../utils/homeroom";
+import {
+  classesAdvisedBy, HOMEROOM_MAX,
+  effectiveHomeroomNames, inheritsHomeroom,
+} from "../utils/homeroom";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { TeacherSettingsModal } from "../components/teachers/TeacherSettingsModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
@@ -293,7 +296,10 @@ const GroupsPanel: React.FC = () => {
                         className="flex items-center gap-1 px-2 py-1 rounded border text-xs bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 max-w-[220px]">
                         👩‍🏫
                         <span className="truncate">
-                          {homeroomNames(g, teachers).join(" · ") || "ยังไม่ได้ตั้ง"}
+                          {effectiveHomeroomNames(g, flat, teachers).join(" · ") || "ยังไม่ได้ตั้ง"}
+                          {inheritsHomeroom(g, flat) && effectiveHomeroomNames(g, flat, teachers).length > 0 && (
+                            <span className="ml-1 text-[10px] text-gray-400">(ตามห้องแม่)</span>
+                          )}
                         </span>
                       </button>
                     </td>

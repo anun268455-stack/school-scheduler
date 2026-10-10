@@ -2853,6 +2853,61 @@ def _sync_homeroom(g: dict[str, Any]) -> None:
     g["homeroom_teacher_id"] = ids[0] if ids else None
 
 
+def _family_root(gid: int | None) -> int | None:
+    """The class an advisor is recorded on: this one, or the one above it.
+
+    ม.4/6 is one roomful of students and ม.4/6ก, ข, ค are that roomful split
+    for electives — one class with one set of ครูประจำชั้น between them. The
+    hop count is bounded because a row whose parent points back into its own
+    ancestry would otherwise loop here forever.
+    """
+    if gid is None:
+        return None
+    by = {g["id"]: g for g in _flat_groups()}
+    cur = by.get(gid)
+    for _ in range(8):
+        if not cur:
+            return gid
+        pid = cur.get("parent_id")
+        if not pid or pid == cur["id"] or pid not in by:
+            return cur["id"]
+        cur = by[pid]
+    return cur["id"] if cur else gid
+
+
+def _effective_homeroom_ids(g: dict[str, Any] | None) -> list[int]:
+    """This class's ครูประจำชั้น, falling back to the class above it."""
+    own = _homeroom_ids(g)
+    if own or not g:
+        return own
+    root = _family_root(g.get("id"))
+    if root is None or root == g.get("id"):
+        return []
+    return _homeroom_ids(next((x for x in _flat_groups() if x["id"] == root), None))
+
+
+def _release_other_classes(teacher_ids: list[int], keep_root: int | None) -> None:
+    """One teacher, one class.
+
+    Taking a teacher for this class gives up whatever they held before, rather
+    than refusing the change: the office is telling us where this teacher
+    belongs now, and making them go and clear the old row first would be a
+    rule that only gets in the way. A parent and its sub-classes are one
+    class, so moving within a family releases nothing.
+    """
+    if not teacher_ids:
+        return
+    wanted = set(teacher_ids)
+    for other in _flat_groups():
+        if _family_root(other["id"]) == keep_root:
+            continue
+        ids = _homeroom_ids(other)
+        left = [x for x in ids if x not in wanted]
+        if len(left) != len(ids):
+            other["homeroom_teacher_ids"] = left
+            _sync_homeroom(other)
+
+
 @app.post("/api/groups/")
 def create_group(body: dict[str, Any]):
     body["id"] = _next("group")
@@ -2874,6 +2929,10 @@ def update_group(i: int, body: dict[str, Any]):
                         [body["homeroom_teacher_id"]] if body["homeroom_teacher_id"] else []}
             g.update(body)
             _sync_homeroom(g)
+            # Enforced here as well as in the dialog, because the bulk import
+            # and any later caller write through this same door.
+            if "homeroom_teacher_ids" in body:
+                _release_other_classes(_homeroom_ids(g), _family_root(g["id"]))
             return g
     return {}
 
@@ -3330,7 +3389,10 @@ def create_level_activity(body: dict[str, Any]):
 
         # Work out who supervises this particular class.
         if teacher_mode == "homeroom":
-            slot_teacher = g.get("homeroom_teacher_id")
+            # Sub-classes take theirs from the class above, so ม.4/6ก gets
+            # ม.4/6's advisor instead of being skipped for having none.
+            ids = _effective_homeroom_ids(g)
+            slot_teacher = ids[0] if ids else None
             if slot_teacher is None:
                 warnings.append(f"{g['name']}: ยังไม่ได้ตั้งครูประจำชั้น (สร้างคาบให้แล้วแต่ไม่มีครู)")
         elif teacher_mode == "single":

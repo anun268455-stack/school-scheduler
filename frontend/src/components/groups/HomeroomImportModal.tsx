@@ -17,7 +17,8 @@ import { useTimetableStore } from "../../store/timetableStore";
 import { flattenGroups } from "../../utils/groupHierarchy";
 import { HOMEROOM_MAX } from "../../utils/homeroom";
 import {
-  parseHomeroomText, findOverfilled, buildChanges, type ParsedRow,
+  parseHomeroomText, findOverfilled, findDoubleBooked, buildChanges,
+  type ParsedRow,
 } from "../../utils/homeroomImport";
 
 interface Props {
@@ -53,12 +54,17 @@ export const HomeroomImportModal = ({ onClose, onApply }: Props) => {
   const count = (s: string) => resolved.filter((r) => r.status === s).length;
   const needsEye = resolved.filter(
     (r) => r.status === "ambiguous" || r.status === "no-teacher" || r.status === "no-class");
-  const conflicts = findOverfilled(resolved, HOMEROOM_MAX);
-  const changes = buildChanges(resolved, HOMEROOM_MAX);
+  const conflicts = findOverfilled(resolved, HOMEROOM_MAX, flat);
+  const doubled = findDoubleBooked(resolved, flat);
+  const changes = buildChanges(resolved, HOMEROOM_MAX, flat);
 
+  // Sub-classes read their advisors from the class above, so one whose parent
+  // is in the list is covered and must not be reported as missing.
   const uncovered = useMemo(() => {
     const hit = new Set(changes.map((c) => c.groupId));
-    return flat.filter((g) => !hit.has(g.id)).map((g) => g.name);
+    return flat
+      .filter((g) => !hit.has(g.id) && !(g.parent_id && hit.has(g.parent_id)))
+      .map((g) => g.name);
   }, [changes, flat]);
 
   const apply = async () => {
@@ -169,6 +175,18 @@ export const HomeroomImportModal = ({ onClose, onApply }: Props) => {
           </div>
         )}
 
+        {doubled.length > 0 && (
+          <div className="text-xs bg-red-50 border border-red-300 text-red-900 rounded-lg px-3 py-2">
+            <strong>ครู 1 คนประจำได้ห้องเดียว</strong> — รายการนี้ให้ครูต่อไปนี้ประจำหลายห้อง
+            กรุณาแก้ก่อนบันทึก (ห้องแม่กับห้องลูกนับเป็นห้องเดียวกัน ไม่ถือว่าซ้ำ)
+            <ul className="mt-1 space-y-0.5">
+              {doubled.map((d) => (
+                <li key={d.teacherName}>• {d.teacherName}: {d.classNames.join(" / ")}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {changes.length > 0 && uncovered.length > 0 && (
           <details className="text-xs">
             <summary className="cursor-pointer text-gray-600">
@@ -191,7 +209,9 @@ export const HomeroomImportModal = ({ onClose, onApply }: Props) => {
           </button>
           <button
             onClick={apply}
-            disabled={busy || changes.length === 0}
+            disabled={busy || changes.length === 0 || doubled.length > 0}
+            title={doubled.length > 0
+              ? "แก้ครูที่ประจำหลายห้องก่อนจึงจะบันทึกได้" : undefined}
             className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-40"
           >
             {busy ? "กำลังบันทึก…" : `บันทึกครูประจำชั้น ${changes.length} ห้อง`}

@@ -14,7 +14,7 @@ import type { Department, LessonRequirement, Period, SchoolConfig, StudentGroup,
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { teachesSlot, myElectiveOption } from "../../utils/teacherSlots";
-import { homeroomIds } from "../../utils/homeroom";
+import { effectiveHomeroomIds } from "../../utils/homeroom";
 import { WorkloadReport } from "./WorkloadReport";
 import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
 
@@ -556,7 +556,9 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
         // the code, so a printed copy identifies itself without the system.
         // All of them: a class may have up to three ครูประจำชั้น, and a sheet
         // naming only the first sends parents to the wrong one.
-        const advisors = homeroomIds(group)
+        // A sub-class takes the advisors recorded on the class above it, so
+        // ม.4/6ก's sheet names the same people as ม.4/6's rather than nobody.
+        const advisors = effectiveHomeroomIds(group, flat)
           .map((id) => teachers.find((t) => t.id === id))
           .filter((t): t is NonNullable<typeof t> => !!t)
           .map((t) => `${t.code ? `${t.code} ` : ""}${shortTeacher(t.name)}`);
