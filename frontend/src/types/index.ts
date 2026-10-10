@@ -170,7 +170,8 @@ export interface LessonRequirement {
 export interface ElectiveOption {
   id:         number;
   subject_id: number;
-  teacher_id: number;
+  /** null until the school says who takes it — see ElectivePoolOption. */
+  teacher_id: number | null;
   label:      string;
   /** Subject code, carried over when the option came from a กลุ่มวิชาเสรี. */
   code?:      string;

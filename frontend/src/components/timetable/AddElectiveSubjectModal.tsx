@@ -105,7 +105,10 @@ export const AddElectiveSubjectModal: React.FC<Props> = ({ subjectId, onClose, o
     const dept = subj?.department_id;
     const teaching = new Set(requirements.filter((r) => r.subject_id === subj?.id).map((r) => r.teacher_id));
     for (const p of pools) {
-      for (const o of p.options) if (o.subject_id === subj?.id) teaching.add(o.teacher_id);
+      // An option still waiting for a teacher names nobody to rank first.
+      for (const o of p.options) {
+        if (o.subject_id === subj?.id && o.teacher_id) teaching.add(o.teacher_id);
+      }
     }
     return [...teachers]
       .sort((a, b) => {

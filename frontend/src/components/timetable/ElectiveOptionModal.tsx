@@ -161,7 +161,10 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
                   <p className="text-sm font-semibold text-gray-800 truncate">
                     {opt.label} {isActive && <span className="text-purple-600 text-xs">(กำลังใช้)</span>}
                   </p>
-                  <p className="text-xs text-gray-500 truncate">{subj?.code ?? "?"} – {subj?.name} · {teacher?.name}</p>
+                  <p className="text-xs text-gray-500 truncate">
+                    {subj?.code ?? "?"} – {subj?.name} ·{" "}
+                    {teacher?.name ?? <span className="text-amber-700">ยังไม่ได้เลือกครู</span>}
+                  </p>
                 </button>
                 <button
                   onClick={() => handleDelete(opt.id)}
