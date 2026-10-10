@@ -141,10 +141,21 @@ export function assignOffer(
   const rows = idx.get(`${groupId}:${subjectId}`) ?? [];
   if (rows.length === 0) return { kind: "free" };
   const own = rows.find((r) => r.teacher_id === teacherId);
-  const other = rows.find((r) => r.teacher_id !== teacherId);
-  if (!other) return { kind: "mine" };
-  if (partnerOf(other, idx) === teacherId) return { kind: "joined", who: other };
-  if (own) return { kind: "pair", who: other };
-  if (other.co_teacher_id != null) return { kind: "full", who: other };
-  return { kind: "join", who: other };
+  const others = rows.filter((r) => r.teacher_id !== teacherId);
+  if (others.length === 0) return { kind: "mine" };
+
+  // Every other row is asked, not just the first. A class with three rows on
+  // it would otherwise be judged by whichever happened to be listed first,
+  // and a pairing already set on the second one read as a fresh clash.
+  const already = others.find((o) => partnerOf(o, idx) === teacherId)
+    ?? (own && own.co_teacher_id != null
+        ? others.find((o) => o.teacher_id === own.co_teacher_id)
+        : undefined);
+  if (already) return { kind: "joined", who: already };
+
+  // Somebody free to stand beside. A row that already has its second teacher
+  // is full — a lesson holds two people, not three.
+  const open = others.find((o) => o.co_teacher_id == null);
+  if (!open) return { kind: "full", who: others[0] };
+  return own ? { kind: "pair", who: open } : { kind: "join", who: open };
 }

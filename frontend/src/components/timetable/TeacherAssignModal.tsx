@@ -157,13 +157,18 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
     if (!subjectId) return;
     const targets = classesInLevel
       .map((g) => [g, offerFor(g.id, Number(subjectId))] as const)
-      .filter(([, o]) => o.kind === "join");
+      .filter(([, o]) => o.kind === "join" || o.kind === "pair");
     if (targets.length === 0) return;
     setBusy(true); setError(null);
     try {
-      for (const [, o] of targets) {
-        if (o.kind !== "join") continue;
+      for (const [g, o] of targets) {
+        if (o.kind !== "join" && o.kind !== "pair") continue;
         await api.updateRequirement(o.who.id, { co_teacher_id: teacher.id });
+        if (o.kind === "pair") {
+          const own = rowsFor(g.id, Number(subjectId))
+            .find((r) => r.teacher_id === teacher.id && r.co_teacher_id == null);
+          if (own) await api.updateRequirement(own.id, { co_teacher_id: o.who.teacher_id });
+        }
       }
       await refresh();
     } catch {
@@ -225,7 +230,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
     [subjectId, classesInLevel, reqIndex],
   );
   const freeCount = offers.filter((k) => k === "free").length;
-  const joinCount = offers.filter((k) => k === "join").length;
+  const joinCount = offers.filter((k) => k === "join" || k === "pair").length;
 
   const deptName = departments.find((d) => d.id === teacher.department_id)?.name;
 
@@ -366,7 +371,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
                       : offer.kind === "joined" ? "border-sky-300 bg-sky-50"
                       : offer.kind === "full"   ? "border-gray-200 bg-gray-50 opacity-70 cursor-not-allowed"
                       : offer.kind === "join"   ? "border-sky-200 hover:border-sky-400 hover:bg-sky-50"
-                      : offer.kind === "pair"   ? "border-amber-300 bg-amber-50 hover:bg-amber-100"
+                      : offer.kind === "pair"   ? "border-sky-200 hover:border-sky-400 hover:bg-sky-50"
                       : "border-gray-200 hover:border-indigo-400 hover:bg-indigo-50/50",
                   )}
                 >
@@ -374,7 +379,10 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
                   {offer.kind === "mine"   && <span className="text-[10px] text-indigo-600">สอนอยู่</span>}
                   {offer.kind === "joined" && <span className="text-[10px] text-sky-700 truncate max-w-[110px]">👥 สอนร่วมกับ {them}</span>}
                   {offer.kind === "join"   && <span className="text-[10px] text-sky-600 truncate max-w-[110px]">👥 สอนร่วมกับ {them}</span>}
-                  {offer.kind === "pair"   && <span className="text-[10px] text-amber-700 truncate max-w-[110px]">⚠ ซ้ำกับ {them} — จับคู่</span>}
+                  {/* Reached from a different starting state than "join" — both
+                      teachers already have a row — but the same thing happens
+                      and the same thing comes out, so it reads the same. */}
+                  {offer.kind === "pair"   && <span className="text-[10px] text-sky-600 truncate max-w-[110px]">👥 สอนร่วมกับ {them}</span>}
                   {offer.kind === "full"   && <span className="text-[10px] text-gray-400 truncate max-w-[110px]">มีครูสอนร่วมแล้ว</span>}
                   {offer.kind === "free"   && <span className="text-[11px] text-indigo-500">+ เพิ่ม</span>}
                 </button>
