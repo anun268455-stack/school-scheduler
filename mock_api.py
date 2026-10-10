@@ -153,6 +153,43 @@ def _room_free_for(room: dict[str, Any], teacher_id: int | None) -> bool:
     return not kept or (teacher_id is not None and teacher_id in kept)
 
 
+def _room_allows_group(room: dict[str, Any], group_id: int | None,
+                       family: "set[int] | None" = None) -> bool:
+    """ห้องเรียนพิเศษของชั้นไหน — may this class be seated in this room?
+
+    A school short of rooms gives one to a class outright: 247 is ม.5/1's and
+    nobody else's. Empty means anyone. A sub-class counts as its parent, so
+    reserving a room for ม.5/1 does not shut out ม.5/1ก.
+    """
+    kept = room.get("reserved_group_ids")
+    if not isinstance(kept, list) or not kept:
+        return True
+    want = {int(x) for x in kept if x}
+    mine = set(family or ())
+    if group_id is not None:
+        mine.add(group_id)
+    return bool(want & mine)
+
+
+def _subject_room_rule(subj: dict[str, Any]) -> str:
+    """Where this subject is taught: "subject" | "homeroom" | "auto".
+
+    "subject"  always its own facility — พละ on the field, นาฏศิลป์ in the
+               studio — whatever room the class or the teacher would get.
+    "homeroom" always the students' own room: แนะแนว is the teacher walking
+               to the class, even when that teacher has a room of their own.
+    "auto"     the ordinary rules.
+    """
+    rule = subj.get("room_rule")
+    return rule if rule in ("subject", "homeroom") else "auto"
+
+
+def _subject_outdoor(subj: dict[str, Any]) -> bool | None:
+    """เรียนที่ลานได้ไหม — True yes, False never, None not said."""
+    v = subj.get("allow_outdoor")
+    return v if isinstance(v, bool) else None
+
+
 def _room_usable(room: dict[str, Any]) -> bool:
     """May a lesson be scheduled in this room?
 
@@ -564,6 +601,7 @@ def _touches_lunch(period_rows: dict[int, dict[str, Any]], start: int, end: int)
 # honoured now, together with two new rules the school asked for.
 
 LAST_PERIOD_MIN = 1     # เวรคาบสุดท้าย: lessons each teacher takes in the last period
+LAST_PERIOD_MAX = 3     # เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 = ไม่จำกัด
 
 def _teacher_prefs(teacher: dict[str, Any] | None) -> dict[str, Any]:
     adv = (teacher or {}).get("advanced_settings") or {}
@@ -592,6 +630,27 @@ def _school_min_last_period(body: dict[str, Any] | None = None) -> int:
             except (TypeError, ValueError):
                 pass
     return LAST_PERIOD_MIN
+
+
+def _school_max_last_period(body: dict[str, Any] | None = None) -> int:
+    """เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 means no ceiling.
+
+    A real trade, so the school sets it rather than us. Capped at three, this
+    school loses about ten lessons a week: the cells still free at the end of
+    a solve really are the late ones, and a limit that cannot be lifted turns
+    "this teacher goes home late four times" into "this class never gets the
+    subject". Lifting it places everything and puts a handful of teachers on
+    the last period four or five days running — which is the complaint that
+    brought the setting into being.
+    """
+    for src in (body or {}, SCHOOL_CONFIG if isinstance(SCHOOL_CONFIG, dict) else {}):
+        v = src.get("max_last_period")
+        if v not in (None, ""):
+            try:
+                return max(0, int(v))
+            except (TypeError, ValueError):
+                pass
+    return LAST_PERIOD_MAX
 
 
 def _last_period_for(level: str) -> int | None:
@@ -856,7 +915,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # Match specialised rooms against the SUBJECT's department — a maths
         # teacher covering a computer period still needs the lab.
         want_dept = subj.get("department_id") or t.get("department_id")
-        wants_outdoor = subj.get("department_id") in outdoor_dept_ids
+        # พละ belongs outdoors by its department; any other subject goes out
+        # only if the school has ticked เรียนที่ลานได้, and then only once the
+        # indoor rooms are full — see `eligible` and `rank` below.
+        rule = _subject_room_rule(subj)
+        allow_out = _subject_outdoor(subj)
+        wants_outdoor = (subj.get("department_id") in outdoor_dept_ids
+                         and allow_out is not False)
+        may_outdoor = wants_outdoor or allow_out is True
         grp = g_map.get(group_id, {}) if group_id is not None else {}
         # ห้องประจำชั้น, or the one this run has settled on for a class that has
         # none. Forty of this school's classes have no homeroom recorded, which
@@ -884,6 +950,13 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         def room_taken(rid: int) -> bool:
             return any((rid, day, b) in room_busy for b in bks)
 
+        # ม.5/1ก is ม.5/1 for the purpose of a room reserved for ม.5/1.
+        family = {group_id} if group_id is not None else set()
+        if grp.get("parent_id"):
+            family.add(grp["parent_id"])
+        for ch in (grp.get("children") or []):
+            family.add(ch["id"] if isinstance(ch, dict) else ch)
+
         def eligible(r: dict) -> bool:
             if room_taken(r["id"]):
                 return False
@@ -892,11 +965,32 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # setting existed, and still does.)
             if not _room_usable(r):
                 return False
-            if not _room_free_for(r, teacher_id):
+            if not _room_allows_group(r, group_id, family):
                 return False
-            if r.get("specialized_dept_id") and r["specialized_dept_id"] != want_dept:
+            # A room held for named teachers is held for THEM, not for their
+            # กลุ่มสาระ: this school has one room three teachers of three
+            # different subjects share, and asking for both shut all three out.
+            reserved = bool(_room_reserved_for(r))
+            if reserved:
+                if not _room_free_for(r, teacher_id):
+                    return False
+            elif r.get("specialized_dept_id") and r["specialized_dept_id"] != want_dept:
+                return False
+            # ลาน: open ground is a last resort for an ordinary subject and
+            # only when the school has said this one may go outside.
+            if r["type"] == "outdoor" and not may_outdoor:
                 return False
             return True
+
+        # 0. "เรียนที่ห้องของนักเรียน" — แนะแนว, โฮมรูม, anything where the
+        #    teacher walks to the class. Ahead of everything, including the
+        #    teacher's own room, because that room is exactly what the setting
+        #    exists to override: a guidance teacher with an office was pulling
+        #    the whole class across the school to sit in it.
+        if rule == "homeroom" and home and not room_taken(home):
+            r = r_map.get(home)
+            if r:
+                return home, r["name"], r["type"]
 
         # 1. ห้องประจำวิชา — a room tied to the subject itself (gym, computer
         #    lab, music room). This outranks the class's homeroom: the students
@@ -906,6 +1000,17 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             r = r_map.get(subj_room)
             if r:
                 return subj_room, r["name"], r["type"]
+        # "ต้องเรียนที่ห้องประจำวิชา" and it is busy: wait for it rather than
+        # take an ordinary classroom. A นาฏศิลป์ period in 247 is not the
+        # lesson the school planned, so the cell is left for another time.
+        if rule == "subject" and (subj_room or want_dept):
+            own = [r for r in ROOMS
+                   if (r["id"] == subj_room or r.get("specialized_dept_id") == want_dept)
+                   and eligible(r)]
+            if own:
+                r = min(own, key=lambda r: r["id"])
+                return r["id"], r["name"], r["type"]
+            return None, None, None
 
         # 2. A room this department owns. Several labs may serve one subject
         #    (5 computer rooms for 156 periods a week), so pin by department
@@ -946,16 +1051,18 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 if not near:
                     continue
                 r = r_map.get(near["room_id"])
-                if r and not room_taken(r["id"]) and _room_usable(r) \
-                        and _room_free_for(r, teacher_id) and not upstairs(r) \
-                        and not (r.get("specialized_dept_id")
-                                 and r["specialized_dept_id"] != want_dept):
+                if r and eligible(r) and not upstairs(r):
                     return r["id"], r["name"], r["type"]
 
         # 3. Stay in the group's homeroom for ordinary subjects.
         if home and not wants_outdoor and not room_taken(home):
             r = r_map.get(home)
-            if r and _room_free_for(r, teacher_id) and not upstairs(r):
+            if (r and _room_free_for(r, teacher_id) and not upstairs(r)
+                    # …unless "home" is open ground and this subject is not
+                    # allowed outside. A few classes here are recorded with a
+                    # ลาน as their ห้องประจำชั้น, which quietly put ordinary
+                    # lessons outdoors whatever the subject said.
+                    and (r["type"] != "outdoor" or may_outdoor)):
                 return home, r["name"], r["type"]
 
         # 3b. A class with no ห้องประจำชั้น gets one chosen for it now, BEFORE it
@@ -967,10 +1074,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if (group_id is not None and not grp.get("homeroom_room_id")
                 and group_id not in anchor_room and not wants_outdoor):
             taken_anchors = set(anchor_room.values())
-            free = [r for r in ROOMS
-                    if r["type"] in ("physical", "floating")
-                    and not r.get("specialized_dept_id")
-                    and r["id"] not in homeroom_ids and eligible(r)]
+            indoor = [r for r in ROOMS
+                      if r["type"] in ("physical", "floating")
+                      and not r.get("specialized_dept_id") and eligible(r)]
+            # A room nobody calls home first. But when the school is short of
+            # rooms there may be none — every open room is somebody's — and
+            # refusing to look further sent the class outside while five
+            # classrooms stood empty. Another class's room beats no room.
+            free = [r for r in indoor if r["id"] not in homeroom_ids] or indoor
+            # Nothing indoors left and the school allows it: a ลาน is a place
+            # to sit, which beats the class having nowhere recorded at all.
             if free:
                 pick = min(free, key=lambda r: (
                     r["id"] in taken_anchors,
@@ -979,11 +1092,25 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     r["id"]))
                 anchor_room[group_id] = pick["id"]
                 return pick["id"], pick["name"], pick["type"]
+            # Nothing indoors free this hour. A ลาน will hold the lesson, but
+            # it is NOT recorded as the class's anchor: anchoring them outside
+            # sent the class back out every period for the rest of the week,
+            # with classrooms standing empty — which is the opposite of
+            # "fill the rooms first, then the open ground".
+            if may_outdoor:
+                yard = [r for r in ROOMS if r["type"] == "outdoor" and eligible(r)]
+                if yard:
+                    r = min(yard, key=lambda r: (-int(r.get("capacity") or 0), r["id"]))
+                    return r["id"], r["name"], r["type"]
 
         # 4. Teacher's own fixed room (skip for outdoor subjects).
         if fr and not wants_outdoor and not room_taken(fr):
             r = r_map.get(fr)
-            if r:
+            # Not if it is open ground and this subject stays indoors: some
+            # teachers here are recorded against a ลาน, and that alone was
+            # sending ninety ordinary lessons outside with classrooms free.
+            if r and (r["type"] != "outdoor" or may_outdoor) \
+                    and _room_allows_group(r, group_id, family):
                 return fr, r["name"], r["type"]
 
         group_size = grp.get("size", 40)
@@ -992,11 +1119,28 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if wants_outdoor:
                 pref = {"outdoor": 0, "physical": 1, "floating": 2, "special": 3}
             else:
-                pref = {"physical": 0, "floating": 1, "special": 2, "outdoor": 3}
+                # ลาน last, and by a wide margin: the school asked that the
+                # classrooms fill up first and open ground take only what is
+                # left over, so it sits below even a special room.
+                pref = {"physical": 0, "floating": 1, "special": 2, "outdoor": 9}
             # Seat the class somewhere it fits when we can — but a tight room
             # still beats no room, so this orders rather than excludes.
             too_small = 1 if r.get("capacity", 40) < group_size else 0
-            return (1 if upstairs(r) else 0, too_small, pref.get(r["type"], 4), r["id"])
+            # Somebody else's ห้องประจำชั้น is their desks, their things on the
+            # wall, and the room they come back to. Taking it because it
+            # happened to be free this hour is what left ม.3/6 unable to hold
+            # its own แนะแนว in its own room. A preference, not a rule: an
+            # empty room still beats no room at all.
+            squat = 1 if (r["id"] in homeroom_ids and r["id"] != home) else 0
+            kind = pref.get(r["type"], 4)
+            # "Fill the classrooms first" means FIRST — ahead of the stairs
+            # preference too. Ranked under it, every upstairs classroom came
+            # after the ลาน for a teacher who cannot manage stairs, and the
+            # class went outside with the first floor empty. A flight of
+            # stairs is a cost; sitting in the open because of it is not the
+            # trade the school asked for.
+            return (1 if kind >= 9 else 0, 1 if upstairs(r) else 0, squat,
+                    too_small, kind, r["id"])
 
         for r in sorted((r for r in ROOMS if eligible(r)), key=rank):
             # First ordinary room this class gets becomes its anchor, so the
@@ -1139,6 +1283,25 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     def teacher_free(tid, day, gid, period) -> bool:
         return not any((tid, day, b) in teacher_busy for b in cell_buckets(gid, period))
 
+    def home_free(req: dict, day: int, period: int) -> bool:
+        """เรียนที่ห้องของนักเรียน — is their own room free at this hour?
+
+        แนะแนว in whatever room happened to be spare is not แนะแนว at the
+        students' desks, which is the whole point of the setting. Finding the
+        room busy, the old code shrugged and took another one; this looks for
+        an hour when the room is free instead, and only gives up on the last
+        passes, where a lesson placed beats a lesson lost.
+        """
+        subj = s_map.get(req.get("subject_id")) or {}
+        if _subject_room_rule(subj) != "homeroom":
+            return True
+        grp = g_map.get(req["group_id"]) or {}
+        home = grp.get("homeroom_room_id")
+        if not home:
+            return True
+        return not any((home, day, b) in room_busy
+                       for b in cell_buckets(req["group_id"], period))
+
     def co_of(req: dict) -> int | None:
         """The สอนร่วม partner on this requirement, if there is a real one."""
         co = req.get("co_teacher_id")
@@ -1267,6 +1430,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # เวรคาบสุดท้าย — how many last-period lessons each teacher already has,
     # and how many they still owe.
     school_last_min = _school_min_last_period(body)
+    last_cap = _school_max_last_period(body)
     last_period_done: dict[int, int] = defaultdict(int)
     for s_ in SLOTS:
         if s_.get("teacher_id") is None:
@@ -1309,8 +1473,15 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
           2. preferences honoured, run still short, lunch allowed
           3. preferences honoured, up to the teacher's hard ceiling
           4. preferences dropped — better a lesson placed than a lesson lost
+          5. the same-hour limits dropped too, as the very last thing tried
         A lesson that cannot be placed even then is reported, rather than
         stacking a teacher up to seven periods in a row as it used to.
+
+        Pass 5 exists because pass 4 alone cost twelve lessons a week: the
+        cells left over at the end are often all in one column, and a limit
+        that cannot be lifted turns "this teacher's week is lopsided" into
+        "this class never gets the subject". Lopsided is the lesser harm, so
+        it is tried only once everything else has failed.
         """
         hard = _consec_limit(t_map.get(tid), consec_hard)
         prefs = _teacher_prefs(t_map.get(tid))
@@ -1320,7 +1491,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # A คาบคู่ is meant to sit twice in a day; everything else is not.
         duration = (s_map.get(req["subject_id"], {}) or {}).get("duration", 1) or 1
         placed = 0
-        for attempt in range(4):
+        for attempt in range(5):
             if placed >= needed:
                 break
             cells = cells_for(gid)
@@ -1408,6 +1579,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                         continue
                     if not pair_free(req, day, period):
                         continue          # สอนร่วม: คู่สอนติดคาบอื่นอยู่
+                    if attempt < 3 and not home_free(req, day, period):
+                        continue          # เรียนที่ห้องของนักเรียน: ห้องไม่ว่าง
                     if group_occupied(gid, day, period):
                         continue
                     run = run_if_placed(tid, gid, day, period)
@@ -1442,7 +1615,25 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     # quietly slides back into คาบ 2 every single day, which is
                     # the complaint that rule was meant to live alongside, not
                     # undo. Said outright here it cannot be traded away.
-                    if attempt < 3 and teacher_period[(tid, period)] >= 4:
+                    # The same hour over and over is the complaint; the last
+                    # pass loosens the limit rather than dropping it, because
+                    # an unlimited last resort is where every five-day column
+                    # came from — the cells it could not fill earlier are
+                    # exactly the ones it then filled all in one row.
+                    if attempt < 4 and teacher_period[(tid, period)] >= (3 if attempt < 3 else 4):
+                        continue
+                    # The LAST period of the day is tighter still. Three days
+                    # of คาบ 8 is a teacher who goes home late three times a
+                    # week while somebody else never does, and the duty pass
+                    # below only ever hands those cells OUT — nothing was
+                    # counting how many one teacher had already collected.
+                    # Kept even on the last pass, where the general limit is
+                    # let go. Spread across the hours is a comfort; the last
+                    # period is the one a teacher goes home on, and four of
+                    # them is the complaint that started this. Three stands.
+                    if (last_cap and period == last_num
+                            and teacher_period[(tid, period)]
+                                >= (max(1, last_cap - 1) if attempt < 3 else last_cap)):
                         continue
                     if attempt == 1 and run > consec_soft:
                         continue
@@ -4482,8 +4673,10 @@ SCHOOL_CONFIG: dict[str, Any] = {
     "directorName": "", "deputyName": "", "logoUrl": "",
     # How many periods in a row a teacher may be given, and what to aim for.
     "max_consecutive": CONSEC_HARD, "prefer_consecutive": CONSEC_SOFT,
-    # เวรคาบสุดท้าย: how many last-period lessons each teacher should carry.
+    # เวรคาบสุดท้าย: how many last-period lessons each teacher should carry,
+    # and how many they may be given at most. 0 = ไม่จำกัด.
     "min_last_period": LAST_PERIOD_MIN,
+    "max_last_period": LAST_PERIOD_MAX,
 }
 
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
