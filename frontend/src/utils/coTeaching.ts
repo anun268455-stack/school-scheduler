@@ -159,3 +159,69 @@ export function assignOffer(
   if (!open) return { kind: "full", who: others[0] };
   return own ? { kind: "pair", who: open } : { kind: "join", who: open };
 }
+
+/**
+ * The pairings the plan is already describing without saying so.
+ *
+ * An imported teaching plan lists a co-taught lesson as two rows, one per
+ * teacher, and says nothing about them belonging together. Read literally
+ * that is a clash on every one of them; read the way the school means it,
+ * it is a pairing nobody has typed in yet. There can be hundreds, so they
+ * are offered as one action rather than one click per class.
+ *
+ * Only the unambiguous shape is offered: exactly two teachers on the class
+ * and subject, neither already paired with anyone. Three teachers, or a pair
+ * that already has a second teacher, is a question the school has to answer.
+ */
+export function autoPairable(
+  all: LessonRequirement[],
+): { a: LessonRequirement; b: LessonRequirement }[] {
+  const out: { a: LessonRequirement; b: LessonRequirement }[] = [];
+  for (const rows of indexRequirements(all).values()) {
+    const teachers = new Set(rows.map((r) => r.teacher_id));
+    if (teachers.size !== 2) continue;
+    if (rows.some((r) => r.co_teacher_id != null)) continue;
+    const a = rows[0];
+    const b = rows.find((r) => r.teacher_id !== a.teacher_id);
+    if (b) out.push({ a, b });
+  }
+  return out;
+}
+
+/**
+ * Who teaches what with whom — one line per pair of teachers per subject.
+ *
+ * The plan holds the pairing a row at a time, which answers "is this lesson
+ * co-taught" but never "which of our teachers work together, and on what".
+ * That is the question a head of department actually asks.
+ */
+export interface CoTeachingPair {
+  teacherA: number;
+  teacherB: number;
+  subjectId: number;
+  groupIds: number[];
+  periods: number;
+}
+
+export function coTeachingPairs(all: LessonRequirement[]): CoTeachingPair[] {
+  const idx = indexRequirements(all);
+  const seen = new Set<number>();
+  const by = new Map<string, CoTeachingPair>();
+  for (const r of all) {
+    if (seen.has(r.id)) continue;
+    const mate = partnerOf(r, idx);
+    if (mate == null) continue;
+    const mirror = mirrorOf(r, idx);
+    seen.add(r.id);
+    if (mirror) seen.add(mirror.id);     // one lesson, counted once
+    const [a, b] = [r.teacher_id, mate].sort((x, y) => x - y);
+    const k = `${a}:${b}:${r.subject_id}`;
+    const cur = by.get(k) ?? {
+      teacherA: a, teacherB: b, subjectId: r.subject_id, groupIds: [], periods: 0,
+    };
+    if (!cur.groupIds.includes(r.group_id)) cur.groupIds.push(r.group_id);
+    cur.periods += Math.max(r.weekly_count ?? 0, mirror?.weekly_count ?? 0);
+    by.set(k, cur);
+  }
+  return [...by.values()].sort((x, y) => y.groupIds.length - x.groupIds.length);
+}

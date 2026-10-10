@@ -19,7 +19,7 @@ import { byTeacherCode } from "../utils/teacherOrder";
 import { SavePointPanel } from "../components/backup/SavePointPanel";
 import { clashesByRequirement } from "../utils/teachingConflicts";
 import { findSubjectDuplicates } from "../utils/duplicateCheck";
-import { indexRequirements, partnerOf, mismatchedPairs } from "../utils/coTeaching";
+import { indexRequirements, partnerOf, mismatchedPairs, autoPairable, coTeachingPairs } from "../utils/coTeaching";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
@@ -1144,6 +1144,31 @@ const RequirementsPanel: React.FC = () => {
     return m;
   }, [requirements]);
   const mismatched = useMemo(() => mismatchedPairs(requirements), [requirements]);
+  const pairable = useMemo(() => autoPairable(requirements), [requirements]);
+  const [pairing, setPairing] = useState(false);
+
+  /**
+   * Write every pairing the plan is already describing.
+   *
+   * One request, not two per class: the bulk endpoint matches on class +
+   * subject + teacher and updates the row it finds, so a few hundred
+   * pairings go in together instead of a few hundred round trips.
+   */
+  const pairAll = async () => {
+    if (!pairable.length) return;
+    setPairing(true);
+    try {
+      await api.bulkCreateRequirements(pairable.flatMap(({ a, b }) => [
+        { group_id: a.group_id, subject_id: a.subject_id, teacher_id: a.teacher_id,
+          weekly_count: a.weekly_count, parallel_group_key: a.parallel_group_key ?? null,
+          co_teacher_id: b.teacher_id },
+        { group_id: b.group_id, subject_id: b.subject_id, teacher_id: b.teacher_id,
+          weekly_count: b.weekly_count, parallel_group_key: b.parallel_group_key ?? null,
+          co_teacher_id: a.teacher_id },
+      ]));
+      useTimetableStore.setState({ requirements: await api.fetchRequirements() });
+    } finally { setPairing(false); }
+  };
 
   // 1,200+ rows: filter first, then draw only a slice so the page stays quick.
   const [q, setQ] = useState("");
@@ -1173,9 +1198,15 @@ const RequirementsPanel: React.FC = () => {
           </p>
           <p className="mt-1 leading-relaxed">
             แถวที่มีปัญหาจะขึ้นป้ายแดง <strong>“⚠ ซ้ำกับ …”</strong> ในคอลัมน์ครูผู้สอนด้านล่าง
-            — ถ้าใส่ผิดให้ลบแถวที่เกินออก ถ้า<strong>ตั้งใจให้สอนคู่กัน</strong> ให้เหลือแถวเดียว
-            แล้วใส่ครูคนที่สองในช่อง <strong>👥 สอนร่วม</strong> แทน
+            — ถ้า<strong>ตั้งใจให้สอนคู่กัน</strong> กดปุ่มด้านล่างได้เลย ระบบจะจับคู่ให้ทุกรายการ
+            แล้วนับเป็นคาบเดียว · ถ้าใส่ผิดให้ลบแถวที่เกินออกแทน
           </p>
+          {pairable.length > 0 && (
+            <button onClick={pairAll} disabled={pairing}
+              className="mt-2 px-3 py-1.5 bg-sky-600 text-white text-xs rounded font-semibold hover:bg-sky-700 disabled:opacity-40">
+              {pairing ? "กำลังจับคู่…" : `👥 จับคู่สอนร่วมให้ทั้งหมด (${pairable.length} ห้อง-วิชา)`}
+            </button>
+          )}
         </div>
       )}
 
@@ -2232,6 +2263,28 @@ const AnalyticsPanel: React.FC = () => {
   const coTaught = useMemo(
     () => slots.filter(teachingTogether).length, [slots],
   );
+  // Who works with whom, on what — read off the plan rather than the week,
+  // so it answers the question before the timetable has been built.
+  const pairs = useMemo(() => coTeachingPairs(requirements), [requirements]);
+  const pairable = useMemo(() => autoPairable(requirements), [requirements]);
+  const [pairing, setPairing] = useState(false);
+
+  /** Same one-shot pairing as the การสอน/วิชา page — see pairAll there. */
+  const pairAllDuplicates = async () => {
+    if (!pairable.length) return;
+    setPairing(true);
+    try {
+      await api.bulkCreateRequirements(pairable.flatMap(({ a, b }) => [
+        { group_id: a.group_id, subject_id: a.subject_id, teacher_id: a.teacher_id,
+          weekly_count: a.weekly_count, parallel_group_key: a.parallel_group_key ?? null,
+          co_teacher_id: b.teacher_id },
+        { group_id: b.group_id, subject_id: b.subject_id, teacher_id: b.teacher_id,
+          weekly_count: b.weekly_count, parallel_group_key: b.parallel_group_key ?? null,
+          co_teacher_id: a.teacher_id },
+      ]));
+      useTimetableStore.setState({ requirements: await api.fetchRequirements() });
+    } finally { setPairing(false); }
+  };
 
   // Alerts
   const fatigueTeachers    = teacherStats.filter((t) => t.maxConsec >= 4 || t.maxDay > t.teacher.max_slots_per_day);
@@ -2262,10 +2315,48 @@ const AnalyticsPanel: React.FC = () => {
         <StatCard icon="🔁" label="วิชาซ้ำ" value={dupCount}
           sub={dupCount === 0 ? "ไม่พบวิชาซ้ำ" : "ดูรายการด้านล่าง"}
           color={dupCount > 0 ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"} />
-        <StatCard icon="👥" label="คาบสอนร่วม" value={coTaught}
-          sub={coTaught === 0 ? "ยังไม่มีคาบที่ครู 2 คนสอนด้วยกัน" : "ครู 2 คนในคาบเดียวกัน"}
+        <StatCard icon="👥" label="คู่สอนร่วม" value={pairs.length}
+          sub={pairs.length === 0 ? "ยังไม่มีวิชาที่ครู 2 คนสอนด้วยกัน" : `รวม ${coTaught} คาบในตาราง`}
           color="bg-sky-50 border-sky-200" />
       </div>
+
+      {/* ── ใครสอนร่วมกับใคร วิชาอะไร ──────────────────────────────────── */}
+      {pairs.length > 0 && (
+        <div className="border border-sky-200 rounded-xl overflow-hidden mb-6">
+          <div className="px-4 py-3 bg-sky-50 border-b border-sky-200">
+            <h3 className="text-sm font-bold text-sky-800">👥 ครูที่สอนร่วมกัน</h3>
+            <p className="text-[11px] text-gray-600 mt-0.5">
+              หนึ่งบรรทัดคือครูหนึ่งคู่กับหนึ่งวิชา · นับเป็นคาบเดียว ไม่ใช่คนละคาบ
+            </p>
+          </div>
+          <table className="w-full text-xs">
+            <thead className="bg-gray-50/50">
+              <tr>
+                {["ครูคนที่ 1", "ครูคนที่ 2", "วิชา", "ห้อง", "คาบ/สัปดาห์"].map((h) => (
+                  <th key={h} className="px-3 py-2 text-left font-semibold text-gray-500">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {pairs.map((p) => (
+                <tr key={`${p.teacherA}-${p.teacherB}-${p.subjectId}`} className="hover:bg-sky-50/40">
+                  <td className="px-3 py-2 text-gray-800">{tName(p.teacherA)}</td>
+                  <td className="px-3 py-2 text-gray-800">{tName(p.teacherB)}</td>
+                  <td className="px-3 py-2 font-medium text-gray-700">{sCode(p.subjectId)}</td>
+                  <td className="px-3 py-2 text-gray-500" title={p.groupIds.map(gName).join(", ")}>
+                    {p.groupIds.length} ห้อง
+                    <span className="text-gray-400 ml-1">
+                      {p.groupIds.slice(0, 5).map(gName).join(", ")}
+                      {p.groupIds.length > 5 ? " …" : ""}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 font-mono">{p.periods}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* ── ตรวจสอบวิชาซ้ำ ─────────────────────────────────────────────── */}
       <div className={`border rounded-xl overflow-hidden mb-6 ${dupCount > 0 ? "border-red-200" : "border-green-200"}`}>
@@ -2282,14 +2373,29 @@ const AnalyticsPanel: React.FC = () => {
           {dupCount === 0 && (
             <p className="text-xs text-green-700">✅ ไม่พบห้อง-วิชาที่มีครูซ้ำกัน และไม่มีวิชาไหนลงเกินแผน</p>
           )}
+          {pairable.length > 0 && (
+            <div className="bg-sky-50 border border-sky-200 rounded-lg px-3 py-2.5">
+              <p className="text-xs text-sky-900 mb-2">
+                <strong>{pairable.length} ห้อง-วิชา</strong> ที่มีครู 2 คนและยังไม่ได้จับคู่ —
+                ถ้าทั้งคู่สอนด้วยกันจริง กดปุ่มนี้ครั้งเดียว ระบบจะจับคู่ให้ทั้งหมด
+                แล้วนับเป็นคาบเดียว ครูทั้งสองคนจะได้คาบเดียวกันห้องเดียวกัน
+              </p>
+              <button onClick={pairAllDuplicates} disabled={pairing}
+                className="px-3 py-1.5 bg-sky-600 text-white text-xs rounded font-semibold hover:bg-sky-700 disabled:opacity-40">
+                {pairing ? "กำลังจับคู่…" : `👥 จับคู่สอนร่วมให้ทั้งหมด (${pairable.length})`}
+              </button>
+            </div>
+          )}
           {dup.splitTeachers.map((d) => (
             <div key={`t-${d.groupId}-${d.subjectId}`} className="text-xs bg-red-50 border border-red-100 rounded-lg px-3 py-2">
               <strong className="text-red-800">{gName(d.groupId)} · {sCode(d.subjectId)}</strong>
               {" — ถูกกำหนดให้ครู "}{d.teacherIds.length}{" คนจากคนละแถว: "}
               <span className="text-red-700">{d.teacherIds.map(tName).join(", ")}</span>
-              <span className="text-gray-500">
-                {" · แก้ที่หน้า “📋 การสอน/วิชา” — ลบแถวที่เกิน แล้วใส่ครูคนที่สองในช่อง สอนร่วม"}
-              </span>
+              {d.teacherIds.length > 2 && (
+                <span className="text-gray-500">
+                  {" · มีครูเกิน 2 คน ระบบจับคู่ให้เองไม่ได้ ต้องเลือกว่าใครสอนที่หน้า “📋 การสอน/วิชา”"}
+                </span>
+              )}
             </div>
           ))}
           {dup.overPlaced.map((d) => (
