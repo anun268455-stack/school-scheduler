@@ -201,8 +201,12 @@ export const createLevelActivity = (d: {
   day: number; period: number; subject_id: number;
   teacher_mode?: "homeroom" | "single" | "none";
   teacher_id?: number | null;
-  /** ครูผู้ดูแลรายห้อง — {group_id: [teacher_id, …]}, overrides teacher_mode. */
-  supervisors?: Record<number, number[]>;
+  /**
+   * ครูผู้ดูแลของกิจกรรม — one list for the whole activity, overriding
+   * teacher_mode. Everyone on it gets the period; who takes which classroom
+   * is left to them.
+   */
+  teacher_ids?: number[];
   room_mode?: "homeroom" | "none";
 }) => api.post<{
   created: TimetableSlot[];

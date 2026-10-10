@@ -193,10 +193,45 @@ def _slot_teachers(slot: dict[str, Any]) -> set[int]:
         out.add(slot["teacher_id"])
     if slot.get("co_teacher_id") is not None:
         out.add(slot["co_teacher_id"])
-    # ครูผู้ดูแลคาบกิจกรรม — ลูกเสือ, เนตรนารี, ชุมนุม. A class on parade with
-    # four teachers watching it has four teachers who are not free.
+    # ครูผู้ดูแลคาบกิจกรรม — ลูกเสือ, เนตรนารี, ชุมนุม. The roster belongs to
+    # the activity, not to one classroom, so the same names sit on every slot
+    # of it. They are busy for that hour once; see _same_activity.
     out |= {t for t in (slot.get("activity_teacher_ids") or []) if t}
     return out | _elective_option_teachers(slot)
+
+
+def _same_activity(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Two slots of one activity — ลูกเสือ in ม.1/1 and ลูกเสือ in ม.1/2.
+
+    Its ครูผู้ดูแล are listed on every classroom of it, because the school
+    divides the หมู่ among themselves rather than through the timetable. So a
+    name appearing in both is one teacher at one activity, not a teacher in
+    two rooms, and anything hunting for double-bookings has to know that or it
+    reports fourteen clashes for a period that has none.
+    """
+    k = a.get("activity_key")
+    return bool(k) and k == b.get("activity_key")
+
+
+def _teacher_view(slots: list[dict[str, Any]], teacher_id: int) -> list[dict[str, Any]]:
+    """One teacher's own week: what they teach, each thing once.
+
+    ลูกเสือ across fourteen classrooms is one hour of this teacher's Monday,
+    so it appears once. The classroom kept is simply the first — which room
+    of the fourteen they end up with is theirs to sort out, and the sheet
+    says the scope rather than pretending to know.
+    """
+    out, seen = [], set()
+    for s in slots:
+        if teacher_id not in _slot_teachers(s):
+            continue
+        k = s.get("activity_key")
+        if k:
+            if k in seen:
+                continue
+            seen.add(k)
+        out.append(s)
+    return out
 
 
 # ── วิชาเสรี: pools ───────────────────────────────────────────────────────────
@@ -3262,8 +3297,10 @@ def get_slots(group_id: int | None = None, teacher_id: int | None = None,
     result = list(SLOTS)
     if group_id   is not None: result = [s for s in result if s["group_id"]   == group_id]
     # A สอนร่วม lesson is on both teachers' timetables, so asking for one
-    # teacher's slots has to include the ones where they are the second.
-    if teacher_id is not None: result = [s for s in result if teacher_id in _slot_teachers(s)]
+    # teacher's slots has to include the ones where they are the second —
+    # and a คาบกิจกรรม they help run is one period on their sheet, not one
+    # per classroom taking part.
+    if teacher_id is not None: result = _teacher_view(result, teacher_id)
     if day        is not None: result = [s for s in result if s["day"]        == day]
     if room_id    is not None: result = [s for s in result if s["room_id"]    == room_id]
     return result
@@ -3498,20 +3535,19 @@ def create_level_activity(body: dict[str, Any]):
     teacher_id   = int(teacher_id) if teacher_id not in (None, "") else None
     if teacher_id is not None and teacher_mode == "none":
         teacher_mode = "single"
-    # ครูผู้ดูแลรายห้อง — {group_id: [teacher_id, …]}, which is what the
-    # ผู้ดูแล screen sends once the school has picked who watches which class.
-    # It sits on top of teacher_mode rather than replacing it, so the simple
-    # "ครูประจำชั้นของแต่ละห้อง" case still needs no roster at all.
-    roster_in = body.get("supervisors") or {}
-    roster: dict[int, list[int]] = {}
+    # ครูผู้ดูแล — one list for the whole activity, not one per class.
+    #
+    # The school picks the twelve teachers who run ลูกเสือ and sorts out which
+    # หมู่ each of them takes between themselves; that split is not something
+    # the timetable needs to know or would get right. What the timetable owes
+    # them is the hour: every name on this list is busy then, and sees the
+    # period on their own sheet.
     known = {t["id"] for t in TEACHERS}
-    for gid_s, ids in roster_in.items():
-        clean, seen_t = [], set()
-        for t in (ids or []):
-            t = int(t)
-            if t in known and t not in seen_t:
-                seen_t.add(t); clean.append(t)
-        roster[int(gid_s)] = clean
+    roster: list[int] = []
+    for t in (body.get("teacher_ids") or []):
+        t = int(t)
+        if t in known and t not in roster:
+            roster.append(t)
 
     # Which classes. The school names them outright now: ลูกเสือ is ม.1–3 but
     # ชุมนุม is everybody, and no level ever described either of them well.
@@ -3532,20 +3568,20 @@ def create_level_activity(body: dict[str, Any]):
 
     t_names = {t["id"]: t["name"] for t in TEACHERS}
 
-    # One teacher cannot watch two classes at once. Caught here rather than at
-    # the per-class check below, because that one only sees slots already
-    # saved and would happily put the same teacher in every class of the run.
-    doubled: dict[int, list[str]] = defaultdict(list)
-    for g in targets:
-        for t in roster.get(g["id"], []):
-            doubled[t].append(g["name"])
-    clash_msgs = [f"ครู {t_names.get(t, t)} ถูกใส่ไว้ {len(v)} ห้องในคาบเดียวกัน ({', '.join(v)})"
-                  for t, v in doubled.items() if len(v) > 1]
-    if clash_msgs:
-        raise HTTPException(400, " · ".join(clash_msgs))
+    # Anyone on the roster who is already teaching then is dropped once, with
+    # one warning — not once per classroom, which for ชุมนุม would be sixty
+    # copies of the same sentence.
+    created, skipped, warnings = [], [], []
+    scope = f"{label} {len(targets)} ห้อง" if label else f"{len(targets)} ห้อง"
+    free_roster = []
+    for t in roster:
+        if any(s["day"] == day and s["period"] == period and t in _slot_teachers(s)
+               for s in SLOTS):
+            warnings.append(f"ครู {t_names.get(t, t)} ติดสอนคาบนี้อยู่ จึงไม่ได้ใส่ให้")
+        else:
+            free_roster.append(t)
 
     key = f"ACT-{label or 'ห้องที่เลือก'}-{day}-{period}-{_next('activity')}"
-    created, skipped, warnings = [], [], []
     for g in targets:
         # Skip classrooms that already have something in this cell.
         clash = next((s for s in SLOTS
@@ -3556,52 +3592,32 @@ def create_level_activity(body: dict[str, Any]):
                             "reason": clash.get("subject_code") or "มีคาบอยู่แล้ว"})
             continue
 
-        # Work out who supervises this particular class. A roster entry wins:
-        # it is the school naming names, which beats any rule.
-        picked = list(roster.get(g["id"], []))
-        if picked:
-            slot_teacher, extra = picked[0], picked[1:]
+        # The roster covers the activity as a whole, so it goes on every
+        # classroom's slot unchanged. Those slots all share one activity_key,
+        # and everything that counts a teacher's time treats them as the one
+        # hour they are — see _same_activity below.
+        if free_roster:
+            slot_teacher, extra = None, list(free_roster)
         elif teacher_mode == "homeroom":
             # Sub-classes take theirs from the class above, so ม.4/6ก gets
             # ม.4/6's advisor instead of being skipped for having none.
-            ids = _effective_homeroom_ids(g)
+            ids = [t for t in _effective_homeroom_ids(g)
+                   if not any(s["day"] == day and s["period"] == period
+                              and t in _slot_teachers(s) for s in SLOTS)]
             slot_teacher, extra = (ids[0] if ids else None), ids[1:]
             if slot_teacher is None:
-                warnings.append(f"{g['name']}: ยังไม่ได้ตั้งครูประจำชั้น (สร้างคาบให้แล้วแต่ไม่มีครู)")
+                warnings.append(f"{g['name']}: ไม่มีครูประจำชั้นที่ว่างในคาบนี้")
         elif teacher_mode == "single":
             slot_teacher, extra = teacher_id, []
         else:
             slot_teacher, extra = None, []
-
-        # A teacher can't supervise while teaching elsewhere at the same time.
-        # Dropped one by one, so one busy teacher does not cost the class the
-        # rest of its supervisors.
-        def busy(tid: int) -> bool:
-            return any(s["day"] == day and s["period"] == period
-                       and tid in _slot_teachers(s) for s in SLOTS)
-
-        if slot_teacher is not None and busy(slot_teacher):
-            warnings.append(
-                f"{g['name']}: ครู {t_names.get(slot_teacher, slot_teacher)} ติดสอนคาบนี้อยู่ "
-                f"จึงไม่ได้ใส่ให้")
-            slot_teacher = None
-        kept = []
-        for t in extra:
-            if busy(t):
-                warnings.append(f"{g['name']}: ครู {t_names.get(t, t)} ติดสอนคาบนี้อยู่ จึงไม่ได้ใส่ให้")
-            else:
-                kept.append(t)
-        # With the lead dropped, one of the others steps up, so the cell still
-        # shows a name instead of looking unsupervised.
-        if slot_teacher is None and kept:
-            slot_teacher, kept = kept[0], kept[1:]
 
         slot = {
             "id": _next("slot"),
             "day": day, "period": period,
             "group_id": g["id"],
             "teacher_id": slot_teacher,
-            "activity_teacher_ids": kept,
+            "activity_teacher_ids": extra,
             "subject_id": subject_id,
             "room_id": g.get("homeroom_room_id") if room_mode == "homeroom" else None,
             "is_double_start": False,
@@ -3610,6 +3626,9 @@ def create_level_activity(body: dict[str, Any]):
             "is_activity_block": True,
             "activity_key": key,
             "activity_level": g.get("level") or label,
+            # What to show on a teacher's own sheet, where naming one of the
+            # fourteen classrooms would be picking a room at random.
+            "activity_scope": scope,
         }
         SLOTS.append(slot)
         created.append(_enrich_slot(slot))
@@ -4217,6 +4236,8 @@ def _validate_moves(moves: list[dict[str, Any]]) -> list[str]:
                 msgs.append(f"{a} มีคาบอื่นอยู่แล้ว" if a == b
                             else f"{a} กับ {b} ใช้นักเรียนกลุ่มเดียวกัน จึงเรียนพร้อมกันไม่ได้")
             mine, yours = _slot_teachers(s), _slot_teachers(o)
+            if _same_activity(s, o):
+                mine = yours = set()
             for tid in mine & yours:
                 msgs.append(f"{t_name.get(tid, '?')} สอนคาบนี้อยู่แล้ว")
             if s.get("room_id") and s["room_id"] == o.get("room_id"):
@@ -4381,7 +4402,7 @@ def analyze_conflict(slot_id: int, target_day: int, target_period: int):
     if any(s["group_id"]   == slot["group_id"]   for s in at_target):
         return {"level": "red",   "cascades": 0, "reason": "ห้องซ้อนกัน"}
     mine = _slot_teachers(slot)
-    if mine and any(mine & _slot_teachers(s) for s in at_target):
+    if mine and any(mine & _slot_teachers(s) for s in at_target if not _same_activity(slot, s)):
         return {"level": "red",   "cascades": 0, "reason": "ครูสอนอยู่แล้ว"}
     if any(s.get("is_locked") for s in at_target):
         return {"level": "red",   "cascades": 0, "reason": "มีคาบล็อก"}

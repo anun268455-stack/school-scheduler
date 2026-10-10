@@ -226,6 +226,8 @@ export interface TimetableSlot {
    */
   activity_teacher_ids?:   number[];
   activity_teacher_names?: string[];
+  /** เช่น "ม.1–ม.3 14 ห้อง" — ใช้แทนชื่อห้องในตารางของครูผู้ดูแล */
+  activity_scope?:         string | null;
   is_locked:          boolean;    // pre-lock flag
   // วิชาเสรี — pinned slot with a swappable catalog of subject+teacher choices
   is_elective?:        boolean;

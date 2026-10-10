@@ -31,7 +31,8 @@ export const LevelActivityPanel: React.FC = () => {
     room_mode: "homeroom" as "homeroom" | "none",
   });
   const [picked, setPicked]   = useState<number[]>([]);
-  const [roster, setRoster]   = useState<Record<number, number[]>>({});
+  // The ครูผู้ดูแล of the activity as a whole — not one list per classroom.
+  const [roster, setRoster]   = useState<number[]>([]);
   const [showRoster, setShowRoster] = useState(false);
   const [newName, setNewName] = useState<string | null>(null);
   const [busy, setBusy]       = useState(false);
@@ -78,9 +79,7 @@ export const LevelActivityPanel: React.FC = () => {
     return s ? `${s.code} – ${s.name}` : "กิจกรรม";
   }, [subjects, form.subject_id]);
 
-  const rosterCount = useMemo(
-    () => Object.values(roster).reduce((n, v) => n + v.length, 0), [roster],
-  );
+  const rosterCount = roster.length;
 
   // Existing activity blocks, grouped by activity_key.
   const existing = useMemo(() => {
@@ -147,7 +146,7 @@ export const LevelActivityPanel: React.FC = () => {
         subject_id: Number(form.subject_id),
         teacher_mode: choice === "homeroom" ? "homeroom" : choice === "none" ? "none" : "single",
         teacher_id: choice !== "homeroom" && choice !== "none" ? Number(choice) : null,
-        supervisors: rosterCount ? roster : undefined,
+        teacher_ids: roster,
         room_mode: form.room_mode,
       });
       await loadSlots();
@@ -276,17 +275,13 @@ export const LevelActivityPanel: React.FC = () => {
         <Field label="ครูผู้ดูแล">
           {rosterCount > 0 ? (
             <div className="flex items-center gap-2 border border-teal-300 bg-teal-50 rounded px-2 py-1.5">
-              <span className="flex-1 text-sm text-teal-900 truncate">
-                👥 จัดไว้แล้ว {rosterCount} คน ใน {Object.keys(roster).length} ห้อง
-                {Object.keys(roster).length < picked.length && (
-                  <span className="text-teal-700/70 text-xs">
-                    {" "}(อีก {picked.length - Object.keys(roster).length} ห้องใช้ครูประจำชั้น)
-                  </span>
-                )}
+              <span className="flex-1 text-sm text-teal-900 truncate"
+                title={roster.map((t) => nameOf(teachers, t)).join(", ")}>
+                👥 ครูผู้ดูแล {rosterCount} คน
               </span>
               <button onClick={() => setShowRoster(true)}
                 className="px-2 py-0.5 text-xs border border-teal-400 text-teal-800 rounded hover:bg-white">แก้ไข</button>
-              <button onClick={() => setRoster({})}
+              <button onClick={() => setRoster([])}
                 className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-red-600">✕</button>
             </div>
           ) : (
@@ -322,15 +317,11 @@ export const LevelActivityPanel: React.FC = () => {
       </div>
 
       {rosterCount > 0 && (
-        <div className="text-xs text-gray-500 mb-2 leading-relaxed">
-          {chosen.slice(0, 8).map((g) => (
-            <span key={g.id} className="inline-block mr-3">
-              <strong className="text-teal-700">{g.name}</strong>{" "}
-              {(roster[g.id] ?? []).map((t) => nameOf(teachers, t)).join(", ") || "–"}
-            </span>
-          ))}
-          {chosen.length > 8 && <span>… อีก {chosen.length - 8} ห้อง</span>}
-        </div>
+        <p className="text-xs text-gray-500 mb-2 leading-relaxed">
+          {roster.slice(0, 10).map((t) => nameOf(teachers, t)).join(" · ")}
+          {roster.length > 10 && ` … อีก ${roster.length - 10} คน`}
+          <span className="text-gray-400"> — ครูไปแบ่งกันเองว่าใครดูห้องไหน</span>
+        </p>
       )}
       {rosterCount === 0 && form.teacher_choice === "homeroom" && picked.length > 0 && (
         missingHomeroom.length > 0 ? (

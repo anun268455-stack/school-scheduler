@@ -122,11 +122,24 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
         {/* A shared elective the class hasn't settled on has no single teacher —
             its students split across every option at once. Say how many. */}
         {names.length
-          ? names.join(" + ")
+          ? (slot.is_activity_block && names.length > 2
+               ? `ครูผู้ดูแล ${names.length} คน`
+               : names.join(" + "))
           : (slot.is_elective && slot.elective_options?.length
                 ? `${slot.elective_options.length} ตัวเลือก`
                 : null)}
       </div>
+      {/* On a teacher's own timetable a คาบกิจกรรม belongs to many classrooms
+          at once, so the cell says the scope rather than one of them. */}
+      {slot.is_activity_block && slot.activity_scope && (
+        <div
+          className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"
+          style={{ fontSize: "8px" }}
+          title={slot.activity_scope}
+        >
+          {slot.activity_scope}
+        </div>
+      )}
       {compact && slot.group_name && (
         <div
           className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"

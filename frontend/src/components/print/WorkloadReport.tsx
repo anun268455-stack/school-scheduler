@@ -17,7 +17,7 @@ import type {
   Department, LessonRequirement, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../../types";
 import { flattenGroups, compareNames } from "../../utils/groupHierarchy";
-import { teachesSlot } from "../../utils/teacherSlots";
+import { slotsForTeacher } from "../../utils/teacherSlots";
 
 /** "ม.4/2" → "4/2": the "ม." is on every row and tells the reader nothing. */
 const shortClass = (n: string | null | undefined) =>
@@ -76,8 +76,7 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
   /** One row per subject this teacher actually teaches, classes merged. */
   const rowsFor = (t: Teacher): SubjectRow[] => {
     const by = new Map<number, SubjectRow>();
-    for (const s of slots) {
-      if (!teachesSlot(s, t.id)) continue;
+    for (const s of slotsForTeacher(slots, t.id)) {
       const sid = s.subject_id;
       if (sid == null) continue;
       const row = by.get(sid) ?? {
@@ -104,8 +103,8 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
       want.set(r.subject_id, (want.get(r.subject_id) ?? 0) + r.weekly_count);
     }
     const got = new Map<number, number>();
-    for (const s of slots) {
-      if (!teachesSlot(s, t.id) || s.subject_id == null) continue;
+    for (const s of slotsForTeacher(slots, t.id)) {
+      if (s.subject_id == null) continue;
       got.set(s.subject_id, (got.get(s.subject_id) ?? 0) + 1);
     }
     let missing = 0;

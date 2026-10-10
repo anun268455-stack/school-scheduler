@@ -13,7 +13,7 @@ import React, { forwardRef } from "react";
 import type { Department, LessonRequirement, Period, SchoolConfig, StudentGroup, Subject, Teacher, TimetableSlot } from "../../types";
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
-import { teachesSlot, myElectiveOption, slotTeacherNames } from "../../utils/teacherSlots";
+import { myElectiveOption, slotTeacherNames, slotsForTeacher } from "../../utils/teacherSlots";
 import { effectiveHomeroomIds } from "../../utils/homeroom";
 import { WorkloadReport } from "./WorkloadReport";
 import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
@@ -324,6 +324,9 @@ const WESTERN_GLUED = /^(mr|mrs|miss|ms|dr|prof)\.\s*(?=\S)/i;
 function teacherLine(s: TimetableSlot): string {
   const names = slotTeacherNames(s).map(shortTeacher).filter(Boolean);
   if (names.length <= 2) return names.join(" + ");
+  // A ลูกเสือ roster is a list the school keeps, not a cell caption: the
+  // first name carries no more meaning than the twelfth, so the cell counts.
+  if (s.is_activity_block) return `ครู ${names.length} คน`;
   return `${names[0]} +${names.length - 1} คน`;
 }
 
@@ -517,7 +520,12 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
     <CellLines
       m={m}
       code={s.subject_code ?? s.subject_name ?? mine?.code ?? (mine ? "วิชาเสรี" : "")}
-      mid={mine?.label ?? shortClass(s.group_name)}
+      // A คาบกิจกรรม is run for many classrooms at once and the school splits
+      // them between the ครูผู้ดูแล themselves, so naming one of the fourteen
+      // here would be picking a room at random.
+      mid={mine?.label ?? (s.is_activity_block && s.activity_scope
+            ? s.activity_scope
+            : shortClass(s.group_name))}
       room={roomNumber(s.room_name)}
     />
   );
@@ -549,7 +557,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
         });
 
       list.forEach((teacher, idx) => {
-        const grid = buildGrid(slots.filter((s) => teachesSlot(s, teacher.id)));
+        const grid = buildGrid(slotsForTeacher(slots, teacher.id));
         const codePart = teacher.code ? `รหัสประจำตัว ${teacher.code}` : "";
         blocks.push(
           <TimetableBlock

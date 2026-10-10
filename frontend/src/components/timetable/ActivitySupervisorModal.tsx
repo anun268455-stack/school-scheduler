@@ -1,29 +1,24 @@
 /**
- * ครูผู้ดูแลคาบกิจกรรม — who stands with which class during ลูกเสือ, เนตรนารี
- * or ชุมนุม.
+ * ครูผู้ดูแลคาบกิจกรรม — the teachers who run ลูกเสือ, เนตรนารี or ชุมนุม.
  *
- * The school thinks of this as "ครูทั้งหมด" or "ครูที่สอน ม.1" — a pool of
- * people on duty, not a name typed per class. So the buttons take the pool and
- * deal it out across the chosen classes, and the lists below stay editable,
- * because the real roster always has exceptions in it.
- *
- * One teacher, one class: a name in two rows of the same period is a teacher
- * in two places, so it is shown in red here rather than discovered on the
- * printed sheet.
+ * One list for the activity, not one per classroom. The school picks the
+ * twelve teachers who take ลูกเสือ and sorts out between themselves which หมู่
+ * each of them walks to; that split changes week to week and is not something
+ * a timetable should be inventing. What everyone on this list gets is the
+ * hour: it sits in their own timetable, it counts in อัตรากำลัง, and nothing
+ * else will be scheduled on top of it.
  */
 import { useMemo, useState } from "react";
 import { ModalShell } from "../common/ModalShell";
 import { SearchableSelect, teacherOptions } from "../common/SearchableSelect";
-import {
-  buildAffinity, spreadTeachers, teachersOfLevels, doubleBooked, nameOf,
-} from "../../utils/activityRoster";
+import { buildAffinity, teachersOfLevels } from "../../utils/activityRoster";
 import { effectiveHomeroomIds } from "../../utils/homeroom";
 import type {
   Department, LessonRequirement, StudentGroup, Teacher,
 } from "../../types";
 
 interface Props {
-  /** The classes this activity is being created for, in display order. */
+  /** The classes this activity is being created for. */
   classes:      StudentGroup[];
   flat:         StudentGroup[];
   teachers:     Teacher[];
@@ -31,122 +26,111 @@ interface Props {
   requirements: LessonRequirement[];
   /** What the activity is called, for the heading. */
   title:        string;
-  value:        Record<number, number[]>;
-  onSave:       (v: Record<number, number[]>) => void;
+  value:        number[];
+  onSave:       (v: number[]) => void;
   onClose:      () => void;
 }
 
 export const ActivitySupervisorModal = ({
   classes, flat, teachers, departments, requirements, title, value, onSave, onClose,
 }: Props) => {
-  const [roster, setRoster] = useState<Map<number, number[]>>(
-    () => new Map(classes.map((g) => [g.id, [...(value[g.id] ?? [])]])),
-  );
+  const [chosen, setChosen] = useState<number[]>([...value]);
+  const [q, setQ] = useState("");
 
   const affinity = useMemo(
     () => buildAffinity(requirements, flat), [requirements, flat],
   );
   const ids = useMemo(() => classes.map((g) => g.id), [classes]);
-  const clashes = useMemo(() => doubleBooked(roster), [roster]);
-  const total = useMemo(
-    () => [...roster.values()].reduce((n, v) => n + v.length, 0), [roster],
+  const byId = useMemo(
+    () => new Map(teachers.map((t) => [t.id, t])), [teachers],
+  );
+  const levelNames = useMemo(
+    () => [...new Set(classes.map((g) => g.level).filter(Boolean))].join(", "),
+    [classes],
   );
 
-  const fill = (next: Map<number, number[]>) => setRoster(new Map(next));
+  const addAll = (more: number[]) =>
+    setChosen((p) => [...new Set([...p, ...more.filter((t) => byId.has(t))])]);
 
-  const byLevel = () => fill(spreadTeachers(ids, teachersOfLevels(ids, flat, affinity), affinity));
-  const everyone = () => fill(spreadTeachers(ids, teachers.map((t) => t.id), affinity));
-  const homeroom = () =>
-    fill(new Map(classes.map((g) => [g.id, effectiveHomeroomIds(g, flat)])));
-  const clear = () => fill(new Map(ids.map((i) => [i, []])));
+  const ofLevels = () => addAll(teachersOfLevels(ids, flat, affinity));
+  const everyone = () => addAll(teachers.map((t) => t.id));
+  const advisors = () => addAll(classes.flatMap((g) => effectiveHomeroomIds(g, flat)));
 
-  const add = (gid: number, tid: string) => {
-    if (!tid) return;
-    const n = Number(tid);
-    setRoster((prev) => {
-      const next = new Map(prev);
-      const cur = next.get(gid) ?? [];
-      if (!cur.includes(n)) next.set(gid, [...cur, n]);
-      return next;
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return chosen;
+    return chosen.filter((t) => {
+      const x = byId.get(t);
+      return `${x?.name ?? ""} ${x?.code ?? ""}`.toLowerCase().includes(needle);
     });
-  };
-  const drop = (gid: number, tid: number) =>
-    setRoster((prev) => {
-      const next = new Map(prev);
-      next.set(gid, (next.get(gid) ?? []).filter((x) => x !== tid));
-      return next;
-    });
-
-  const save = () => {
-    const out: Record<number, number[]> = {};
-    for (const [gid, v] of roster) if (v.length) out[gid] = v;
-    onSave(out);
-    onClose();
-  };
+  }, [chosen, q, byId]);
 
   return (
-    <ModalShell onClose={onClose} maxWidth="max-w-4xl">
+    <ModalShell onClose={onClose} maxWidth="max-w-3xl">
       <div className="px-5 py-3 border-b bg-teal-50">
         <h3 className="font-bold text-gray-800">👩‍🏫 ครูผู้ดูแลคาบกิจกรรม</h3>
         <p className="text-xs text-gray-600 mt-0.5">
-          {title} · {classes.length} ห้อง · เลือกครูแล้ว {total} คน
+          {title} · {classes.length} ห้อง · เลือกครูแล้ว <strong>{chosen.length}</strong> คน
         </p>
       </div>
 
       <div className="px-5 py-3 border-b bg-gray-50">
-        <p className="text-xs text-gray-600 mb-2">
-          เลือกทีเดียวทั้งหมด แล้วค่อยแก้ทีละห้องด้านล่างได้ —
-          ระบบจะ<strong>กระจายครูไปห้องละไม่กี่คน</strong> ไม่ใส่ครูคนเดียวกันซ้ำหลายห้อง
-          เพราะครู 1 คนยืนได้ทีละห้องเท่านั้น
+        <p className="text-xs text-gray-600 mb-2 leading-relaxed">
+          เลือกรายชื่อครูที่รับผิดชอบกิจกรรมนี้ —{" "}
+          <strong>ไม่ต้องระบุว่าใครดูห้องไหน</strong> ครูไปแบ่งกันเองได้
+          <br/>ครูทุกคนในรายชื่อจะมีคาบนี้ในตารางสอนของตัวเอง
+          นับในอัตรากำลัง และระบบจะไม่จัดวิชาอื่นให้ในคาบนี้
         </p>
         <div className="flex flex-wrap gap-2">
-          <Bulk onClick={byLevel}>👥 ครูที่สอนระดับชั้นนั้น</Bulk>
+          <Bulk onClick={ofLevels}>
+            👥 ครูที่สอน{levelNames ? ` ${levelNames}` : "ระดับชั้นนั้น"}
+          </Bulk>
           <Bulk onClick={everyone}>🏫 ครูทั้งหมดในโรงเรียน ({teachers.length} คน)</Bulk>
-          <Bulk onClick={homeroom}>👩‍🏫 ครูประจำชั้นของแต่ละห้อง</Bulk>
-          <Bulk onClick={clear} danger>✕ ล้างทั้งหมด</Bulk>
+          <Bulk onClick={advisors}>🧑‍🏫 ครูประจำชั้นของห้องที่เลือก</Bulk>
+          <Bulk onClick={() => setChosen([])} danger>✕ ล้างทั้งหมด</Bulk>
         </div>
       </div>
 
-      {clashes.size > 0 && (
-        <div className="px-5 py-2 bg-red-50 border-b border-red-200 text-xs text-red-800">
-          ⚠️ ครูที่ถูกใส่ไว้มากกว่า 1 ห้องในคาบเดียวกัน —{" "}
-          {[...clashes.keys()].map((t) => nameOf(teachers, t)).join(", ")} · ต้องแก้ก่อนบันทึก
-        </div>
-      )}
+      <div className="px-5 py-3 border-b">
+        <SearchableSelect
+          value=""
+          onChange={(v) => v && addAll([Number(v)])}
+          options={teacherOptions(teachers.filter((t) => !chosen.includes(t.id)), departments)}
+          placeholder="+ เพิ่มครูทีละคน"
+        />
+      </div>
 
-      <div className="flex-1 overflow-y-auto px-5 py-3 space-y-2">
-        {classes.map((g) => {
-          const mine = roster.get(g.id) ?? [];
-          return (
-            <div key={g.id} className="flex items-start gap-3 border-b border-gray-100 pb-2">
-              <span className="w-20 shrink-0 text-sm font-medium text-teal-700 pt-1.5">{g.name}</span>
-              <div className="flex-1 min-w-0">
-                <div className="flex flex-wrap gap-1 mb-1">
-                  {mine.length === 0 && (
-                    <span className="text-xs text-gray-300 py-1">– ยังไม่มีครูผู้ดูแล –</span>
+      <div className="flex-1 overflow-y-auto px-5 py-3">
+        {chosen.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-8">
+            ยังไม่ได้เลือกครู — กดปุ่มด้านบนเพื่อเพิ่มทีเดียวทั้งกลุ่ม หรือเพิ่มทีละคน
+          </p>
+        ) : (
+          <>
+            {chosen.length > 12 && (
+              <input
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-2 outline-none focus:ring-1 focus:ring-teal-500"
+                placeholder="ค้นหาในรายชื่อที่เลือกไว้…"
+                value={q} onChange={(e) => setQ(e.target.value)} />
+            )}
+            <div className="flex flex-wrap gap-1.5">
+              {shown.map((t) => (
+                <span key={t}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-teal-200 bg-teal-50 text-teal-800 text-xs">
+                  {byId.get(t)?.code && (
+                    <span className="text-teal-500 font-mono">{byId.get(t)?.code}</span>
                   )}
-                  {mine.map((t) => (
-                    <span key={t}
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs ${
-                        clashes.has(t)
-                          ? "bg-red-50 border-red-300 text-red-700"
-                          : "bg-teal-50 border-teal-200 text-teal-800"}`}>
-                      {nameOf(teachers, t)}
-                      <button onClick={() => drop(g.id, t)}
-                        className="text-gray-400 hover:text-red-600 leading-none">✕</button>
-                    </span>
-                  ))}
-                </div>
-                <SearchableSelect
-                  value=""
-                  onChange={(v) => add(g.id, v)}
-                  options={teacherOptions(teachers.filter((t) => !mine.includes(t.id)), departments)}
-                  placeholder="+ เพิ่มครู"
-                />
-              </div>
+                  {byId.get(t)?.name ?? t}
+                  <button onClick={() => setChosen((p) => p.filter((x) => x !== t))}
+                    className="text-gray-400 hover:text-red-600 leading-none">✕</button>
+                </span>
+              ))}
             </div>
-          );
-        })}
+            {q && shown.length === 0 && (
+              <p className="text-xs text-gray-400 py-3">ไม่พบครูที่ค้นหาในรายชื่อนี้</p>
+            )}
+          </>
+        )}
       </div>
 
       <div className="px-5 py-3 border-t bg-gray-50 flex justify-end gap-2">
@@ -154,9 +138,9 @@ export const ActivitySupervisorModal = ({
           className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-100">
           ยกเลิก
         </button>
-        <button onClick={save} disabled={clashes.size > 0}
-          className="px-4 py-1.5 text-sm bg-teal-600 text-white rounded hover:bg-teal-700 font-medium disabled:opacity-40">
-          ใช้รายชื่อนี้
+        <button onClick={() => { onSave(chosen); onClose(); }}
+          className="px-4 py-1.5 text-sm bg-teal-600 text-white rounded hover:bg-teal-700 font-medium">
+          ใช้รายชื่อนี้ ({chosen.length} คน)
         </button>
       </div>
     </ModalShell>

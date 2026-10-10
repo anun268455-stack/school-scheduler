@@ -21,6 +21,32 @@ export function teachesSlot(slot: TimetableSlot, teacherId: number): boolean {
 }
 
 /**
+ * One teacher's own week.
+ *
+ * A คาบกิจกรรม is one hour of their Monday however many classrooms take part:
+ * the ครูผู้ดูแล list belongs to the activity, and the school splits the หมู่
+ * between themselves. Filtering on teachesSlot alone returns it once per
+ * classroom, which stacks fourteen copies into one cell of their timetable
+ * and counts fourteen periods against them in อัตรากำลัง.
+ */
+export function slotsForTeacher(
+  slots: TimetableSlot[], teacherId: number,
+): TimetableSlot[] {
+  const seen = new Set<string>();
+  const out: TimetableSlot[] = [];
+  for (const s of slots) {
+    if (!teachesSlot(s, teacherId)) continue;
+    const k = s.activity_key;
+    if (k) {
+      if (seen.has(k)) continue;
+      seen.add(k);
+    }
+    out.push(s);
+  }
+  return out;
+}
+
+/**
  * Everyone standing in the room, in the order they should be read.
  *
  * One lesson, one teacher is still the normal case; สอนร่วม adds a partner and
