@@ -1030,6 +1030,26 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     r["id"]))
                 return r["id"], r["name"], r["type"]
 
+        # 2a. ห้องของครูคนนี้ — their fixed room, or one the school has written
+        #     their name on.
+        #
+        #     Writing a teacher's name on a room used to do one thing only:
+        #     keep everyone else out. It never brought that teacher's own
+        #     lessons in, because the class's homeroom was decided first and
+        #     almost always free — so 261 ห้องสมุด sat empty all week with a
+        #     name on the door. A room given to a teacher is where they teach.
+        #
+        #     Two things still outrank it: the subject's own facility (step 1),
+        #     and a subject marked เรียนที่ห้องของนักเรียน (step 0), which
+        #     exists precisely to say "not the teacher's room, theirs".
+        if teacher_id is not None and rule != "homeroom":
+            own_rooms = [r for r in ROOMS
+                         if (r["id"] == fr or teacher_id in _room_reserved_for(r))
+                         and eligible(r) and not upstairs(r)]
+            if own_rooms:
+                r = min(own_rooms, key=lambda r: (r["id"] != fr, r["id"]))
+                return r["id"], r["name"], r["type"]
+
         # 2b. Already in a room next door in time? Stay in it.
         #     Walking is what happens BETWEEN back-to-back periods, so the
         #     cheapest room is the one the class is in either side of this one —
@@ -1103,7 +1123,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     r = min(yard, key=lambda r: (-int(r.get("capacity") or 0), r["id"]))
                     return r["id"], r["name"], r["type"]
 
-        # 4. Teacher's own fixed room (skip for outdoor subjects).
+        # 4. Teacher's own fixed room, as a late fallback: step 2a already
+        #    tried it, so reaching here means it was busy or not allowed then
+        #    and something has freed up since — or `rule` sent us past it.
         if fr and not wants_outdoor and not room_taken(fr):
             r = r_map.get(fr)
             # Not if it is open ground and this subject stays indoors: some
@@ -1301,6 +1323,26 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             return True
         return not any((home, day, b) in room_busy
                        for b in cell_buckets(req["group_id"], period))
+
+    def facility_free(req: dict, day: int, period: int) -> bool:
+        """ต้องเรียนที่ห้องประจำวิชา — is that room free at this hour?
+
+        Without this the setting only chose the room; a cell where the gym was
+        already busy still took the lesson and left it with no room at all,
+        which is neither the facility nor an honest "could not place it".
+        """
+        subj = s_map.get(req.get("subject_id")) or {}
+        if _subject_room_rule(subj) != "subject":
+            return True
+        want = subj.get("fixed_room_id")
+        dept = subj.get("department_id")
+        rooms = [r for r in ROOMS
+                 if r["id"] == want or (dept and r.get("specialized_dept_id") == dept)]
+        if not rooms:
+            return True
+        bks = cell_buckets(req["group_id"], period)
+        return any(not any((r["id"], day, b) in room_busy for b in bks)
+                   and _room_usable(r) for r in rooms)
 
     def co_of(req: dict) -> int | None:
         """The สอนร่วม partner on this requirement, if there is a real one."""
@@ -1581,6 +1623,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                         continue          # สอนร่วม: คู่สอนติดคาบอื่นอยู่
                     if attempt < 3 and not home_free(req, day, period):
                         continue          # เรียนที่ห้องของนักเรียน: ห้องไม่ว่าง
+                    if attempt < 3 and not facility_free(req, day, period):
+                        continue          # ต้องเรียนที่ห้องประจำวิชา: ห้องไม่ว่าง
                     if group_occupied(gid, day, period):
                         continue
                     run = run_if_placed(tid, gid, day, period)
