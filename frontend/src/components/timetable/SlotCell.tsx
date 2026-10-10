@@ -1,7 +1,7 @@
 import React from "react";
 import clsx from "clsx";
 import type { TimetableSlot } from "../../types";
-import { slotTeacherNames } from "../../utils/teacherSlots";
+import { slotTeacherNames, teachingTogether } from "../../utils/teacherSlots";
 
 interface SlotCellProps {
   slots:       TimetableSlot[];
@@ -16,6 +16,9 @@ interface SlotCellProps {
 
 function slotColors(s: TimetableSlot): string {
   if (s.is_elective)            return "bg-purple-50 border-purple-300 text-purple-900";
+  // สอนร่วม before ล็อก: two teachers in one room is the thing the school is
+  // scanning the grid for, and the dark locked cell hid the badge entirely.
+  if (teachingTogether(s))      return "bg-sky-50 border-sky-400 text-sky-900";
   if (s.is_locked)              return "bg-slate-700 border-slate-500 text-slate-100";
   if (s.room_type === "outdoor") return "bg-amber-50  border-amber-400  text-amber-900";
   if (s.parallel_group_key)     return "bg-emerald-50 border-emerald-300 text-emerald-900";

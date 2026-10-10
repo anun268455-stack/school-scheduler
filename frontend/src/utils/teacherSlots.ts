@@ -21,6 +21,18 @@ export function teachesSlot(slot: TimetableSlot, teacherId: number): boolean {
 }
 
 /**
+ * สอนร่วม — two named teachers in one lesson.
+ *
+ * Not the same as a คาบกิจกรรม with a duty roster: that is many classrooms
+ * sharing one hour, and it already looks different on the grid. This is one
+ * class, one subject, two people in the room, which is the thing the school
+ * checks a printed grid for.
+ */
+export function teachingTogether(slot: TimetableSlot): boolean {
+  return !slot.is_activity_block && slot.co_teacher_id != null;
+}
+
+/**
  * One teacher's own week.
  *
  * A คาบกิจกรรม is one hour of their Monday however many classrooms take part:

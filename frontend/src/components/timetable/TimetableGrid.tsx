@@ -602,6 +602,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       <div className="shrink-0 flex flex-wrap gap-3 px-4 py-2 border-t border-gray-200 bg-white text-[10px] text-gray-500">
         <LegendDot color="bg-amber-400"   label="☀ กลางแจ้ง" />
         <LegendDot color="bg-emerald-300" label="↔ คู่ขนาน" />
+        <LegendDot color="bg-sky-400"     label="👥 สอนร่วม" />
         <LegendDot color="bg-slate-500"   label="🔒 ล็อก" />
         <span className="flex items-center gap-1">
           <span className="inline-block bg-blue-500 text-white text-[8px] px-1 rounded font-bold">2×</span> คาบคู่

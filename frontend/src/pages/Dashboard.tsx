@@ -12,12 +12,13 @@ import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal
 import { ElectivePoolPanel } from "../components/timetable/ElectivePoolPanel";
 import { RoomSettingsModal } from "../components/rooms/RoomSettingsModal";
 import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubjectModal";
-import { teachesSlot, slotLabel } from "../utils/teacherSlots";
+import { teachesSlot, slotLabel, teachingTogether } from "../utils/teacherSlots";
 import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
 import { flattenGroups } from "../utils/groupHierarchy";
 import { byTeacherCode } from "../utils/teacherOrder";
 import { SavePointPanel } from "../components/backup/SavePointPanel";
 import { clashesByRequirement } from "../utils/teachingConflicts";
+import { findSubjectDuplicates } from "../utils/duplicateCheck";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
@@ -2153,6 +2154,20 @@ const AnalyticsPanel: React.FC = () => {
     return { dept: d, count };
   }).filter((x) => x.count > 0).sort((a, b) => b.count - a.count);
 
+  const gName = (id: number) =>
+    groups.flatMap((g) => [g, ...(g.children ?? [])]).find((g) => g.id === id)?.name ?? String(id);
+  const tName = (id: number) => teachers.find((t) => t.id === id)?.name ?? String(id);
+  const sCode = (id: number) => subjects.find((x) => x.id === id)?.code ?? String(id);
+
+  // วิชาซ้ำ — read off the plan and the placed week, not remembered.
+  const dup = useMemo(
+    () => findSubjectDuplicates(requirements, slots), [requirements, slots],
+  );
+  const dupCount = dup.splitTeachers.length + dup.overPlaced.length;
+  const coTaught = useMemo(
+    () => slots.filter(teachingTogether).length, [slots],
+  );
+
   // Alerts
   const fatigueTeachers    = teacherStats.filter((t) => t.maxConsec >= 4 || t.maxDay > t.teacher.max_slots_per_day);
   const outdoorOverloaded  = teacherStats.filter((t) => t.outdoorCount > t.teacher.max_outdoor_per_week);
@@ -2179,6 +2194,46 @@ const AnalyticsPanel: React.FC = () => {
         <StatCard icon="✅" label="ความครอบคลุม" value={`${coverPct}%`} sub={filledReq < totalReq ? `ยังขาด ${totalReq - filledReq} คาบ` : "ครบถ้วน"} color={coverPct >= 90 ? "bg-green-50 border-green-200" : "bg-amber-50 border-amber-200"} />
         <StatCard icon="⚠️" label="ครูที่ล้า (>3 ต่อเนื่อง)" value={fatigueTeachers.length} sub="ควรปรับตาราง" color={fatigueTeachers.length > 0 ? "bg-red-50 border-red-200" : "bg-white border-gray-200"} />
         <StatCard icon="🌿" label="ห้องที่ยังไม่มีตาราง" value={groupsWithNoSlots.length} sub={groupsWithNoSlots.map((g) => g.name).join(", ") || "ครบทุกห้อง"} color={groupsWithNoSlots.length > 0 ? "bg-amber-50 border-amber-200" : "bg-green-50 border-green-200"} />
+        <StatCard icon="🔁" label="วิชาซ้ำ" value={dupCount}
+          sub={dupCount === 0 ? "ไม่พบวิชาซ้ำ" : "ดูรายการด้านล่าง"}
+          color={dupCount > 0 ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"} />
+        <StatCard icon="👥" label="คาบสอนร่วม" value={coTaught}
+          sub={coTaught === 0 ? "ยังไม่มีคาบที่ครู 2 คนสอนด้วยกัน" : "ครู 2 คนในคาบเดียวกัน"}
+          color="bg-sky-50 border-sky-200" />
+      </div>
+
+      {/* ── ตรวจสอบวิชาซ้ำ ─────────────────────────────────────────────── */}
+      <div className={`border rounded-xl overflow-hidden mb-6 ${dupCount > 0 ? "border-red-200" : "border-green-200"}`}>
+        <div className={`px-4 py-3 border-b ${dupCount > 0 ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"}`}>
+          <h3 className={`text-sm font-bold ${dupCount > 0 ? "text-red-700" : "text-green-700"}`}>
+            🔁 ตรวจสอบวิชาซ้ำ
+          </h3>
+          <p className="text-[11px] text-gray-600 mt-0.5">
+            1 ห้อง + 1 วิชา ควรมีครู 1 คน และลงคาบตามที่วางแผนไว้ —
+            ถ้าตั้งใจให้ครู 2 คนสอนด้วยกัน ให้ใช้แถวเดียวแล้วใส่ช่อง <strong>👥 สอนร่วม</strong>
+          </p>
+        </div>
+        <div className="p-3 space-y-2">
+          {dupCount === 0 && (
+            <p className="text-xs text-green-700">✅ ไม่พบห้อง-วิชาที่มีครูซ้ำกัน และไม่มีวิชาไหนลงเกินแผน</p>
+          )}
+          {dup.splitTeachers.map((d) => (
+            <div key={`t-${d.groupId}-${d.subjectId}`} className="text-xs bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+              <strong className="text-red-800">{gName(d.groupId)} · {sCode(d.subjectId)}</strong>
+              {" — ถูกกำหนดให้ครู "}{d.teacherIds.length}{" คนจากคนละแถว: "}
+              <span className="text-red-700">{d.teacherIds.map(tName).join(", ")}</span>
+              <span className="text-gray-500">
+                {" · แก้ที่หน้า “📋 การสอน/วิชา” — ลบแถวที่เกิน แล้วใส่ครูคนที่สองในช่อง สอนร่วม"}
+              </span>
+            </div>
+          ))}
+          {dup.overPlaced.map((d) => (
+            <div key={`p-${d.groupId}-${d.subjectId}`} className="text-xs bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+              <strong className="text-amber-800">{gName(d.groupId)} · {sCode(d.subjectId)}</strong>
+              {" — ลงตาราง "}{d.placed}{" คาบ แต่แผนขอไว้ "}{d.planned}{" คาบ (เกิน "}{d.placed - d.planned}{" คาบ)"}
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

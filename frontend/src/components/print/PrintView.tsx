@@ -366,8 +366,11 @@ function shortTeacher(name: string | null | undefined): string {
  */
 function roomNumber(room: string | null | undefined): string {
   if (!room) return "";
-  const m = String(room).trim().match(/^([0-9][0-9.\-/]*)\b/);
-  return m ? m[1] : String(room).trim();
+  // "ห้องประชุมเกียรติยศ" → "ประชุมเกียรติยศ". Every room on the sheet is a
+  // room; the word costs four characters of a column that holds about ten.
+  const name = String(room).trim().replace(/^ห้อง\s*/, "");
+  const m = name.match(/^([0-9][0-9.\-/]*)\b/);
+  return m ? m[1] : name;
 }
 
 
@@ -460,6 +463,23 @@ const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.1, fontSi
  * codes across a row sit on one line, the teachers on the next and the rooms
  * on the next — instead of every cell starting wherever its own content ended.
  */
+/**
+ * Shrink a line's type until the words fit the column.
+ *
+ * A lesson column on a two-per-sheet A4 is about eleven characters wide.
+ * Longer than that and the old cell clipped the text with overflow:hidden on
+ * a centred flex line, which cuts BOTH ends: "ห้องประชุมเกียรติยศ" printed as
+ * "ประชุมเกียรติ" — a room nobody can look up. A point or two smaller keeps
+ * the whole name, and the floor stops it shrinking into something unreadable.
+ */
+function fitFont(text: string, basePt: string, maxChars: number): string {
+  const base = parseFloat(basePt);
+  const n = (text ?? "").length;
+  if (!base || n <= maxChars) return basePt;
+  const scaled = base * (maxChars / n);
+  return `${Math.max(scaled, base * 0.72).toFixed(1)}pt`;
+}
+
 function CellLines(
   { m, code, mid, room }: { m: Metrics; code: string; mid: string; room: string },
 ) {
@@ -470,13 +490,28 @@ function CellLines(
   const line: React.CSSProperties = {
     flex: "1 1 0", minHeight: m.lineH,
     display: "flex", alignItems: "center", justifyContent: "center",
-    overflow: "hidden", whiteSpace: "nowrap",
+    overflow: "hidden",
   };
+  // Whatever is still too long after shrinking ends in an ellipsis instead of
+  // being cut off mid-word at both edges, so the start of the name survives
+  // and the reader can see that something was left out.
+  const text: React.CSSProperties = {
+    width: "100%", textAlign: "center",
+    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+  };
+  // Roughly how many characters a lesson column holds at each size. The code
+  // line is the largest type, so it fits the fewest.
   return (
     <div style={{ ...cellText(m), display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ ...line, fontSize: m.cellFont, fontWeight: 600, color: "#111827" }}>{code}</div>
-      <div style={{ ...line, fontSize: m.subFont, color: "#4b5563" }}>{mid}</div>
-      <div style={{ ...line, fontSize: m.roomFont, fontWeight: 500, color: "#1f2937" }}>{room}</div>
+      <div style={{ ...line, fontWeight: 600, color: "#111827" }}>
+        <span style={{ ...text, fontSize: fitFont(code, m.cellFont, 9) }}>{code}</span>
+      </div>
+      <div style={{ ...line, color: "#4b5563" }}>
+        <span style={{ ...text, fontSize: fitFont(mid, m.subFont, 11) }}>{mid}</span>
+      </div>
+      <div style={{ ...line, fontWeight: 500, color: "#1f2937" }}>
+        <span style={{ ...text, fontSize: fitFont(room, m.roomFont, 10) }}>{room}</span>
+      </div>
     </div>
   );
 }
@@ -638,6 +673,11 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             }
             .tt-block { flex: 1 1 0; min-height: 0; }
             .tt-grid  { flex: 1 1 auto; min-height: 0; }
+            /* Half a sheet, measured the same way a pair is: the page is a
+               flex column of the printable height and a pair splits it with
+               5mm of gap, so one alone takes that same share and the bottom
+               half stays empty. */
+            .print-page.half > .tt-block { flex: 0 0 calc(50% - 4mm); }
           }
           @media print {
             body > *:not(.print-wrapper) { display: none !important; }
@@ -662,7 +702,14 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
           />
         ) : sheets.length > 0 ? (
           sheets.map((sheet, i) => (
-            <div key={i} className="print-page">{sheet}</div>
+            /* A sheet holding one table when two were asked for keeps that
+               table at half height. Letting it stretch gave the last page of
+               an odd run — and every single-class print — one table blown up
+               to fill A4, which is a different sheet from all the others. */
+            <div key={i}
+              className={`print-page${options.perPage === 2 && sheet.length === 1 ? " half" : ""}`}>
+              {sheet}
+            </div>
           ))
         ) : (
           <div className="print-page" style={{ padding: "20mm" }}>
