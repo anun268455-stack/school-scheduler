@@ -155,6 +155,18 @@ async function applyHomeroom(changes: { groupId: number; teacherIds: number[] }[
 const GroupsPanel: React.FC = () => {
   const { groups, rooms, teachers } = useTimetableStore();
   const [homeroomFor, setHomeroomFor] = useState<number | null>(null);
+
+  /** ปกติ → ไม่ออกลาน → ออกลานได้ → ปกติ */
+  const toggleGroupYard = async (g: StudentGroup) => {
+    const next = g.allow_outdoor == null ? false : g.allow_outdoor === false ? true : null;
+    const updated = await api.updateGroup(g.id, { allow_outdoor: next });
+    useTimetableStore.setState((st) => ({
+      groups: st.groups.map((x) =>
+        x.id === g.id
+          ? { ...x, ...updated, children: x.children ?? [] }
+          : { ...x, children: (x.children ?? []).map((c) => c.id === g.id ? { ...c, ...updated } : c) }),
+    }));
+  };
   const [importingHomeroom, setImportingHomeroom] = useState(false);
   const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "" });
   const [editing, setEditing]   = useState<number | null>(null);
@@ -308,6 +320,23 @@ const GroupsPanel: React.FC = () => {
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
+                        {/* เรียนที่ลานได้ไหม ทั้งห้องนี้.
+                            Short of rooms, the school has to choose who goes
+                            outside, and that is a decision about classes:
+                            ห้องวิทย์-คณิต keep the classrooms. One tick here
+                            beats setting it on every subject they take. */}
+                        <button onClick={() => toggleGroupYard(g)}
+                          title={g.allow_outdoor === false
+                            ? "ห้องนี้ไม่ต้องออกลาน — กดเพื่อเปลี่ยน"
+                            : g.allow_outdoor === true
+                            ? "ห้องนี้ออกลานได้ถ้าห้องเต็ม — กดเพื่อเปลี่ยน"
+                            : "ปกติ (ออกลานได้ถ้าห้องเต็ม) — กดเพื่อกันห้องนี้ไว้ในอาคาร"}
+                          className={clsx("px-2 py-1 rounded border text-xs",
+                            g.allow_outdoor === false ? "bg-gray-200 border-gray-400 text-gray-700"
+                              : g.allow_outdoor === true ? "bg-green-50 border-green-300 text-green-700"
+                              : "bg-white border-gray-200 text-gray-300 hover:border-green-400")}>
+                          {g.allow_outdoor === false ? "🚫 ไม่ออกลาน" : "🌳"}
+                        </button>
                         <button onClick={() => { setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "", homeroom_teacher_id: g.homeroom_teacher_id ? String(g.homeroom_teacher_id) : "" }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteGroup(g.id); useTimetableStore.setState((s) => ({ groups: s.groups.filter((x) => x.id !== g.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
@@ -575,6 +604,7 @@ const SubjectsPanel: React.FC = () => {
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [assigning, setAssigning] = useState<number | null>(null);
   const [electiveFor, setElectiveFor] = useState<number | null>(null);
+  const [rowMenu, setRowMenu] = useState<number | null>(null);
 
   // How many classes each subject is already assigned to.
   const classCount = (subjectId: number) =>
@@ -915,7 +945,11 @@ const SubjectsPanel: React.FC = () => {
                       </button>
                     </td>
                     <td className="px-3 py-2">
-                      <div className="flex gap-1">
+                      {/* Four buttons on every one of 293 rows read as a wall
+                          of colour, and the one that matters — จัดห้อง/ครู,
+                          where the real work is — looked like the other
+                          three. It stays out; the rest fold into one ⋯. */}
+                      <div className="flex gap-1 items-center">
                         <button
                           onClick={() => setAssigning(s.id)}
                           className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100 border border-blue-200 whitespace-nowrap"
@@ -926,15 +960,37 @@ const SubjectsPanel: React.FC = () => {
                             <span className="ml-1 text-[10px] bg-blue-600 text-white px-1 rounded-full">{classCount(s.id)}</span>
                           )}
                         </button>
-                        <button
-                          onClick={() => setElectiveFor(s.id)}
-                          className="px-2 py-1 text-xs bg-purple-50 text-purple-700 rounded hover:bg-purple-100 border border-purple-200 whitespace-nowrap"
-                          title="ใส่วิชานี้เป็นตัวเลือกในคาบเสรีที่มีอยู่"
-                        >
-                          🎓 ใส่คาบเสรี
-                        </button>
-                        <button onClick={() => { setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "", prefer_morning: s.prefer_morning ?? false, allow_outdoor: outdoorChoice(s.allow_outdoor) as "" | "yes" | "no", room_rule: (s.room_rule ?? "") as "" | "subject" | "homeroom" }); }} className={btnEdit}>แก้ไข</button>
-                        <button onClick={async () => { await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }} className={btnDanger}>ลบ</button>
+                        <div className="relative">
+                          <button
+                            onClick={() => setRowMenu(rowMenu === s.id ? null : s.id)}
+                            title="เครื่องมืออื่น"
+                            className="px-2 py-1 text-xs bg-gray-50 text-gray-500 rounded hover:bg-gray-100 border border-gray-200">
+                            ⋯
+                          </button>
+                          {rowMenu === s.id && (
+                            <>
+                              <div className="fixed inset-0 z-10" onClick={() => setRowMenu(null)} />
+                              <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-xl overflow-hidden min-w-[170px] py-1">
+                                <button
+                                  onClick={() => { setElectiveFor(s.id); setRowMenu(null); }}
+                                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-gray-700 hover:bg-purple-50">
+                                  🎓 <span>ใส่คาบเสรี</span>
+                                </button>
+                                <button
+                                  onClick={() => { setRowMenu(null); setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "", prefer_morning: s.prefer_morning ?? false, allow_outdoor: outdoorChoice(s.allow_outdoor) as "" | "yes" | "no", room_rule: (s.room_rule ?? "") as "" | "subject" | "homeroom" }); }}
+                                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-gray-700 hover:bg-gray-50">
+                                  ✏️ <span>แก้ไขรายวิชา</span>
+                                </button>
+                                <div className="border-t border-gray-100 my-1" />
+                                <button
+                                  onClick={async () => { setRowMenu(null); await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }}
+                                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-red-600 hover:bg-red-50">
+                                  🗑 <span>ลบวิชานี้</span>
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </td>
                   </>

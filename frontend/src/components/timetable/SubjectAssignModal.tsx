@@ -28,6 +28,8 @@ interface Row {
   teacherId: string;
   /** ครูคนที่ 2 ที่สอนคาบเดียวกัน — "" เมื่อไม่มี */
   coTeacherId: string;
+  /** เรียนที่ลานได้ไหม เฉพาะห้องนี้ — "" ไม่ระบุ, "yes", "no" */
+  outdoor: "" | "yes" | "no";
   weekly:    number;
   reqId?:    number;    // set when this row already exists in the database
 }
@@ -51,6 +53,8 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
       .map((r) => ({
         groupId: r.group_id, teacherId: String(r.teacher_id),
         coTeacherId: r.co_teacher_id ? String(r.co_teacher_id) : "",
+        outdoor: (r.allow_outdoor === true ? "yes"
+                  : r.allow_outdoor === false ? "no" : "") as "" | "yes" | "no",
         weekly: r.weekly_count, reqId: r.id,
       })),
   );
@@ -99,7 +103,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
     setRows((prev) =>
       prev.some((r) => r.groupId === groupId)
         ? prev.filter((r) => r.groupId !== groupId)
-        : [...prev, { groupId, teacherId: defaultTeacher, coTeacherId: "", weekly: defaultWeekly }],
+        : [...prev, { groupId, teacherId: defaultTeacher, coTeacherId: "", outdoor: "", weekly: defaultWeekly }],
     );
   };
 
@@ -112,7 +116,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
       }
       const add = classesInLevel
         .filter((g) => !picked.has(g.id))
-        .map((g) => ({ groupId: g.id, teacherId: defaultTeacher, coTeacherId: "", weekly: defaultWeekly }));
+        .map((g) => ({ groupId: g.id, teacherId: defaultTeacher, coTeacherId: "", outdoor: "" as const, weekly: defaultWeekly }));
       return [...prev, ...add];
     });
   };
@@ -139,6 +143,8 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
    */
   const coOf = (r: Row) =>
     r.coTeacherId && r.coTeacherId !== r.teacherId ? Number(r.coTeacherId) : null;
+  /** The row's own answer about the ลาน, or null to inherit. */
+  const yardOf = (r: Row) => r.outdoor === "yes" ? true : r.outdoor === "no" ? false : null;
 
   const handleSave = async () => {
     setBusy(true); setError(null);
@@ -159,12 +165,14 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
         const co = coOf(row);
         if (before.teacher_id !== Number(row.teacherId)
             || before.weekly_count !== row.weekly
-            || (before.co_teacher_id ?? null) !== co) {
+            || (before.co_teacher_id ?? null) !== co
+            || (before.allow_outdoor ?? null) !== yardOf(row)) {
           await api.updateRequirement(row.reqId, {
             group_id: row.groupId,
             subject_id: subject.id,
             teacher_id: Number(row.teacherId),
             co_teacher_id: co,
+            allow_outdoor: yardOf(row),
             weekly_count: row.weekly,
           });
         }
@@ -176,6 +184,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
         subject_id: subject.id,
         teacher_id: Number(r.teacherId),
         co_teacher_id: coOf(r),
+        allow_outdoor: yardOf(r),
         weekly_count: r.weekly,
         parallel_group_key: null,
       }));
@@ -340,6 +349,24 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
                     value={r.weekly}
                     onChange={(e) => setRow(r.groupId, { weekly: Number(e.target.value) })}
                   />
+                  {/* เรียนที่ลานได้ไหม เฉพาะห้องนี้.
+                      The school is short of rooms and has to choose who goes
+                      outside — and that is a question about classes, not
+                      subjects: ห้องวิทย์-คณิต keep the classrooms while
+                      another class takes the ลาน for the same lesson. */}
+                  <button
+                    onClick={() => setRow(r.groupId, {
+                      outdoor: r.outdoor === "" ? "no" : r.outdoor === "no" ? "yes" : "",
+                    })}
+                    title={r.outdoor === "no" ? "ห้องนี้ไม่ต้องออกลาน — กดเพื่อเปลี่ยน"
+                      : r.outdoor === "yes" ? "ห้องนี้ออกลานได้ถ้าห้องเต็ม — กดเพื่อเปลี่ยน"
+                      : "ปกติ (ออกลานได้ถ้าห้องเต็ม) — กดเพื่อกันห้องนี้ไว้ในอาคาร"}
+                    className={clsx("shrink-0 px-1.5 py-1 rounded border text-xs",
+                      r.outdoor === "no" ? "bg-gray-200 border-gray-400 text-gray-700"
+                        : r.outdoor === "yes" ? "bg-green-50 border-green-300 text-green-700"
+                        : "bg-white border-gray-200 text-gray-300 hover:border-green-400")}>
+                    {r.outdoor === "no" ? "🚫" : "🌳"}
+                  </button>
                   <button onClick={() => toggleClass(r.groupId)}
                     className="px-1.5 py-1 text-xs text-red-400 hover:text-red-600 shrink-0" title="เอาห้องนี้ออก">
                     ✕

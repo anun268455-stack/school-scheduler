@@ -85,6 +85,13 @@ export interface StudentGroup {
   homeroom_teacher_ids?: number[];
   advanced_settings?: GroupAdvanced;
   children:          StudentGroup[];
+  /**
+   * เรียนที่ลานได้ไหม สำหรับทั้งห้องเรียนนี้ — ทับค่าของรายวิชา.
+   *
+   * ห้องวิทย์-คณิต ที่ต้องได้ห้องเรียนก่อน ติ๊กครั้งเดียวจบ แทนที่จะไล่ตั้ง
+   * ทีละวิชา ส่วนคาบไหนยกเว้นก็ตั้งรายคาบทับได้อีกที
+   */
+  allow_outdoor?:      boolean | null;
 }
 
 export interface TeacherAdvanced {
@@ -153,6 +160,11 @@ export interface LessonRequirement {
    * it, so both are busy and neither can be booked elsewhere at that hour.
    */
   co_teacher_id?:     number | null;
+  /**
+   * เรียนที่ลานได้ไหม เฉพาะคาบนี้ — ทับค่าของห้องเรียนและของรายวิชา.
+   * null/undefined = ไม่ระบุ ใช้ค่าที่ตั้งไว้ระดับบน
+   */
+  allow_outdoor?:     boolean | null;
 }
 
 export interface ElectiveOption {

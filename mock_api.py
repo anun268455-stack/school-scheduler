@@ -190,17 +190,32 @@ def _subject_outdoor(subj: dict[str, Any]) -> bool | None:
     return v if isinstance(v, bool) else None
 
 
-def _may_use_outdoor(subj: dict[str, Any]) -> bool:
+def _may_use_outdoor(subj: dict[str, Any] | None,
+                     req: dict[str, Any] | None = None,
+                     group: dict[str, Any] | None = None) -> bool:
     """Open ground is a room like any other, unless the school says no.
 
     It was the other way round at first — nothing outdoors unless ticked —
     and the yards stayed empty all week while the school was short of rooms,
     because nobody had been through 271 subjects ticking boxes. The school
     asked for the opposite: put lessons out there the way you would in any
-    room, and they will mark the few subjects that cannot. Classrooms still
-    fill first; see `rank`, where a ลาน sits below every indoor room.
+    room, and they will mark the few that cannot. Classrooms still fill
+    first; see `rank`, where a ลาน sits below every indoor room.
+
+    Asked from the most specific side first, because "which classes" is the
+    real question. A school short of rooms decides who goes outside, and the
+    answer is rarely a whole subject: ห้องวิทย์-คณิต keep the classrooms and
+    another class takes the ลาน for the same period of the same subject. So
+    one lesson's own setting beats the class's, and the class's beats the
+    subject's.
     """
-    return _subject_outdoor(subj) is not False
+    for src in (req, group, subj):
+        if src is None:
+            continue
+        v = src.get("allow_outdoor")
+        if isinstance(v, bool):
+            return v
+    return True
 
 
 def _room_usable(room: dict[str, Any]) -> bool:
@@ -908,7 +923,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     outdoor_dept_ids = {d["id"] for d in DEPARTMENTS if "พลศึกษา" in d.get("name", "")}
 
     def find_room(teacher_id: int, day: int, period: int, subject_id: int | None = None,
-                  group_id: int | None = None, also_period: int | None = None):
+                  group_id: int | None = None, also_period: int | None = None,
+                  allow_out_override: bool | None = None):
         """Pick a room, minimising how far students/teachers must walk.
 
         Priority:
@@ -933,9 +949,11 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # indoor rooms are full — see `eligible` and `rank` below.
         rule = _subject_room_rule(subj)
         allow_out = _subject_outdoor(subj)
+        if allow_out_override is not None:
+            allow_out = allow_out_override
         wants_outdoor = (subj.get("department_id") in outdoor_dept_ids
                          and allow_out is not False)
-        may_outdoor = wants_outdoor or _may_use_outdoor(subj)
+        may_outdoor = wants_outdoor or allow_out is not False
         grp = g_map.get(group_id, {}) if group_id is not None else {}
         # ห้องประจำชั้น, or the one this run has settled on for a class that has
         # none. Forty of this school's classes have no homeroom recorded, which
@@ -1217,7 +1235,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         """
         rid, rname, rtype = room if room else find_room(
             req["teacher_id"], day, period, req["subject_id"], req["group_id"],
-            also_period)
+            also_period,
+            _may_use_outdoor(s_map.get(req["subject_id"]), req,
+                             g_map.get(req["group_id"])))
         if rid:                       # so the next cell knows where they are
             teacher_room[(req["teacher_id"], day, period)] = rid
         subj    = s_map.get(req["subject_id"], {})
