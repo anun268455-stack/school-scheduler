@@ -1011,6 +1011,37 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         else:
             solo.append(req)
 
+    # One teacher, one subject, two sub-classes of the same class: that is one
+    # lesson, not two.
+    #
+    # ม.6/9ก and ม.6/9ข sitting with the same teacher for ว33286 are a single
+    # roomful — the school writes it "ม.6/9กข" on their sheet, meaning the two
+    # halves come together for it. Taken as separate requirements it became
+    # four periods in the teacher's week instead of two, and the sub-classes
+    # were taught the same thing at different times. Merged here rather than
+    # asked for, because nothing about the pair is ambiguous: a teacher cannot
+    # be in two places at once, so two sibling classes with one teacher and one
+    # subject can only ever have meant together.
+    merged_keys: set[str] = set()
+    sibling: dict[tuple, list] = defaultdict(list)
+    for req in solo:
+        g = g_map.get(req["group_id"]) or {}
+        parent = g.get("parent_id")
+        if parent:
+            sibling[(parent, req["subject_id"], req["teacher_id"])].append(req)
+    for (parent, sid, tid), group in sibling.items():
+        if len(group) < 2:
+            continue
+        key = f"พร้อมกัน-{parent}-{sid}-{tid}"
+        merged_keys.add(key)
+        # Copies, so the key exists for this solve and on the lessons it
+        # produces — which is what makes the pair move together when somebody
+        # drags one — without being written back onto the school's saved
+        # requirement rows, where it would look like a คู่ขนาน they set up.
+        for req in group:
+            solo.remove(req)
+        parallel[key] = [{**req, "parallel_group_key": key} for req in group]
+
     class_period_set = set(class_periods)
     def teacher_free(tid, day, gid, period) -> bool:
         return not any((tid, day, b) in teacher_busy for b in cell_buckets(gid, period))
@@ -1397,9 +1428,11 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # If any subject in the block is a double-period subject, place as pairs.
         is_double  = any((s_map.get(r["subject_id"], {}).get("duration", 1) or 1) == 2 for r in reqs)
 
-        # Detect same-teacher assignment (warn but still try)
+        # Detect same-teacher assignment (warn but still try). Not for a
+        # sibling merge: one teacher taking both halves of a class at once is
+        # the whole point of it, and the two halves sit in one room together.
         teacher_ids = [r["teacher_id"] for r in reqs]
-        if len(set(teacher_ids)) < len(teacher_ids):
+        if pgk not in merged_keys and len(set(teacher_ids)) < len(teacher_ids):
             violations.append(
                 f"[{pgk}] ครูคนเดียวสอนหลายห้องพร้อมกันไม่ได้ "
                 f"กรุณาตั้งครูคนละคนสำหรับแต่ละห้อง"
@@ -1424,15 +1457,36 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                         return False
             return True
 
+        merged = pgk in merged_keys
+
         def place_block(day_, periods_to_fill):
             for i, per_ in enumerate(periods_to_fill):
+                # Two halves of one class sit in one room, so the room is
+                # chosen once and the rest follow. Left to itself each half
+                # would find the first room taken by the other and wander off
+                # to a different one.
+                shared_room = None
                 for req in reqs:
                     slot = make_slot(req, day_, per_)
+                    if merged:
+                        if shared_room is None:
+                            shared_room = (slot.get("room_id"), slot.get("room_name"),
+                                           slot.get("room_type"))
+                        else:
+                            (slot["room_id"], slot["room_name"],
+                             slot["room_type"]) = shared_room
                     if i == 0 and len(periods_to_fill) > 1:
                         slot["is_double_start"] = True
                     SLOTS.append(slot)
                     note_subject(req["group_id"], req.get("subject_id"), day_)
-                    book(req["teacher_id"], req["group_id"], day_, per_)
+                    # One lesson for the teacher however many halves are in
+                    # the room: booking them twice counts the same hour twice
+                    # against their run of back-to-back periods.
+                    if merged and req is not reqs[0]:
+                        group_busy.add((req["group_id"], day_, per_))
+                        class_period_load[(req["group_id"], per_)] += 1
+                    else:
+                        book(req["teacher_id"], req["group_id"], day_, per_)
 
         placed = 0
         created_here = 0
