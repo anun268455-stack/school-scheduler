@@ -3104,7 +3104,8 @@ def bulk_create_reqs(body: list[dict[str, Any]]):
     gids = {g["id"] for g in _flat_groups()}
     tids = {t["id"] for t in TEACHERS}
     sids = {x["id"] for x in SUBJECTS}
-    created, rejected = [], []
+    created, rejected, updated = [], [], []
+    unchanged = 0
     for i, row in enumerate(body):
         if not row.get("group_id") or not row.get("subject_id") or not row.get("teacher_id"):
             rejected.append({"row": i, "reason": "ข้อมูลไม่ครบ (ต้องมีห้องเรียน วิชา และครู)"})
@@ -3116,13 +3117,33 @@ def bulk_create_reqs(body: list[dict[str, Any]]):
         if missing:
             rejected.append({"row": i, "reason": f"ไม่พบ{'/'.join(missing)}ที่อ้างถึง"})
             continue
+        # The same class, subject and teacher is the same assignment, not a
+        # second one. Importing a plan is something a school does more than
+        # once — a sheet gets corrected and sent round again — and without
+        # this, the second import silently doubles every lesson that was
+        # already there. Matching rows have their คาบ/สัปดาห์ brought up to
+        # date instead, so re-importing settles rather than piles up.
+        key = (row["group_id"], row["subject_id"], row["teacher_id"],
+               row.get("parallel_group_key"))
+        same = next((r for r in REQUIREMENTS
+                     if (r["group_id"], r["subject_id"], r["teacher_id"],
+                         r.get("parallel_group_key")) == key), None)
+        if same:
+            want = row.get("weekly_count")
+            if want is not None and want != same.get("weekly_count"):
+                same["weekly_count"] = want
+                updated.append(same)
+            else:
+                unchanged += 1
+            continue
         row["id"] = _next("requirement")
         row.setdefault("weekly_count", 1)
         row.setdefault("parallel_group_key", None)
         REQUIREMENTS.append(row)
         created.append(row)
-    if rejected:
-        return {"created": created, "rejected": rejected}
+    if rejected or updated or unchanged:
+        return {"created": created, "rejected": rejected,
+                "updated": updated, "unchanged": unchanged}
     return created
 
 @app.delete("/api/timetable/requirements/{i}")
