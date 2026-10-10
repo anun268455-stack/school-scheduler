@@ -467,7 +467,8 @@ function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
       <CellLines
         m={m}
         code={s.subject_code ?? s.subject_name ?? (sharedElective ? "วิชาเสรี" : "")}
-        mid={shortTeacher(s.teacher_name)
+        mid={[shortTeacher(s.teacher_name), shortTeacher(s.co_teacher_name)]
+          .filter(Boolean).join(" + ")
           || (sharedElective ? `${s.elective_options?.length ?? 0} ตัวเลือก` : "")}
         room={roomNumber(s.room_name)}
       />

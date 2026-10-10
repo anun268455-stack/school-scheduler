@@ -179,6 +179,23 @@ def _elective_option_teachers(slot: dict[str, Any]) -> set[int]:
     return {o["teacher_id"] for o in slot.get("elective_options", []) if o.get("teacher_id")}
 
 
+def _slot_teachers(slot: dict[str, Any]) -> set[int]:
+    """Everyone who is in the room for this lesson, and therefore busy.
+
+    The one chokepoint for the question, because getting it wrong in any one
+    place does not look like a bug — it looks like the solver handing somebody
+    a second class at an hour they were already teaching. Three callers used
+    to assemble this set themselves and a สอนร่วม partner would have been
+    missed by whichever one was forgotten.
+    """
+    out: set[int] = set()
+    if slot.get("teacher_id") is not None:
+        out.add(slot["teacher_id"])
+    if slot.get("co_teacher_id") is not None:
+        out.add(slot["co_teacher_id"])
+    return out | _elective_option_teachers(slot)
+
+
 # ── วิชาเสรี: pools ───────────────────────────────────────────────────────────
 # A pool is one elective WINDOW shared by several classes, holding the subject
 # options a student may pick inside it. The staffing sheet writes these as
@@ -647,13 +664,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     for s in SLOTS:
         bks = cell_buckets(s["group_id"], s["period"])
-        # Activity periods (สาธารณประโยชน์ ฯลฯ) may have no assigned teacher.
-        tids = set()
-        if s.get("teacher_id") is not None:
-            tids.add(s["teacher_id"])
-        # A shared elective runs every option at once, so each option's teacher
-        # is teaching in this window even though the class cell names none.
-        tids |= _elective_option_teachers(s)
+        # Activity periods may have no teacher; a shared elective has one per
+        # option; a สอนร่วม lesson has two. All of it lives in _slot_teachers.
+        tids = _slot_teachers(s)
         for tid in tids:
             for b in bks:
                 teacher_busy.add((tid, s["day"], b))
@@ -994,6 +1007,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             "subject_name": subj.get("name"),
             "subject_code": subj.get("code"),
         }
+        co = req.get("co_teacher_id")
+        if co and co != req["teacher_id"]:
+            slot["co_teacher_id"] = co
+            slot["co_teacher_name"] = (t_map.get(co) or {}).get("name")
         if rid:
             for b in cell_buckets(req["group_id"], period):
                 room_busy.add((rid, day, b))
@@ -1045,6 +1062,21 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     class_period_set = set(class_periods)
     def teacher_free(tid, day, gid, period) -> bool:
         return not any((tid, day, b) in teacher_busy for b in cell_buckets(gid, period))
+
+    def co_of(req: dict) -> int | None:
+        """The สอนร่วม partner on this requirement, if there is a real one."""
+        co = req.get("co_teacher_id")
+        return co if co and co != req.get("teacher_id") else None
+
+    def pair_free(req: dict, day: int, period: int) -> bool:
+        """Both of them must be free — the lesson puts both in the room."""
+        co = co_of(req)
+        return co is None or teacher_free(co, day, req["group_id"], period)
+
+    def book_pair(req: dict, day: int, period: int) -> None:
+        co = co_of(req)
+        if co is not None:
+            book(co, req["group_id"], day, period)
 
     # How many of this class's five days already have a lesson in this period.
     # Used to spread a class's lessons across its periods: without it the slack
@@ -1298,6 +1330,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                             continue
                     if not teacher_free(tid, day, gid, period):
                         continue
+                    if not pair_free(req, day, period):
+                        continue          # สอนร่วม: คู่สอนติดคาบอื่นอยู่
                     if group_occupied(gid, day, period):
                         continue
                     run = run_if_placed(tid, gid, day, period)
@@ -1342,6 +1376,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     SLOTS.append(slot)
                     note_subject(gid, req.get("subject_id"), day)
                     book(tid, gid, day, period)
+                    book_pair(req, day, period)
                     if period == last_num:
                         last_period_done[tid] += 1
                     placed += 1
@@ -1380,6 +1415,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     p2 = _next_class_period_for(lvl, p)
                     if p2 is None:
                         continue
+                    if not pair_free(req, day, p) or not pair_free(req, day, p2):
+                        continue
                     if not teacher_free(tid, day, gid, p) or not teacher_free(tid, day, gid, p2):
                         continue
                     if group_occupied(gid, day, p) or group_occupied(gid, day, p2):
@@ -1400,6 +1437,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     note_subject(gid, req.get("subject_id"), day, 2)
                     for pp in (p, p2):
                         book(tid, gid, day, pp)
+                        book_pair(req, day, pp)
                     created      += 2
                     placed       += 2
                     pairs_needed -= 1
@@ -1487,6 +1525,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                         class_period_load[(req["group_id"], per_)] += 1
                     else:
                         book(req["teacher_id"], req["group_id"], day_, per_)
+                        book_pair(req, day_, per_)
 
         placed = 0
         created_here = 0
@@ -1785,8 +1824,7 @@ def _consecutive_report() -> dict[str, Any]:
         span = (_hhmm(row.get("start_time")), _hhmm(row.get("end_time")))
         if None in span:
             continue
-        tids = {s["teacher_id"]} if s.get("teacher_id") else set()
-        tids |= _elective_option_teachers(s)
+        tids = _slot_teachers(s)
         for tid in tids:
             by_day[(tid, s["day"])].add(span)
 
@@ -1871,11 +1909,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     busy_room    = set()   # (rid, d, p)
     for s in SLOTS:
         bks = _slot_buckets(g_map.get(s["group_id"]), s["period"])
-        tids = set()
-        if s.get("teacher_id") is not None:
-            tids.add(s["teacher_id"])
-        # Shared electives run all options at once — hold every option's teacher.
-        tids |= _elective_option_teachers(s)
+        tids = _slot_teachers(s)
         for tid in tids:
             for b in bks:
                 busy_teacher.add((tid, s["day"], b))
@@ -3171,6 +3205,12 @@ def bulk_create_reqs(body: list[dict[str, Any]]):
         if missing:
             rejected.append({"row": i, "reason": f"ไม่พบ{'/'.join(missing)}ที่อ้างถึง"})
             continue
+        # สอนร่วม: a second teacher nobody knows would be booked into the cell
+        # and never show up, so an unknown one is dropped rather than kept.
+        # Naming the same teacher twice is a typo, not a pair.
+        co = row.get("co_teacher_id")
+        if co is not None and (co not in tids or co == row["teacher_id"]):
+            row["co_teacher_id"] = None
         # The same class, subject and teacher is the same assignment, not a
         # second one. Importing a plan is something a school does more than
         # once — a sheet gets corrected and sent round again — and without
@@ -3183,9 +3223,15 @@ def bulk_create_reqs(body: list[dict[str, Any]]):
                      if (r["group_id"], r["subject_id"], r["teacher_id"],
                          r.get("parallel_group_key")) == key), None)
         if same:
+            changed = False
             want = row.get("weekly_count")
             if want is not None and want != same.get("weekly_count"):
                 same["weekly_count"] = want
+                changed = True
+            if "co_teacher_id" in row and row["co_teacher_id"] != same.get("co_teacher_id"):
+                same["co_teacher_id"] = row["co_teacher_id"]
+                changed = True
+            if changed:
                 updated.append(same)
             else:
                 unchanged += 1
@@ -3212,7 +3258,9 @@ def get_slots(group_id: int | None = None, teacher_id: int | None = None,
               day: int | None = None, room_id: int | None = None):
     result = list(SLOTS)
     if group_id   is not None: result = [s for s in result if s["group_id"]   == group_id]
-    if teacher_id is not None: result = [s for s in result if s["teacher_id"] == teacher_id]
+    # A สอนร่วม lesson is on both teachers' timetables, so asking for one
+    # teacher's slots has to include the ones where they are the second.
+    if teacher_id is not None: result = [s for s in result if teacher_id in _slot_teachers(s)]
     if day        is not None: result = [s for s in result if s["day"]        == day]
     if room_id    is not None: result = [s for s in result if s["room_id"]    == room_id]
     return result
@@ -3477,7 +3525,8 @@ def create_level_activity(body: dict[str, Any]):
 
         # A teacher can't supervise while teaching elsewhere at the same time.
         if slot_teacher is not None and any(
-                s["day"] == day and s["period"] == period and s.get("teacher_id") == slot_teacher
+                s["day"] == day and s["period"] == period
+                and slot_teacher in _slot_teachers(s)
                 for s in SLOTS):
             warnings.append(
                 f"{g['name']}: ครู {t_names.get(slot_teacher, slot_teacher)} ติดสอนคาบนี้อยู่ "
@@ -3621,7 +3670,7 @@ def _teacher_busy_outside_pool(teacher_id: int, pool: dict[str, Any]) -> list[di
             continue
         if s.get("elective_pool_id") == pool["id"]:
             continue
-        if s.get("teacher_id") == teacher_id or teacher_id in _elective_option_teachers(s):
+        if teacher_id in _slot_teachers(s):
             grp = _find_group(s["group_id"]) or {}
             subj = next((x for x in SUBJECTS if x["id"] == s.get("subject_id")), {})
             label = subj.get("name") or s.get("elective_label") or "วิชาเสรี"
@@ -4103,8 +4152,7 @@ def _validate_moves(moves: list[dict[str, Any]]) -> list[str]:
                 a, b = g_name.get(s["group_id"], "?"), g_name.get(o["group_id"], "?")
                 msgs.append(f"{a} มีคาบอื่นอยู่แล้ว" if a == b
                             else f"{a} กับ {b} ใช้นักเรียนกลุ่มเดียวกัน จึงเรียนพร้อมกันไม่ได้")
-            mine  = ({s["teacher_id"]} if s.get("teacher_id") else set()) | _elective_option_teachers(s)
-            yours = ({o["teacher_id"]} if o.get("teacher_id") else set()) | _elective_option_teachers(o)
+            mine, yours = _slot_teachers(s), _slot_teachers(o)
             for tid in mine & yours:
                 msgs.append(f"{t_name.get(tid, '?')} สอนคาบนี้อยู่แล้ว")
             if s.get("room_id") and s["room_id"] == o.get("room_id"):
@@ -4268,8 +4316,8 @@ def analyze_conflict(slot_id: int, target_day: int, target_period: int):
                  if s["day"] == target_day and s["period"] == target_period and s["id"] != slot_id]
     if any(s["group_id"]   == slot["group_id"]   for s in at_target):
         return {"level": "red",   "cascades": 0, "reason": "ห้องซ้อนกัน"}
-    if slot.get("teacher_id") is not None and any(
-            s.get("teacher_id") == slot["teacher_id"] for s in at_target):
+    mine = _slot_teachers(slot)
+    if mine and any(mine & _slot_teachers(s) for s in at_target):
         return {"level": "red",   "cascades": 0, "reason": "ครูสอนอยู่แล้ว"}
     if any(s.get("is_locked") for s in at_target):
         return {"level": "red",   "cascades": 0, "reason": "มีคาบล็อก"}

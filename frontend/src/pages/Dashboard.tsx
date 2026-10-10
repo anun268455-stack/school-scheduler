@@ -17,6 +17,7 @@ import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from ".
 import { flattenGroups } from "../utils/groupHierarchy";
 import { byTeacherCode } from "../utils/teacherOrder";
 import { SavePointPanel } from "../components/backup/SavePointPanel";
+import { clashesByRequirement } from "../utils/teachingConflicts";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
@@ -1028,9 +1029,20 @@ const RequirementsPanel: React.FC = () => {
   const { requirements, groups, teachers, subjects, periods, departments } = useTimetableStore();
   const [form, setForm] = useState({
     group_id: "", subject_id: "", teacher_id: "", weekly_count: 1, parallel_group_key: "",
+    co_teacher_id: "",
   });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
+
+  /**
+   * The สอนร่วม partner, or null.
+   *
+   * Changing ครูผู้สอน after picking a partner can leave the two the same
+   * person: the dropdown stops offering them, but the value already chosen
+   * stays put. Sent through, that books one teacher into the cell twice.
+   */
+  const coOf = (teacher: string, co: string) =>
+    co && co !== teacher ? Number(co) : null;
 
   const handleCreate = async () => {
     const created = await api.createRequirement({
@@ -1039,9 +1051,11 @@ const RequirementsPanel: React.FC = () => {
       teacher_id: Number(form.teacher_id),
       weekly_count: Number(form.weekly_count),
       parallel_group_key: form.parallel_group_key || null,
+      co_teacher_id: coOf(form.teacher_id, form.co_teacher_id),
     });
     useTimetableStore.setState((s) => ({ requirements: [...s.requirements, created] }));
-    setForm({ group_id: "", subject_id: "", teacher_id: "", weekly_count: 1, parallel_group_key: "" });
+    setForm({ group_id: "", subject_id: "", teacher_id: "", weekly_count: 1,
+              parallel_group_key: "", co_teacher_id: "" });
   };
 
   const handleUpdate = async (id: number) => {
@@ -1052,6 +1066,7 @@ const RequirementsPanel: React.FC = () => {
       teacher_id: Number(editForm.teacher_id),
       weekly_count: Number(editForm.weekly_count),
       parallel_group_key: editForm.parallel_group_key || null,
+      co_teacher_id: coOf(editForm.teacher_id, editForm.co_teacher_id),
     });
     useTimetableStore.setState((s) => ({ requirements: s.requirements.map((r) => r.id === id ? { ...r, ...updated } : r) }));
     setEditing(null); setEditForm(null);
@@ -1084,6 +1099,9 @@ const RequirementsPanel: React.FC = () => {
 
   const existingParallelKeys = [...new Set(requirements.map((r) => r.parallel_group_key).filter(Boolean))] as string[];
 
+  // หนึ่งห้อง หนึ่งวิชา หนึ่งครู — see utils/teachingConflicts.
+  const clashes = useMemo(() => clashesByRequirement(requirements), [requirements]);
+
   // 1,200+ rows: filter first, then draw only a slice so the page stays quick.
   const [q, setQ] = useState("");
   const matchedReqs = requirements.filter((r) =>
@@ -1095,9 +1113,28 @@ const RequirementsPanel: React.FC = () => {
     <Section title="ข้อกำหนดคาบเรียน — ครูสอนวิชาอะไร ในห้องใด">
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-800">
         <strong>วิธีกำหนดการสอน:</strong> เลือกห้องเรียน → วิชา → ครูผู้สอน → จำนวนคาบ/สัปดาห์
+        <br/><strong>1 ห้อง + 1 วิชา = ครู 1 คน</strong> — ถ้าอยากให้มีครูสองคนในคาบเดียวกัน (ครูพี่เลี้ยงกับนักศึกษาฝึกสอน
+        หรือครูต่างชาติกับครูไทย) <strong>อย่าสร้างสองแถว</strong> ให้ใช้แถวเดียวแล้วใส่คนที่สองในช่อง
+        <strong> 👥 สอนร่วม</strong> ทั้งคู่จะได้ลงคาบเดียวกันห้องเดียวกัน และระบบจะกันไม่ให้ทั้งสองคนไปติดคาบอื่น
         <br/>ถ้าวิชาเดียวกันสอนหลายห้องพร้อมกัน (คู่ขนาน) ให้ใช้ <strong>รหัสคู่ขนาน</strong> เดียวกัน — เลือกจากรายการที่มี หรือพิมพ์รหัสใหม่
         <br/>💡 มีข้อกำหนดจำนวนมาก? ใช้ปุ่ม <strong>"นำเข้า"</strong> ด้านบน แล้วเลือก "ข้อกำหนดคาบ" เพื่อนำเข้าจาก Excel ทีเดียว
       </div>
+
+      {clashes.size > 0 && (
+        <div className="bg-red-50 border-2 border-red-300 rounded-lg p-3 mb-4 text-xs text-red-900">
+          <p className="font-bold">
+            ⚠️ มี {new Set([...clashes.keys()].map((id) => {
+              const r = requirements.find((x) => x.id === id);
+              return r ? `${r.group_id}:${r.subject_id}` : id;
+            })).size} ห้อง-วิชา ที่ถูกกำหนดให้ครูมากกว่า 1 คน
+          </p>
+          <p className="mt-1 leading-relaxed">
+            แถวที่มีปัญหาจะขึ้นป้ายแดง <strong>“⚠ ซ้ำกับ …”</strong> ในคอลัมน์ครูผู้สอนด้านล่าง
+            — ถ้าใส่ผิดให้ลบแถวที่เกินออก ถ้า<strong>ตั้งใจให้สอนคู่กัน</strong> ให้เหลือแถวเดียว
+            แล้วใส่ครูคนที่สองในช่อง <strong>👥 สอนร่วม</strong> แทน
+          </p>
+        </div>
+      )}
 
       {(overbooked.length > 0 || teacherOver.length > 0) && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-xs text-red-800 space-y-1">
@@ -1130,6 +1167,13 @@ const RequirementsPanel: React.FC = () => {
           <SearchableSelect value={form.teacher_id} onChange={(v) => setForm({ ...form, teacher_id: v })}
             options={teacherOptions(teachers, departments)} placeholder="เลือกครู" />
         </Field>
+        <Field label="👥 สอนร่วม — ครูคนที่ 2 (ถ้ามี)">
+          <SearchableSelect
+            value={form.co_teacher_id}
+            onChange={(v) => setForm({ ...form, co_teacher_id: v })}
+            options={teacherOptions(teachers.filter((t) => String(t.id) !== form.teacher_id), departments)}
+            emptyLabel="– ไม่มี –" placeholder="– ไม่มี –" />
+        </Field>
         <Field label="คาบ/สัปดาห์">
           <input type="number" min={1} max={10} className={inputCls} value={form.weekly_count}
             onChange={(e) => setForm({ ...form, weekly_count: Number(e.target.value) })} />
@@ -1156,14 +1200,14 @@ const RequirementsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ห้องเรียน","วิชา","ครูผู้สอน","คาบ/สัปดาห์","รหัสคู่ขนาน",""].map((h) => (
+              {["ห้องเรียน","วิชา","ครูผู้สอน","👥 สอนร่วม","คาบ/สัปดาห์","รหัสคู่ขนาน",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {requirements.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อกำหนด</td></tr>
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อกำหนด</td></tr>
             )}
             {shownReqs.map((r) => (
               editing === r.id && editForm ? (
@@ -1183,6 +1227,14 @@ const RequirementsPanel: React.FC = () => {
                       {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                     </select>
                   </td>
+                  <td className="px-2 py-1">
+                    <select className={inlineCls} value={editForm.co_teacher_id}
+                      onChange={(e) => setEditForm({ ...editForm, co_teacher_id: e.target.value })}>
+                      <option value="">– ไม่มี –</option>
+                      {teachers.filter((t) => String(t.id) !== editForm.teacher_id)
+                        .map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                  </td>
                   <td className="px-2 py-1"><input type="number" min={1} max={20} className={inlineCls} style={{ width: 55 }} value={editForm.weekly_count} onChange={(e) => setEditForm({ ...editForm, weekly_count: Number(e.target.value) })} /></td>
                   <td className="px-2 py-1"><input className={inlineCls} list="parallel-keys" style={{ width: 100 }} value={editForm.parallel_group_key} onChange={(e) => setEditForm({ ...editForm, parallel_group_key: e.target.value })} /></td>
                   <td className="px-2 py-1">
@@ -1196,7 +1248,23 @@ const RequirementsPanel: React.FC = () => {
                 <tr key={r.id} className="hover:bg-gray-50">
                   <td className="px-3 py-2 font-medium text-blue-700">{gName(r.group_id)}</td>
                   <td className="px-3 py-2">{sCode(r.subject_id)}</td>
-                  <td className="px-3 py-2 text-gray-600">{tName(r.teacher_id)}</td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {tName(r.teacher_id)}
+                    {clashes.has(r.id) && (
+                      <span
+                        title={`ห้องนี้วิชานี้ถูกกำหนดให้ครูมากกว่า 1 คน — ถ้าตั้งใจให้สอนคู่กัน ให้ลบแถวที่ซ้ำแล้วใส่คนที่สองในช่อง “สอนร่วม” แทน`}
+                        className="ml-1.5 px-1.5 py-0.5 rounded border text-[10px] bg-red-50 border-red-300 text-red-700 whitespace-nowrap">
+                        ⚠ ซ้ำกับ {(clashes.get(r.id) ?? []).map(tName).join(", ")}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {r.co_teacher_id ? (
+                      <span className="px-1.5 py-0.5 rounded border text-[11px] bg-indigo-50 border-indigo-200 text-indigo-800">
+                        👥 {tName(r.co_teacher_id)}
+                      </span>
+                    ) : <span className="text-gray-300">–</span>}
+                  </td>
                   <td className="px-3 py-2 text-center">{r.weekly_count}</td>
                   <td className="px-3 py-2">
                     {r.parallel_group_key ? (
@@ -1207,7 +1275,7 @@ const RequirementsPanel: React.FC = () => {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex gap-1">
-                      <button onClick={() => { setEditing(r.id); setEditForm({ group_id: String(r.group_id), subject_id: String(r.subject_id), teacher_id: String(r.teacher_id), weekly_count: r.weekly_count, parallel_group_key: r.parallel_group_key ?? "" }); }} className={btnEdit}>แก้ไข</button>
+                      <button onClick={() => { setEditing(r.id); setEditForm({ group_id: String(r.group_id), subject_id: String(r.subject_id), teacher_id: String(r.teacher_id), weekly_count: r.weekly_count, parallel_group_key: r.parallel_group_key ?? "", co_teacher_id: r.co_teacher_id ? String(r.co_teacher_id) : "" }); }} className={btnEdit}>แก้ไข</button>
                       <button onClick={async () => { await api.deleteRequirement(r.id); useTimetableStore.setState((s) => ({ requirements: s.requirements.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
                     </div>
                   </td>

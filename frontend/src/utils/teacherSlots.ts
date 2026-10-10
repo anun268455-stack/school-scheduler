@@ -10,6 +10,9 @@ import type { TimetableSlot } from "../types";
 
 export function teachesSlot(slot: TimetableSlot, teacherId: number): boolean {
   if (slot.teacher_id === teacherId) return true;
+  // สอนร่วม — the second teacher is in the room, so the lesson belongs on
+  // their timetable too, and they are busy for it like anyone else.
+  if (slot.co_teacher_id === teacherId) return true;
   if (!slot.is_elective || slot.selected_option_id) return false;
   return (slot.elective_options ?? []).some((o) => o.teacher_id === teacherId);
 }

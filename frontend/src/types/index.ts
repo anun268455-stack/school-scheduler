@@ -126,6 +126,14 @@ export interface LessonRequirement {
   teacher_id:         number;
   weekly_count:       number;
   parallel_group_key: string | null;
+  /**
+   * สอนร่วม — a second teacher in the room for the same lesson.
+   *
+   * For a student teacher with their mentor, or a foreign teacher paired with
+   * a Thai one. Not a second lesson: one period, one room, both of them in
+   * it, so both are busy and neither can be booked elsewhere at that hour.
+   */
+  co_teacher_id?:     number | null;
 }
 
 export interface ElectiveOption {
@@ -196,6 +204,9 @@ export interface TimetableSlot {
   day:                number;     // 0=Mon … 4=Fri
   period:             number;     // period_num (0-based)
   teacher_id:         number | null;   // null = คาบกิจกรรมที่ไม่มีครูเจาะจง
+  /** สอนร่วม — the second teacher in the room for this same lesson. */
+  co_teacher_id?:     number | null;
+  co_teacher_name?:   string | null;
   group_id:           number;
   room_id:            number | null;
   subject_id:         number | null;

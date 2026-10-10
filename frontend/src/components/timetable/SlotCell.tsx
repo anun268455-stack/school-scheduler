@@ -87,6 +87,17 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
           🔗{slot.is_double_cont ? "ต่อ" : "คู่"}
         </span>
       )}
+      {/* สอนร่วม — two teachers in the room at once. The badge is here because
+          the name line truncates: on a narrow cell "ครูก + ครูข" loses the
+          second name, and then the cell looks like an ordinary lesson. */}
+      {slot.co_teacher_id != null && (
+        <span
+          className="shrink-0 inline-block bg-sky-500 text-white text-[7px] px-0.5 rounded-sm leading-tight"
+          title={`สอนร่วม: ${slot.teacher_name ?? "—"} + ${slot.co_teacher_name ?? "—"}`}
+        >
+          👥
+        </span>
+      )}
     </div>
 
     {/* ── Subject code (single truncated line) ──────────────────── */}
@@ -103,12 +114,17 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       <div
         className="overflow-hidden whitespace-nowrap text-ellipsis opacity-80"
         style={{ fontSize: "9px" }}
-        title={slot.teacher_name ?? undefined}
+        title={
+          slot.co_teacher_name
+            ? `${slot.teacher_name ?? "—"} + ${slot.co_teacher_name}`
+            : slot.teacher_name ?? undefined
+        }
       >
         {/* A shared elective the class hasn't settled on has no single teacher —
             its students split across every option at once. Say how many. */}
         {slot.teacher_name
-          ?? (slot.is_elective && slot.elective_options?.length
+          ? [slot.teacher_name, slot.co_teacher_name].filter(Boolean).join(" + ")
+          : (slot.is_elective && slot.elective_options?.length
                 ? `${slot.elective_options.length} ตัวเลือก`
                 : null)}
       </div>
