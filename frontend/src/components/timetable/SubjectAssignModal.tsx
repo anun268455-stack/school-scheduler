@@ -26,6 +26,8 @@ interface SubjectAssignModalProps {
 interface Row {
   groupId:   number;
   teacherId: string;
+  /** ครูคนที่ 2 ที่สอนคาบเดียวกัน — "" เมื่อไม่มี */
+  coTeacherId: string;
   weekly:    number;
   reqId?:    number;    // set when this row already exists in the database
 }
@@ -46,7 +48,11 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
   const [rows, setRows]   = useState<Row[]>(() =>
     requirements
       .filter((r) => r.subject_id === subject.id)
-      .map((r) => ({ groupId: r.group_id, teacherId: String(r.teacher_id), weekly: r.weekly_count, reqId: r.id })),
+      .map((r) => ({
+        groupId: r.group_id, teacherId: String(r.teacher_id),
+        coTeacherId: r.co_teacher_id ? String(r.co_teacher_id) : "",
+        weekly: r.weekly_count, reqId: r.id,
+      })),
   );
   const [defaultTeacher, setDefaultTeacher] = useState("");
   const [defaultWeekly, setDefaultWeekly]   = useState(subject.duration === 2 ? 2 : 1);
@@ -93,7 +99,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
     setRows((prev) =>
       prev.some((r) => r.groupId === groupId)
         ? prev.filter((r) => r.groupId !== groupId)
-        : [...prev, { groupId, teacherId: defaultTeacher, weekly: defaultWeekly }],
+        : [...prev, { groupId, teacherId: defaultTeacher, coTeacherId: "", weekly: defaultWeekly }],
     );
   };
 
@@ -106,7 +112,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
       }
       const add = classesInLevel
         .filter((g) => !picked.has(g.id))
-        .map((g) => ({ groupId: g.id, teacherId: defaultTeacher, weekly: defaultWeekly }));
+        .map((g) => ({ groupId: g.id, teacherId: defaultTeacher, coTeacherId: "", weekly: defaultWeekly }));
       return [...prev, ...add];
     });
   };
@@ -125,6 +131,15 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
   const missingTeacher = rows.filter((r) => !r.teacherId).length;
   const canSave = rows.length > 0 && missingTeacher === 0 && !busy;
 
+  /**
+   * The สอนร่วม partner to save, or null.
+   *
+   * Changing ครูผู้สอน after picking a partner can leave the two the same
+   * person; sent through, that books one teacher into the cell twice.
+   */
+  const coOf = (r: Row) =>
+    r.coTeacherId && r.coTeacherId !== r.teacherId ? Number(r.coTeacherId) : null;
+
   const handleSave = async () => {
     setBusy(true); setError(null);
     try {
@@ -141,11 +156,15 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
         if (!row.reqId) continue;
         const before = original.find((r) => r.id === row.reqId);
         if (!before) continue;
-        if (before.teacher_id !== Number(row.teacherId) || before.weekly_count !== row.weekly) {
+        const co = coOf(row);
+        if (before.teacher_id !== Number(row.teacherId)
+            || before.weekly_count !== row.weekly
+            || (before.co_teacher_id ?? null) !== co) {
           await api.updateRequirement(row.reqId, {
             group_id: row.groupId,
             subject_id: subject.id,
             teacher_id: Number(row.teacherId),
+            co_teacher_id: co,
             weekly_count: row.weekly,
           });
         }
@@ -156,6 +175,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
         group_id: r.groupId,
         subject_id: subject.id,
         teacher_id: Number(r.teacherId),
+        co_teacher_id: coOf(r),
         weekly_count: r.weekly,
         parallel_group_key: null,
       }));
@@ -305,6 +325,15 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
                     onChange={(v) => setRow(r.groupId, { teacherId: v })}
                     options={teacherOptions(optionsFor(r.teacherId))}
                     emptyLabel="– เลือกครู –"
+                  />
+                  <SearchableSelect
+                    className="shrink-0 w-[118px]"
+                    value={r.coTeacherId}
+                    onChange={(v) => setRow(r.groupId, { coTeacherId: v })}
+                    options={teacherOptions(
+                      teachers.filter((t) => String(t.id) !== r.teacherId), departments)}
+                    emptyLabel="– ไม่มีครูสอนร่วม –"
+                    placeholder="👥"
                   />
                   <input
                     type="number" min={1} max={20} style={{ width: 58 }} className={inputCls}

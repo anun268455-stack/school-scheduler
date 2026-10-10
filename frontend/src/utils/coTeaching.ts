@@ -109,3 +109,42 @@ export function mismatchedPairs(
   }
   return out;
 }
+
+/**
+ * What a teacher can do about one class's lesson in this subject.
+ *
+ * The old answer, wherever a class was already spoken for, was "nothing" —
+ * which is where the school got stuck: a ครูต่างชาติ joining the Thai
+ * teacher's lesson is not taking the class off them, they stand in the room
+ * together, and there was no way to say so from the teacher's own page.
+ *
+ *  free   nobody teaches it — create a row
+ *  mine   this teacher already has it
+ *  joined this teacher is already the second teacher
+ *  join   somebody else has it and has no partner — step in beside them
+ *  pair   both have a row of their own — point them at each other
+ *  full   somebody else's lesson already has its second teacher
+ */
+export type AssignOffer =
+  | { kind: "free" }
+  | { kind: "mine" }
+  | { kind: "joined"; who: LessonRequirement }
+  | { kind: "join";   who: LessonRequirement }
+  | { kind: "pair";   who: LessonRequirement }
+  | { kind: "full";   who: LessonRequirement };
+
+export function assignOffer(
+  teacherId: number, groupId: number, subjectId: number,
+  all: LessonRequirement[] | ReqIndex,
+): AssignOffer {
+  const idx = all instanceof Map ? all : indexRequirements(all);
+  const rows = idx.get(`${groupId}:${subjectId}`) ?? [];
+  if (rows.length === 0) return { kind: "free" };
+  const own = rows.find((r) => r.teacher_id === teacherId);
+  const other = rows.find((r) => r.teacher_id !== teacherId);
+  if (!other) return { kind: "mine" };
+  if (partnerOf(other, idx) === teacherId) return { kind: "joined", who: other };
+  if (own) return { kind: "pair", who: other };
+  if (other.co_teacher_id != null) return { kind: "full", who: other };
+  return { kind: "join", who: other };
+}
