@@ -473,15 +473,31 @@ def _mark_elective(*subject_ids: Any) -> None:
 def _elective_subject_ids() -> set[int]:
     """Subjects a student CHOOSES rather than one the whole class sits.
 
-    Two ways in: the school ticks วิชาเสรี on the subject, or the subject is
-    already an option in a คาบเสรี window, which says the same thing.
+    Three ways in, and the third was the one that was missing: the school
+    ticks วิชาเสรี on the subject; the subject is an option in a คาบเสรี pool;
+    or it is an option in a per-class คาบเสรี cell. The last is how most of
+    this school's electives are actually held, so leaving it out meant the
+    tick never appeared for them and every one was still counted per class.
+
+    Reading also writes the tick back, so a subject that was put into a window
+    before any of this existed is marked from the next time anything looks —
+    rather than waiting for somebody to notice and tick it by hand.
     """
     out = {s["id"] for s in SUBJECTS if s.get("is_elective")}
+    found: set[int] = set()
     for p in ELECTIVE_POOLS:
         for o in p.get("options", []):
             if o.get("subject_id"):
-                out.add(o["subject_id"])
-    return out
+                found.add(o["subject_id"])
+    for sl in SLOTS:
+        if not sl.get("is_elective"):
+            continue
+        for o in sl.get("elective_options") or []:
+            if o.get("subject_id"):
+                found.add(o["subject_id"])
+    if found - out:
+        _mark_elective(*(found - out))
+    return out | found
 
 
 def _requirement_problems() -> list[dict[str, Any]]:
@@ -572,9 +588,13 @@ def _requirement_problems() -> list[dict[str, Any]]:
             return True
         return False
 
-    # Ticked as เสรี, but no คาบเสรี window offers it yet.
+    # Ticked as เสรี, but no คาบเสรี window offers it yet. Both kinds of
+    # window count — the pool and the per-class cell — or a subject already
+    # being taught in one would be told it is not scheduled.
     pooled = {o["subject_id"] for p in ELECTIVE_POOLS for o in p.get("options", [])
               if o.get("subject_id")}
+    pooled |= {o["subject_id"] for sl in SLOTS if sl.get("is_elective")
+               for o in (sl.get("elective_options") or []) if o.get("subject_id")}
     ticked_not_pooled = {x["id"] for x in SUBJECTS
                          if x.get("is_elective") and x["id"] not in pooled}
 
@@ -3691,6 +3711,9 @@ def bulk_create_teachers(body: list[dict[str, Any]]):
 # ── Subjects ──────────────────────────────────────────────────────────────────
 @app.get("/api/subjects/")
 def get_subjects():
+    # Reconcile the วิชาเสรี tick on the way out, so a subject already sitting
+    # in a คาบเสรี arrives marked instead of waiting to be ticked by hand.
+    _elective_subject_ids()
     return SUBJECTS
 
 @app.post("/api/subjects/")

@@ -14,12 +14,13 @@ import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { electiveSubjectIds, teacherLoad } from "../../utils/teachingLoad";
-import { coverageFor } from "../../utils/electiveCoverage";
+import { coverageFor, windowsFor } from "../../utils/electiveCoverage";
 import { flattenGroups } from "../../utils/groupHierarchy";
 import { ModalShell } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { partnerOf, indexRequirements, assignOffer, type AssignOffer } from "../../utils/coTeaching";
 import type { LessonRequirement, Teacher, ElectivePool } from "../../types";
+import { DAYS, periodLabel } from "../../types";
 
 interface Props {
   teacher: Teacher;
@@ -27,7 +28,7 @@ interface Props {
 }
 
 export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
-  const { subjects, groups, requirements, departments, teachers, slots } = useTimetableStore();
+  const { subjects, groups, requirements, departments, teachers, slots, periods } = useTimetableStore();
 
   const flat = useMemo(() => flattenGroups(groups), [groups]);
   const levels = useMemo(() => {
@@ -80,7 +81,6 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
   // per class — see utils/teachingLoad. Counted the old way, a teacher
   // offering one elective to ten classes read as twenty hours and showed up
   // as overloaded when nothing was wrong.
-  const electiveIds = useMemo(() => electiveSubjectIds(subjects), [subjects]);
 
   /**
    * The คาบเสรี windows, so each class can be checked against them.
@@ -93,6 +93,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
   const [pools, setPools] = useState<ElectivePool[]>([]);
   useEffect(() => { api.fetchElectivePools().then(setPools).catch(() => setPools([])); }, []);
   const electiveSlots = useMemo(() => slots.filter((x) => x.is_elective), [slots]);
+  const electiveIds = useMemo(
+    () => electiveSubjectIds(subjects, pools, slots), [subjects, pools, slots]);
 
   /** Mark (or unmark) a subject as วิชาเสรี without leaving this dialog. */
   const toggleElective = async (subjectId: number, on: boolean) => {
@@ -301,6 +303,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
               const isElective = electiveIds.has(subjId);
               const cover = isElective
                 ? coverageFor(subjId, requirements, groups, pools, electiveSlots) : null;
+              const where = isElective ? windowsFor(subjId, pools, electiveSlots) : [];
               const sum = rows.reduce((n, r) => n + r.weekly_count, 0);
               const counted = isElective ? Math.max(...rows.map((r) => r.weekly_count)) : sum;
               return (
@@ -336,6 +339,20 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
                     ) : `${sum} คาบ`}
                   </span>
                 </div>
+                {/* Where it is offered, so nobody goes hunting for the window. */}
+                {isElective && where.length > 0 && (
+                  <p className="px-2.5 py-1 bg-purple-50/70 border-t border-purple-200 text-[11px] text-purple-900">
+                    🎓 อยู่ในคาบเสรี: {where.map((w, i) => (
+                      <span key={i}>
+                        {i > 0 && " · "}
+                        {w.day != null && w.period != null
+                          ? `${DAYS[w.day]} ${periodLabel(w.period, periods)}`
+                          : "ยังไม่กำหนดวัน/คาบ"}
+                        {` (${w.groupCount} ห้อง)`}
+                      </span>
+                    ))}
+                  </p>
+                )}
                 {cover && cover.missing.length > 0 && (
                   <p className="px-2.5 py-1 bg-amber-50 border-t border-amber-200 text-[11px] text-amber-900">
                     ⚠ {cover.missing.length} ห้องยังไม่ได้อยู่ในคาบเสรีที่มีวิชานี้

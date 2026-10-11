@@ -16,16 +16,27 @@
  * Ordinary subjects are summed as before. Shared by the pre-solve warnings
  * and by the dialogs that show a teacher's total, so the two never disagree.
  */
-import type { LessonRequirement, Subject, ElectivePool } from "../types";
+import type { LessonRequirement, Subject, ElectivePool, TimetableSlot } from "../types";
 
-/** Subjects a student chooses: ticked วิชาเสรี, or already in a คาบเสรี. */
+/**
+ * Subjects a student chooses: ticked วิชาเสรี, or sitting in a คาบเสรี.
+ *
+ * Both kinds of window count — the pool that covers a whole level, and the
+ * per-class cell. Most of this school's electives are the second kind, and
+ * leaving them out meant the subject read as ordinary and was counted once
+ * per class however obviously it was an elective.
+ */
 export function electiveSubjectIds(
-  subjects: Subject[], pools: ElectivePool[] = [],
+  subjects: Subject[], pools: ElectivePool[] = [], slots: TimetableSlot[] = [],
 ): Set<number> {
   const out = new Set<number>();
   for (const s of subjects) if (s.is_elective) out.add(s.id);
   for (const p of pools) for (const o of p.options ?? []) {
     if (o.subject_id) out.add(o.subject_id);
+  }
+  for (const s of slots) {
+    if (!s.is_elective) continue;
+    for (const o of s.elective_options ?? []) if (o.subject_id) out.add(o.subject_id);
   }
   return out;
 }

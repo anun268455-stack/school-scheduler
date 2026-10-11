@@ -51,6 +51,39 @@ export function windowGroupsFor(
   return out;
 }
 
+/** Where a subject is actually offered — so nobody has to go looking. */
+export interface ElectiveWindow {
+  day: number | null;
+  period: number | null;
+  groupCount: number;
+}
+
+export function windowsFor(
+  subjectId: number, pools: ElectivePool[], slots: TimetableSlot[],
+): ElectiveWindow[] {
+  const out: ElectiveWindow[] = [];
+  for (const p of pools) {
+    if ((p.options ?? []).some((o) => o.subject_id === subjectId)) {
+      out.push({ day: p.day ?? null, period: p.period ?? null,
+                 groupCount: (p.group_ids ?? []).length });
+    }
+  }
+  // Per-class cells: the same day and period across many classes is one
+  // window, counted once with all its classes.
+  const cells = new Map<string, number>();
+  for (const s of slots) {
+    if (!s.is_elective || s.is_double_cont) continue;
+    if (!(s.elective_options ?? []).some((o) => o.subject_id === subjectId)) continue;
+    const k = `${s.day}-${s.period}`;
+    cells.set(k, (cells.get(k) ?? 0) + 1);
+  }
+  for (const [k, n] of cells) {
+    const [day, period] = k.split("-").map(Number);
+    out.push({ day, period, groupCount: n });
+  }
+  return out.sort((a, b) => (a.day ?? 9) - (b.day ?? 9) || (a.period ?? 99) - (b.period ?? 99));
+}
+
 export interface ElectiveCoverage {
   subjectId: number;
   /** Classes whose plan has it AND who sit in a window offering it. */

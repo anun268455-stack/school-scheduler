@@ -1160,7 +1160,10 @@ const RoomsPanel: React.FC = () => {
 
 // ─── Requirements (Teacher-Subject-Group Assignments) ─────────────────────────
 const RequirementsPanel: React.FC = () => {
-  const { requirements, groups, teachers, subjects, periods, departments } = useTimetableStore();
+  const { requirements, groups, teachers, subjects, periods, departments, slots } = useTimetableStore();
+  // Per-class คาบเสรี cells count as windows too, so a subject in one reads
+  // as an elective here as well.
+  const electiveCells = useMemo(() => slots.filter((x) => x.is_elective), [slots]);
   // ชุดเรียนพร้อมกันของห้องย่อย — ก/ข/ค at three different subjects in one hour.
   const [showSets, setShowSets] = useState(false);
   const hasSubgroups = groups.some((g) => (g.children ?? []).length > 0);
@@ -1245,7 +1248,8 @@ const RequirementsPanel: React.FC = () => {
   // วิชาเสรี count once, not once per class — see utils/teachingLoad for why.
   // The ticked subjects. Membership of a คาบเสรี window counts too, but the
   // pools live on their own page; the server's own check knows about both.
-  const electiveIds = useMemo(() => electiveSubjectIds(subjects), [subjects]);
+  const electiveIds = useMemo(
+    () => electiveSubjectIds(subjects, [], electiveCells), [subjects, electiveCells]);
   const groupLoad = groupLoads(requirements, electiveIds);
   const overbooked = [...groupLoad.entries()]
     .filter(([, load]) => load > weekCapacity)
@@ -1611,9 +1615,24 @@ const ElectivesPanel: React.FC = () => {
     );
   };
 
+  /**
+   * Searching by what is IN the window, not only by its label.
+   *
+   * Somebody looking for ศ23204 types the code, and the วง is called
+   * "ศิลปะตกแต่ง" — so the search found nothing and they were left hunting
+   * through forty rows for the window that already holds it. The code, the
+   * name and the teacher of every subject in a window are all searchable.
+   */
+  const optionText = (s: typeof slots[number]) =>
+    (s.elective_options ?? []).flatMap((o) => {
+      const subj = subjects.find((x) => x.id === o.subject_id);
+      return [o.label, subj?.code, subj?.name,
+              teachers.find((t) => t.id === o.teacher_id)?.name];
+    });
+
   const electiveSlots = allElectives.filter((s) => matches(q, gName(s.group_id),
     s.subject_code, s.subject_name, s.teacher_name, s.room_name,
-    ...(s.elective_options ?? []).map((o) => o.label)));
+    ...optionText(s)));
   // Forty rows that were always one decision — see utils/electiveGroups.
   const electiveGroups = useMemo(() => groupElectiveSlots(electiveSlots), [electiveSlots]);
   const managingGroup = managing != null
@@ -2453,8 +2472,8 @@ const AnalyticsPanel: React.FC = () => {
   useEffect(() => { api.fetchElectivePools().then(setPools).catch(() => setPools([])); }, []);
   const electiveSlotsAll = useMemo(() => slots.filter((x) => x.is_elective), [slots]);
   const covGaps = useMemo(
-    () => coverageProblems(electiveSubjectIds(subjects, pools), requirements, groups,
-                           pools, electiveSlotsAll),
+    () => coverageProblems(electiveSubjectIds(subjects, pools, electiveSlotsAll),
+                           requirements, groups, pools, electiveSlotsAll),
     [subjects, pools, requirements, groups, electiveSlotsAll]);
   const coTaught = useMemo(
     () => slots.filter(teachingTogether).length, [slots],
@@ -2559,7 +2578,7 @@ const AnalyticsPanel: React.FC = () => {
           plan has it but who sits in no such window gets an ordinary lesson
           of its own instead — with a teacher who is at that moment standing
           in the window teaching the same subject to everybody else. */}
-      {(covGaps.length > 0 || electiveSubjectIds(subjects, pools).size > 0) && (
+      {(covGaps.length > 0 || electiveSubjectIds(subjects, pools, electiveSlotsAll).size > 0) && (
         <div className={`border rounded-xl overflow-hidden mb-6 ${
           covGaps.length > 0 ? "border-amber-300" : "border-green-200"}`}>
           <div className={`px-4 py-3 border-b ${
