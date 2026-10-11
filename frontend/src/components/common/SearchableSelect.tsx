@@ -99,7 +99,15 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
           !selected && (tone === "dark" ? "text-gray-400" : "text-gray-400"))}>
           {selected ? selected.label : (emptyLabel && !value ? emptyLabel : placeholder)}
         </span>
-        {selected?.hint && <span className="text-[11px] text-gray-400 shrink-0">{selected.hint}</span>}
+        {/* The hint — a teacher's code, a room's type — is a tiebreaker, not
+            the answer. In a narrow column it was taking its width off the
+            front of the name instead, leaving "นาง… 101" where the name was
+            the whole point of the control, so it gives way first. */}
+        {selected?.hint && (
+          <span className="hidden sm:inline text-[11px] text-gray-400 shrink min-w-0 truncate">
+            {selected.hint}
+          </span>
+        )}
         <span className="text-gray-400 text-[10px] shrink-0">▾</span>
       </button>
 

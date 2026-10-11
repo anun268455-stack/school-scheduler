@@ -193,14 +193,21 @@ def _subject_outdoor(subj: dict[str, Any]) -> bool | None:
 def _may_use_outdoor(subj: dict[str, Any] | None,
                      req: dict[str, Any] | None = None,
                      group: dict[str, Any] | None = None) -> bool:
-    """Open ground is a room like any other, unless the school says no.
+    """A class goes outdoors only when the school has said it may.
 
-    It was the other way round at first — nothing outdoors unless ticked —
-    and the yards stayed empty all week while the school was short of rooms,
-    because nobody had been through 271 subjects ticking boxes. The school
-    asked for the opposite: put lessons out there the way you would in any
-    room, and they will mark the few that cannot. Classrooms still fill
-    first; see `rank`, where a ลาน sits below every indoor room.
+    This has been both ways round. Nothing outdoors unless ticked left the
+    yards empty all week while the school was short of rooms, because nobody
+    had been through 271 subjects ticking boxes; the opposite filled the gap
+    but put classes outside that nobody had chosen, and they found out when
+    one was standing on the ลาน in the rain.
+
+    What settles it is that neither default costs anything here. With 99
+    indoor rooms for 93 classes, refusing the ลาน outright still places every
+    lesson — measured on the school's own data, 2,156 placed with no ลาน
+    against 2,155 with it, and no lesson left without a room either way. When
+    a default is free, it should be the one that does nothing surprising. The
+    ticks are now a few clicks (ทุกห้องออกลานได้ in the subject dialog), so
+    a school that is genuinely short of rooms can open it up in seconds.
 
     Asked from the most specific side first, because "which classes" is the
     real question. A school short of rooms decides who goes outside, and the
@@ -215,7 +222,7 @@ def _may_use_outdoor(subj: dict[str, Any] | None,
         v = src.get("allow_outdoor")
         if isinstance(v, bool):
             return v
-    return True
+    return False
 
 
 def _room_usable(room: dict[str, Any]) -> bool:

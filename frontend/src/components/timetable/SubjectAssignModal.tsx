@@ -23,6 +23,16 @@ interface SubjectAssignModalProps {
   onClose: () => void;
 }
 
+/**
+ * What a newly ticked class says about the ลาน.
+ *
+ * "ไม่ออกลาน", because that is the answer for almost every class and the
+ * school would rather name the exceptions than the rule: a lesson quietly
+ * placed outdoors is one nobody chose, and they only find out when a class
+ * is standing on the ลาน in the rain. Opting a class in is one click.
+ */
+const NEW_ROW_YARD = "no" as const;
+
 interface Row {
   groupId:   number;
   teacherId: string;
@@ -53,8 +63,11 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
       .map((r) => ({
         groupId: r.group_id, teacherId: String(r.teacher_id),
         coTeacherId: r.co_teacher_id ? String(r.co_teacher_id) : "",
-        outdoor: (r.allow_outdoor === true ? "yes"
-                  : r.allow_outdoor === false ? "no" : "") as "" | "yes" | "no",
+        // Two answers, not three. "ไม่ได้ตั้ง" used to mean "ตามค่าวิชา",
+        // which the school read as a third state they had to understand;
+        // now a class is either allowed out or it is not, and not is the
+        // starting point, which is also what the solver assumes.
+        outdoor: (r.allow_outdoor === true ? "yes" : "no") as "yes" | "no",
         weekly: r.weekly_count, reqId: r.id,
       })),
   );
@@ -97,13 +110,28 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
   );
 
   const picked = useMemo(() => new Set(rows.map((r) => r.groupId)), [rows]);
+
+  /**
+   * The rows in class order, which is the order anyone reads them in.
+   *
+   * They arrive in whatever order the requirements happen to be stored, so
+   * fourteen classes came out as ม.2/4, ม.2/8, ม.2/10, ม.2/12, ม.2/14, ม.2/1 —
+   * and checking that every class has a teacher means reading all fourteen
+   * twice. Sorted for display only; the rows themselves keep their identity.
+   */
+  const shownRows = useMemo(() => {
+    const nameOf = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
+    return [...rows].sort((a, b) =>
+      nameOf(a.groupId).localeCompare(nameOf(b.groupId), "th", { numeric: true }));
+  }, [rows, flat]);
   const gName  = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
 
   const toggleClass = (groupId: number) => {
     setRows((prev) =>
       prev.some((r) => r.groupId === groupId)
         ? prev.filter((r) => r.groupId !== groupId)
-        : [...prev, { groupId, teacherId: defaultTeacher, coTeacherId: "", outdoor: "", weekly: defaultWeekly }],
+        : [...prev, { groupId, teacherId: defaultTeacher, coTeacherId: "",
+                      outdoor: NEW_ROW_YARD, weekly: defaultWeekly }],
     );
   };
 
@@ -116,10 +144,15 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
       }
       const add = classesInLevel
         .filter((g) => !picked.has(g.id))
-        .map((g) => ({ groupId: g.id, teacherId: defaultTeacher, coTeacherId: "", outdoor: "" as const, weekly: defaultWeekly }));
+        .map((g) => ({ groupId: g.id, teacherId: defaultTeacher, coTeacherId: "",
+                       outdoor: NEW_ROW_YARD, weekly: defaultWeekly }));
       return [...prev, ...add];
     });
   };
+
+  /** Every class of this subject, in or out of the ลาน, in one click. */
+  const setAllYard = (outdoor: "yes" | "no") =>
+    setRows((prev) => prev.map((r) => ({ ...r, outdoor })));
 
   const applyDefaultsToAll = () => {
     setRows((prev) => prev.map((r) => ({
@@ -204,7 +237,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
   const deptLabel = deptName ?? "กลุ่มสาระนี้";
 
   return (
-    <ModalShell onClose={onClose} maxWidth="max-w-3xl">
+    <ModalShell onClose={onClose} maxWidth="max-w-6xl">
 
         {/* Header */}
         <div className="flex items-center gap-3 bg-blue-700 px-5 py-4 shrink-0">
@@ -220,9 +253,9 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
           <button onClick={onClose} className="text-blue-200 hover:text-white text-lg leading-none shrink-0">✕</button>
         </div>
 
-        <div className="flex-1 overflow-hidden grid grid-cols-5">
+        <div className="flex-1 overflow-hidden grid grid-cols-12">
           {/* ── Left: choose level, then classes ─────────────────────────── */}
-          <div className="col-span-2 border-r border-gray-200 flex flex-col min-h-0">
+          <div className="col-span-4 lg:col-span-3 border-r border-gray-200 flex flex-col min-h-0">
             <div className="px-4 pt-3 pb-2 shrink-0">
               <p className="text-xs font-semibold text-gray-500 mb-1.5">1. เลือกระดับชั้น</p>
               <div className="flex flex-wrap gap-1">
@@ -279,7 +312,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
           </div>
 
           {/* ── Right: teacher per class ──────────────────────────────────── */}
-          <div className="col-span-3 flex flex-col min-h-0">
+          <div className="col-span-8 lg:col-span-9 flex flex-col min-h-0">
             <div className="px-4 pt-3 pb-2 shrink-0 border-b border-gray-100">
               <div className="flex items-center gap-2 mb-1.5">
                 <p className="text-xs font-semibold text-gray-500">3. กำหนดครูผู้สอนของแต่ละห้อง</p>
@@ -317,15 +350,50 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
                   ใส่ให้ทุกห้อง
                 </button>
               </div>
+
+              {/* ลาน, for every class at once.
+                  Fourteen classes meant fourteen clicks on the same button to
+                  say one thing about the subject, and the school gave up long
+                  before ม.2/14. The per-class button stays, for the exceptions
+                  that are the whole reason it is per-class. */}
+              <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-gray-100">
+                <span className="text-[11px] text-gray-500 shrink-0">เรียนที่ลาน:</span>
+                <button onClick={() => setAllYard("yes")} disabled={rows.length === 0}
+                  title="ทุกห้องของวิชานี้ออกไปเรียนที่ลานได้ ถ้าห้องเรียนเต็ม"
+                  className="px-2 py-1 text-xs bg-green-50 border border-green-300 text-green-800 rounded hover:bg-green-100 disabled:opacity-40 whitespace-nowrap">
+                  🌳 ทุกห้องออกลานได้
+                </button>
+                <button onClick={() => setAllYard("no")} disabled={rows.length === 0}
+                  title="ทุกห้องของวิชานี้ต้องอยู่ในห้องเรียน"
+                  className="px-2 py-1 text-xs bg-gray-100 border border-gray-400 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-40 whitespace-nowrap">
+                  🚫 ทุกห้องไม่ออกลาน
+                </button>
+                <span className="text-[11px] text-gray-400 truncate">
+                  แล้วค่อยกดปุ่มท้ายแถวแก้เฉพาะห้องที่ต่างออกไป
+                </span>
+              </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-4 py-2.5 space-y-1.5">
+            {rows.length > 0 && (
+              <div className="flex items-center gap-1.5 px-4 pt-2 pb-1 shrink-0
+                              text-[10px] font-semibold text-gray-400 uppercase tracking-wide">
+                <span className="w-16 shrink-0">ห้อง</span>
+                <span className="flex-1 min-w-0">ครูผู้สอน</span>
+                <span className="shrink-0" style={{ width: 170 }}>ครูสอนร่วม</span>
+                <span className="shrink-0 text-center" style={{ width: 58 }}>คาบ</span>
+                <span className="shrink-0 text-center" style={{ width: 30 }}>ลาน</span>
+                <span className="shrink-0" style={{ width: 20 }} />
+              </div>
+            )}
+            <div className="flex-1 overflow-y-auto px-4 pb-2.5 space-y-1 border-t border-gray-100">
               {rows.length === 0 && (
                 <p className="text-xs text-gray-400 text-center py-8">ยังไม่ได้เลือกห้อง — ติ๊กห้องจากทางซ้าย</p>
               )}
-              {rows.map((r) => (
-                <div key={r.groupId} className="flex items-center gap-1.5">
-                  <span className="text-sm text-gray-800 w-20 shrink-0 truncate" title={gName(r.groupId)}>
+              {shownRows.map((r, i) => (
+                <div key={r.groupId}
+                  className={clsx("flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5",
+                    i % 2 === 1 && "bg-gray-50/80")}>
+                  <span className="text-sm text-gray-800 w-16 shrink-0 truncate" title={gName(r.groupId)}>
                     {gName(r.groupId)}
                   </span>
                   <SearchableSelect
@@ -336,7 +404,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
                     emptyLabel="– เลือกครู –"
                   />
                   <SearchableSelect
-                    className="shrink-0 w-[118px]"
+                    className="shrink-0 w-[170px]"
                     value={r.coTeacherId}
                     onChange={(v) => setRow(r.groupId, { coTeacherId: v })}
                     options={teacherOptions(
@@ -355,17 +423,16 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
                       subjects: ห้องวิทย์-คณิต keep the classrooms while
                       another class takes the ลาน for the same lesson. */}
                   <button
-                    onClick={() => setRow(r.groupId, {
-                      outdoor: r.outdoor === "" ? "no" : r.outdoor === "no" ? "yes" : "",
-                    })}
-                    title={r.outdoor === "no" ? "ห้องนี้ไม่ต้องออกลาน — กดเพื่อเปลี่ยน"
-                      : r.outdoor === "yes" ? "ห้องนี้ออกลานได้ถ้าห้องเต็ม — กดเพื่อเปลี่ยน"
-                      : "ปกติ (ออกลานได้ถ้าห้องเต็ม) — กดเพื่อกันห้องนี้ไว้ในอาคาร"}
-                    className={clsx("shrink-0 px-1.5 py-1 rounded border text-xs",
-                      r.outdoor === "no" ? "bg-gray-200 border-gray-400 text-gray-700"
-                        : r.outdoor === "yes" ? "bg-green-50 border-green-300 text-green-700"
-                        : "bg-white border-gray-200 text-gray-300 hover:border-green-400")}>
-                    {r.outdoor === "no" ? "🚫" : "🌳"}
+                    onClick={() => setRow(r.groupId,
+                      { outdoor: r.outdoor === "yes" ? "no" : "yes" })}
+                    title={r.outdoor === "yes"
+                      ? "ห้องนี้ออกไปเรียนที่ลานได้ ถ้าห้องเรียนเต็ม — กดเพื่อกันไว้ในอาคาร"
+                      : "ห้องนี้อยู่ในห้องเรียนเท่านั้น — กดเพื่อให้ออกลานได้"}
+                    className={clsx("shrink-0 rounded border text-xs text-center",
+                      r.outdoor === "yes" ? "bg-green-50 border-green-300"
+                        : "bg-gray-100 border-gray-300")}
+                    style={{ width: 30, paddingTop: 4, paddingBottom: 4 }}>
+                    {r.outdoor === "yes" ? "🌳" : "🚫"}
                   </button>
                   <button onClick={() => toggleClass(r.groupId)}
                     className="px-1.5 py-1 text-xs text-red-400 hover:text-red-600 shrink-0" title="เอาห้องนี้ออก">
