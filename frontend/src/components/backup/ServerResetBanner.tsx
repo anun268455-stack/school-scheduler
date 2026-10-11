@@ -81,6 +81,7 @@ export const ServerResetBanner = () => {
           <p className="text-xs text-red-800 mt-0.5 leading-relaxed">
             ระบบ<strong>หยุดดึงข้อมูลจากเซิร์ฟเวอร์แล้ว</strong> ตารางที่เห็นอยู่บนหน้าจอตอนนี้ยังเป็นของจริง
             <strong> อย่าเพิ่งรีเฟรชหน้าเว็บ</strong> — เลือกทางใดทางหนึ่งด้านล่างก่อน
+            {" "}(อีกทางคือ ⚙️ จัดการ → 💾 สำรองและกู้คืนข้อมูล → 🕘 ประวัติย้อนหลังบนเซิร์ฟเวอร์)
             {best && (
               <> · มีเซฟล่าสุดเมื่อ <strong>{formatSavedAt(best.saved_at)}</strong>
                 {" "}(ครู {best.counts.teachers} · คาบในตาราง {best.counts.slots})</>
@@ -100,10 +101,20 @@ export const ServerResetBanner = () => {
             className="px-3 py-1.5 text-xs bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-700 disabled:opacity-40">
             {busy === "push" ? "กำลังส่ง…" : "⬆ ใช้ข้อมูลที่เห็นบนจอนี้"}
           </button>
-          <button onClick={() => { void acceptServerState(); }} disabled={busy !== null}
+          <button
+            onClick={async () => {
+              // The server is refusing to save while it believes it is holding
+              // the shipped data rather than the school's. Accepting that data
+              // has to tell it so, or it would quietly stop saving from here on.
+              setBusy("accept");
+              try { await api.adoptServerState(); } catch { /* the refusal is not fatal */ }
+              await acceptServerState();
+              setBusy(null);
+            }}
+            disabled={busy !== null}
             title="ทิ้งสิ่งที่เห็นบนจอ แล้วใช้ข้อมูลที่เซิร์ฟเวอร์มีตอนนี้"
             className="px-3 py-1.5 text-xs border border-red-300 text-red-800 rounded-lg font-semibold hover:bg-red-100 disabled:opacity-40">
-            ใช้ข้อมูลบนเซิร์ฟเวอร์
+            {busy === "accept" ? "กำลังตั้งค่า…" : "ใช้ข้อมูลบนเซิร์ฟเวอร์"}
           </button>
         </div>
       </div>

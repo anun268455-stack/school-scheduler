@@ -316,8 +316,33 @@ export const fetchStateInfo = () =>
     store_configured?: boolean;
     store_error?: string | null;
     last_saved_at?: string | null;
+    /** The server is refusing to save, because what it holds is not the school's. */
+    write_blocked?: boolean;
     counts: Record<string, number>;
   }>("/state/info").then((r) => r.data);
+
+// ── ประวัติย้อนหลังบนเซิร์ฟเวอร์ ─────────────────────────────────────────────
+// Dated copies kept in the database alongside the live one. The live copy is
+// overwritten by every save; these are not, so there is always a way back.
+export interface StateHistoryPoint {
+  id: number;
+  saved_at: string | null;
+  slots: number | null;
+  note: string | null;
+  bytes: number;
+}
+
+export const fetchStateHistory = () =>
+  api.get<{ available: boolean; reason?: string; keep?: number; points: StateHistoryPoint[] }>(
+    "/state/history").then((r) => r.data);
+
+export const restoreStateHistory = (id: number) =>
+  api.post<{ restored: Record<string, number>; saved_at?: string }>(
+    `/state/history/${id}/restore`, {}).then((r) => r.data);
+
+/** "Keep what this server is holding" — the way past the save refusal. */
+export const adoptServerState = () =>
+  api.post<{ ok: boolean; slots: number }>("/state/adopt", {}).then((r) => r.data);
 
 // ── ตั้งค่าโรงเรียน ──────────────────────────────────────────────────────────
 // Kept on the server, not in the browser, so both people editing see the same

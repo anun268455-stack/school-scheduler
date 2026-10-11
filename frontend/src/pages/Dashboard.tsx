@@ -17,6 +17,7 @@ import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from ".
 import { flattenGroups } from "../utils/groupHierarchy";
 import { byTeacherCode } from "../utils/teacherOrder";
 import { SavePointPanel } from "../components/backup/SavePointPanel";
+import { ServerHistoryPanel } from "../components/backup/ServerHistoryPanel";
 import { clashesByRequirement } from "../utils/teachingConflicts";
 import { findSubjectDuplicates } from "../utils/duplicateCheck";
 import { indexRequirements, partnerOf, mismatchedPairs, autoPairable, coTeachingPairs } from "../utils/coTeaching";
@@ -2897,6 +2898,18 @@ const SettingsPanel: React.FC = () => {
               ⭐ จุดบันทึก (เซฟหลัก) — กดปุ่มเดียวกลับมาได้
             </p>
             <SavePointPanel onRestored={async () => {
+              await loadAll();
+              setInfo(await api.fetchStateInfo().catch(() => info));
+            }} />
+          </div>
+
+          {/* ประวัติย้อนหลังบนเซิร์ฟเวอร์ — the copies the server keeps itself,
+              so a loss is not something only this browser can undo. */}
+          <div className="pt-3 mt-1 border-t border-amber-200">
+            <p className="text-sm font-bold text-blue-900 mb-2">
+              🕘 ประวัติย้อนหลังบนเซิร์ฟเวอร์ — ย้อนกลับไปเวลาที่ข้อมูลยังครบ
+            </p>
+            <ServerHistoryPanel onRestored={async () => {
               await loadAll();
               setInfo(await api.fetchStateInfo().catch(() => info));
             }} />

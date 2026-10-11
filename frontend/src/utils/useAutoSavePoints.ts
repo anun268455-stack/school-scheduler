@@ -42,6 +42,20 @@ export function useAutoSavePoints(enabled: boolean): void {
         // it means the fetch came back from a server mid-reset.
         const teachers = snap["teachers"];
         if (!Array.isArray(teachers) || teachers.length === 0) return;
+
+        // Nor is one whose timetable has collapsed. The window holds six
+        // copies: if the school loses their คาบ and then keeps working, six
+        // ticks is twenty-four minutes before the last copy holding the real
+        // timetable is pushed out — and that copy is the only way back. So a
+        // sharp drop stops the rolling window instead of feeding it, and the
+        // on-screen warning takes over.
+        const slots = Array.isArray(snap["slots"]) ? (snap["slots"] as unknown[]).length : 0;
+        const kept = await listSavePoints();
+        const most = kept.reduce((n, p) => Math.max(n, p.counts.slots ?? 0), 0);
+        if (most > 20 && slots < most * 0.5) {
+          useTimetableStore.setState({ serverReset: true });
+          return;
+        }
         await putSavePoint("auto", snap);
         savedRevision.current = revision;
       } catch {

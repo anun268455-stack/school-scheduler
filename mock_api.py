@@ -5022,25 +5022,106 @@ CREATE TABLE IF NOT EXISTS app_state (
     saved_at timestamptz NOT NULL DEFAULT now()
 )
 """
+# One row, overwritten on every save, was the whole of the school's storage.
+# That is a one-way door: whatever goes wrong — a restart that comes back on
+# the shipped data, a bad restore, a timetable cleared by accident — the next
+# save writes over the only copy there is, and the work is gone with no way
+# back. So every save also leaves a dated copy here, and the school can look
+# at the list and go back to any of them.
+#
+# A snapshot is ~70 KB packed, so thirty of them is about 2 MB. That is
+# nothing next to a term's timetable.
+_DB_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_state_history (
+    id       bigserial PRIMARY KEY,
+    data     bytea NOT NULL,
+    saved_at timestamptz NOT NULL DEFAULT now(),
+    slots    integer,
+    note     text
+)
+"""
 _DB_UPSERT = """
 INSERT INTO app_state (id, data, saved_at) VALUES (1, %s, now())
 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, saved_at = now()
 """
 
+HISTORY_KEEP = 30               # how many dated copies to keep
+_HISTORY_EVERY = 10 * 60        # seconds between ordinary history rows
+_last_history_at = 0.0
+_last_history_slots: int | None = None
 
-def _db_write(blob: bytes) -> None:
+
+def _history_worth_keeping(slots: int) -> tuple[bool, str]:
+    """Should this save also leave a dated copy, and why.
+
+    Time alone is not enough. The save that matters most is the one taken
+    just before the count falls off a cliff — that is what somebody will be
+    reaching for — so a big drop always earns its own row, immediately.
+    """
+    global _last_history_at, _last_history_slots
+    now = _time.time()
+    prev = _last_history_slots
+    if prev is not None and slots < prev * 0.8:
+        return True, f"คาบลดจาก {prev} เหลือ {slots}"
+    if now - _last_history_at >= _HISTORY_EVERY:
+        return True, ""
+    return False, ""
+
+
+def _db_write(blob: bytes, slots: int | None = None) -> None:
+    global _last_history_at, _last_history_slots
+    keep, note = (False, "")
+    if slots is not None:
+        keep, note = _history_worth_keeping(slots)
     with _db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(_DB_SCHEMA)
+            cur.execute(_DB_HISTORY_SCHEMA)
             cur.execute(_DB_UPSERT, (blob,))
+            if keep:
+                cur.execute(
+                    "INSERT INTO app_state_history (data, slots, note) VALUES (%s, %s, %s)",
+                    (blob, slots, note or None))
+                cur.execute(
+                    "DELETE FROM app_state_history WHERE id NOT IN "
+                    "(SELECT id FROM app_state_history ORDER BY id DESC LIMIT %s)",
+                    (HISTORY_KEEP,))
         conn.commit()
+    if keep:
+        _last_history_at = _time.time()
+    if slots is not None:
+        _last_history_slots = slots
 
 
 def _db_read() -> bytes | None:
     with _db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(_DB_SCHEMA)
+            cur.execute(_DB_HISTORY_SCHEMA)
             cur.execute("SELECT data FROM app_state WHERE id = 1")
+            row = cur.fetchone()
+        conn.commit()
+    return bytes(row[0]) if row else None
+
+
+def _db_history() -> list[dict[str, Any]]:
+    """The dated copies, newest first — enough to choose one, not to load it."""
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_DB_HISTORY_SCHEMA)
+            cur.execute("SELECT id, saved_at, slots, note, length(data) "
+                        "FROM app_state_history ORDER BY id DESC")
+            rows = cur.fetchall()
+        conn.commit()
+    return [{"id": r[0], "saved_at": r[1].isoformat() if r[1] else None,
+             "slots": r[2], "note": r[3], "bytes": r[4]} for r in rows]
+
+
+def _db_history_blob(hid: int) -> bytes | None:
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_DB_HISTORY_SCHEMA)
+            cur.execute("SELECT data FROM app_state_history WHERE id = %s", (hid,))
             row = cur.fetchone()
         conn.commit()
     return bytes(row[0]) if row else None
@@ -5057,9 +5138,14 @@ def _db_read() -> bytes | None:
 # queued; the whole state goes out every time, so an overtaken save loses
 # nothing.
 _FLUSH_DELAY = 1.5                      # seconds to coalesce a burst of edits
-_pending_blob: bytes | None = None
+_pending_blob: tuple[bytes, int] | None = None   # (packed snapshot, slot count)
 _pending_lock = _threading.Lock()
 _pending_signal = _threading.Event()
+
+# True when the database turned out to be holding a snapshot already. A fresh
+# database is a different thing entirely: there is nothing to protect, and the
+# first save is supposed to seed it.
+_DB_HAD_DATA = False
 
 
 def _mark_state_saved() -> None:
@@ -5073,11 +5159,12 @@ def _flush_pending(blocking: bool = False) -> None:
     """Send whatever is queued. Called by the writer thread and at shutdown."""
     global _pending_blob, _STORE_ERROR, _LAST_SAVED_AT
     with _pending_lock:
-        blob, _pending_blob = _pending_blob, None
-    if blob is None:
+        pending, _pending_blob = _pending_blob, None
+    if pending is None:
         return
+    blob, slots = pending
     try:
-        _db_write(blob)
+        _db_write(blob, slots)
         _STORE_ERROR = None
         # With the offset attached, so the browser can show it in the reader's
         # own time. Bare local time reads as hours stale to anyone not sitting
@@ -5093,7 +5180,7 @@ def _flush_pending(blocking: bool = False) -> None:
         # already waiting — that one is the better copy to send.
         with _pending_lock:
             if _pending_blob is None:
-                _pending_blob = blob
+                _pending_blob = pending
         _save_state_to_file()                      # a local copy is still worth having
         if blocking:
             raise
@@ -5122,35 +5209,67 @@ def _save_state_to_file() -> None:
 
 
 def _save_state() -> None:
-    """Keep the data. Never let a failed save break a request."""
+    """Keep the data. Never let a failed save break a request.
+
+    One refusal: a process that never managed to load the school's data is
+    running on the data this code ships with, and writing that to the database
+    would put the shipped data where the school's timetable was. That is not a
+    save, it is the loss — the restart only hid the work, the save destroyed
+    it. So while the data on this server is the seed, the stored copy is left
+    alone and the save goes to the local file instead.
+    """
     global _pending_blob
     if _STORE_KIND != "postgres":
+        _save_state_to_file()
+        return
+    if _DB_HAD_DATA and globals().get("_STATE_SOURCE") not in ("snapshot", None):
+        # Something is stored, and it is not what this process is holding.
+        # Keep it on disk only; /api/state/info reports the refusal so the
+        # school is told rather than left to find out.
         _save_state_to_file()
         return
     try:
         blob = _pack(_snapshot())           # built here, where the data is still
         with _pending_lock:
-            _pending_blob = blob
+            _pending_blob = (blob, len(SLOTS))
         _pending_signal.set()
     except Exception:
         _save_state_to_file()
 
 
 def _load_state() -> bool:
-    """Bring the data back, preferring the copy that survives a restart."""
-    global _STORE_KIND, _STORE_ERROR
+    """Bring the data back, preferring the copy that survives a restart.
+
+    The read is retried. A serverless database suspends when nobody has used
+    it, and the first connection after that has to wake it — which can take
+    longer than one attempt allows, exactly when the school's server is also
+    starting cold. Giving up on the first timeout means coming up on the
+    shipped data with the real timetable sitting untouched in a database this
+    process decided it could not reach.
+    """
+    global _STORE_KIND, _STORE_ERROR, _DB_HAD_DATA
     if _DB_URL:
-        try:
-            blob = _db_read()
+        blob, last = None, None
+        for attempt in range(4):
+            try:
+                blob = _db_read()
+                last = None
+                break
+            except Exception as exc:               # noqa: BLE001
+                last = exc
+                if attempt < 3:
+                    _time.sleep(2 * (attempt + 1))  # 2s, 4s, 6s — ~12s of waking
+        if last is None:
             _STORE_KIND, _STORE_ERROR = "postgres", None
             _threading.Thread(target=_writer_loop, daemon=True).start()
             if blob:
+                _DB_HAD_DATA = True
                 _apply_snapshot(_unpack(blob))
                 return True
             # Connected, but nothing stored yet — a fresh database. Anything
             # the file still holds is seeded into it by the first save.
-        except Exception as exc:                   # noqa: BLE001
-            _STORE_ERROR = f"{type(exc).__name__}: {exc}"[:200]
+        else:
+            _STORE_ERROR = f"{type(last).__name__}: {last}"[:200]
             _STORE_KIND = "file"
     if not _os.path.exists(_STATE_PATH):
         return False
@@ -5160,6 +5279,62 @@ def _load_state() -> bool:
         return True
     except Exception:
         return False
+
+
+@app.get("/api/state/history")
+def state_history():
+    """The dated copies the server has kept, newest first.
+
+    Listing them is what makes them real: a backup nobody can see is a backup
+    nobody reaches for.
+    """
+    if _STORE_KIND != "postgres":
+        return {"available": False, "reason": "ยังไม่ได้ต่อฐานข้อมูล จึงไม่มีประวัติย้อนหลัง",
+                "points": []}
+    try:
+        return {"available": True, "keep": HISTORY_KEEP, "points": _db_history()}
+    except Exception as exc:                       # noqa: BLE001
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"[:200],
+                "points": []}
+
+
+@app.post("/api/state/history/{history_id}/restore")
+def restore_history(history_id: int):
+    """Go back to one of the dated copies."""
+    if _STORE_KIND != "postgres":
+        raise HTTPException(400, "ยังไม่ได้ต่อฐานข้อมูล จึงกู้คืนจากประวัติไม่ได้")
+    try:
+        blob = _db_history_blob(history_id)
+    except Exception as exc:                       # noqa: BLE001
+        raise HTTPException(500, f"อ่านประวัติไม่สำเร็จ: {exc}"[:200]) from exc
+    if not blob:
+        raise HTTPException(404, "ไม่พบสำเนานี้แล้ว")
+    data = _unpack(blob)
+    _apply_snapshot(data)
+    global _STATE_SOURCE
+    _STATE_SOURCE = "snapshot"        # the school has said this is their data
+    was = data.get("revision")
+    if isinstance(was, int):
+        REVISION["n"] = max(REVISION["n"], was)
+    _save_state()
+    return {"restored": {k: len(data.get(k) or []) for k in
+                         ("groups", "teachers", "subjects", "rooms",
+                          "requirements", "slots", "elective_pools")},
+            "saved_at": data.get("saved_at")}
+
+
+@app.post("/api/state/adopt")
+def adopt_current_state():
+    """Keep what this server is holding, even though it is not what was stored.
+
+    Only reached from the warning that says the server came back without the
+    school's data. Saying yes there has to actually mean yes, or the refusal
+    that protects them becomes a wall they cannot get past.
+    """
+    global _STATE_SOURCE
+    _STATE_SOURCE = "snapshot"
+    _save_state()
+    return {"ok": True, "slots": len(SLOTS)}
 
 
 @app.get("/api/backup")
@@ -5174,6 +5349,8 @@ def restore_backup(body: dict[str, Any]):
     if not isinstance(body, dict) or not any(body.get(k) for k in _SAVE_KEYS):
         raise HTTPException(400, "ไฟล์นี้ไม่ใช่ไฟล์สำรองข้อมูลของระบบ")
     _apply_snapshot(body)
+    global _STATE_SOURCE
+    _STATE_SOURCE = "snapshot"      # restoring is the school naming their data
     # Put the counter past whatever the backup was taken at, so every browser
     # still holding a higher number sees this restore as newer and pulls it.
     # The middleware adds one more on the way out of this request.
@@ -5450,6 +5627,11 @@ def state_info():
         "store_configured": bool(_DB_URL),
         "store_error": _STORE_ERROR,
         "last_saved_at": _LAST_SAVED_AT,
+        # True when this server is NOT writing to the database because what it
+        # is holding is the shipped data and the school's own copy is still
+        # stored. Said out loud, because a server that quietly stops saving
+        # looks exactly like one that is saving.
+        "write_blocked": bool(_DB_HAD_DATA and _STATE_SOURCE != "snapshot"),
         "counts": {
             "groups": len(_flat_groups()), "teachers": len(TEACHERS),
             "subjects": len(SUBJECTS), "rooms": len(ROOMS),
