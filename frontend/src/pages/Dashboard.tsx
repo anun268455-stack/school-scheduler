@@ -23,6 +23,7 @@ import { findSubjectDuplicates } from "../utils/duplicateCheck";
 import { indexRequirements, partnerOf, mismatchedPairs, autoPairable, coTeachingPairs } from "../utils/coTeaching";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { SubgroupSetModal } from "../components/timetable/SubgroupSetModal";
+import { auditAll } from "../utils/subgroupAudit";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
@@ -2402,6 +2403,12 @@ const AnalyticsPanel: React.FC = () => {
     () => findSubjectDuplicates(requirements, slots), [requirements, slots],
   );
   const dupCount = dup.splitTeachers.length + dup.overPlaced.length;
+
+  // ห้องย่อย: read off the timetable as it stands, so it is already answered
+  // by the time anyone thinks to ask.
+  const subAudits = useMemo(() => auditAll(groups, slots), [groups, slots]);
+  const subProblems = subAudits.reduce((n, r) => n + r.problemCount, 0);
+  const [auditFor, setAuditFor] = useState<number | null>(null);
   const coTaught = useMemo(
     () => slots.filter(teachingTogether).length, [slots],
   );
@@ -2498,6 +2505,53 @@ const AnalyticsPanel: React.FC = () => {
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* ── ตรวจคาบห้องย่อย ────────────────────────────────────────────
+          Runs itself off the timetable as it stands, so the answer is here
+          the moment a lesson is placed or the whole week is generated. It
+          reports; it does not insist. A subgroup lesson with nobody beside
+          it is a normal thing, and only what cannot be taught is red. */}
+      {subAudits.length > 0 && (
+        <div className={`border rounded-xl overflow-hidden mb-6 ${
+          subProblems > 0 ? "border-red-200" : "border-green-200"}`}>
+          <div className={`px-4 py-3 border-b ${
+            subProblems > 0 ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"}`}>
+            <h3 className={`text-sm font-bold ${
+              subProblems > 0 ? "text-red-700" : "text-green-700"}`}>
+              🧩 ตรวจคาบห้องย่อย (ก/ข/ค)
+            </h3>
+            <p className="text-[11px] text-gray-600 mt-0.5">
+              ดูว่าแต่ละคาบห้องย่อยจับคู่กับอะไรบ้าง และคาบไหนมีห้องเดียวเรียน —
+              <strong> ไม่จำเป็นต้องมีคู่ทุกคาบ</strong> คาบที่ห้องอื่นว่างถือว่าปกติ
+            </p>
+          </div>
+          <div className="p-3 space-y-1.5">
+            {subProblems === 0 && (
+              <p className="text-xs text-green-700">
+                ✅ ไม่พบคาบที่สอนจริงไม่ได้ (ห้องแม่เรียนทับ · ห้องสอนซ้ำ · ครูซ้ำ)
+              </p>
+            )}
+            {subAudits.map((r) => (
+              <div key={r.parentId} className="flex items-center gap-2 text-xs">
+                <span className="font-medium text-gray-800 w-24 shrink-0">{r.parentName}</span>
+                <span className="text-gray-500">
+                  ครบทุกห้อง {r.fullCount} · บางห้องว่าง {r.partialCount}
+                </span>
+                {r.problemCount > 0 && (
+                  <span className="text-red-700 font-semibold">⚠ ต้องแก้ {r.problemCount}</span>
+                )}
+                <button onClick={() => setAuditFor(r.parentId)}
+                  className="ml-auto px-2 py-1 text-[11px] border border-indigo-200 text-indigo-700 rounded hover:bg-indigo-50">
+                  ดูรายคาบ
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {auditFor != null && (
+        <SubgroupSetModal onClose={() => setAuditFor(null)} initialParentId={auditFor} />
       )}
 
       {/* ── ตรวจสอบวิชาซ้ำ ─────────────────────────────────────────────── */}

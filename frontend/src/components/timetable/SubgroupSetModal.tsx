@@ -17,17 +17,26 @@ import {
   classesWithSubgroups, subgroupsOf, readSets, makeSetKey, planSetSave, setProblems,
   type SubgroupSet, type SetRow,
 } from "../../utils/subgroupSets";
+import { SubgroupAuditView } from "./SubgroupAuditView";
+import { auditAll } from "../../utils/subgroupAudit";
 
 interface Props { onClose: () => void; initialParentId?: number | null; }
 
 export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
-  const { groups, subjects, teachers, departments, requirements } = useTimetableStore();
+  const { groups, subjects, teachers, departments, requirements, slots } = useTimetableStore();
 
   const parents = useMemo(() => classesWithSubgroups(groups), [groups]);
   const [parentId, setParentId] = useState<number | null>(
     initialParentId ?? parents[0]?.id ?? null);
   const subs = useMemo(
     () => (parentId == null ? [] : subgroupsOf(groups, parentId)), [groups, parentId]);
+
+  // Across every split class, not just the one on screen: the badge is there
+  // to send someone to the tab they would not otherwise open.
+  const auditProblems = useMemo(
+    () => auditAll(groups, slots).reduce((n, r) => n + r.problemCount, 0),
+    [groups, slots],
+  );
 
   const saved = useMemo(
     () => (parentId == null ? [] : readSets(requirements, parentId)), [requirements, parentId]);
@@ -36,6 +45,9 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
   const [editing, setEditing] = useState<SubgroupSet | null>(null);
   const [name, setName] = useState("");
   const [rows, setRows] = useState<SetRow[]>([]);
+  // Setting the sets up and checking what came out are the same job seen
+  // before and after, so they live behind two tabs rather than in two places.
+  const [tab, setTab] = useState<"setup" | "audit">("setup");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -131,6 +143,28 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
         <button onClick={onClose} className="text-indigo-200 hover:text-white text-lg shrink-0">✕</button>
       </div>
 
+      <div className="flex gap-1 px-5 pt-2 border-b border-gray-200 shrink-0">
+        {([["setup", "🧩 ตั้งค่าเซ็ต"], ["audit", "🔍 ตรวจคาบจริงในตาราง"]] as const).map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={clsx("px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+              tab === k ? "border-indigo-500 text-indigo-700"
+                : "border-transparent text-gray-400 hover:text-gray-600")}>
+            {label}
+            {k === "audit" && auditProblems > 0 && (
+              <span className="ml-1 text-[10px] bg-red-100 text-red-700 border border-red-200 rounded-full px-1.5">
+                {auditProblems}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === "audit" ? (
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-3">
+          <SubgroupAuditView parentId={parentId} />
+        </div>
+      ) : (
+      <>
       <div className="px-5 py-3 border-b border-gray-100 shrink-0 flex items-end gap-3 flex-wrap">
         <div className="min-w-[200px]">
           <label className="block text-[11px] text-gray-500 mb-0.5">ชั้นเรียนที่มีห้องย่อย</label>
@@ -287,6 +321,8 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
         {note && <p className="text-xs text-emerald-700">✅ {note}</p>}
         {err && <p className="text-xs text-red-600">{err}</p>}
       </div>
+      </>
+      )}
 
       <div className="px-5 py-3 border-t border-gray-100 bg-gray-50 shrink-0 flex items-center gap-2">
         <p className="text-[11px] text-gray-500 flex-1">
