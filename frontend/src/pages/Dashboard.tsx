@@ -12,7 +12,7 @@ import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal
 import { ElectivePoolPanel } from "../components/timetable/ElectivePoolPanel";
 import { RoomSettingsModal } from "../components/rooms/RoomSettingsModal";
 import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubjectModal";
-import { teachesSlot, teachingTogether } from "../utils/teacherSlots";
+import { slotsForTeacher, teachingTogether } from "../utils/teacherSlots";
 import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
 import { flattenGroups } from "../utils/groupHierarchy";
 import { byTeacherCode } from "../utils/teacherOrder";
@@ -2412,7 +2412,10 @@ const AnalyticsPanel: React.FC = () => {
   // ── Compute stats ────────────────────────────────────────────────────────
   // Teacher slots per day
   const teacherStats = teachers.map((t) => {
-    const tSlots = slots.filter((s) => teachesSlot(s, t.id));
+    // Her own week, each lesson once. Counting the cells instead stacks every
+    // class of a คาบกิจกรรม or a คาบเสรี into one square of her Wednesday and
+    // bills her for hours nobody worked — 36 periods in a six-period day.
+    const tSlots = slotsForTeacher(slots, t.id);
     const byDay  = Array.from({ length: 5 }, (_, d) =>
       tSlots.filter((s) => s.day === d).length
     );
@@ -2422,7 +2425,8 @@ const AnalyticsPanel: React.FC = () => {
     // Consecutive periods per day
     let maxConsec = 0;
     for (let d = 0; d < 5; d++) {
-      const dayPeriods = tSlots.filter((s) => s.day === d).map((s) => s.period).sort((a, b) => a - b);
+      const dayPeriods = [...new Set(tSlots.filter((s) => s.day === d).map((s) => s.period))]
+        .sort((a, b) => a - b);
       let cur = 1;
       for (let i = 1; i < dayPeriods.length; i++) {
         cur = dayPeriods[i] - dayPeriods[i - 1] === 1 ? cur + 1 : 1;

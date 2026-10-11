@@ -50,6 +50,11 @@ function sharedLessonKey(s: TimetableSlot): string | null {
   if (s.activity_key) return `ACT:${s.activity_key}`;
   // Both halves of a double are real hours, so the period is part of the key.
   if (s.elective_pool_id) return `POOL:${s.elective_pool_id}:${s.day}:${s.period}`;
+  // A คาบเสรี built class by class has no pool id — it is one window written
+  // out one cell per class, and this school builds nearly all of them that
+  // way. Missed here, a teacher facing ten classes in one window is billed
+  // for ten hours of the same Wednesday.
+  if (s.is_elective) return `ELEC:${s.day}:${s.period}`;
   return null;
 }
 

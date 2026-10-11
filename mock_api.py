@@ -327,13 +327,32 @@ def _shared_lesson_key(s: dict[str, Any]) -> str | None:
     # The two halves of a double are two real hours, so the period is part of it.
     if pool:
         return f"POOL:{pool}:{s.get('day')}:{s.get('period')}"
+    # A คาบเสรี built class by class is the same window, written out one cell
+    # per class. It carries no pool id — which is how a teacher standing in one
+    # window facing ten classes was billed for ten hours of the same Wednesday,
+    # and how the warning panel decided she was ten times over her daily quota.
+    if s.get("is_elective"):
+        return f"ELEC:{s.get('day')}:{s.get('period')}"
     return None
+
+
+def _elective_option_pairs(s: dict[str, Any]) -> set[tuple]:
+    return {(o.get("subject_id"), o.get("teacher_id"))
+            for o in (s.get("elective_options") or [])}
 
 
 def _same_activity(a: dict[str, Any], b: dict[str, Any]) -> bool:
     """Two cells of one shared lesson — ลูกเสือ in ม.1/1 and ลูกเสือ in ม.1/2."""
     k = _shared_lesson_key(a)
-    return bool(k) and k == _shared_lesson_key(b)
+    if not k or k != _shared_lesson_key(b):
+        return False
+    # Two per-class คาบเสรี cells share an hour, which is not on its own proof
+    # they are the same window: ม.2 and ม.3 may both hold one at พุธ คาบ 7, and
+    # a teacher who offers something in both really is in two places at once.
+    # They are one window when they put the same thing on offer.
+    if k.startswith("ELEC:"):
+        return bool(_elective_option_pairs(a) & _elective_option_pairs(b))
+    return True
 
 
 def _teacher_view(slots: list[dict[str, Any]], teacher_id: int) -> list[dict[str, Any]]:
