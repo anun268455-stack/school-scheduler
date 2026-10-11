@@ -116,6 +116,15 @@ export const ServerResetBanner = () => {
             className="px-3 py-1.5 text-xs border border-red-300 text-red-800 rounded-lg font-semibold hover:bg-red-100 disabled:opacity-40">
             {busy === "accept" ? "กำลังตั้งค่า…" : "ใช้ข้อมูลบนเซิร์ฟเวอร์"}
           </button>
+          {/* Closing it has to be possible. The warning clears itself once the
+              server is demonstrably well again, but somebody who has already
+              dealt with it should not have to wait to be believed — and a
+              strip that cannot be closed is one people stop reading. */}
+          <button onClick={dismissServerReset} disabled={busy !== null}
+            title="ปิดแถบนี้ — ข้อมูลที่เห็นอยู่ยังอยู่ครบ และระบบจะกลับมาซิงค์ตามปกติ"
+            className="px-2 py-1.5 text-xs text-red-700 hover:text-red-900 disabled:opacity-40">
+            ✕ ปิด
+          </button>
         </div>
       </div>
     </div>

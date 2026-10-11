@@ -35,6 +35,11 @@ export function useAutoSavePoints(enabled: boolean): void {
   useEffect(() => {
     if (!enabled || !storageAvailable()) return;
 
+    /** Settle the indicator. It must never be left reading "กำลังเซฟ…". */
+    const settle = (why: "saved" | "failed" | "idle") =>
+      useTimetableStore.setState((cur) =>
+        cur.savePointState === why ? {} : { savePointState: why });
+
     const tick = async () => {
       if (running.current) return;
       const st = useTimetableStore.getState();
@@ -42,19 +47,22 @@ export function useAutoSavePoints(enabled: boolean): void {
       // snapshot is the shipped demo data, and saving it would push the real
       // copies out of the rolling window — destroying the safety net at
       // exactly the moment it is needed.
-      if (st.serverReset) return;
-      if (st.isSolving || st.isLoading || st.draggingSlot) return;
+      if (st.serverReset) { settle("idle"); return; }
+      if (st.isSolving || st.isLoading || st.draggingSlot) return;   // try again shortly
       if (typeof document !== "undefined" && document.hidden) return;
 
       running.current = true;
       try {
         const { revision } = await api.fetchStateVersion();
-        if (revision === savedRevision.current) return;   // nothing new to keep
+        if (revision === savedRevision.current) {        // nothing new to keep
+          settle(st.lastSavePointAt ? "saved" : "idle");
+          return;
+        }
         const snap = await api.downloadBackup();
         // A copy with no teachers in it is not worth a slot in the window;
         // it means the fetch came back from a server mid-reset.
         const teachers = snap["teachers"];
-        if (!Array.isArray(teachers) || teachers.length === 0) return;
+        if (!Array.isArray(teachers) || teachers.length === 0) { settle("idle"); return; }
 
         // Nor is one whose timetable has collapsed. The window holds six
         // copies: if the school loses their คาบ and then keeps working, six
@@ -66,7 +74,7 @@ export function useAutoSavePoints(enabled: boolean): void {
         const kept = await listSavePoints();
         const most = kept.reduce((n, p) => Math.max(n, p.counts.slots ?? 0), 0);
         if (most > 20 && slots < most * 0.5) {
-          useTimetableStore.setState({ serverReset: true });
+          useTimetableStore.setState({ serverReset: true, savePointState: "idle" });
           return;
         }
         const meta = await putSavePoint("auto", snap);
@@ -90,6 +98,13 @@ export function useAutoSavePoints(enabled: boolean): void {
     // "just save every single time". The revision counter moves on each write,
     // so this fires for their own edits and for anyone else's.
     let pending: number | undefined;
+    // Anything that made tick() bail — mid-drag, mid-solve — is over in
+    // seconds, so the indicator is given a second chance rather than being
+    // left on "กำลังเซฟ…" until the next change.
+    const retry = setInterval(() => {
+      if (useTimetableStore.getState().savePointState === "saving") void tick();
+    }, 15_000) as unknown as number;
+
     const unsubscribe = useTimetableStore.subscribe((st, prev) => {
       // The school's own edits land in the store directly, so watching the
       // lists catches them the moment they happen; lastRevision catches
@@ -106,6 +121,7 @@ export function useAutoSavePoints(enabled: boolean): void {
 
     return () => {
       clearInterval(id);
+      clearInterval(retry);
       if (pending !== undefined) clearTimeout(pending);
       unsubscribe();
     };
@@ -123,31 +139,77 @@ export function useAutoSavePoints(enabled: boolean): void {
  * saved copy that holds more than the server does is taken as proof it lost
  * the school's work rather than the school never having entered any.
  */
+/**
+ * Is the server holding the school's data, or has it lost it?
+ *
+ *   "healthy"  the server has their own data, and at least as much of it as
+ *              the best copy kept here. Nothing to warn about — and if the
+ *              warning is up, this is what takes it down.
+ *   "lost"     our copy is genuinely the fuller one. Raise it.
+ *   "unknown"  neither can be shown. A school still setting up has seed data
+ *              on the server and little saved here, and being told their data
+ *              is missing every morning would be noise.
+ */
+export type ServerVerdict = "healthy" | "lost" | "unknown";
+
+export function serverHealthVerdict(
+  server: { source: string; slots: number; teachers: number },
+  mine: { slots: number; teachers: number } | null,
+): ServerVerdict {
+  const have = mine ?? { slots: 0, teachers: 0 };
+  if (server.source === "snapshot"
+      && server.slots >= have.slots && server.teachers >= have.teachers) {
+    return "healthy";
+  }
+  if (!mine) return "unknown";
+  return (have.slots > server.slots || have.teachers > server.teachers) ? "lost" : "unknown";
+}
+
 export function useServerDataCheck(enabled: boolean): void {
   useEffect(() => {
     if (!enabled || !storageAvailable()) return;
-    let cancelled = false;
+    let stop = false;
 
-    (async () => {
+    /**
+     * Compare what the server holds against the best copy kept here, and set
+     * or clear the warning accordingly.
+     *
+     * Both directions matter. Raising it was the easy half; the warning used
+     * to be a latch, so once the server had a bad morning the red strip stayed
+     * across the top for the rest of the day — after the data was recovered,
+     * after the database was storing it again — and with it live sync and the
+     * automatic copies stayed switched off. A warning that will not go away
+     * when the problem does is one people learn to look past, which is worse
+     * than not showing it.
+     */
+    const check = async () => {
       try {
         const info = await api.fetchStateInfo();
-        if (cancelled || info.source === "snapshot") return;
-
-        const all = await listSavePoints();
-        if (cancelled || all.length === 0) return;
+        if (stop) return;
+        const all = await listSavePoints().catch(() => []);
+        if (stop) return;
         const best = all.find((p) => p.kind === "main") ?? all[0];
-
-        // Only raise it when our copy really is the fuller one. A school still
-        // setting up has seed data on the server and little saved here, and
-        // being told their data is missing every morning would be noise.
-        const richer = (best.counts.slots ?? 0) > (info.counts.slots ?? 0)
-          || (best.counts.teachers ?? 0) > (info.counts.teachers ?? 0);
-        if (richer) useTimetableStore.setState({ serverReset: true });
+        const verdict = serverHealthVerdict(
+          { source: info.source, slots: info.counts.slots ?? 0,
+            teachers: info.counts.teachers ?? 0 },
+          best ? { slots: best.counts.slots ?? 0, teachers: best.counts.teachers ?? 0 } : null,
+        );
+        if (verdict === "healthy") {
+          if (useTimetableStore.getState().serverReset) {
+            // Forget the old revision too, or the next poll reads the gap as
+            // another reset and the strip comes straight back.
+            useTimetableStore.setState({ serverReset: false, lastRevision: -1 });
+          }
+        } else if (verdict === "lost") {
+          useTimetableStore.setState({ serverReset: true });
+        }
       } catch {
         /* offline; the polling tick reports that separately */
       }
-    })();
+    };
 
-    return () => { cancelled = true; };
+    void check();
+    const id = setInterval(check, 45_000) as unknown as number;
+    return () => { stop = true; clearInterval(id); };
   }, [enabled]);
 }
