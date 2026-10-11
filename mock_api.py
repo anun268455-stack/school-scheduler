@@ -4003,6 +4003,56 @@ def create_level_activity(body: dict[str, Any]):
     return {"created": created, "skipped": skipped, "warnings": warnings, "activity_key": key}
 
 
+@app.put("/api/timetable/level-activity/{activity_key}")
+def update_level_activity(activity_key: str, body: dict[str, Any]):
+    """Change an activity that already exists — day, period, classes, roster.
+
+    Deleting and re-creating is what the school had to do before, and it is the
+    wrong shape for a mistake: ชุมนุม covers sixty classrooms and a roster of a
+    hundred and thirty, so "I put it on the wrong period" cost all of that typed
+    again. Worse, the delete happens first, so a re-creation that then collides
+    with something leaves the school with neither the old activity nor the new.
+
+    So the old slots are lifted out, the new ones built in their place, and if
+    nothing could be built the old ones go straight back. The hour is either
+    changed or untouched — never lost.
+    """
+    global SLOTS
+    old = [s for s in SLOTS if s.get("activity_key") == activity_key]
+    if not old:
+        raise HTTPException(404, "ไม่พบกิจกรรมนี้")
+
+    # Anything the caller leaves out keeps what the activity already had.
+    first = old[0]
+    merged = {
+        "day":        body.get("day",        first["day"]),
+        "period":     body.get("period",     first["period"]),
+        "subject_id": body.get("subject_id", first["subject_id"]),
+        "group_ids":  body.get("group_ids",  [s["group_id"] for s in old]),
+        "teacher_ids": body.get("teacher_ids", first.get("activity_teacher_ids") or []),
+        "room_mode":  body.get("room_mode",
+                               "homeroom" if any(s.get("room_id") for s in old) else "none"),
+        "label":      body.get("label", ""),
+    }
+    for k in ("teacher_mode", "teacher_id"):
+        if k in body:
+            merged[k] = body[k]
+
+    SLOTS = [s for s in SLOTS if s.get("activity_key") != activity_key]
+    try:
+        result = create_level_activity(merged)
+    except Exception:
+        SLOTS.extend(old)          # put it back exactly as it was
+        raise
+    if not result["created"]:
+        SLOTS = [s for s in SLOTS if s.get("activity_key") != result["activity_key"]]
+        SLOTS.extend(old)
+        raise HTTPException(
+            409, "แก้ไขไม่ได้ — ทุกห้องที่เลือกมีคาบอื่นอยู่ในวัน/คาบใหม่แล้ว "
+                 "(กิจกรรมเดิมยังอยู่ครบ)")
+    return {**result, "replaced": len(old)}
+
+
 @app.delete("/api/timetable/level-activity/{activity_key}")
 def delete_level_activity(activity_key: str):
     """Remove every slot belonging to one level-wide activity."""

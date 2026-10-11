@@ -11,6 +11,7 @@
  * The created periods are locked, so the auto-scheduler never books over them.
  */
 import React, { useMemo, useState } from "react";
+import clsx from "clsx";
 import * as api from "../../api/client";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { ActivitySupervisorModal } from "./ActivitySupervisorModal";
@@ -36,12 +37,15 @@ export const LevelActivityPanel: React.FC = () => {
   const [showRoster, setShowRoster] = useState(false);
   const [newName, setNewName] = useState<string | null>(null);
   const [busy, setBusy]       = useState(false);
-  const [result, setResult]   = useState<{ created: number; skipped: { group: string; reason: string }[]; warnings: string[] } | null>(null);
+  const [result, setResult]   = useState<{ created: number; skipped: { group: string; reason: string }[]; warnings: string[]; edited?: boolean } | null>(null);
   const [error, setError]     = useState<string | null>(null);
+  // The activity_key being edited, or null when making a new one.
+  const [editing, setEditing] = useState<string | null>(null);
+  const topRef = React.useRef(null as HTMLDivElement | null);
 
-  // Whole-class activity → top-level classrooms only. A subgroup (ก/ข/ค) sits
-  // inside its parent's hour, so ticking both would double-book the students.
-  const classes = useMemo(
+  // Top-level classrooms, which is what a whole-school activity is normally
+  // pinned onto.
+  const parents = useMemo(
     () => groups.filter((g) => !g.parent_id)
       .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", undefined, { numeric: true })),
     [groups],
@@ -49,11 +53,38 @@ export const LevelActivityPanel: React.FC = () => {
   const flat = useMemo(
     () => groups.flatMap((g) => [g, ...(g.children ?? [])]), [groups],
   );
+  // …and the subgroups too. They used to be hidden here, on the reasoning that
+  // ม.4/6ก sits inside ม.4/6's hour so ticking both would double-book the
+  // students. That is still true — but hiding them also meant a school whose
+  // ชุมนุม is organised by ก/ข/ค simply could not say so, and ม.4/6ก looked
+  // like a class that had been lost. So they are listed, and a subgroup whose
+  // parent is already ticked is shown as covered rather than offered twice.
+  const classes = useMemo(() => {
+    const out: typeof parents = [];
+    for (const g of parents) {
+      out.push(g);
+      for (const c of [...(g.children ?? [])].sort(
+        (a, b) => (a.name ?? "").localeCompare(b.name ?? "", undefined, { numeric: true }))) {
+        out.push(c);
+      }
+    }
+    return out;
+  }, [parents]);
+  const parentOf = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const g of parents) for (const c of g.children ?? []) m.set(c.id, g.id);
+    return m;
+  }, [parents]);
+  const childrenOf = useMemo(() => {
+    const m = new Map<number, number[]>();
+    for (const g of parents) m.set(g.id, (g.children ?? []).map((c) => c.id));
+    return m;
+  }, [parents]);
   const levels = useMemo(() => {
     const seen: string[] = [];
-    for (const g of classes) if (g.level && !seen.includes(g.level)) seen.push(g.level);
+    for (const g of parents) if (g.level && !seen.includes(g.level)) seen.push(g.level);
     return seen;
-  }, [classes]);
+  }, [parents]);
 
   const classPeriods = useMemo(
     () => [...new Map(periods.filter((p) => p.type === "class").map((p) => [p.period_num, p])).values()]
@@ -82,8 +113,19 @@ export const LevelActivityPanel: React.FC = () => {
   const rosterCount = roster.length;
 
   // Existing activity blocks, grouped by activity_key.
+  //
+  // Enough of each one is kept to put it back into the form, not just to list
+  // it: an activity that cannot be edited has to be deleted and re-entered,
+  // and for ชุมนุม that is sixty classrooms and a roster of a hundred typed
+  // again because the period was wrong.
+  interface Existing {
+    key: string; level: string; day: number; period: number; subject: string;
+    classes: string[]; teachers: Set<string>;
+    subjectId: number | null; groupIds: number[]; roster: number[];
+    teacherIds: (number | null)[]; hasRoom: boolean;
+  }
   const existing = useMemo(() => {
-    const m = new Map<string, { key: string; level: string; day: number; period: number; subject: string; classes: string[]; teachers: Set<string> }>();
+    const m = new Map<string, Existing>();
     for (const s of slots) {
       if (!s.is_activity_block || !s.activity_key) continue;
       const cur = m.get(s.activity_key) ?? {
@@ -92,8 +134,15 @@ export const LevelActivityPanel: React.FC = () => {
         day: s.day, period: s.period,
         subject: s.subject_code ?? s.subject_name ?? "",
         classes: [] as string[], teachers: new Set<string>(),
+        subjectId: s.subject_id ?? null, groupIds: [] as number[],
+        roster: [] as number[], teacherIds: [] as (number | null)[], hasRoom: false,
       };
       cur.classes.push(s.group_name ?? "");
+      cur.groupIds.push(s.group_id);
+      cur.teacherIds.push(s.teacher_id ?? null);
+      if (s.room_id) cur.hasRoom = true;
+      // The roster is the same list on every classroom of the activity.
+      for (const t of s.activity_teacher_ids ?? []) if (!cur.roster.includes(t)) cur.roster.push(t);
       for (const n of [s.teacher_name, ...(s.activity_teacher_names ?? [])]) if (n) cur.teachers.add(n);
       m.set(s.activity_key, cur);
     }
@@ -105,12 +154,31 @@ export const LevelActivityPanel: React.FC = () => {
     [chosen],
   );
 
+  /**
+   * Tick a classroom, keeping a parent and its subgroups from both being in.
+   *
+   * They hold the same students, so an activity on both is that class sitting
+   * in two places at once — the API would refuse the second one anyway, but
+   * silently, as "มีคาบอยู่แล้ว". Here it is simply impossible: ticking the
+   * parent takes its children out, and ticking a child takes the parent out.
+   */
   const toggle = (id: number) =>
-    setPicked((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
+    setPicked((p) => {
+      if (p.includes(id)) return p.filter((x) => x !== id);
+      const kin = new Set<number>([...(childrenOf.get(id) ?? [])]);
+      const par = parentOf.get(id);
+      if (par != null) kin.add(par);
+      return [...p.filter((x) => !kin.has(x)), id];
+    });
   const pickLevel = (lv: string) => {
-    const ids = classes.filter((g) => g.level === lv).map((g) => g.id);
+    // A level shortcut means the whole classes, never the subgroups.
+    const ids = parents.filter((g) => g.level === lv).map((g) => g.id);
     const all = ids.every((i) => picked.includes(i));
-    setPicked((p) => all ? p.filter((i) => !ids.includes(i)) : [...new Set([...p, ...ids])]);
+    setPicked((p) => {
+      const kids = new Set(ids.flatMap((i) => childrenOf.get(i) ?? []));
+      return all ? p.filter((i) => !ids.includes(i))
+                 : [...new Set([...p.filter((i) => !kids.has(i)), ...ids])];
+    });
   };
 
   /** Create ลูกเสือ / เนตรนารี / ชุมนุม without leaving this screen. */
@@ -134,26 +202,62 @@ export const LevelActivityPanel: React.FC = () => {
 
   const canCreate = picked.length > 0 && form.period !== "" && !!form.subject_id && !busy;
 
+  /** Put an activity that is already on the board back into the form. */
+  const startEdit = (a: Existing) => {
+    const single = a.roster.length === 0 && a.teacherIds.length > 0
+      && a.teacherIds.every((t) => t != null && t === a.teacherIds[0]);
+    setEditing(a.key);
+    setForm({
+      day: String(a.day),
+      period: String(a.period),
+      subject_id: a.subjectId != null ? String(a.subjectId) : "",
+      teacher_choice: a.roster.length > 0 ? "homeroom"
+        : single ? String(a.teacherIds[0])
+        : a.teacherIds.some((t) => t != null) ? "homeroom" : "none",
+      room_mode: a.hasRoom ? "homeroom" : "none",
+    });
+    setPicked(a.groupIds);
+    setRoster(a.roster);
+    setResult(null); setError(null);
+    topRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setPicked([]); setRoster([]);
+    setForm({ day: "0", period: "", subject_id: "", teacher_choice: "homeroom", room_mode: "homeroom" });
+    setResult(null); setError(null);
+  };
+
   const handleCreate = async () => {
     setBusy(true); setError(null); setResult(null);
     try {
       const choice = form.teacher_choice;
-      const res = await api.createLevelActivity({
+      const payload = {
         group_ids: picked,
         label: [...new Set(chosen.map((g) => g.level).filter(Boolean))].join("/") || "ห้องที่เลือก",
         day: Number(form.day),
         period: Number(form.period),
         subject_id: Number(form.subject_id),
-        teacher_mode: choice === "homeroom" ? "homeroom" : choice === "none" ? "none" : "single",
+        teacher_mode: (choice === "homeroom" ? "homeroom" : choice === "none" ? "none" : "single") as
+          "homeroom" | "single" | "none",
         teacher_id: choice !== "homeroom" && choice !== "none" ? Number(choice) : null,
         teacher_ids: roster,
         room_mode: form.room_mode,
-      });
+      };
+      // Editing replaces the activity in one call. If nothing can be placed at
+      // the new time the server keeps the old one and says so, so a failed
+      // edit never costs the school the activity it already had.
+      const res = editing
+        ? await api.updateLevelActivity(editing, payload)
+        : await api.createLevelActivity(payload);
       await loadSlots();
-      setResult({ created: res.created.length, skipped: res.skipped, warnings: res.warnings ?? [] });
+      setResult({ created: res.created.length, skipped: res.skipped, warnings: res.warnings ?? [],
+                  edited: !!editing });
+      setEditing(null);
     } catch (e) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(detail || "สร้างคาบกิจกรรมไม่สำเร็จ กรุณาลองใหม่");
+      setError(detail || (editing ? "แก้ไขคาบกิจกรรมไม่สำเร็จ" : "สร้างคาบกิจกรรมไม่สำเร็จ กรุณาลองใหม่"));
     } finally {
       setBusy(false);
     }
@@ -170,9 +274,26 @@ export const LevelActivityPanel: React.FC = () => {
     }
   };
 
+  const editingOf = editing ? existing.find((a) => a.key === editing) : null;
+
   return (
-    <div className="mb-6">
+    <div className="mb-6" ref={topRef}>
       <h2 className="text-base font-bold text-gray-800 mb-3">คาบกิจกรรม (ลูกเสือ · เนตรนารี · ชุมนุม)</h2>
+
+      {editing && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 mb-3 text-xs text-amber-900">
+          <span className="text-base">✏️</span>
+          <span className="flex-1">
+            กำลังแก้ไข <strong>{editingOf?.subject ?? "กิจกรรม"}</strong>
+            {editingOf && ` · ${DAYS[editingOf.day]} ${periodLabel(editingOf.period, periods)} · ${editingOf.classes.length} ห้อง`}
+            {" — "}แก้แล้วกด “บันทึกการแก้ไข” ด้านล่าง คาบเดิมจะถูกแทนที่ให้
+          </span>
+          <button onClick={cancelEdit}
+            className="shrink-0 px-2 py-1 border border-amber-400 text-amber-800 rounded hover:bg-white">
+            ยกเลิกการแก้ไข
+          </button>
+        </div>
+      )}
 
       <div className="bg-teal-50 border border-teal-200 rounded-lg p-3 mb-4 text-xs text-teal-900 leading-relaxed">
         <strong>ใช้ทำอะไร:</strong> ตั้งคาบที่หลายห้องทำพร้อมกัน เช่น
@@ -181,7 +302,8 @@ export const LevelActivityPanel: React.FC = () => {
         — ถ้ายังไม่มีกิจกรรมในรายการ สร้างใหม่ได้ตรงนี้เลย
         <br/>ระบบจะ<strong>ล็อกคาบไว้</strong> ตัวจัดตารางอัตโนมัติจะไม่วางวิชาอื่นทับ
         และครูผู้ดูแลจะเห็นคาบนี้ในตารางสอนของตัวเอง นับรวมในอัตรากำลังด้วย
-        <br/>ห้องย่อย (ก/ข/ค) ไม่ต้องติ๊ก เพราะกิจกรรมเป็นของทั้งห้องอยู่แล้ว
+        <br/>ห้องย่อย (ก/ข/ค) ติ๊กแยกได้ถ้าต้องการ — แต่ถ้าติ๊กห้องแม่แล้ว ห้องย่อยถือว่ารวมอยู่ด้วย
+        จึงติ๊กซ้ำไม่ได้ (นักเรียนกลุ่มเดียวกัน)
       </div>
 
       {/* ── กิจกรรม / วัน / คาบ ─────────────────────────────────────── */}
@@ -249,7 +371,7 @@ export const LevelActivityPanel: React.FC = () => {
                 {lv}
               </button>
             ))}
-            <button onClick={() => setPicked(classes.map((g) => g.id))}
+            <button onClick={() => setPicked(parents.map((g) => g.id))}
               className="px-2 py-0.5 text-xs rounded border border-teal-400 bg-teal-50 text-teal-800 font-medium">
               ทั้งหมด
             </button>
@@ -260,12 +382,22 @@ export const LevelActivityPanel: React.FC = () => {
           </div>
         </div>
         <div className="max-h-44 overflow-y-auto grid grid-cols-6 gap-x-2 gap-y-1">
-          {classes.map((g) => (
-            <label key={g.id} className="flex items-center gap-1 text-xs text-gray-700 cursor-pointer">
-              <input type="checkbox" checked={picked.includes(g.id)} onChange={() => toggle(g.id)} />
-              <span className="truncate">{g.name}</span>
-            </label>
-          ))}
+          {classes.map((g) => {
+            const par = parentOf.get(g.id);
+            const covered = par != null && picked.includes(par);
+            const parName = par != null ? parents.find((x) => x.id === par)?.name : undefined;
+            return (
+              <label key={g.id}
+                title={covered ? `รวมอยู่ใน ${parName} แล้ว` : undefined}
+                className={clsx("flex items-center gap-1 text-xs cursor-pointer",
+                  covered ? "text-gray-300 cursor-default"
+                    : par != null ? "text-gray-500 pl-3" : "text-gray-700")}>
+                <input type="checkbox" checked={picked.includes(g.id) || covered}
+                  disabled={covered} onChange={() => toggle(g.id)} />
+                <span className="truncate">{g.name}</span>
+              </label>
+            );
+          })}
           {classes.length === 0 && <p className="text-xs text-gray-400 col-span-6">ยังไม่มีห้องเรียน</p>}
         </div>
       </div>
@@ -341,15 +473,25 @@ export const LevelActivityPanel: React.FC = () => {
         </p>
       )}
 
-      <button onClick={handleCreate} disabled={!canCreate}
-        className="px-3 py-1.5 bg-teal-600 text-white text-sm rounded hover:bg-teal-700 font-medium disabled:opacity-40">
-        {busy ? "กำลังสร้าง…" : `+ สร้างคาบกิจกรรมให้ ${picked.length} ห้อง`}
-      </button>
+      <div className="flex items-center gap-2">
+        <button onClick={handleCreate} disabled={!canCreate}
+          className={clsx("px-3 py-1.5 text-white text-sm rounded font-medium disabled:opacity-40",
+            editing ? "bg-amber-600 hover:bg-amber-700" : "bg-teal-600 hover:bg-teal-700")}>
+          {busy ? "กำลังบันทึก…"
+            : editing ? `บันทึกการแก้ไข (${picked.length} ห้อง)`
+            : `+ สร้างคาบกิจกรรมให้ ${picked.length} ห้อง`}
+        </button>
+        {editing && (
+          <button onClick={cancelEdit} className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded hover:bg-gray-100">
+            ยกเลิก
+          </button>
+        )}
+      </div>
 
       {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
       {result && (
         <div className="mt-3 bg-green-50 border border-green-200 rounded-lg p-3 text-xs text-green-800">
-          ✅ สร้างแล้ว {result.created} ห้อง
+          ✅ {result.edited ? "แก้ไขแล้ว" : "สร้างแล้ว"} {result.created} ห้อง
           {result.warnings.length > 0 && (
             <div className="mt-1 text-amber-700 space-y-0.5">
               {result.warnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
@@ -396,10 +538,16 @@ export const LevelActivityPanel: React.FC = () => {
                     {a.teachers.size === 0 ? "– ไม่ระบุ –" : `${a.teachers.size} คน`}
                   </td>
                   <td className="px-3 py-2">
-                    <button onClick={() => handleDelete(a.key)} disabled={busy}
-                      className="px-2 py-1 text-xs bg-red-50 text-red-600 rounded hover:bg-red-100 border border-red-200">
-                      ลบกิจกรรมนี้
-                    </button>
+                    <div className="flex gap-1">
+                      <button onClick={() => startEdit(a)} disabled={busy}
+                        className="px-2 py-1 text-xs bg-amber-50 text-amber-700 rounded hover:bg-amber-100 border border-amber-200">
+                        ✏️ แก้ไข
+                      </button>
+                      <button onClick={() => handleDelete(a.key)} disabled={busy}
+                        className="px-2 py-1 text-xs bg-red-50 text-red-600 rounded hover:bg-red-100 border border-red-200">
+                        ลบ
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

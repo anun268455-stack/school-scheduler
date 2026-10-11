@@ -220,6 +220,29 @@ export const createLevelActivity = (d: {
   activity_key: string;
 }>("/timetable/level-activity", d).then((r) => r.data);
 
+/**
+ * Change an activity that is already on the board.
+ *
+ * Anything left out keeps what it had, so moving ชุมนุม to another period does
+ * not mean re-ticking sixty classrooms. If nothing could be placed at the new
+ * time the old activity is left exactly as it was and the call fails.
+ */
+export const updateLevelActivity = (activityKey: string, d: {
+  label?: string;
+  day?: number; period?: number; subject_id?: number;
+  group_ids?: number[];
+  teacher_mode?: "homeroom" | "single" | "none";
+  teacher_id?: number | null;
+  teacher_ids?: number[];
+  room_mode?: "homeroom" | "none";
+}) => api.put<{
+  created: TimetableSlot[];
+  skipped: { group: string; reason: string }[];
+  warnings: string[];
+  activity_key: string;
+  replaced: number;
+}>(`/timetable/level-activity/${encodeURIComponent(activityKey)}`, d).then((r) => r.data);
+
 export const deleteLevelActivity = (activityKey: string) =>
   api.delete<{ removed: number }>(`/timetable/level-activity/${encodeURIComponent(activityKey)}`)
     .then((r) => r.data);
