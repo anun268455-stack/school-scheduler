@@ -8,7 +8,6 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../../api/client";
-import { useTimetableStore } from "../../store/timetableStore";
 import {
   putSavePoint, listSavePoints, getSavePoint, deleteSavePoint,
   storageAvailable, formatSavedAt, formatBytes, AUTO_KEEP,
@@ -42,19 +41,13 @@ export const SavePointPanel = ({ onRestored }: Props) => {
    * Saving is the one button here that can destroy data, and the moment it is
    * most likely to be pressed is the moment it must not be: the school opens
    * the page, sees an empty timetable, and reaches for the save button. That
-   * would replace a good copy with the empty one. Two things stand in the way
-   * — the reset flag when we know the server restarted, and a size check for
-   * when we do not, since a copy holding a fraction of what the last one held
-   * is a loss, not an edit.
+   * would replace a good copy with the empty one. What stands in the way is a
+   * size check: a copy holding a fraction of what the last one held is a loss,
+   * not an edit, so it asks before overwriting.
    */
   const saveMain = async (force = false) => {
     setBusy("save"); setNote(null); setErr(null); setShrink(null);
     try {
-      if (!force && useTimetableStore.getState().serverReset) {
-        setErr("ตอนนี้ข้อมูลบนเซิร์ฟเวอร์หายอยู่ — ถ้าบันทึกตอนนี้จะเอาข้อมูลเปล่าไปทับเซฟหลักที่มีอยู่"
-          + " กรุณากู้คืนให้ข้อมูลกลับมาก่อน แล้วค่อยบันทึก");
-        return;
-      }
       const snap = await api.downloadBackup();
       const prev = points.find((p) => p.kind === "main");
       const now = {

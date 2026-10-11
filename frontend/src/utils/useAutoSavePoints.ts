@@ -43,11 +43,6 @@ export function useAutoSavePoints(enabled: boolean): void {
     const tick = async () => {
       if (running.current) return;
       const st = useTimetableStore.getState();
-      // Never photograph a server that has just thrown its data away: that
-      // snapshot is the shipped demo data, and saving it would push the real
-      // copies out of the rolling window — destroying the safety net at
-      // exactly the moment it is needed.
-      if (st.serverReset) { settle("idle"); return; }
       if (st.isSolving || st.isLoading || st.draggingSlot) return;   // try again shortly
       if (typeof document !== "undefined" && document.hidden) return;
 
@@ -64,17 +59,17 @@ export function useAutoSavePoints(enabled: boolean): void {
         const teachers = snap["teachers"];
         if (!Array.isArray(teachers) || teachers.length === 0) { settle("idle"); return; }
 
-        // Nor is one whose timetable has collapsed. The window holds six
-        // copies: if the school loses their คาบ and then keeps working, six
-        // ticks is twenty-four minutes before the last copy holding the real
-        // timetable is pushed out — and that copy is the only way back. So a
-        // sharp drop stops the rolling window instead of feeding it, and the
-        // on-screen warning takes over.
+        // Nor is one whose timetable has collapsed. Copies are written on
+        // every change, so a school that loses their คาบ and keeps working
+        // would push the last good copy out of the window in minutes — and
+        // that copy is the way back. A sharp drop simply stops the window
+        // instead of feeding it; nothing is announced, because the server
+        // itself says whether anything is wrong, up at the top of the page.
         const slots = Array.isArray(snap["slots"]) ? (snap["slots"] as unknown[]).length : 0;
         const kept = await listSavePoints();
         const most = kept.reduce((n, p) => Math.max(n, p.counts.slots ?? 0), 0);
         if (most > 20 && slots < most * 0.5) {
-          useTimetableStore.setState({ serverReset: true, savePointState: "idle" });
+          settle("idle");
           return;
         }
         const meta = await putSavePoint("auto", snap);
@@ -113,7 +108,6 @@ export function useAutoSavePoints(enabled: boolean): void {
           && st.groups === prev.groups && st.teachers === prev.teachers
           && st.subjects === prev.subjects && st.rooms === prev.rooms
           && st.lastRevision === prev.lastRevision) return;
-      if (st.serverReset) return;
       useTimetableStore.setState({ savePointState: "saving" });
       if (pending !== undefined) clearTimeout(pending);
       pending = setTimeout(() => { void tick(); }, AFTER_CHANGE_MS) as unknown as number;
@@ -139,77 +133,3 @@ export function useAutoSavePoints(enabled: boolean): void {
  * saved copy that holds more than the server does is taken as proof it lost
  * the school's work rather than the school never having entered any.
  */
-/**
- * Is the server holding the school's data, or has it lost it?
- *
- *   "healthy"  the server has their own data, and at least as much of it as
- *              the best copy kept here. Nothing to warn about — and if the
- *              warning is up, this is what takes it down.
- *   "lost"     our copy is genuinely the fuller one. Raise it.
- *   "unknown"  neither can be shown. A school still setting up has seed data
- *              on the server and little saved here, and being told their data
- *              is missing every morning would be noise.
- */
-export type ServerVerdict = "healthy" | "lost" | "unknown";
-
-export function serverHealthVerdict(
-  server: { source: string; slots: number; teachers: number },
-  mine: { slots: number; teachers: number } | null,
-): ServerVerdict {
-  const have = mine ?? { slots: 0, teachers: 0 };
-  if (server.source === "snapshot"
-      && server.slots >= have.slots && server.teachers >= have.teachers) {
-    return "healthy";
-  }
-  if (!mine) return "unknown";
-  return (have.slots > server.slots || have.teachers > server.teachers) ? "lost" : "unknown";
-}
-
-export function useServerDataCheck(enabled: boolean): void {
-  useEffect(() => {
-    if (!enabled || !storageAvailable()) return;
-    let stop = false;
-
-    /**
-     * Compare what the server holds against the best copy kept here, and set
-     * or clear the warning accordingly.
-     *
-     * Both directions matter. Raising it was the easy half; the warning used
-     * to be a latch, so once the server had a bad morning the red strip stayed
-     * across the top for the rest of the day — after the data was recovered,
-     * after the database was storing it again — and with it live sync and the
-     * automatic copies stayed switched off. A warning that will not go away
-     * when the problem does is one people learn to look past, which is worse
-     * than not showing it.
-     */
-    const check = async () => {
-      try {
-        const info = await api.fetchStateInfo();
-        if (stop) return;
-        const all = await listSavePoints().catch(() => []);
-        if (stop) return;
-        const best = all.find((p) => p.kind === "main") ?? all[0];
-        const verdict = serverHealthVerdict(
-          { source: info.source, slots: info.counts.slots ?? 0,
-            teachers: info.counts.teachers ?? 0 },
-          best ? { slots: best.counts.slots ?? 0, teachers: best.counts.teachers ?? 0 } : null,
-        );
-        if (verdict === "healthy") {
-          if (useTimetableStore.getState().serverReset) {
-            // Forget the old revision too, or the next poll reads the gap as
-            // another reset and the strip comes straight back.
-            useTimetableStore.setState({ serverReset: false, lastRevision: -1 });
-          }
-        } else if (verdict === "lost") {
-          useTimetableStore.setState({ serverReset: true });
-        }
-      } catch {
-        /* offline; the polling tick reports that separately */
-      }
-    };
-
-    void check();
-    const id = setInterval(check, 45_000) as unknown as number;
-    return () => { stop = true; clearInterval(id); };
-  }, [enabled]);
-}

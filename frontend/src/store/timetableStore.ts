@@ -19,6 +19,29 @@ let pollTimer: number | null = null;
  * Reload every collection without flipping `isLoading`, so another person's edit
  * refreshes the table in place instead of flashing a loading spinner.
  */
+/**
+ * Would taking this refresh throw away a timetable that is on screen?
+ *
+ * One guard, and only one. The server keeps its data in a database now and
+ * refuses to write the shipped data over the school's, so a poll returning an
+ * empty school is the last unlikely path left — and the cost of being wrong
+ * about it is the whole timetable, while the cost of skipping one refresh is
+ * nothing. Both numbers have to fall: deleting half the คาบ on purpose is
+ * something a school does, losing half the คาบ AND staff at once is not.
+ *
+ * It replaces a whole warning system that guessed at the same thing from a
+ * counter, latched, and switched off live sync and the automatic copies until
+ * somebody noticed. The amber strip at the top says what is wrong with the
+ * server, from what the server itself reports; this just declines to spread it.
+ */
+export function wouldWipeTheScreen(
+  cur: { slots: number; teachers: number },
+  next: { slots: number; teachers: number },
+): boolean {
+  if (cur.slots <= 20) return false;          // nothing much to lose yet
+  return next.slots < cur.slots * 0.5 && next.teachers < cur.teachers;
+}
+
 async function quietRefresh(
   set: (partial: Partial<TimetableStore>) => void,
   get: () => TimetableStore,
@@ -36,6 +59,11 @@ async function quietRefresh(
       api.fetchSlots().catch(() => cur.slots),
       api.fetchPeriods().catch(() => cur.periods),
     ]);
+  if (wouldWipeTheScreen(
+        { slots: cur.slots.length, teachers: cur.teachers.length },
+        { slots: slots.length, teachers: teachers.length })) {
+    return;
+  }
   set({ departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
 }
 
@@ -87,12 +115,6 @@ interface TimetableStore {
   syncState:     "connecting" | "live" | "offline";
   remoteUpdates: number;                    // how many times someone else's edit arrived
   /**
-   * The server came back with LESS history than we have already seen, which
-   * only happens when it restarted and lost the lot. Set here, cleared when
-   * the data is recovered or the warning is dismissed.
-   */
-  serverReset:   boolean;
-  /**
    * The copy in this browser: when it was last written, and what is happening
    * to it now. Shown in the toolbar, because "I don't know whether what I'm
    * doing is saved" is answered by seeing it, not by being told it happens.
@@ -102,9 +124,6 @@ interface TimetableStore {
   setLiveSync:   (on: boolean) => void;
   startLiveSync: () => void;
   stopLiveSync:  () => void;
-  /** Take the current revision as the truth again and resume pulling. */
-  acceptServerState: () => Promise<void>;
-  dismissServerReset: () => void;
   addLesson: (d: {
     group_id: number; day: number; period: number;
     subject_id: number; teacher_id: number; room_id?: number | null;
@@ -185,7 +204,6 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   lastSyncedAt:      null,
   syncState:         "connecting",
   remoteUpdates:     0,
-  serverReset:       false,
   lastSavePointAt:   null,
   savePointState:    "idle",
 
@@ -249,23 +267,6 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
   },
 
-  /** Take whatever the server now holds, losing anything only we still have. */
-  acceptServerState: async () => {
-    await get().loadAll();
-    try {
-      const { revision } = await api.fetchStateVersion();
-      set({ lastRevision: revision });
-    } catch { /* the next poll will pick the revision up */ }
-    set({ serverReset: false, syncState: "live" });
-  },
-
-  /**
-   * Carry on without deciding. The revision is forgotten rather than adopted,
-   * so the next poll simply records where the server is now instead of
-   * reading the gap as another reset and asking again every few seconds.
-   */
-  dismissServerReset: () => set({ serverReset: false, lastRevision: -1 }),
-
   startLiveSync: () => {
     get().stopLiveSync();
     const tick = async () => {
@@ -274,10 +275,6 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       if (!st.liveSync) return;
       if (st.draggingSlot || st.isSolving || st.isLoading) return;
       if (typeof document !== "undefined" && document.hidden) return;
-      // Once the server is known to have reset, stop pulling from it. Every
-      // poll after that would pull the same empty server over the work that
-      // is still on screen — which is the one copy of it left.
-      if (st.serverReset) return;
       try {
         const { revision } = await api.fetchStateVersion();
         const prev = get().lastRevision;
@@ -285,30 +282,12 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         if (revision === prev) return;
         if (prev === -1) { set({ lastRevision: revision }); return; }  // first poll: just record
         // A revision that went BACKWARDS means the process restarted: the
-        // counter only ever climbs while the server is up.
-        //
-        // A restart is not the same thing as a loss, and treating it as one is
-        // why the red strip kept coming back minutes after the school had
-        // fixed everything. The free host puts the service to sleep whenever
-        // nobody is using it, so restarts are ordinary — several a day — and
-        // almost all of them come back with the timetable intact.
-        //
-        // So the server is asked what it actually has before anyone is told
-        // anything. Only a restart that really did lose the work raises the
-        // warning; one that came back whole just resyncs, quietly.
+        // counter only ever climbs while the server is up. Restarts are
+        // ordinary on a host that sleeps when nobody is using it, and the
+        // counter now comes back with the data, so this is simply a new
+        // numbering to adopt. quietRefresh above will not pull an empty
+        // server over a full screen, which is the only risk worth guarding.
         if (revision < prev) {
-          let lost = true;
-          try {
-            const info = await api.fetchStateInfo();
-            lost = info.source !== "snapshot"
-              || (info.counts.slots ?? 0) < get().slots.length
-              || (info.counts.teachers ?? 0) < get().teachers.length;
-          } catch { /* cannot tell — assume the worse of the two */ }
-          if (lost) {
-            set({ serverReset: true, syncState: "live" });
-            return;
-          }
-          // Came back whole. Take the new numbering and carry on.
           set({ lastRevision: revision, syncState: "live" });
           await quietRefresh(set, get);
           return;
