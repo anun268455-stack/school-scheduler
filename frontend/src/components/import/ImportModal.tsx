@@ -180,8 +180,12 @@ function mapRow(row: Record<string, string>, mapping: Record<string, string>, co
   for (const [key, header] of Object.entries(mapping)) {
     let val: unknown = row[header] ?? "";
     if (NUMERIC_KEYS.includes(key)) {
-      const n = Number(val);
-      val = isNaN(n) ? undefined : n;
+      // An empty cell is "not given", not zero. Number("") is 0, so without
+      // this a blank จำนวนนักเรียน column sets every class to 0 students on
+      // an import meant only to add a parent.
+      const raw = String(val ?? "").trim();
+      const n = Number(raw);
+      val = raw === "" || isNaN(n) ? undefined : n;
     } else if (resolveKeys.has(key)) {
       val = String(val ?? "").trim();   // keep the name for later resolution
     }

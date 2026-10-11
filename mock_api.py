@@ -3412,10 +3412,61 @@ def create_group(body: dict[str, Any]):
     GROUPS.append(body)
     return body
 
+def _norm_name(s: Any) -> str:
+    return "".join(str(s or "").split())
+
+
+def _detach_group(gid: int) -> None:
+    """Take a class out of whatever list is currently holding it."""
+    for container in [GROUPS] + [g.get("children") or [] for g in _flat_groups()]:
+        for i, g in enumerate(container):
+            if g["id"] == gid:
+                container.pop(i)
+                return
+
+
+def _is_ancestor(maybe_parent: int, gid: int) -> bool:
+    by_id = {g["id"]: g for g in _flat_groups()}
+    seen, cur = set(), by_id.get(maybe_parent)
+    while cur is not None and cur["id"] not in seen:
+        if cur["id"] == gid:
+            return True
+        seen.add(cur["id"])
+        cur = by_id.get(cur.get("parent_id"))
+    return False
+
+
+def _reparent_group(g: dict[str, Any], parent_id: int | None) -> None:
+    """Move a class under another one, or back out to the top.
+
+    Setting parent_id alone only wrote the number down: the class stayed in
+    whichever list already held it, so an imported ม.4/6ก said it belonged to
+    ม.4/6 while still sitting beside it as a class of its own. Everything that
+    walks the tree then saw it twice, and everything that reads parent_id saw
+    it once — which is how a subgroup can be both present and missing.
+    """
+    if parent_id is not None and (parent_id == g["id"] or _is_ancestor(parent_id, g["id"])):
+        raise HTTPException(400, "ห้องย่อยอยู่ใต้ตัวเองหรือใต้ลูกของตัวเองไม่ได้")
+    parent = next((x for x in _flat_groups() if x["id"] == parent_id), None) if parent_id else None
+    if parent_id is not None and parent is None:
+        raise HTTPException(400, "ไม่พบห้องแม่ที่ระบุ")
+    _detach_group(g["id"])
+    g["parent_id"] = parent["id"] if parent else None
+    g.setdefault("children", [])
+    (parent.setdefault("children", []) if parent else GROUPS).append(g)
+
+
 @app.put("/api/groups/{i}")
 def update_group(i: int, body: dict[str, Any]):
     for g in _flat_groups():
         if g["id"] == i:
+            # Moving between parents has to move the node, not just the field.
+            if "parent_id" in body:
+                want = body["parent_id"]
+                want = int(want) if want not in (None, "", 0) else None
+                if want != g.get("parent_id"):
+                    _reparent_group(g, want)
+                body = {k: v for k, v in body.items() if k != "parent_id"}
             # A caller that sends only the single field means to replace the
             # whole list with it, not to add to what is there.
             if "homeroom_teacher_ids" not in body and "homeroom_teacher_id" in body:
@@ -3438,17 +3489,50 @@ def del_group(i: int):
 
 @app.post("/api/groups/bulk")
 def bulk_create_groups(body: list[dict[str, Any]]):
-    created = []
+    """Import classes. A name that already exists is UPDATED, not duplicated.
+
+    Importing used to append whatever it was given, so a file run twice — or
+    run to add the subgroups a school already half had — left two ม.4/6ก, each
+    with its own id, its own lessons and half the timetable each. The school
+    cannot tell them apart on screen, and deleting the wrong one takes the
+    lessons with it.
+
+    So the name is the identity. Re-importing the same file is then a no-op
+    rather than a mess, which is what makes it safe to hand someone a file and
+    say "run this".
+
+    A row only carries what it carries: fields the file leaves blank keep
+    whatever the class already had, so adding a parent to ม.4/6ก does not wipe
+    its ครูประจำชั้น.
+    """
+    existing = {_norm_name(g.get("name")): g for g in _flat_groups()}
+    out = []
     for row in body:
+        row = {k: v for k, v in row.items() if v is not None or k == "parent_id"}
+        parent_id = row.pop("parent_id", None)
+        found = existing.get(_norm_name(row.get("name")))
+        if found:
+            # Don't let an import move a class out of its parent by omission.
+            found.update({k: v for k, v in row.items() if k not in ("id", "children")})
+            _sync_homeroom(found)
+            if parent_id is not None and parent_id != found.get("parent_id"):
+                _reparent_group(found, int(parent_id))
+            out.append(found)
+            continue
         row["id"] = _next("group")
-        row.setdefault("children", [])
-        row.setdefault("parent_id", None)
+        row["children"] = []
+        row["parent_id"] = None
         row.setdefault("homeroom_room_id", None)
         row.setdefault("homeroom_teacher_id", None)
         _sync_homeroom(row)
         GROUPS.append(row)
-        created.append(row)
-    return created
+        existing[_norm_name(row.get("name"))] = row
+        # Placed under its parent here rather than left at the top level with
+        # the field set, which read as "a class of its own that claims a parent".
+        if parent_id is not None:
+            _reparent_group(row, int(parent_id))
+        out.append(row)
+    return out
 
 # ── Teachers ──────────────────────────────────────────────────────────────────
 @app.get("/api/teachers/")
