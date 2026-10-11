@@ -727,6 +727,49 @@ def _requirement_problems() -> list[dict[str, Any]]:
     return out
 
 
+def _elective_window_groups(subject_id: int) -> set[int]:
+    """Classes sitting in a คาบเสรี that offers this subject."""
+    out: set[int] = set()
+    for p in ELECTIVE_POOLS:
+        if any(o.get("subject_id") == subject_id for o in p.get("options", [])):
+            out |= {g for g in (p.get("group_ids") or [])}
+    for s in SLOTS:
+        if not s.get("is_elective"):
+            continue
+        if any(o.get("subject_id") == subject_id
+               for o in (s.get("elective_options") or [])):
+            out.add(s["group_id"])
+    return out
+
+
+def _reqs_served_by_elective() -> set[int]:
+    """Plan rows whose teaching already happens inside a คาบเสรี.
+
+    The school writes a วิชาเสรี down twice, and both are right: the plan says
+    which classes may choose it, and the คาบเสรี is the hour it is actually
+    taught in. Read as two separate instructions, the solver placed the window
+    AND an ordinary lesson of the same subject for every class — ยิมนาสติก in
+    the Tuesday window and again on Thursday, with one teacher in two places.
+
+    So a plan row is left alone once the class it belongs to sits in a window
+    offering that subject. A class NOT in any window keeps its ordinary
+    lesson, which is the whole point of the coverage warning.
+    """
+    shares = _shares_students_fn()
+    by_subject: dict[int, set[int]] = {}
+    out: set[int] = set()
+    for r in REQUIREMENTS:
+        sid = r["subject_id"]
+        if sid not in by_subject:
+            by_subject[sid] = _elective_window_groups(sid)
+        here = by_subject[sid]
+        if not here:
+            continue
+        if any(shares(r["group_id"], g) for g in here):
+            out.add(r["id"])
+    return out
+
+
 def _excluded_requirement_ids(body: dict[str, Any]) -> set[int]:
     """Requirement ids this run must leave alone."""
     ids = set(body.get("exclude_requirement_ids") or [])
@@ -735,6 +778,9 @@ def _excluded_requirement_ids(body: dict[str, Any]) -> set[int]:
         for p in _requirement_problems():
             if not only_blocking or p["severity"] == "blocking":
                 ids.add(p["requirement_id"])
+    # Already taught in a คาบเสรี — placing it again is a second lesson of a
+    # subject the class takes once, with the teacher booked twice for it.
+    ids |= _reqs_served_by_elective()
     return ids
 
 

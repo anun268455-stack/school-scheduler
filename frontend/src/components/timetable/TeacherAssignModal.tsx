@@ -19,7 +19,7 @@ import { flattenGroups } from "../../utils/groupHierarchy";
 import { ModalShell } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { partnerOf, indexRequirements, assignOffer, type AssignOffer } from "../../utils/coTeaching";
-import type { LessonRequirement, Teacher, ElectivePool } from "../../types";
+import type { LessonRequirement, Teacher, ElectivePool, TimetableSlot } from "../../types";
 import { DAYS, periodLabel } from "../../types";
 
 interface Props {
@@ -119,8 +119,49 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
       }));
     } finally { setBusy(false); }
   };
-  const totalPeriods = useMemo(() => teacherLoad(mine, electiveIds), [mine, electiveIds]);
-  const rawPeriods = mine.reduce((n, r) => n + (r.weekly_count ?? 0), 0);
+  /**
+   * วิชาที่ครูสอนอยู่ในคาบเสรี แต่ยังไม่มีในแผนการสอน
+   *
+   * A วิชาเสรี is written down twice: the plan says which classes may choose
+   * it, and the คาบเสรี is the hour it is taught in. Putting a subject into a
+   * window writes only the second, so this list — which reads the plan —
+   * showed nothing at all, and the teacher's week was short by those hours
+   * with nothing on screen to say why.
+   */
+  const fromWindows = useMemo(() => {
+    const planned = new Set(mine.map((r) => r.subject_id));
+    const by = new Map<number, { cells: TimetableSlot[]; groups: Set<number>; label?: string }>();
+    for (const s of electiveSlots) {
+      for (const o of s.elective_options ?? []) {
+        if (o.teacher_id !== teacher.id || o.subject_id == null) continue;
+        if (planned.has(o.subject_id)) continue;
+        const cur = by.get(o.subject_id)
+          ?? { cells: [] as TimetableSlot[], groups: new Set<number>(), label: o.label };
+        cur.cells.push(s);
+        cur.groups.add(s.group_id);
+        by.set(o.subject_id, cur);
+      }
+    }
+    return [...by.entries()].map(([subjectId, v]) => {
+      // One hour however many classes sit in it; a double is two hours.
+      const hours = new Set(v.cells.map((s) => `${s.day}:${s.period}`));
+      return {
+        subjectId, label: v.label,
+        classes: v.groups.size,
+        weekly: hours.size,
+        windows: [...new Set(v.cells.filter((s) => !s.is_double_cont)
+          .map((s) => `${s.day}:${s.period}`))]
+          .map((k) => { const [d, p] = k.split(":").map(Number); return { day: d, period: p }; })
+          .sort((a, b) => a.day - b.day || a.period - b.period),
+      };
+    }).sort((a, b) => subjName(a.subjectId).localeCompare(subjName(b.subjectId)));
+  }, [electiveSlots, mine, teacher.id, subjects]);
+
+  const windowHours = fromWindows.reduce((n, w) => n + w.weekly, 0);
+  const totalPeriods = useMemo(
+    () => teacherLoad(mine, electiveIds) + windowHours,
+    [mine, electiveIds, windowHours]);
+  const rawPeriods = mine.reduce((n, r) => n + (r.weekly_count ?? 0), 0) + windowHours;
   const coCount = mine.filter((r) => partnerOf(r, reqIndex) != null).length;
   const cap = (teacher.max_slots_per_day || 6) * 5;
 
@@ -358,7 +399,36 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
             </div>
           )}
           <div className="flex-1 overflow-y-auto px-4 pb-3 space-y-2.5">
-            {bySubject.length === 0 && (
+
+            {/* สอนอยู่ในคาบเสรี แต่ยังไม่มีในแผน — real teaching, real hours,
+                and until now invisible on this screen. */}
+            {fromWindows.map((w) => (
+              <div key={`w-${w.subjectId}`}
+                className="rounded-lg border-2 border-purple-300 bg-purple-50/60 overflow-hidden">
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-100/70">
+                  <span className="text-sm font-semibold text-gray-800 truncate">
+                    {subjName(w.subjectId)}
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-purple-600 text-white text-[10px] shrink-0">
+                    วิชาเสรี
+                  </span>
+                  <span className="flex-1" />
+                  <span className="text-xs text-purple-800 shrink-0">
+                    {w.weekly} คาบ ({w.classes} ห้อง เรียนพร้อมกัน)
+                  </span>
+                </div>
+                <div className="px-3 py-1.5 text-[11px] text-gray-600">
+                  🎓 ลงไว้ในคาบเสรี:{" "}
+                  {w.windows.map((x) => `${DAYS[x.day] ?? x.day} ${periodLabel(x.period, periods)}`).join(" · ")}
+                  {w.label ? ` · วง “${w.label}”` : ""}
+                  <span className="text-gray-400">
+                    {" — "}มาจากคาบเสรี ไม่ได้อยู่ในแผนการสอน แก้ได้ที่ช่องคาบเสรีในตาราง
+                  </span>
+                </div>
+              </div>
+            ))}
+
+            {bySubject.length === 0 && fromWindows.length === 0 && (
               <p className="text-xs text-gray-400 text-center py-8">ยังไม่ได้กำหนดวิชาให้ครูคนนี้</p>
             )}
             {bySubject.map(([subjId, rows]) => {
