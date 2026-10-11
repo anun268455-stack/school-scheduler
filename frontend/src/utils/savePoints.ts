@@ -30,8 +30,14 @@ const DB_NAME = "school-scheduler";
 const DB_VERSION = 1;
 const STORE = "save_points";
 
-/** How many automatic save points to keep before the oldest is dropped. */
-export const AUTO_KEEP = 6;
+/**
+ * How many automatic save points to keep.
+ *
+ * A copy goes in after every change now, so these are spread over time by
+ * trimAuto rather than being the last twelve edits — twelve of those would be
+ * two minutes of history.
+ */
+export const AUTO_KEEP = 12;
 
 export type SaveKind = "main" | "auto";
 
@@ -173,12 +179,52 @@ export async function deleteSavePoint(id: string): Promise<void> {
   await tx("readwrite", (s) => s.delete(id) as unknown as IDBRequest<undefined>);
 }
 
-/** Drop the oldest automatic saves past AUTO_KEEP. Main is never touched. */
+/**
+ * Keep AUTO_KEEP automatic saves, spread over time rather than bunched.
+ *
+ * A copy is now written after every change, which is what the school asked
+ * for — but dropping the oldest each time would leave a window a few minutes
+ * wide. An afternoon's work would be covered by twelve copies of the last two
+ * minutes, and the mistake somebody wants to undo is usually older than that.
+ *
+ * So the copy that goes is the one nobody would miss: the one sitting closest
+ * in time to its two neighbours, because the copies on either side of it say
+ * almost the same thing. Repeated on every save, that spreads the window out
+ * evenly over however long the school has been working — twelve copies across
+ * an afternoon rather than twelve copies of the last two minutes — without
+ * anyone having to choose an interval.
+ *
+ * Two are never dropped: the newest, which is the one just written and is
+ * always current, and the oldest, which is what makes the window reach back.
+ */
+export function pickToDrop<T extends { saved_at: number }>(
+  newestFirst: T[], keep: number,
+): T[] {
+  let left = [...newestFirst];
+  const dropped: T[] = [];
+  while (left.length > keep) {
+    let worst = -1, smallest = Infinity;
+    // Skip the newest (0) and judge each of the rest by the span it covers.
+    for (let i = 1; i < left.length; i++) {
+      const newer = left[i - 1].saved_at;
+      const older = i + 1 < left.length ? left[i + 1].saved_at : null;
+      // The oldest one covers all the history before it, so it is never the
+      // cheapest to lose — that is what keeps the window reaching back.
+      const span = older === null ? Infinity : newer - older;
+      if (span < smallest) { smallest = span; worst = i; }
+    }
+    if (worst < 0) break;
+    dropped.push(left[worst]);
+    left = left.filter((_, i) => i !== worst);
+  }
+  return dropped;
+}
+
 async function trimAuto(): Promise<void> {
   const all = await listSavePoints();
   const autos = all.filter((p) => p.kind === "auto");   // already newest-first
-  for (const old of autos.slice(AUTO_KEEP)) {
-    await deleteSavePoint(old.id).catch(() => undefined);
+  for (const gone of pickToDrop(autos, AUTO_KEEP)) {
+    await deleteSavePoint(gone.id).catch(() => undefined);
   }
 }
 

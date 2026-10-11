@@ -12,8 +12,21 @@ import * as api from "../api/client";
 import { useTimetableStore } from "../store/timetableStore";
 import { putSavePoint, listSavePoints, storageAvailable } from "./savePoints";
 
-/** How often to look; a copy is only written if the revision has moved. */
-const CHECK_MS = 4 * 60 * 1000;
+/**
+ * How often to look when nothing is happening.
+ *
+ * Mostly this catches somebody else's edit from another browser. The school's
+ * own edits do not wait for it: each one schedules a copy of its own.
+ */
+const CHECK_MS = 2 * 60 * 1000;
+
+/**
+ * How long to wait after a change before copying.
+ *
+ * Long enough that dragging six lessons across the grid is one copy rather
+ * than six, short enough that nobody can get ahead of it by much.
+ */
+const AFTER_CHANGE_MS = 6000;
 
 export function useAutoSavePoints(enabled: boolean): void {
   const savedRevision = useRef<number>(-1);
@@ -56,10 +69,15 @@ export function useAutoSavePoints(enabled: boolean): void {
           useTimetableStore.setState({ serverReset: true });
           return;
         }
-        await putSavePoint("auto", snap);
+        const meta = await putSavePoint("auto", snap);
         savedRevision.current = revision;
+        // Say so on screen. "I do not know whether what I am doing is saved"
+        // is the whole problem; a copy nobody can see does not answer it.
+        useTimetableStore.setState({ lastSavePointAt: meta.saved_at, savePointState: "saved" });
       } catch {
-        /* a failed auto-save must never be visible; the next tick retries */
+        // A failed copy must not interrupt the work, but it must not look like
+        // success either — the indicator turns and stays turned.
+        useTimetableStore.setState({ savePointState: "failed" });
       } finally {
         running.current = false;
       }
@@ -67,7 +85,30 @@ export function useAutoSavePoints(enabled: boolean): void {
 
     void tick();
     const id = setInterval(tick, CHECK_MS) as unknown as number;
-    return () => clearInterval(id);
+
+    // …and after every change the school makes, which is what they asked for:
+    // "just save every single time". The revision counter moves on each write,
+    // so this fires for their own edits and for anyone else's.
+    let pending: number | undefined;
+    const unsubscribe = useTimetableStore.subscribe((st, prev) => {
+      // The school's own edits land in the store directly, so watching the
+      // lists catches them the moment they happen; lastRevision catches
+      // somebody else's, arriving by poll.
+      if (st.slots === prev.slots && st.requirements === prev.requirements
+          && st.groups === prev.groups && st.teachers === prev.teachers
+          && st.subjects === prev.subjects && st.rooms === prev.rooms
+          && st.lastRevision === prev.lastRevision) return;
+      if (st.serverReset) return;
+      useTimetableStore.setState({ savePointState: "saving" });
+      if (pending !== undefined) clearTimeout(pending);
+      pending = setTimeout(() => { void tick(); }, AFTER_CHANGE_MS) as unknown as number;
+    });
+
+    return () => {
+      clearInterval(id);
+      if (pending !== undefined) clearTimeout(pending);
+      unsubscribe();
+    };
   }, [enabled]);
 }
 

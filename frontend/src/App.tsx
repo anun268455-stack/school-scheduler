@@ -7,6 +7,7 @@ import { PrintView, DEFAULT_PRINT_OPTIONS, type PrintOptions } from "./component
 import { TimetableGrid } from "./components/timetable/TimetableGrid";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ServerResetBanner } from "./components/backup/ServerResetBanner";
+import { StorageWarningBanner } from "./components/backup/StorageWarningBanner";
 import { useAutoSavePoints, useServerDataCheck } from "./utils/useAutoSavePoints";
 import { useTimetableStore } from "./store/timetableStore";
 import type { DashPage } from "./pages/Dashboard";
@@ -91,6 +92,7 @@ export default function App() {
       {/* Stands above everything: if the server has thrown its data away, the
           copy on screen is the only one left and a reload would end it. */}
       <ServerResetBanner />
+      <StorageWarningBanner />
 
       <main className="flex-1 overflow-hidden flex flex-col">
         <ErrorBoundary>

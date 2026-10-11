@@ -92,6 +92,13 @@ interface TimetableStore {
    * the data is recovered or the warning is dismissed.
    */
   serverReset:   boolean;
+  /**
+   * The copy in this browser: when it was last written, and what is happening
+   * to it now. Shown in the toolbar, because "I don't know whether what I'm
+   * doing is saved" is answered by seeing it, not by being told it happens.
+   */
+  lastSavePointAt: number | null;
+  savePointState:  "idle" | "saving" | "saved" | "failed";
   setLiveSync:   (on: boolean) => void;
   startLiveSync: () => void;
   stopLiveSync:  () => void;
@@ -179,6 +186,8 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   syncState:         "connecting",
   remoteUpdates:     0,
   serverReset:       false,
+  lastSavePointAt:   null,
+  savePointState:    "idle",
 
   schoolConfig: {
     schoolName: "โรงเรียน",
