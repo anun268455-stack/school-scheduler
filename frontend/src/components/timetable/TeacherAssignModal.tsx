@@ -9,16 +9,17 @@
  *        change periods-per-week or drop a class.
  * Right: add work — pick a subject, pick a level, tick the classes.
  */
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { electiveSubjectIds, teacherLoad } from "../../utils/teachingLoad";
+import { coverageFor } from "../../utils/electiveCoverage";
 import { flattenGroups } from "../../utils/groupHierarchy";
 import { ModalShell } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { partnerOf, indexRequirements, assignOffer, type AssignOffer } from "../../utils/coTeaching";
-import type { LessonRequirement, Teacher } from "../../types";
+import type { LessonRequirement, Teacher, ElectivePool } from "../../types";
 
 interface Props {
   teacher: Teacher;
@@ -26,7 +27,7 @@ interface Props {
 }
 
 export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
-  const { subjects, groups, requirements, departments, teachers } = useTimetableStore();
+  const { subjects, groups, requirements, departments, teachers, slots } = useTimetableStore();
 
   const flat = useMemo(() => flattenGroups(groups), [groups]);
   const levels = useMemo(() => {
@@ -80,6 +81,18 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
   // offering one elective to ten classes read as twenty hours and showed up
   // as overloaded when nothing was wrong.
   const electiveIds = useMemo(() => electiveSubjectIds(subjects), [subjects]);
+
+  /**
+   * The คาบเสรี windows, so each class can be checked against them.
+   *
+   * A class down to take an elective that sits in no window offering it gets
+   * an ordinary lesson instead, on its own, with a teacher who is already
+   * standing in the window teaching the same subject to everybody else. Each
+   * half looks reasonable on its own, which is why nothing caught it.
+   */
+  const [pools, setPools] = useState<ElectivePool[]>([]);
+  useEffect(() => { api.fetchElectivePools().then(setPools).catch(() => setPools([])); }, []);
+  const electiveSlots = useMemo(() => slots.filter((x) => x.is_elective), [slots]);
 
   /** Mark (or unmark) a subject as วิชาเสรี without leaving this dialog. */
   const toggleElective = async (subjectId: number, on: boolean) => {
@@ -286,6 +299,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
             )}
             {bySubject.map(([subjId, rows]) => {
               const isElective = electiveIds.has(subjId);
+              const cover = isElective
+                ? coverageFor(subjId, requirements, groups, pools, electiveSlots) : null;
               const sum = rows.reduce((n, r) => n + r.weekly_count, 0);
               const counted = isElective ? Math.max(...rows.map((r) => r.weekly_count)) : sum;
               return (
@@ -321,6 +336,14 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
                     ) : `${sum} คาบ`}
                   </span>
                 </div>
+                {cover && cover.missing.length > 0 && (
+                  <p className="px-2.5 py-1 bg-amber-50 border-t border-amber-200 text-[11px] text-amber-900">
+                    ⚠ {cover.missing.length} ห้องยังไม่ได้อยู่ในคาบเสรีที่มีวิชานี้
+                    {cover.noWindow
+                      ? " — ยังไม่มีคาบเสรีไหนเปิดวิชานี้เลย ไปสร้างที่หน้า “คาบเสรี”"
+                      : " — เปิดหน้า “คาบเสรี” แล้วกด “เพิ่มห้อง” ให้ครบ"}
+                  </p>
+                )}
                 <div className="divide-y divide-gray-50">
                   {rows.map((r) => {
                     // Joined, not owned: the row belongs to the other teacher,
@@ -332,6 +355,24 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
                     <div key={r.id} className={clsx("flex items-center gap-1.5 px-2.5 py-1.5",
                       joined && "bg-sky-50/60")}>
                       <span className="text-sm text-gray-700 truncate">{gName(r.group_id)}</span>
+                      {/* Said after the class, because the class is the thing
+                          that is wrong: this one is not in any คาบเสรี. */}
+                      {isElective && cover && cover.missing.includes(r.group_id) && (
+                        <span
+                          title={cover.noWindow
+                            ? "ยังไม่มีคาบเสรีที่มีวิชานี้เลย — ห้องนี้จะถูกจัดเป็นคาบธรรมดาแยกต่างหาก"
+                            : "ห้องนี้ไม่ได้อยู่ในคาบเสรีที่มีวิชานี้ — จะถูกจัดเป็นคาบธรรมดาแยกต่างหาก "
+                              + "ไปเพิ่มห้องนี้เข้าคาบเสรี หรือเอาวิชานี้ออกจากห้องนี้"}
+                          className="shrink-0 px-1.5 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-800 text-[10px]">
+                          ⚠ ไม่ได้อยู่ในคาบเสรี
+                        </span>
+                      )}
+                      {isElective && cover && cover.covered.includes(r.group_id) && (
+                        <span title="ห้องนี้อยู่ในคาบเสรีที่มีวิชานี้แล้ว"
+                          className="shrink-0 px-1.5 py-0.5 rounded-full border border-purple-200 bg-purple-50 text-purple-700 text-[10px]">
+                          ✓ อยู่ในคาบเสรี
+                        </span>
+                      )}
                       {mate != null && (
                         <span
                           title={joined

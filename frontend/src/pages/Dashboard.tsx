@@ -4,7 +4,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
-import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject, LessonRequirement } from "../types";
+import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject, LessonRequirement, ElectivePool } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
 import { ImportModal } from "../components/import/ImportModal";
@@ -26,6 +26,7 @@ import { SubgroupSetModal } from "../components/timetable/SubgroupSetModal";
 import { auditAll } from "../utils/subgroupAudit";
 import { groupElectiveSlots } from "../utils/electiveGroups";
 import { electiveSubjectIds, teacherLoads, groupLoads } from "../utils/teachingLoad";
+import { coverageProblems } from "../utils/electiveCoverage";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
@@ -2446,6 +2447,15 @@ const AnalyticsPanel: React.FC = () => {
   const subAudits = useMemo(() => auditAll(groups, slots), [groups, slots]);
   const subProblems = subAudits.reduce((n, r) => n + r.problemCount, 0);
   const [auditFor, setAuditFor] = useState<number | null>(null);
+
+  // วิชาเสรี: the plan and the คาบเสรี windows have to name the same classes.
+  const [pools, setPools] = useState<ElectivePool[]>([]);
+  useEffect(() => { api.fetchElectivePools().then(setPools).catch(() => setPools([])); }, []);
+  const electiveSlotsAll = useMemo(() => slots.filter((x) => x.is_elective), [slots]);
+  const covGaps = useMemo(
+    () => coverageProblems(electiveSubjectIds(subjects, pools), requirements, groups,
+                           pools, electiveSlotsAll),
+    [subjects, pools, requirements, groups, electiveSlotsAll]);
   const coTaught = useMemo(
     () => slots.filter(teachingTogether).length, [slots],
   );
@@ -2541,6 +2551,49 @@ const AnalyticsPanel: React.FC = () => {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* ── ตรวจวิชาเสรีกับคาบเสรีให้ตรงกัน ───────────────────────────
+          A subject marked เสรี is taught once, in a window. Any class whose
+          plan has it but who sits in no such window gets an ordinary lesson
+          of its own instead — with a teacher who is at that moment standing
+          in the window teaching the same subject to everybody else. */}
+      {(covGaps.length > 0 || electiveSubjectIds(subjects, pools).size > 0) && (
+        <div className={`border rounded-xl overflow-hidden mb-6 ${
+          covGaps.length > 0 ? "border-amber-300" : "border-green-200"}`}>
+          <div className={`px-4 py-3 border-b ${
+            covGaps.length > 0 ? "bg-amber-50 border-amber-300" : "bg-green-50 border-green-200"}`}>
+            <h3 className={`text-sm font-bold ${
+              covGaps.length > 0 ? "text-amber-800" : "text-green-700"}`}>
+              🎓 ตรวจวิชาเสรีกับคาบเสรี
+            </h3>
+            <p className="text-[11px] text-gray-600 mt-0.5">
+              ห้องที่ลงวิชาเสรีไว้ ต้องอยู่ในคาบเสรีที่เปิดวิชานั้นด้วย
+              ไม่งั้นระบบจะจัดให้เป็นคาบธรรมดาแยกต่างหาก และครูจะชนกับคาบเสรีของตัวเอง
+            </p>
+          </div>
+          <div className="p-3 space-y-1.5">
+            {covGaps.length === 0 && (
+              <p className="text-xs text-green-700">✅ ทุกห้องที่ลงวิชาเสรีไว้ อยู่ในคาบเสรีครบแล้ว</p>
+            )}
+            {covGaps.slice(0, 12).map((c) => (
+              <div key={c.subjectId} className="text-xs">
+                <span className="font-medium text-gray-800">{sCode(c.subjectId)}</span>
+                <span className="text-amber-800">
+                  {" "}— {c.missing.length} ห้องไม่ได้อยู่ในคาบเสรี
+                  {c.noWindow && " (ยังไม่มีคาบเสรีไหนเปิดวิชานี้เลย)"}
+                </span>
+                <div className="text-[11px] text-gray-500">
+                  {c.missing.slice(0, 12).map(gName).join(" · ")}
+                  {c.missing.length > 12 && ` … อีก ${c.missing.length - 12}`}
+                </div>
+              </div>
+            ))}
+            {covGaps.length > 12 && (
+              <p className="text-[11px] text-gray-500">… และอีก {covGaps.length - 12} วิชา</p>
+            )}
+          </div>
         </div>
       )}
 
