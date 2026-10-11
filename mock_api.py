@@ -33,13 +33,38 @@ async def _bump_revision(request, call_next):
         # changed that, and a stale cache would offer a teacher who has just
         # been booked.
         _SUB.invalidate()
+        # …and keep it. This is the line the whole storage layer was written
+        # for and never had: _save_state was reachable only from the restore
+        # endpoints, so an ordinary afternoon of work — every lesson dragged,
+        # every teacher assigned — was held in memory and nowhere else. It
+        # looked saved, because the screen and every other browser showed it,
+        # right up to the next restart. On a host that sleeps when nobody is
+        # using it, that is most evenings.
+        #
+        # Every write, not every few: a save that waits for a timer is a save
+        # that is not there when the process is stopped between ticks. The
+        # cost is one snapshot built here (~60ms) and handed to the writer
+        # thread, which coalesces a burst of edits into a single round trip.
+        _save_state()
     return response
 
 
 @app.get("/api/state/version")
 def state_version():
-    """Tiny polling endpoint — lets clients detect other people's edits."""
-    return {"revision": REVISION["n"], "slots": len(SLOTS)}
+    """Tiny polling endpoint — lets clients detect other people's edits.
+
+    It carries the save state too. "Is what I am doing saved?" is a question
+    about the server, and answering it from the browser's own copy was only
+    ever half an answer.
+    """
+    return {
+        "revision": REVISION["n"],
+        "slots": len(SLOTS),
+        "saved_at": _LAST_SAVED_AT,
+        "pending": _pending_blob is not None,
+        "store": _STORE_KIND,
+        "store_error": _STORE_ERROR,
+    }
 
 # ── Data ───────────────────────────────────────────────────────────────────────
 PERIODS: list[dict[str, Any]] = [
@@ -979,13 +1004,23 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # only if the school has ticked เรียนที่ลานได้, and then only once the
         # indoor rooms are full — see `eligible` and `rank` below.
         rule = _subject_room_rule(subj)
-        allow_out = _subject_outdoor(subj)
-        if allow_out_override is not None:
-            allow_out = allow_out_override
-        wants_outdoor = (subj.get("department_id") in outdoor_dept_ids
-                         and allow_out is not False)
-        may_outdoor = wants_outdoor or allow_out is not False
         grp = g_map.get(group_id, {}) if group_id is not None else {}
+        # Who may go outdoors is decided in one place, _may_use_outdoor, which
+        # asks the lesson, then the class, then the subject, and says no when
+        # none of them has an opinion.
+        #
+        # This used to work it out again here, as "not explicitly forbidden",
+        # which is the opposite answer for anything nobody had ticked — so a
+        # class could still be sent to a ลาน after the school had set the
+        # default to keep everyone indoors. Two rules for one question is one
+        # rule too many.
+        allow_out = _may_use_outdoor(subj, None, grp or None)
+        if allow_out_override is not None:
+            allow_out = bool(allow_out_override)
+        # พละ is the exception the school never has to tick: a department that
+        # owns the ลาน owns it because that is where its lessons happen.
+        wants_outdoor = subj.get("department_id") in outdoor_dept_ids
+        may_outdoor = wants_outdoor or allow_out
         # ห้องประจำชั้น, or the one this run has settled on for a class that has
         # none. Forty of this school's classes have no homeroom recorded, which
         # left 862 lessons with nothing to hold them in place — they took
@@ -3780,29 +3815,50 @@ def create_slot(body: dict[str, Any]):
         if body.get("room_id") and not any(r["id"] == int(body["room_id"]) for r in ROOMS):
             raise HTTPException(400, "ไม่พบห้องสอนที่เลือก (อาจถูกลบไปแล้ว)")
 
-    slot = {
-        "id": _next("slot"),
-        "day": int(body["day"]), "period": int(body["period"]),
-        "group_id": int(body["group_id"]),
-        "teacher_id": int(body["teacher_id"]),
-        "subject_id": int(body["subject_id"]),
-        "room_id": body.get("room_id"),
-        "is_double_start": bool(body.get("is_double_start", False)),
-        "parallel_group_key": body.get("parallel_group_key"),
-        "is_locked": bool(body.get("is_locked", False)),
-    }
-    if not body.get("force"):
-        # Judge the cell with the new lesson in place.
-        SLOTS.append(slot)
-        problems = _validate_moves([{"slot_id": slot["id"]}])
-        if problems:
-            SLOTS.remove(slot)
-            _counters["slot"] -= 1
-            raise HTTPException(409, " · ".join(problems[:3]))
-        return _enrich_slot(slot)
+    group = _find_group(int(body["group_id"]))
+    day, period = int(body["day"]), int(body["period"])
 
-    SLOTS.append(slot)
-    return _enrich_slot(slot)
+    # คาบคู่ added by hand. Two periods back to back, one lesson: the school
+    # builds these as a pair or not at all, so the second half is found and
+    # judged here rather than left for somebody to add separately and get
+    # wrong. The next period is the next one THIS class has — ม.ต้น and
+    # ม.ปลาย break at different times, so "the one after" is not the same
+    # period number for both.
+    second = _next_class_period_for(_level_key(group), period) if body.get("is_double") else None
+    if body.get("is_double") and second is None:
+        raise HTTPException(400, "คาบนี้ต่อคาบคู่ไม่ได้ — เป็นคาบสุดท้ายของวัน "
+                                 "หรือคาบถัดไปเป็นเวลาพัก")
+
+    key = f"MAN-{_next('activity')}" if second is not None else None
+    made: list[dict[str, Any]] = []
+    for i, p in enumerate([period] + ([second] if second is not None else [])):
+        made.append({
+            "id": _next("slot"),
+            "day": day, "period": p,
+            "group_id": int(body["group_id"]),
+            "teacher_id": int(body["teacher_id"]),
+            "subject_id": int(body["subject_id"]),
+            "room_id": body.get("room_id"),
+            # Both halves share a room: a คาบคู่ that moves rooms halfway
+            # through is two lessons wearing one name.
+            "is_double_start": second is not None and i == 0,
+            "is_double_cont": second is not None and i > 0,
+            "double_group_key": key,
+            "parallel_group_key": body.get("parallel_group_key"),
+            "is_locked": bool(body.get("is_locked", False)),
+        })
+
+    SLOTS.extend(made)
+    if not body.get("force"):
+        # Judge the cells with the new lesson in place — both of them, so a
+        # double is never half-created.
+        problems = _validate_moves([{"slot_id": x["id"]} for x in made])
+        if problems:
+            for x in made:
+                SLOTS.remove(x)
+            _counters["slot"] -= len(made)
+            raise HTTPException(409, " · ".join(problems[:3]))
+    return _enrich_slot(made[0])
 
 def _enrich_slot(s: dict[str, Any]) -> dict[str, Any]:
     """Re-derive display fields (name/type lookups) from current id fields."""
@@ -5110,7 +5166,10 @@ import atexit as _atexit
 
 
 def _pack(snapshot: dict[str, Any]) -> bytes:
-    return _gzip.compress(_json.dumps(snapshot, ensure_ascii=False).encode("utf-8"), 6)
+    # Level 3, not 6. This now runs inside every write request, and the extra
+    # 16 KB over the wire costs less than the 9 ms it saves on each lesson the
+    # school drags across the grid.
+    return _gzip.compress(_json.dumps(snapshot, ensure_ascii=False).encode("utf-8"), 3)
 
 
 def _unpack(blob: bytes) -> dict[str, Any]:
@@ -5244,7 +5303,10 @@ def _db_history_blob(hid: int) -> bytes | None:
 # collapses into one write because each new snapshot replaces the one still
 # queued; the whole state goes out every time, so an overtaken save loses
 # nothing.
-_FLUSH_DELAY = 1.5                      # seconds to coalesce a burst of edits
+# Seconds to coalesce a burst of edits. Every bit of this window is work a
+# hard stop would take with it, so it is as short as it can be while still
+# turning a dragged-across-the-grid burst into one round trip.
+_FLUSH_DELAY = 0.5
 _pending_blob: tuple[bytes, int] | None = None   # (packed snapshot, slot count)
 _pending_lock = _threading.Lock()
 _pending_signal = _threading.Event()

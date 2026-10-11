@@ -37,13 +37,21 @@ export const StorageWarningBanner = () => {
 
   if (!info) return null;
 
-  // Three different problems, three different things to do about them.
+  // Four different problems, four different things to do about them.
   const noDatabase   = info.store_configured === false;
   const cannotReach  = info.store_configured === true && info.store !== "postgres";
   const writeBlocked = info.write_blocked === true;
-  if (!noDatabase && !cannotReach && !writeBlocked) return null;
+  // Connected, but the writes themselves are failing. This one is the quiet
+  // one: everything on screen looks normal and nothing is being kept.
+  const writeFailing = info.store === "postgres" && !!info.store_error;
+  if (!noDatabase && !cannotReach && !writeBlocked && !writeFailing) return null;
 
-  const [title, body] = writeBlocked
+  const [title, body] = writeFailing
+    ? ["บันทึกลงฐานข้อมูลไม่สำเร็จ — งานที่ทำหลังจากนี้อาจหาย",
+       `ต่อฐานข้อมูลได้แต่เขียนไม่ผ่าน (${info.store_error}) ระบบกำลังลองใหม่เรื่อย ๆ `
+       + "และเก็บสำเนาไว้ในเบราว์เซอร์นี้ให้ — กรุณากดดาวน์โหลดไฟล์สำรองเก็บไว้ตอนนี้ "
+       + "ที่ จัดการ → สำรองและกู้คืนข้อมูล"]
+    : writeBlocked
     ? ["เซิร์ฟเวอร์หยุดบันทึกไว้ เพื่อไม่ให้ทับข้อมูลเดิมของโรงเรียน",
        "เซิร์ฟเวอร์กลับมาด้วยข้อมูลตั้งต้น แต่ข้อมูลจริงยังอยู่ในฐานข้อมูล จึงยังไม่บันทึกทับให้ "
        + "— ไปที่ จัดการ → สำรองและกู้คืนข้อมูล → ประวัติย้อนหลังบนเซิร์ฟเวอร์ แล้วกู้คืนเวลาที่ข้อมูลยังครบ"]

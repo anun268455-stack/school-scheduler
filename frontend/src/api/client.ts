@@ -250,7 +250,15 @@ export const deleteLevelActivity = (activityKey: string) =>
 // ── Live collaboration ───────────────────────────────────────────────────────
 /** Tiny poll: returns the server's data revision so we can detect other people's edits. */
 export const fetchStateVersion = () =>
-  api.get<{ revision: number; slots: number }>("/state/version", { timeout: 8000 }).then((r) => r.data);
+  api.get<{
+    revision: number; slots: number;
+    /** When the SERVER last wrote to its database. The answer that matters. */
+    saved_at?: string | null;
+    /** A save is built and on its way out. */
+    pending?: boolean;
+    store?: "postgres" | "file";
+    store_error?: string | null;
+  }>("/state/version", { timeout: 8000 }).then((r) => r.data);
 
 // ── Solver ───────────────────────────────────────────────────────────────────
 export const runSolver = (p: {

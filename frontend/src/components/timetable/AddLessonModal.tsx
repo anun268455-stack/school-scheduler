@@ -63,6 +63,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
   const [busy, setBusy]           = useState(false);
   const [error, setError]         = useState<string | null>(null);
   const [newSubject, setNewSubject] = useState({ code: "", name: "", type: "common" as SubjectType, duration: 1 });
+  const [isDouble, setIsDouble] = useState(false);
 
   const flat      = useMemo(() => flattenGroups(groups), [groups]);
   const shares    = useMemo(() => buildSharesStudents(groups), [groups]);
@@ -175,6 +176,34 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
     if (!groupSel) setGroupSel(String(req.groupId));
   };
 
+  /**
+   * The period this class would run on into, for a คาบคู่.
+   *
+   * Its own next period, not the next number: ม.ต้น and ม.ปลาย break at
+   * different times, so คาบ 4 follows คาบ 3 for one of them and lunch for
+   * the other.
+   */
+  const secondPeriod = useMemo(() => {
+    if (groupId == null) return null;
+    const mine = periodsForLevel(periods, levelKeyOf(flat.find((g) => g.id === groupId)))
+      .filter((p) => p.type === "class")
+      .map((p) => p.period_num)
+      .sort((x, y) => x - y);
+    const i = mine.indexOf(period);
+    return i >= 0 && i + 1 < mine.length ? mine[i + 1] : null;
+  }, [groupId, flat, periods, period]);
+
+  const secondBusy = useMemo(() => {
+    if (secondPeriod == null || groupId == null) return false;
+    return slots.some((s) => s.day === day && s.period === secondPeriod
+      && shares(s.group_id, groupId));
+  }, [slots, day, secondPeriod, groupId, shares]);
+
+  const canDouble = secondPeriod != null && !secondBusy;
+  // Turning the class to one that cannot take a double must not leave the
+  // box ticked and the save failing on the server instead.
+  React.useEffect(() => { if (!canDouble) setIsDouble(false); }, [canDouble]);
+
   const effectiveRoomId = roomId ? Number(roomId) : suggestedRoomId;
   const teacherConflict = teacherId ? busyTeacherIds.has(Number(teacherId)) : false;
   const roomConflict    = effectiveRoomId != null && busyRoomIds.has(effectiveRoomId);
@@ -210,7 +239,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
       if (groupId == null) { setError("กรุณาเลือกห้องเรียน"); return; }
 
       await addLesson({
-        group_id: groupId, day, period,
+        group_id: groupId, day, period, is_double: isDouble,
         subject_id: useSubjectId,
         teacher_id: Number(teacherId),
         room_id: effectiveRoomId,
@@ -416,6 +445,32 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
                     : "– ไม่ระบุห้อง –"}
                 />
               </Field>
+
+              {/* คาบคู่ — two periods back to back, one lesson.
+                  Added by hand it was two separate lessons that happened to
+                  touch, which the printed sheet and the solver both read as
+                  two, and which could then be moved apart. */}
+              <label className={clsx(
+                "flex items-center gap-2 text-sm rounded-lg border px-3 py-2 w-fit",
+                canDouble ? "cursor-pointer border-blue-200 bg-blue-50/60 text-gray-700"
+                  : "border-gray-200 bg-gray-50 text-gray-400 cursor-not-allowed")}>
+                <input type="checkbox" className="w-4 h-4 accent-blue-600"
+                  checked={isDouble} disabled={!canDouble}
+                  onChange={(e) => setIsDouble(e.target.checked)} />
+                <span>
+                  🔗 <strong>คาบคู่</strong> — จอง 2 คาบติดกัน
+                  {secondPeriod != null && (
+                    <span className="text-gray-500">
+                      {" "}({periodLabel(period, periods)} + {periodLabel(secondPeriod, periods)})
+                    </span>
+                  )}
+                  {groupId == null && <span className="text-gray-400"> — เลือกห้องเรียนก่อน</span>}
+                  {groupId != null && secondPeriod == null && (
+                    <span className="text-gray-400"> — คาบนี้เป็นคาบสุดท้ายของชั้นนี้</span>
+                  )}
+                  {secondBusy && <span className="text-amber-600"> — คาบถัดไปของห้องนี้ไม่ว่าง</span>}
+                </span>
+              </label>
 
               {/* Conflict feedback */}
               <div className="space-y-1">

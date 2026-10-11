@@ -121,12 +121,22 @@ interface TimetableStore {
    */
   lastSavePointAt: number | null;
   savePointState:  "idle" | "saving" | "saved" | "failed";
+  /**
+   * When the SERVER last stored the data, as its own polling endpoint reports
+   * it. The browser's copy is a safety net; this is the real answer to "is my
+   * work saved", and it is the one shown in the toolbar.
+   */
+  serverSavedAt:  number | null;
+  serverSaving:   boolean;
+  serverStoreError: string | null;
   setLiveSync:   (on: boolean) => void;
   startLiveSync: () => void;
   stopLiveSync:  () => void;
   addLesson: (d: {
     group_id: number; day: number; period: number;
     subject_id: number; teacher_id: number; room_id?: number | null;
+    /** คาบคู่ — the server creates the following period too, same room. */
+    is_double?: boolean;
   }) => Promise<void>;
 
   // ── Actions ───────────────────────────────────────────────────────────────
@@ -206,6 +216,9 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   remoteUpdates:     0,
   lastSavePointAt:   null,
   savePointState:    "idle",
+  serverSavedAt:     null,
+  serverSaving:      false,
+  serverStoreError:  null,
 
   schoolConfig: {
     schoolName: "โรงเรียน",
@@ -276,9 +289,16 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       if (st.draggingSlot || st.isSolving || st.isLoading) return;
       if (typeof document !== "undefined" && document.hidden) return;
       try {
-        const { revision } = await api.fetchStateVersion();
+        const info = await api.fetchStateVersion();
+        const { revision } = info;
         const prev = get().lastRevision;
-        set({ syncState: "live", lastSyncedAt: Date.now() });
+        set({
+          syncState: "live", lastSyncedAt: Date.now(),
+          serverSavedAt: info.saved_at ? new Date(info.saved_at).getTime() : get().serverSavedAt,
+          serverSaving: !!info.pending,
+          serverStoreError: info.store === "file" ? "ยังไม่ได้เก็บลงฐานข้อมูล"
+            : (info.store_error ?? null),
+        });
         if (revision === prev) return;
         if (prev === -1) { set({ lastRevision: revision }); return; }  // first poll: just record
         // A revision that went BACKWARDS means the process restarted: the
@@ -306,8 +326,11 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
 
   // Add a single lesson to one cell (used by "click an empty cell to add").
   addLesson: async (d) => {
-    const created = await api.createSlot(d);
-    set((s) => ({ slots: [...s.slots, created] }));
+    await api.createSlot(d);
+    // Reload rather than append: a คาบคู่ is two cells and only the first
+    // comes back, so appending would leave the second half off the grid
+    // until something else refreshed it.
+    await get().loadSlots();
   },
 
   // ── DnD ─────────────────────────────────────────────────────────────────

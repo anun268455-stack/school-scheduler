@@ -31,9 +31,11 @@ interface TopNavbarProps {
  * they can see that without being told what to look for.
  */
 const SaveIndicator: React.FC = () => {
-  const at    = useTimetableStore((s) => s.lastSavePointAt);
-  const state = useTimetableStore((s) => s.savePointState);
-  // Re-render on the minute so the "x นาทีที่แล้ว" does not go stale on screen.
+  const at      = useTimetableStore((s) => s.serverSavedAt);
+  const saving  = useTimetableStore((s) => s.serverSaving);
+  const problem = useTimetableStore((s) => s.serverStoreError);
+  const localAt = useTimetableStore((s) => s.lastSavePointAt);
+  // Re-render on the minute so "x นาทีที่แล้ว" does not go stale on screen.
   const [, tick] = React.useState(0);
   React.useEffect(() => {
     const id = setInterval(() => tick((n) => n + 1), 30_000);
@@ -44,10 +46,9 @@ const SaveIndicator: React.FC = () => {
     ? new Date(at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })
     : null;
   const mins = at ? Math.floor((Date.now() - at) / 60000) : null;
-  const stale = mins != null && mins >= 10;
 
-  const label = state === "saving" ? "กำลังเซฟ…"
-    : state === "failed" ? "เซฟไม่สำเร็จ"
+  const label = problem ? "ยังไม่ปลอดภัย"
+    : saving ? "กำลังเซฟ…"
     : time ? `เซฟ ${time}`
     : "ยังไม่ได้เซฟ";
 
@@ -55,23 +56,24 @@ const SaveIndicator: React.FC = () => {
     <div className="flex items-center px-2 border-r border-gray-700 shrink-0">
       <span
         title={
-          state === "failed"
-            ? "เซฟลงเบราว์เซอร์ไม่สำเร็จ — เปิดหน้าจัดการ → สำรองและกู้คืนข้อมูล แล้วกดดาวน์โหลดไฟล์สำรองไว้"
+          problem
+            ? `เซิร์ฟเวอร์ยังไม่ได้เก็บข้อมูลลงฐานข้อมูล (${problem}) — `
+              + "ข้อมูลอาจหายเมื่อระบบรีสตาร์ท ดูรายละเอียดที่แถบเตือนด้านบน"
             : at
-            ? `เก็บสำเนาไว้ในเบราว์เซอร์นี้แล้วเมื่อ ${new Date(at).toLocaleString("th-TH")}`
-              + ` (${mins} นาทีที่แล้ว) · กู้คืนได้ที่ จัดการ → สำรองและกู้คืนข้อมูล`
-            : "ระบบจะเก็บสำเนาให้เองทุกครั้งที่มีการแก้ไข"
+            ? `เซิร์ฟเวอร์บันทึกลงฐานข้อมูลแล้วเมื่อ ${new Date(at).toLocaleString("th-TH")}`
+              + ` (${mins} นาทีที่แล้ว)`
+              + (localAt ? ` · สำเนาในเบราว์เซอร์นี้ ${new Date(localAt).toLocaleTimeString("th-TH")}` : "")
+            : "ยังไม่มีการแก้ไขตั้งแต่เปิดหน้านี้ — ระบบจะบันทึกให้เองทุกครั้งที่แก้ไข"
         }
         className={clsx(
           "flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-medium border",
-          state === "failed" ? "bg-red-900/40 border-red-700 text-red-300"
-          : state === "saving" ? "bg-amber-900/40 border-amber-700 text-amber-200"
-          : stale ? "bg-gray-800 border-gray-600 text-gray-400"
+          problem ? "bg-red-900/40 border-red-700 text-red-300"
+          : saving ? "bg-amber-900/40 border-amber-700 text-amber-200"
           : at ? "bg-emerald-900/40 border-emerald-700 text-emerald-300"
           : "bg-gray-800 border-gray-600 text-gray-400",
         )}
       >
-        <span>{state === "failed" ? "⚠" : "💾"}</span>
+        <span>{problem ? "⚠" : "💾"}</span>
         {label}
       </span>
     </div>

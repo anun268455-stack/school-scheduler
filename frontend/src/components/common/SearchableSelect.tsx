@@ -81,6 +81,28 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
 
   const showSearch = options.length >= searchThreshold;
 
+  /**
+   * Open upwards when there is no room below.
+   *
+   * The list is 20rem tall and these pickers sit in the lower half of a
+   * dialog as often as the upper. Opening downwards regardless put the names
+   * below the fold of a scrolling panel, and the way out of that was to zoom
+   * the whole browser out — which is how the school ended up reading their
+   * timetable at 67%.
+   */
+  const [dropUp, setDropUp] = useState(false);
+  const [listMax, setListMax] = useState(288);        // 18rem, the old max-h-72
+  useEffect(() => {
+    if (!open) return;
+    const r = boxRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const below = window.innerHeight - r.bottom - 12;
+    const above = r.top - 12;
+    const up = below < 240 && above > below;
+    setDropUp(up);
+    setListMax(Math.max(160, Math.min(288, (up ? above : below) - (showSearch ? 52 : 8))));
+  }, [open, showSearch]);
+
   return (
     <div ref={boxRef} className={clsx("relative", className)}>
       {/* Closed state — looks like a select */}
@@ -113,7 +135,10 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
 
       {open && (
         <div
-          className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-2xl overflow-hidden text-gray-900"
+          className={clsx(
+            "absolute z-50 bg-white border border-gray-200 rounded-lg shadow-2xl overflow-hidden text-gray-900",
+            dropUp ? "bottom-full mb-1" : "top-full mt-1",
+          )}
           /* Always at least readable, however narrow the trigger is: a picker
              inside a table column was coming out a few characters wide. */
           style={{ minWidth: "max(100%, 240px)", width: "max-content", maxWidth: "min(380px, 90vw)" }}
@@ -131,7 +156,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
             </div>
           )}
 
-          <div className="max-h-72 overflow-y-auto py-1">
+          <div className="overflow-y-auto py-1" style={{ maxHeight: listMax }}>
             {emptyLabel && (
               <Row
                 label={emptyLabel} active={value === ""} highlighted={false} muted
