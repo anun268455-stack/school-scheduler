@@ -128,6 +128,12 @@ export interface Subject {
   duration:      1 | 2;
   department_id: number | null;
   is_activity:   boolean;       // true = ชุมนุม/ลูกเสือ/กิจกรรม
+  /**
+   * วิชาเสรี — a subject students CHOOSE, not one the whole class sits.
+   * Several classes offering it share one hour and one teacher, so it is
+   * counted once rather than once per class. See utils/teachingLoad.
+   */
+  is_elective?:  boolean;
   fixed_room_id?: number | null; // ห้องประจำวิชา — สำคัญกว่าห้องประจำชั้นของนักเรียน
   /** วิชายากควรอยู่ช่วงเช้า — a nudge the solver tries first, never a rule. */
   prefer_morning?: boolean;

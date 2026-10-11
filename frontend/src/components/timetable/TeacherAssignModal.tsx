@@ -13,6 +13,7 @@ import React, { useMemo, useState } from "react";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
+import { electiveSubjectIds, teacherLoad } from "../../utils/teachingLoad";
 import { flattenGroups } from "../../utils/groupHierarchy";
 import { ModalShell } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
@@ -74,7 +75,13 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
     return [...m.entries()].sort((a, b) => subjName(a[0]).localeCompare(subjName(b[0])));
   }, [mine, subjects]);
 
-  const totalPeriods = mine.reduce((n, r) => n + (r.weekly_count ?? 0), 0);
+  // วิชาเสรี across many classes is one hour of this teacher's week, not one
+  // per class — see utils/teachingLoad. Counted the old way, a teacher
+  // offering one elective to ten classes read as twenty hours and showed up
+  // as overloaded when nothing was wrong.
+  const electiveIds = useMemo(() => electiveSubjectIds(subjects), [subjects]);
+  const totalPeriods = useMemo(() => teacherLoad(mine, electiveIds), [mine, electiveIds]);
+  const rawPeriods = mine.reduce((n, r) => n + (r.weekly_count ?? 0), 0);
   const coCount = mine.filter((r) => partnerOf(r, reqIndex) != null).length;
   const cap = (teacher.max_slots_per_day || 6) * 5;
 
@@ -245,6 +252,11 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
           </h2>
           <p className="text-indigo-100 text-xs mt-0.5 truncate">
             {deptName ?? "ไม่ระบุกลุ่มสาระ"} · รวม {totalPeriods} คาบ/สัปดาห์
+            {rawPeriods !== totalPeriods && (
+              <span className="text-purple-200" title="วิชาเสรีที่หลายห้องเรียนพร้อมกัน นับเป็นชั่วโมงเดียว">
+                {" "}(นับวิชาเสรีเป็นชั่วโมงเดียว · ตามแถวทั้งหมด {rawPeriods})
+              </span>
+            )}
             {totalPeriods > cap && <span className="text-amber-200"> (เกินเพดาน {cap})</span>}
           </p>
         </div>
@@ -261,12 +273,28 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
             {bySubject.length === 0 && (
               <p className="text-xs text-gray-400 text-center py-8">ยังไม่ได้กำหนดวิชาให้ครูคนนี้</p>
             )}
-            {bySubject.map(([subjId, rows]) => (
-              <div key={subjId} className="border border-gray-200 rounded-lg overflow-hidden">
-                <div className="bg-gray-50 px-2.5 py-1.5 flex items-center gap-2">
+            {bySubject.map(([subjId, rows]) => {
+              const isElective = electiveIds.has(subjId);
+              const sum = rows.reduce((n, r) => n + r.weekly_count, 0);
+              const counted = isElective ? Math.max(...rows.map((r) => r.weekly_count)) : sum;
+              return (
+              <div key={subjId} className={clsx("border rounded-lg overflow-hidden",
+                isElective ? "border-purple-300" : "border-gray-200")}>
+                <div className={clsx("px-2.5 py-1.5 flex items-center gap-2",
+                  isElective ? "bg-purple-50" : "bg-gray-50")}>
                   <span className="text-sm font-semibold text-gray-800 truncate">{subjName(subjId)}</span>
+                  {isElective && (
+                    <span className="text-[10px] bg-purple-100 text-purple-800 border border-purple-200 rounded px-1 shrink-0">
+                      วิชาเสรี
+                    </span>
+                  )}
                   <span className="ml-auto text-[11px] text-gray-500 shrink-0">
-                    {rows.reduce((n, r) => n + r.weekly_count, 0)} คาบ
+                    {isElective ? (
+                      <span title={`${rows.length} ห้องเลือกเรียนวิชานี้ แต่เรียนพร้อมกัน จึงนับเป็น ${counted} คาบ`}>
+                        <span className="text-purple-800 font-medium">{counted} คาบ</span>
+                        <span className="text-gray-400"> ({rows.length} ห้อง เรียนพร้อมกัน)</span>
+                      </span>
+                    ) : `${sum} คาบ`}
                   </span>
                 </div>
                 <div className="divide-y divide-gray-50">
@@ -309,7 +337,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
                   })}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 

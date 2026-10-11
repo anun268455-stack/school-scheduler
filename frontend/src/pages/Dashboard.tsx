@@ -24,6 +24,7 @@ import { indexRequirements, partnerOf, mismatchedPairs, autoPairable, coTeaching
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { SubgroupSetModal } from "../components/timetable/SubgroupSetModal";
 import { auditAll } from "../utils/subgroupAudit";
+import { electiveSubjectIds, teacherLoads, groupLoads } from "../utils/teachingLoad";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
@@ -602,7 +603,7 @@ const outdoorChoice = (v: boolean | null | undefined) =>
 
 const SubjectsPanel: React.FC = () => {
   const { subjects, departments, requirements, rooms } = useTimetableStore();
-  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "", prefer_morning: false, allow_outdoor: "" as "" | "yes" | "no", room_rule: "" as "" | "subject" | "homeroom" });
+  const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, is_elective: false, fixed_room_id: "", prefer_morning: false, allow_outdoor: "" as "" | "yes" | "no", room_rule: "" as "" | "subject" | "homeroom" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [assigning, setAssigning] = useState<number | null>(null);
@@ -647,7 +648,7 @@ const SubjectsPanel: React.FC = () => {
       room_rule: form.room_rule || null,
     });
     useTimetableStore.setState((s) => ({ subjects: [...s.subjects, created] }));
-    setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, fixed_room_id: "", prefer_morning: false, allow_outdoor: "" as "" | "yes" | "no", room_rule: "" as "" | "subject" | "homeroom" });
+    setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, is_elective: false, fixed_room_id: "", prefer_morning: false, allow_outdoor: "" as "" | "yes" | "no", room_rule: "" as "" | "subject" | "homeroom" });
   };
 
   const handleUpdate = async (id: number) => {
@@ -658,6 +659,7 @@ const SubjectsPanel: React.FC = () => {
       duration: Number(editForm.duration) as 1 | 2,
       department_id: editForm.department_id ? Number(editForm.department_id) : null,
       is_activity: editForm.is_activity,
+      is_elective: editForm.is_elective,
       prefer_morning: editForm.prefer_morning,
       fixed_room_id: editForm.fixed_room_id ? Number(editForm.fixed_room_id) : null,
       allow_outdoor: outdoorValue(editForm.allow_outdoor),
@@ -843,7 +845,8 @@ const SubjectsPanel: React.FC = () => {
               <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {shownSubjects.map((s) => (
-              <tr key={s.id} className={clsx("hover:bg-gray-50", s.is_activity && "bg-purple-50/30")}>
+              <tr key={s.id} className={clsx("hover:bg-gray-50",
+                (s.is_activity || s.is_elective) && "bg-purple-50/30")}>
                 {editing === s.id && editForm ? (
                   <>
                     <td className="px-2 py-1"><input className={inlineCls} style={{ width: 80 }} value={editForm.code} onChange={(e) => setEditForm({ ...editForm, code: e.target.value })} /></td>
@@ -886,6 +889,7 @@ const SubjectsPanel: React.FC = () => {
                     </td>
                     <td className="px-2 py-1">
                       <label className="flex items-center gap-1"><input type="checkbox" checked={editForm.is_activity} onChange={(e) => setEditForm({ ...editForm, is_activity: e.target.checked })} /> กิจกรรม</label>
+                      <label className="flex items-center gap-1" title="นักเรียนเลือกเรียน หลายห้องเรียนพร้อมกัน จึงนับเป็นชั่วโมงเดียว"><input type="checkbox" checked={editForm.is_elective} onChange={(e) => setEditForm({ ...editForm, is_elective: e.target.checked })} /> วิชาเสรี</label>
                       <label className="flex items-center gap-1"><input type="checkbox" checked={editForm.prefer_morning} onChange={(e) => setEditForm({ ...editForm, prefer_morning: e.target.checked })} /> ☀️ สอนเช้า</label>
                     </td>
                     <td className="px-2 py-1">
@@ -901,6 +905,7 @@ const SubjectsPanel: React.FC = () => {
                     <td className="px-3 py-2 font-medium text-gray-800">
                       {s.name}
                       {s.is_activity && <span className="ml-1 px-1 py-0.5 bg-purple-100 text-purple-600 rounded text-[10px]">กิจกรรม</span>}
+                      {s.is_elective && <span className="ml-1 px-1 py-0.5 bg-purple-100 text-purple-700 border border-purple-300 rounded text-[10px]">วิชาเสรี</span>}
                     </td>
                     <td className="px-3 py-2 text-gray-500 text-xs">{deptName(s.department_id)}</td>
                     <td className="px-3 py-2 text-xs">
@@ -980,7 +985,7 @@ const SubjectsPanel: React.FC = () => {
                                   🎓 <span>ใส่คาบเสรี</span>
                                 </button>
                                 <button
-                                  onClick={() => { setRowMenu(null); setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "", prefer_morning: s.prefer_morning ?? false, allow_outdoor: outdoorChoice(s.allow_outdoor) as "" | "yes" | "no", room_rule: (s.room_rule ?? "") as "" | "subject" | "homeroom" }); }}
+                                  onClick={() => { setRowMenu(null); setEditing(s.id); setEditForm({ code: s.code, name: s.name, type: s.type, duration: s.duration, department_id: s.department_id ? String(s.department_id) : "", is_activity: s.is_activity ?? false, is_elective: s.is_elective ?? false, fixed_room_id: s.fixed_room_id ? String(s.fixed_room_id) : "", prefer_morning: s.prefer_morning ?? false, allow_outdoor: outdoorChoice(s.allow_outdoor) as "" | "yes" | "no", room_rule: (s.room_rule ?? "") as "" | "subject" | "homeroom" }); }}
                                   className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-gray-700 hover:bg-gray-50">
                                   ✏️ <span>แก้ไขรายวิชา</span>
                                 </button>
@@ -1235,17 +1240,17 @@ const RequirementsPanel: React.FC = () => {
   // ── Capacity check: warn if a group needs more periods than exist ──────────
   const classPeriodCount = new Set(periods.filter((p) => p.type === "class").map((p) => p.period_num)).size;
   const weekCapacity = classPeriodCount * 5;   // 5 school days
-  const groupLoad = new Map<number, number>();
-  for (const r of requirements) {
-    groupLoad.set(r.group_id, (groupLoad.get(r.group_id) ?? 0) + (r.weekly_count || 0));
-  }
+  // วิชาเสรี count once, not once per class — see utils/teachingLoad for why.
+  // The ticked subjects. Membership of a คาบเสรี window counts too, but the
+  // pools live on their own page; the server's own check knows about both.
+  const electiveIds = useMemo(() => electiveSubjectIds(subjects), [subjects]);
+  const groupLoad = groupLoads(requirements, electiveIds);
   const overbooked = [...groupLoad.entries()]
     .filter(([, load]) => load > weekCapacity)
     .map(([gid, load]) => ({ name: gName(gid), load }));
 
   // Teacher over-load (soft): teacher total weekly count vs their max_slots_per_day*5
-  const teacherLoad = new Map<number, number>();
-  for (const r of requirements) teacherLoad.set(r.teacher_id, (teacherLoad.get(r.teacher_id) ?? 0) + (r.weekly_count || 0));
+  const teacherLoad = teacherLoads(requirements, electiveIds);
   const teacherOver = teachers
     .map((t) => ({ t, load: teacherLoad.get(t.id) ?? 0, cap: (t.max_slots_per_day || 6) * 5 }))
     .filter((x) => x.load > x.cap)

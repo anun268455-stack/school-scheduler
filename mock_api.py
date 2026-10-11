@@ -451,6 +451,20 @@ def _next(key: str) -> int:
 LAST_RUN: dict[str, Any] = {"unplaced_requirement_ids": [], "skipped_requirement_ids": []}
 
 
+def _elective_subject_ids() -> set[int]:
+    """Subjects a student CHOOSES rather than one the whole class sits.
+
+    Two ways in: the school ticks วิชาเสรี on the subject, or the subject is
+    already an option in a คาบเสรี window, which says the same thing.
+    """
+    out = {s["id"] for s in SUBJECTS if s.get("is_elective")}
+    for p in ELECTIVE_POOLS:
+        for o in p.get("options", []):
+            if o.get("subject_id"):
+                out.add(o["subject_id"])
+    return out
+
+
 def _requirement_problems() -> list[dict[str, Any]]:
     """Every lesson requirement that cannot be scheduled, and why.
 
@@ -475,12 +489,36 @@ def _requirement_problems() -> list[dict[str, Any]]:
     # subgroups (ก/ข/ค) hold different students and run at the same time, so
     # they are never added together — summing across the whole family would
     # invent an overload that does not exist.
+    # วิชาเสรี are counted once, not once per classroom.
+    #
+    # Ten classes "taking" ศิลปะตกแต่ง does not mean ten lessons: the students
+    # who chose it come out of all ten and sit together, so it is one hour of
+    # one teacher's week and one hour of each of those classes'. Added up the
+    # old way it read as twenty hours for the teacher and put every one of the
+    # ten classes over the size of the week — which is what filled the warning
+    # list with classes and teachers that were never actually overloaded.
+    #
+    # For the teacher: one entry per subject, the largest weekly_count asked
+    # for it. For the class: all its electives together are one block, the
+    # largest of them, because a student picks one of them, not all.
+    elective_ids = _elective_subject_ids()
     own: dict[int, int] = defaultdict(int)
     load_teacher: dict[int, int] = defaultdict(int)
+    t_elect: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    g_elect: dict[int, int] = defaultdict(int)
     for r in REQUIREMENTS:
         wc = r.get("weekly_count") or 0
+        if r["subject_id"] in elective_ids:
+            t = t_elect[r["teacher_id"]]
+            t[r["subject_id"]] = max(t[r["subject_id"]], wc)
+            g_elect[r["group_id"]] = max(g_elect[r["group_id"]], wc)
+            continue
         load_teacher[r["teacher_id"]] += wc
         own[r["group_id"]] += wc
+    for tid, subs in t_elect.items():
+        load_teacher[tid] += sum(subs.values())
+    for gid, wc in g_elect.items():
+        own[gid] += wc
 
     parent_of = {g["id"]: g.get("parent_id") for g in g_map.values()}
 
@@ -515,6 +553,12 @@ def _requirement_problems() -> list[dict[str, Any]]:
             return True
         return False
 
+    # Ticked as เสรี, but no คาบเสรี window offers it yet.
+    pooled = {o["subject_id"] for p in ELECTIVE_POOLS for o in p.get("options", [])
+              if o.get("subject_id")}
+    ticked_not_pooled = {x["id"] for x in SUBJECTS
+                         if x.get("is_elective") and x["id"] not in pooled}
+
     last_failed = set(LAST_RUN.get("unplaced_requirement_ids") or [])
     out = []
     for r in REQUIREMENTS:
@@ -548,6 +592,15 @@ def _requirement_problems() -> list[dict[str, Any]]:
                 reasons.append(("warning",
                     f"{teach['name']} ถูกจัด {load_teacher[r['teacher_id']]} คาบ/สัปดาห์ "
                     f"เกินเพดาน {cap} คาบ"))
+        # Ticking วิชาเสรี fixes the counting; it does not by itself make the
+        # solver run one window for all the classes. Said here, because the
+        # warning going quiet would otherwise look like the problem solved —
+        # and the run would still try to place ten separate lessons.
+        if r["subject_id"] in ticked_not_pooled:
+            reasons.append(("warning",
+                "ติ๊กเป็นวิชาเสรีแล้ว แต่ยังไม่ได้อยู่ในคาบเสรี — "
+                "ตัวจัดตารางจะยังจัดแยกทีละห้อง ให้ไปสร้าง 'คาบเสรี' "
+                "แล้วใส่วิชานี้เข้าไป ทุกห้องจึงจะเรียนพร้อมกันจริง"))
         if r["id"] in last_failed:
             reasons.append(("warning", "ครั้งที่แล้วจัดลงตารางไม่ได้"))
 
