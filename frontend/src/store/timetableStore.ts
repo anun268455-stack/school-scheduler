@@ -284,15 +284,33 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         set({ syncState: "live", lastSyncedAt: Date.now() });
         if (revision === prev) return;
         if (prev === -1) { set({ lastRevision: revision }); return; }  // first poll: just record
-        // A revision that went BACKWARDS is not an edit. The counter only
-        // ever climbs while the server is up, so a smaller number means the
-        // process restarted — and on this host that means it lost the saved
-        // file with it and is back on the data it was first shipped with.
-        // Pulling that would overwrite the school's real timetable with the
-        // demo one, which is exactly the "it jumped back to the old system"
-        // the staffroom kept reporting. Hold what we have and raise it.
+        // A revision that went BACKWARDS means the process restarted: the
+        // counter only ever climbs while the server is up.
+        //
+        // A restart is not the same thing as a loss, and treating it as one is
+        // why the red strip kept coming back minutes after the school had
+        // fixed everything. The free host puts the service to sleep whenever
+        // nobody is using it, so restarts are ordinary — several a day — and
+        // almost all of them come back with the timetable intact.
+        //
+        // So the server is asked what it actually has before anyone is told
+        // anything. Only a restart that really did lose the work raises the
+        // warning; one that came back whole just resyncs, quietly.
         if (revision < prev) {
-          set({ serverReset: true, syncState: "live" });
+          let lost = true;
+          try {
+            const info = await api.fetchStateInfo();
+            lost = info.source !== "snapshot"
+              || (info.counts.slots ?? 0) < get().slots.length
+              || (info.counts.teachers ?? 0) < get().teachers.length;
+          } catch { /* cannot tell — assume the worse of the two */ }
+          if (lost) {
+            set({ serverReset: true, syncState: "live" });
+            return;
+          }
+          // Came back whole. Take the new numbering and carry on.
+          set({ lastRevision: revision, syncState: "live" });
+          await quietRefresh(set, get);
           return;
         }
         // Someone (possibly us) changed the data — pull a fresh copy quietly,

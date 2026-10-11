@@ -5049,6 +5049,22 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
     if data.get("school_config"):
         SCHOOL_CONFIG.update(dict(data["school_config"]))
 
+    # The revision counter has to come back with the data.
+    #
+    # Browsers watch this number to notice each other's edits, and they read it
+    # going BACKWARDS as "the server restarted and lost everything" — which is
+    # the only thing it can mean while the counter starts from zero on every
+    # boot. So a restart that loaded the school's timetable perfectly still
+    # announced itself as a disaster, every time the free host put the service
+    # to sleep, and the warning that followed switched off live sync and the
+    # automatic copies with it.
+    #
+    # The snapshot has carried this number all along; it was simply never read
+    # back. max() because this process may already have served writes.
+    saved_rev = data.get("revision")
+    if isinstance(saved_rev, int):
+        REVISION["n"] = max(REVISION["n"], saved_rev)
+
     # Keep issuing ids above everything that exists, however the data arrived.
     saved = dict(data.get("counters") or {})
     for key, value in saved.items():
