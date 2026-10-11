@@ -387,7 +387,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
   const preview = rows.slice(0, 5);
 
   return (
-    <ModalShell onClose={onClose} maxWidth="max-w-3xl" z="z-[100]">
+    <ModalShell onClose={onClose} maxWidth="max-w-4xl" tall z="z-[100]">
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 bg-blue-700 text-white shrink-0">

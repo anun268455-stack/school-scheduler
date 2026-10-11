@@ -1,0 +1,185 @@
+/**
+ * ชุดเรียนพร้อมกัน — what the subgroups of one class do in the same hour.
+ *
+ * A class that splits into ก/ข/ค does not split evenly across subjects. In
+ * one hour ก is at maths, ข is at English and ค is at computing; in another,
+ * ก and ข are both at computing and ค is somewhere else entirely. The school
+ * calls each of these arrangements a เซ็ต, and the point of a เซ็ต is that
+ * its lessons must land on the SAME period — the students are one class being
+ * taught three things at once, not three classes with their own timetables.
+ *
+ * The timetable already has the mechanism: requirements sharing a
+ * parallel_group_key are placed together by the solver. What it did not have
+ * was a way to say it, so this reads and writes those keys as sets.
+ *
+ * A set need not cover every subgroup. "ก and ข have this, ค does not" is an
+ * ordinary thing for a school to want and the commonest reason to open the
+ * dialog at all.
+ */
+import type { LessonRequirement, StudentGroup } from "../types";
+
+export interface SetRow {
+  /** The requirement this row came from, if it is already saved. */
+  requirementId?: number;
+  groupId:   number;
+  subjectId: number;
+  teacherId: number;
+  weekly:    number;
+}
+
+export interface SubgroupSet {
+  /** parallel_group_key — the thing that actually ties the lessons together. */
+  key:      string;
+  /** The parent class whose subgroups these are. */
+  parentId: number;
+  /** What the school called it: "เซ็ต A". Carried inside the key. */
+  name:     string;
+  rows:     SetRow[];
+}
+
+const PREFIX = "SET";
+
+/** "SET:12:เซ็ต A" — the parent and the name, so both survive a reload. */
+export function makeSetKey(parentId: number, name: string): string {
+  return `${PREFIX}:${parentId}:${name.trim() || "ไม่มีชื่อ"}`;
+}
+
+export function parseSetKey(key: string): { parentId: number; name: string } | null {
+  const m = /^SET:(\d+):([\s\S]*)$/.exec(key);
+  return m ? { parentId: Number(m[1]), name: m[2] } : null;
+}
+
+/** Every class, parents and subgroups alike, as one flat list. */
+function flatten(groups: StudentGroup[]): StudentGroup[] {
+  return groups.flatMap((g) => [g, ...(g.children ?? [])]);
+}
+
+/** The subgroups of a class, in name order. Empty for a class that has none. */
+export function subgroupsOf(groups: StudentGroup[], parentId: number): StudentGroup[] {
+  const parent = flatten(groups).find((g) => g.id === parentId);
+  return [...(parent?.children ?? [])].sort(
+    (a, b) => (a.name ?? "").localeCompare(b.name ?? "", "th", { numeric: true }));
+}
+
+/** Classes that are split into ก/ข/ค, which are the only ones sets apply to. */
+export function classesWithSubgroups(groups: StudentGroup[]): StudentGroup[] {
+  return groups
+    .filter((g) => (g.children ?? []).length > 0)
+    .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", "th", { numeric: true }));
+}
+
+/**
+ * The sets already saved, read back out of the requirements.
+ *
+ * Only keys this dialog wrote are returned. A school may have parallel keys
+ * from the staffing import — two whole classes doing PE together, say — and
+ * those are not subgroup sets; showing them here would invite someone to
+ * "fix" a pairing they did not make.
+ */
+export function readSets(
+  requirements: LessonRequirement[], parentId?: number,
+): SubgroupSet[] {
+  const by = new Map<string, SubgroupSet>();
+  for (const r of requirements) {
+    const key = r.parallel_group_key;
+    if (!key) continue;
+    const parsed = parseSetKey(key);
+    if (!parsed) continue;
+    if (parentId != null && parsed.parentId !== parentId) continue;
+    const cur = by.get(key) ?? { key, parentId: parsed.parentId, name: parsed.name, rows: [] };
+    cur.rows.push({
+      requirementId: r.id, groupId: r.group_id, subjectId: r.subject_id,
+      teacherId: r.teacher_id, weekly: r.weekly_count ?? 1,
+    });
+    by.set(key, cur);
+  }
+  return [...by.values()].sort((a, b) => a.name.localeCompare(b.name, "th", { numeric: true }));
+}
+
+/**
+ * What is wrong with a set, in the school's words. Empty means it is fine.
+ *
+ * These are the mistakes that produce a timetable nobody can teach, so they
+ * are caught here rather than discovered when a class turns up twice.
+ */
+export function setProblems(
+  rows: SetRow[], nameOf: (id: number) => string,
+): string[] {
+  const out: string[] = [];
+  const seen = new Map<number, number>();
+  for (const r of rows) {
+    if (!r.groupId) { out.push("มีแถวที่ยังไม่ได้เลือกห้องย่อย"); continue; }
+    seen.set(r.groupId, (seen.get(r.groupId) ?? 0) + 1);
+  }
+  for (const [gid, n] of seen) {
+    if (n > 1) {
+      out.push(`${nameOf(gid)} อยู่ในเซ็ตนี้ ${n} แถว — `
+        + "ห้องเดียวเรียนสองวิชาพร้อมกันไม่ได้");
+    }
+  }
+  if (rows.some((r) => !r.subjectId)) out.push("มีแถวที่ยังไม่ได้เลือกวิชา");
+  if (rows.some((r) => !r.teacherId)) out.push("มีแถวที่ยังไม่ได้เลือกครู");
+  const teachers = new Map<number, number>();
+  for (const r of rows) {
+    if (r.teacherId) teachers.set(r.teacherId, (teachers.get(r.teacherId) ?? 0) + 1);
+  }
+  for (const [, n] of teachers) {
+    if (n > 1) {
+      out.push("ครูคนเดียวกันสอนสองห้องย่อยในเซ็ตนี้ — "
+        + "ทุกวิชาในเซ็ตเรียนพร้อมกัน ครูจึงต้องไม่ซ้ำกัน");
+      break;
+    }
+  }
+  const weeks = new Set(rows.map((r) => r.weekly));
+  if (weeks.size > 1) {
+    out.push(`คาบ/สัปดาห์ไม่เท่ากัน (${[...weeks].sort((a, b) => a - b).join(", ")}) — `
+      + "ทุกวิชาในเซ็ตเรียนพร้อมกัน จึงต้องมีจำนวนคาบเท่ากัน");
+  }
+  return out;
+}
+
+/**
+ * The writes that turn an edited set into saved requirements.
+ *
+ * Returned rather than performed, so the caller can show what will happen and
+ * so this is testable without a server. Rows that did not change are left
+ * alone: rewriting a requirement that nobody touched would churn the ids that
+ * the timetable's own lessons point at.
+ */
+export interface SetPlan {
+  create: { group_id: number; subject_id: number; teacher_id: number;
+            weekly_count: number; parallel_group_key: string }[];
+  update: { id: number; patch: Partial<LessonRequirement> }[];
+  remove: number[];
+}
+
+export function planSetSave(
+  key: string, rows: SetRow[], existing: SetRow[],
+): SetPlan {
+  const plan: SetPlan = { create: [], update: [], remove: [] };
+  const was = new Map(existing.filter((r) => r.requirementId != null)
+    .map((r) => [r.requirementId!, r]));
+  const keptIds = new Set<number>();
+
+  for (const r of rows) {
+    if (!r.groupId || !r.subjectId || !r.teacherId) continue;
+    const old = r.requirementId != null ? was.get(r.requirementId) : undefined;
+    if (!old) {
+      plan.create.push({
+        group_id: r.groupId, subject_id: r.subjectId, teacher_id: r.teacherId,
+        weekly_count: r.weekly, parallel_group_key: key,
+      });
+      continue;
+    }
+    keptIds.add(r.requirementId!);
+    const patch: Partial<LessonRequirement> = {};
+    if (old.groupId !== r.groupId) patch.group_id = r.groupId;
+    if (old.subjectId !== r.subjectId) patch.subject_id = r.subjectId;
+    if (old.teacherId !== r.teacherId) patch.teacher_id = r.teacherId;
+    if (old.weekly !== r.weekly) patch.weekly_count = r.weekly;
+    if (Object.keys(patch).length > 0) plan.update.push({ id: r.requirementId!, patch });
+  }
+
+  for (const id of was.keys()) if (!keptIds.has(id)) plan.remove.push(id);
+  return plan;
+}

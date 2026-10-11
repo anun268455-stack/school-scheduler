@@ -13,13 +13,22 @@ interface ModalShellProps {
   children:  React.ReactNode;
   /** Tailwind max-width for the panel, e.g. "max-w-2xl". */
   maxWidth?: string;
+  /**
+   * Hold the panel at a steady height instead of hugging its contents.
+   *
+   * For the dialogs people work in rather than read: typing in the search box
+   * narrowed a list of 300 subjects to one and the whole window collapsed
+   * around it, moving every control under the pointer. A working surface
+   * should stay where it was put.
+   */
+  tall?: boolean;
   /** Raise above other dialogs when one opens on top of another. */
   z?:        string;
   className?: string;
 }
 
 export const ModalShell: React.FC<ModalShellProps> = ({
-  onClose, children, maxWidth = "max-w-lg", z = "z-[200]", className,
+  onClose, children, maxWidth = "max-w-lg", z = "z-[200]", className, tall,
 }) => {
   // Esc closes, matching the click-outside behaviour.
   useEffect(() => {
@@ -36,7 +45,12 @@ export const ModalShell: React.FC<ModalShellProps> = ({
       <div
         onMouseDown={(e) => e.stopPropagation()}
         className={clsx(
-          "bg-white rounded-2xl shadow-2xl w-full overflow-hidden flex flex-col max-h-[90vh]",
+          "bg-white rounded-2xl shadow-2xl w-full overflow-hidden flex flex-col max-h-[92vh]",
+          // A steady height on anything with room for it. Short screens — a
+          // tablet held sideways, a laptop with a big toolbar — keep the old
+          // behaviour, because a fixed 85vh there is a dialog with nothing in
+          // the bottom third.
+          tall && "h-[85vh] min-h-[32rem]",
           maxWidth, className,
         )}
       >

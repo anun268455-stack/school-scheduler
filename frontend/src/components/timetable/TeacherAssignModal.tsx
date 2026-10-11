@@ -235,7 +235,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
   const deptName = departments.find((d) => d.id === teacher.department_id)?.name;
 
   return (
-    <ModalShell onClose={onClose} maxWidth="max-w-3xl">
+    <ModalShell onClose={onClose} maxWidth="max-w-5xl" tall>
       {/* Header */}
       <div className="flex items-center gap-3 bg-indigo-700 px-5 py-4 shrink-0">
         <span className="text-2xl">📚</span>

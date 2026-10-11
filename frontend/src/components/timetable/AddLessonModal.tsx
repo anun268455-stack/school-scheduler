@@ -259,7 +259,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
   const freeRooms = rooms.filter((r) => !busyRoomIds.has(r.id));
 
   return (
-    <ModalShell onClose={onClose} maxWidth="max-w-3xl">
+    <ModalShell onClose={onClose} maxWidth="max-w-5xl" tall>
 
         {/* Header */}
         <div className="flex items-center gap-3 bg-emerald-600 px-5 py-4 shrink-0">
@@ -288,9 +288,9 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
           </div>
         )}
 
-        <div className="flex-1 overflow-hidden grid grid-cols-5">
+        <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden grid grid-cols-1 md:grid-cols-5">
           {/* ── Left: choose a subject ─────────────────────────────────────── */}
-          <div className="col-span-2 border-r border-gray-200 flex flex-col min-h-0">
+          <div className="md:col-span-2 border-b md:border-b-0 md:border-r border-gray-200 flex flex-col min-h-0 max-h-[40vh] md:max-h-none">
             <div className="px-4 pt-3 pb-2 shrink-0">
               <p className="text-xs font-semibold text-gray-500 mb-2">
                 {groupId == null && fixedTeacherId != null
@@ -344,7 +344,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
           </div>
 
           {/* ── Right: lesson details / create a new subject ────────────────── */}
-          <div className="col-span-3 flex flex-col min-h-0">
+          <div className="md:col-span-3 flex flex-col min-h-0">
             <div className="flex gap-1 px-4 pt-3 shrink-0">
               {([["pick", "ใช้วิชาที่เลือก"], ["new", "+ สร้างวิชาใหม่"]] as const).map(([k, label]) => (
                 <button

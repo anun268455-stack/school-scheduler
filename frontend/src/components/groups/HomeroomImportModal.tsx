@@ -78,7 +78,7 @@ export const HomeroomImportModal = ({ onClose, onApply }: Props) => {
   };
 
   return (
-    <ModalShell onClose={onClose} maxWidth="max-w-3xl">
+    <ModalShell onClose={onClose} maxWidth="max-w-4xl" tall>
       <div className="space-y-3">
         <h3 className="text-base font-bold text-gray-800">
           👩‍🏫 นำเข้าครูประจำชั้นจากรายชื่อ

@@ -142,11 +142,15 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
         const ids = new Set(classesInLevel.map((g) => g.id));
         return prev.filter((r) => !ids.has(r.groupId));
       }
+      // "เลือกทั้งหมด" means the whole classes, not the subgroups as well:
+      // ม.4/6 and ม.4/6ก are the same students, and a lesson on both is that
+      // class sitting in two rooms at once.
       const add = classesInLevel
-        .filter((g) => !picked.has(g.id))
+        .filter((g) => !g.parent_id && !picked.has(g.id))
         .map((g) => ({ groupId: g.id, teacherId: defaultTeacher, coTeacherId: "",
                        outdoor: NEW_ROW_YARD, weekly: defaultWeekly }));
-      return [...prev, ...add];
+      const kids = new Set(classesInLevel.filter((g) => g.parent_id).map((g) => g.id));
+      return [...prev.filter((r) => !kids.has(r.groupId)), ...add];
     });
   };
 
@@ -164,6 +168,25 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
 
   const setRow = (groupId: number, patch: Partial<Row>) =>
     setRows((prev) => prev.map((r) => (r.groupId === groupId ? { ...r, ...patch } : r)));
+
+  /**
+   * A class ticked alongside one of its own subgroups.
+   *
+   * They hold the same students, so the lesson would be that class in two
+   * rooms at once. Said here rather than refused, because which of the two
+   * the school meant is their call, not the dialog's.
+   */
+  const doubleBooked = useMemo(() => {
+    const ids = new Set(rows.map((r) => r.groupId));
+    const out: string[] = [];
+    for (const g of flat) {
+      if (!ids.has(g.id)) continue;
+      for (const c of g.children ?? []) {
+        if (ids.has(c.id)) out.push(`${g.name} + ${c.name}`);
+      }
+    }
+    return out;
+  }, [rows, flat]);
 
   const missingTeacher = rows.filter((r) => !r.teacherId).length;
   const canSave = rows.length > 0 && missingTeacher === 0 && !busy;
@@ -237,7 +260,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
   const deptLabel = deptName ?? "กลุ่มสาระนี้";
 
   return (
-    <ModalShell onClose={onClose} maxWidth="max-w-6xl">
+    <ModalShell onClose={onClose} maxWidth="max-w-6xl" tall>
 
         {/* Header */}
         <div className="flex items-center gap-3 bg-blue-700 px-5 py-4 shrink-0">
@@ -253,9 +276,9 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
           <button onClick={onClose} className="text-blue-200 hover:text-white text-lg leading-none shrink-0">✕</button>
         </div>
 
-        <div className="flex-1 overflow-hidden grid grid-cols-12">
+        <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden grid grid-cols-1 md:grid-cols-12">
           {/* ── Left: choose level, then classes ─────────────────────────── */}
-          <div className="col-span-4 lg:col-span-3 border-r border-gray-200 flex flex-col min-h-0">
+          <div className="md:col-span-4 lg:col-span-3 border-b md:border-b-0 md:border-r border-gray-200 flex flex-col min-h-0 max-h-[40vh] md:max-h-none">
             <div className="px-4 pt-3 pb-2 shrink-0">
               <p className="text-xs font-semibold text-gray-500 mb-1.5">1. เลือกระดับชั้น</p>
               <div className="flex flex-wrap gap-1">
@@ -312,7 +335,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
           </div>
 
           {/* ── Right: teacher per class ──────────────────────────────────── */}
-          <div className="col-span-8 lg:col-span-9 flex flex-col min-h-0">
+          <div className="md:col-span-8 lg:col-span-9 flex flex-col min-h-0">
             <div className="px-4 pt-3 pb-2 shrink-0 border-b border-gray-100">
               <div className="flex items-center gap-2 mb-1.5">
                 <p className="text-xs font-semibold text-gray-500">3. กำหนดครูผู้สอนของแต่ละห้อง</p>
@@ -449,6 +472,11 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
           <p className="text-[11px] flex-1">
             {missingTeacher > 0
               ? <span className="text-red-600">ยังไม่ได้เลือกครู {missingTeacher} ห้อง</span>
+              : doubleBooked.length > 0
+              ? <span className="text-amber-700">
+                  ⚠️ ติ๊กทั้งห้องแม่และห้องย่อย ({doubleBooked.join(", ")}) —
+                  เป็นนักเรียนกลุ่มเดียวกัน เลือกอย่างใดอย่างหนึ่ง
+                </span>
               : <span className="text-gray-400">{rows.length} ห้องจะเรียนวิชานี้ · บันทึกแล้วค่อยกดสร้างตาราง</span>}
           </p>
           {error && <span className="text-xs text-red-600">{error}</span>}

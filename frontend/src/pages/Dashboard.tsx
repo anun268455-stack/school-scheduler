@@ -22,6 +22,7 @@ import { clashesByRequirement } from "../utils/teachingConflicts";
 import { findSubjectDuplicates } from "../utils/duplicateCheck";
 import { indexRequirements, partnerOf, mismatchedPairs, autoPairable, coTeachingPairs } from "../utils/coTeaching";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
+import { SubgroupSetModal } from "../components/timetable/SubgroupSetModal";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
@@ -1152,6 +1153,9 @@ const RoomsPanel: React.FC = () => {
 // ─── Requirements (Teacher-Subject-Group Assignments) ─────────────────────────
 const RequirementsPanel: React.FC = () => {
   const { requirements, groups, teachers, subjects, periods, departments } = useTimetableStore();
+  // ชุดเรียนพร้อมกันของห้องย่อย — ก/ข/ค at three different subjects in one hour.
+  const [showSets, setShowSets] = useState(false);
+  const hasSubgroups = groups.some((g) => (g.children ?? []).length > 0);
   const [form, setForm] = useState({
     group_id: "", subject_id: "", teacher_id: "", weekly_count: 1, parallel_group_key: "",
     co_teacher_id: "",
@@ -1302,6 +1306,21 @@ const RequirementsPanel: React.FC = () => {
 
   return (
     <Section title="ข้อกำหนดคาบเรียน — ครูสอนวิชาอะไร ในห้องใด">
+      {showSets && <SubgroupSetModal onClose={() => setShowSets(false)} />}
+      {hasSubgroups && (
+        <div className="flex items-center gap-3 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2.5 mb-3">
+          <span className="text-lg">🧩</span>
+          <p className="text-xs text-indigo-900 flex-1 leading-relaxed">
+            <strong>ห้องย่อย ก/ข/ค เรียนคนละวิชาในชั่วโมงเดียวกัน?</strong>{" "}
+            ตั้งเป็น “เซ็ต” ได้ — เช่น เซ็ต A: ก เรียนคณิต · ข เรียนอังกฤษ · ค เรียนคอม
+            และเซ็ตไหนที่ ค ไม่เรียน ก็เว้นไว้ได้
+          </p>
+          <button onClick={() => setShowSets(true)}
+            className="shrink-0 px-3 py-1.5 text-xs bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700">
+            จัดการเซ็ตห้องย่อย
+          </button>
+        </div>
+      )}
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-800">
         <strong>วิธีกำหนดการสอน:</strong> เลือกห้องเรียน → วิชา → ครูผู้สอน → จำนวนคาบ/สัปดาห์
         <br/><strong>1 ห้อง + 1 วิชา = ครู 1 คน</strong> — ถ้าอยากให้มีครูสองคนในคาบเดียวกัน (ครูพี่เลี้ยงกับนักศึกษาฝึกสอน

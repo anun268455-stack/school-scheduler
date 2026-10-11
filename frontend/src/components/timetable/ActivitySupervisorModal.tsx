@@ -66,7 +66,7 @@ export const ActivitySupervisorModal = ({
   }, [chosen, q, byId]);
 
   return (
-    <ModalShell onClose={onClose} maxWidth="max-w-3xl">
+    <ModalShell onClose={onClose} maxWidth="max-w-5xl" tall>
       <div className="px-5 py-3 border-b bg-teal-50">
         <h3 className="font-bold text-gray-800">👩‍🏫 ครูผู้ดูแลคาบกิจกรรม</h3>
         <p className="text-xs text-gray-600 mt-0.5">
