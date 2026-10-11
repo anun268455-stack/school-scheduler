@@ -127,9 +127,6 @@ export const addElectiveOption = (slotId: number, d: { subject_id: number; teach
 export const deleteElectiveOption = (slotId: number, optionId: number) =>
   api.delete<TimetableSlot>(`/timetable/elective-slots/${slotId}/options/${optionId}`).then((r) => r.data);
 
-export const selectElectiveOption = (slotId: number, optionId: number) =>
-  api.patch<TimetableSlot>(`/timetable/elective-slots/${slotId}/select`, { option_id: optionId }).then((r) => r.data);
-
 /** Copy an elective to other classes. Classes already busy then are skipped. */
 export const copyElectiveSlot = (slotId: number, targetGroupIds: number[]) =>
   api.post<{

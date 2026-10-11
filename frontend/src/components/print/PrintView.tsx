@@ -522,7 +522,7 @@ function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
     const s = slots[0];
     // A shared elective names no subject — the class scatters across its
     // options — so the printed cell says so instead of coming out blank.
-    const sharedElective = s.is_elective && !s.selected_option_id;
+    const sharedElective = !!s.is_elective;
     return (
       <CellLines
         m={m}

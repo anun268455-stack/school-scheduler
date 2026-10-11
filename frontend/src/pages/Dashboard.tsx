@@ -12,7 +12,7 @@ import { ElectiveOptionModal } from "../components/timetable/ElectiveOptionModal
 import { ElectivePoolPanel } from "../components/timetable/ElectivePoolPanel";
 import { RoomSettingsModal } from "../components/rooms/RoomSettingsModal";
 import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubjectModal";
-import { teachesSlot, slotLabel, teachingTogether } from "../utils/teacherSlots";
+import { teachesSlot, teachingTogether } from "../utils/teacherSlots";
 import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
 import { flattenGroups } from "../utils/groupHierarchy";
 import { byTeacherCode } from "../utils/teacherOrder";
@@ -24,6 +24,7 @@ import { indexRequirements, partnerOf, mismatchedPairs, autoPairable, coTeaching
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { SubgroupSetModal } from "../components/timetable/SubgroupSetModal";
 import { auditAll } from "../utils/subgroupAudit";
+import { groupElectiveSlots } from "../utils/electiveGroups";
 import { electiveSubjectIds, teacherLoads, groupLoads } from "../utils/teachingLoad";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
@@ -1541,8 +1542,10 @@ const RequirementsPanel: React.FC = () => {
 const ElectivesPanel: React.FC = () => {
   const { slots, groups, teachers, subjects, periods, rooms, departments, loadSlots } = useTimetableStore();
   const [form, setForm] = useState({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "", room_id: "", is_double: false });
-  const [managing, setManaging]   = useState<number | null>(null);
-  const [copyingId, setCopyingId] = useState<number | null>(null);
+  // Keyed by window, not by one class's cell: the row the school opens is
+  // the whole period, and so is the edit.
+  const [managing, setManaging]   = useState<string | null>(null);
+  const [copyingId, setCopyingId] = useState<string | null>(null);
   const [copyNote, setCopyNote]   = useState<string | null>(null);
   const [copyTargets, setCopyTargets] = useState<number[]>([]);
 
@@ -1589,10 +1592,6 @@ const ElectivesPanel: React.FC = () => {
     setForm({ group_id: "", day: "0", period: "", subject_id: "", teacher_id: "", label: "", room_id: "", is_double: false });
   };
 
-  const handleDelete = async (id: number) => {
-    await api.deleteSlot(id);
-    await loadSlots();   // backend removes both halves of a double — resync
-  };
 
   const handleCopy = async (id: number) => {
     if (copyTargets.length === 0) return;
@@ -1612,8 +1611,18 @@ const ElectivesPanel: React.FC = () => {
   };
 
   const electiveSlots = allElectives.filter((s) => matches(q, gName(s.group_id),
-    s.subject_code, s.subject_name, s.teacher_name, s.room_name));
-  const managingSlot = managing != null ? slots.find((s) => s.id === managing) ?? null : null;
+    s.subject_code, s.subject_name, s.teacher_name, s.room_name,
+    ...(s.elective_options ?? []).map((o) => o.label)));
+  // Forty rows that were always one decision — see utils/electiveGroups.
+  const electiveGroups = useMemo(() => groupElectiveSlots(electiveSlots), [electiveSlots]);
+  const managingGroup = managing != null
+    ? electiveGroups.find((g) => g.key === managing) ?? null : null;
+
+  /** Delete the whole window: every class's copy of it. */
+  const handleDeleteGroup = async (grp: { slots: { id: number }[] }) => {
+    for (const x of grp.slots) await api.deleteSlot(x.id);
+    await loadSlots();
+  };
 
   return (
     <>
@@ -1701,43 +1710,63 @@ const ElectivesPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["ห้องเรียน","วัน","คาบ","วงที่ใช้อยู่","ห้องสอน","จำนวนวง",""].map((h) => (
+              {["วัน","คาบ","ห้องเรียนที่เรียนคาบนี้","วิชาให้เลือก",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {electiveSlots.length === 0 && (
-              <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีวิชาเสรี</td></tr>
+            {electiveGroups.length === 0 && (
+              <tr><td colSpan={5} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีวิชาเสรี</td></tr>
             )}
-            {electiveSlots.map((s) => (
-              <React.Fragment key={s.id}>
-                <tr className="hover:bg-purple-50/30">
-                  <td className="px-3 py-2 font-medium text-purple-700">{gName(s.group_id)}</td>
-                  <td className="px-3 py-2 text-gray-600">{DAYS[s.day]}</td>
-                  <td className="px-3 py-2 text-gray-600">
-                    {periodRange(s)}
-                    {s.double_group_key && (
+            {electiveGroups.map((grp) => (
+              <React.Fragment key={grp.key}>
+                <tr className="hover:bg-purple-50/30 align-top">
+                  <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{DAYS[grp.day]}</td>
+                  <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
+                    {periodRange(grp.slots[0])}
+                    {grp.isDouble && (
                       <span className="ml-1 text-[10px] bg-purple-100 text-purple-700 border border-purple-200 px-1 py-0.5 rounded">🔗 คาบคู่</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-gray-700">{slotLabel(s)} · {s.teacher_name ?? `${s.elective_options?.length ?? 0} ตัวเลือก`}</td>
-                  <td className="px-3 py-2 text-gray-600">{s.room_name ?? <span className="text-gray-400">–</span>}</td>
-                  <td className="px-3 py-2 text-center text-gray-500">{s.elective_options?.length ?? 1}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      {grp.groupIds.map((id) => (
+                        <span key={id} className="text-[11px] bg-purple-50 border border-purple-200 text-purple-800 rounded px-1.5 py-0.5">
+                          {gName(id)}
+                        </span>
+                      ))}
+                    </div>
+                    <span className="text-[11px] text-gray-400">{grp.groupIds.length} ห้อง</span>
+                  </td>
+                  <td className="px-3 py-2 text-gray-700">
+                    <span className="font-medium">{grp.optionCount} วิชา</span>
+                    <div className="text-[11px] text-gray-500 max-w-md">
+                      {(grp.slots[0].elective_options ?? []).slice(0, 4)
+                        .map((o) => o.label).join(" · ")}
+                      {grp.optionCount > 4 && ` … อีก ${grp.optionCount - 4}`}
+                    </div>
+                  </td>
                   <td className="px-3 py-2">
                     <div className="flex gap-1 flex-wrap">
-                      <button onClick={() => setManaging(s.id)} className="px-2 py-1 text-xs bg-purple-50 text-purple-600 rounded hover:bg-purple-100 border border-purple-200">🎓 จัดการวง</button>
-                      <button onClick={() => { setCopyingId(s.id); setCopyTargets([]); }} className={btnEdit}>📋 คัดลอก</button>
-                      <button onClick={() => handleDelete(s.id)} className={btnDanger}>ลบ</button>
+                      <button onClick={() => setManaging(grp.key)}
+                        title="แก้ไขวิชาในคาบนี้ — มีผลกับทุกห้องในแถวนี้พร้อมกัน"
+                        className="px-2 py-1 text-xs bg-purple-50 text-purple-600 rounded hover:bg-purple-100 border border-purple-200">
+                        🎓 จัดการวิชา ({grp.groupIds.length} ห้อง)
+                      </button>
+                      <button onClick={() => { setCopyingId(grp.key); setCopyTargets([]); }} className={btnEdit}>📋 เพิ่มห้อง</button>
+                      <button onClick={() => handleDeleteGroup(grp)} className={btnDanger}>ลบทั้งคาบ</button>
                     </div>
                   </td>
                 </tr>
-                {copyingId === s.id && (
+                {copyingId === grp.key && (
                   <tr className="bg-gray-50">
-                    <td colSpan={7} className="px-3 py-3">
-                      <p className="text-xs font-semibold text-gray-600 mb-2">คัดลอกวิชาเสรีนี้ (พร้อมทุกวง) ไปยังห้องเรียนอื่น — เวลาเดิม ({DAYS[s.day]} {periodRange(s)}):</p>
-                      <div className="flex flex-wrap gap-2 mb-2">
-                        {flat.filter((g) => g.id !== s.group_id).map((g) => (
+                    <td colSpan={5} className="px-3 py-3">
+                      <p className="text-xs font-semibold text-gray-600 mb-2">
+                        เพิ่มห้องเรียนเข้าคาบนี้ (ได้วิชาทั้งหมดไปด้วย) — {DAYS[grp.day]} {periodRange(grp.slots[0])}:
+                      </p>
+                      <div className="flex flex-wrap gap-2 mb-2 max-h-40 overflow-y-auto">
+                        {flat.filter((g) => !grp.groupIds.includes(g.id)).map((g) => (
                           <label key={g.id} className="flex items-center gap-1 text-xs bg-white border border-gray-200 rounded px-2 py-1 cursor-pointer">
                             <input
                               type="checkbox"
@@ -1749,7 +1778,7 @@ const ElectivesPanel: React.FC = () => {
                         ))}
                       </div>
                       <div className="flex gap-2">
-                        <button onClick={() => handleCopy(s.id)} disabled={copyTargets.length === 0} className={btnSave}>คัดลอก ({copyTargets.length})</button>
+                        <button onClick={() => handleCopy(grp.slots[0].id)} disabled={copyTargets.length === 0} className={btnSave}>เพิ่ม ({copyTargets.length})</button>
                         <button onClick={() => { setCopyingId(null); setCopyTargets([]); }} className={btnCancel}>ยกเลิก</button>
                       </div>
                     </td>
@@ -1761,8 +1790,11 @@ const ElectivesPanel: React.FC = () => {
         </table>
       </div>
 
-      {managingSlot && (
-        <ElectiveOptionModal slot={managingSlot} onClose={() => setManaging(null)} />
+      {managingGroup && (
+        <ElectiveOptionModal
+          slot={managingGroup.slots[0]}
+          siblings={managingGroup.slots}
+          onClose={() => setManaging(null)} />
       )}
       {copyNote && (
         <div className="fixed bottom-4 right-4 z-50 max-w-md bg-white border border-purple-300 shadow-lg rounded-lg px-4 py-3 text-xs text-gray-800">

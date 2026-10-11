@@ -264,14 +264,17 @@ def _room_usable(room: dict[str, Any]) -> bool:
 
 
 def _elective_option_teachers(slot: dict[str, Any]) -> set[int]:
-    """Teachers occupied by a shared elective window.
+    """Teachers occupied by a shared elective window — all of them.
 
-    An elective the class has already settled on (selected_option_id set) books
-    just that one teacher, and `teacher_id` already covers it. An unsettled
-    shared window runs every option simultaneously, so all of its teachers are
-    busy — that is what stops the solver handing them another class.
+    There used to be a notion of the class having "settled on" one option, and
+    the window then booked only that teacher. That is not what these periods
+    are: when the hour comes the students sign up for whichever subject they
+    want and go to that teacher, so every option runs at once and every one of
+    those teachers is busy. The school's job is to put the subjects in the
+    period and have them show up on both the teacher's sheet and the class's —
+    not to pick one on their behalf.
     """
-    if not slot.get("is_elective") or slot.get("selected_option_id"):
+    if not slot.get("is_elective"):
         return set()
     return {o["teacher_id"] for o in slot.get("elective_options", []) if o.get("teacher_id")}
 
@@ -449,6 +452,22 @@ def _next(key: str) -> int:
 # So they are found before the run, shown, and may be left out of it.
 
 LAST_RUN: dict[str, Any] = {"unplaced_requirement_ids": [], "skipped_requirement_ids": []}
+
+
+def _mark_elective(*subject_ids: Any) -> None:
+    """A subject put into an elective period IS an elective subject.
+
+    Asking the school to tick a box as well would mean the counting is wrong
+    until somebody remembers — and the whole reason the warning list was full
+    of imaginary overloads is that nothing knew these subjects were shared.
+    Putting one into a คาบเสรี says so plainly enough.
+    """
+    want = {int(i) for i in subject_ids if i}
+    if not want:
+        return
+    for s in SUBJECTS:
+        if s["id"] in want and not s.get("is_elective"):
+            s["is_elective"] = True
 
 
 def _elective_subject_ids() -> set[int]:
@@ -3946,10 +3965,15 @@ def _enrich_slot(s: dict[str, Any]) -> dict[str, Any]:
 # solver, regardless of is_locked.
 
 def _apply_selected_option(s: dict[str, Any]) -> dict[str, Any]:
-    opt = next((o for o in s.get("elective_options", []) if o["id"] == s.get("selected_option_id")), None)
-    if opt:
-        s["subject_id"] = opt["subject_id"]
-        s["teacher_id"] = opt["teacher_id"]
+    """Kept as the one door every elective-slot reply goes through.
+
+    It used to copy the chosen option onto the cell. Nothing is chosen any
+    more — the cell is the window itself — so the cell names no subject and no
+    single teacher, and the options carry the detail.
+    """
+    s["selected_option_id"] = None
+    s["subject_id"] = None
+    s["teacher_id"] = None
     return _enrich_slot(s)
 
 # ── Double-period (คาบคู่) helpers ────────────────────────────────────────────
@@ -4514,6 +4538,7 @@ def create_elective_pool(body: dict[str, Any]):
         "period": body.get("period"),
         "options": _clean_pool_options(body.get("options") or []),
     }
+    _mark_elective(*[o["subject_id"] for o in pool["options"]])
     ELECTIVE_POOLS.append(pool)
     _sync_pool_slots(pool)
     return _decorate_pool(pool)
@@ -4578,6 +4603,7 @@ def add_pool_option(pool_id: int, body: dict[str, Any]):
         "label": body.get("label") or subj["name"],
         "code": subj.get("code"),
     })
+    _mark_elective(subject_id)
     _sync_pool_slots(pool)
     return _decorate_pool(pool)
 
@@ -4606,6 +4632,7 @@ def update_pool_option(pool_id: int, option_key: int, body: dict[str, Any]):
     if "subject_id" in body:
         subj = next((s for s in SUBJECTS if s["id"] == body["subject_id"]), {})
         opt["code"] = subj.get("code")
+        _mark_elective(body["subject_id"])
     _sync_pool_slots(pool)
     return _decorate_pool(pool)
 
@@ -4671,15 +4698,18 @@ def create_elective_slot(body: dict[str, Any]):
         "teacher_id": body["teacher_id"],
         "label": body.get("label") or "วงที่ 1",
     }
+    _mark_elective(option["subject_id"])
     common = {
         "group_id": body["group_id"],
         "room_id": body.get("room_id"),
         "parallel_group_key": None,
         "is_locked": True,
         "is_elective": True,
-        "selected_option_id": option["id"],
-        "subject_id": option["subject_id"],
-        "teacher_id": option["teacher_id"],
+        # No option is "the" one: the cell is the window, and every option in
+        # it runs at the same time.
+        "selected_option_id": None,
+        "subject_id": None,
+        "teacher_id": None,
     }
     day = body["day"]
     p1  = body["period"]
@@ -4727,6 +4757,7 @@ def add_elective_option(slot_id: int, body: dict[str, Any]):
         "label": body.get("label") or f"วงที่ {len(slot['elective_options']) + 1}",
     }
     slot["elective_options"].append(option)
+    _mark_elective(option["subject_id"])
     _sync_doubles(slot)
     return _enrich_slot(slot)
 
@@ -4735,29 +4766,10 @@ def delete_elective_option(slot_id: int, option_id: int):
     slot = next((s for s in SLOTS if s["id"] == slot_id and s.get("is_elective")), None)
     if not slot:
         raise HTTPException(404, "Elective slot not found")
+    # Removing the last วง leaves the window empty but still locked — the
+    # period is the school's decision and should not evaporate because its
+    # subject list was cleared out to be rebuilt.
     slot["elective_options"] = [o for o in slot["elective_options"] if o["id"] != option_id]
-    if slot["selected_option_id"] == option_id:
-        # Removing the last วง leaves the window empty but still locked — the
-        # period is the school's decision and should not evaporate because its
-        # subject list was cleared out to be rebuilt.
-        slot["selected_option_id"] = (
-            slot["elective_options"][0]["id"] if slot["elective_options"] else None
-        )
-        if slot["selected_option_id"] is None:
-            slot["subject_id"] = None
-            slot["teacher_id"] = None
-    _sync_doubles(slot)
-    return _apply_selected_option(slot)
-
-@app.patch("/api/timetable/elective-slots/{slot_id}/select")
-def select_elective_option(slot_id: int, body: dict[str, Any]):
-    slot = next((s for s in SLOTS if s["id"] == slot_id and s.get("is_elective")), None)
-    if not slot:
-        raise HTTPException(404, "Elective slot not found")
-    option_id = body["option_id"]
-    if not any(o["id"] == option_id for o in slot["elective_options"]):
-        raise HTTPException(404, "Option not found")
-    slot["selected_option_id"] = option_id
     _sync_doubles(slot)
     return _apply_selected_option(slot)
 

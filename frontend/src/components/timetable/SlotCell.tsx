@@ -1,7 +1,8 @@
 import React from "react";
 import clsx from "clsx";
 import type { TimetableSlot } from "../../types";
-import { slotTeacherNames, teachingTogether } from "../../utils/teacherSlots";
+import { slotTeacherNames, teachingTogether, myElectiveOption } from "../../utils/teacherSlots";
+import { useTimetableStore } from "../../store/timetableStore";
 
 interface SlotCellProps {
   slots:       TimetableSlot[];
@@ -69,6 +70,16 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
   // สอนร่วม and a คาบกิจกรรม duty roster both put more than one teacher in the
   // room. The line truncates, so the count goes in a badge that cannot.
   const names = slotTeacherNames(slot);
+  /**
+   * Whose sheet this is, when it is one teacher's.
+   *
+   * A คาบเสรี holds a dozen subjects at once, so "9 ตัวเลือก" is the honest
+   * thing to show a class — but on a teacher's own timetable it tells them
+   * nothing. They want the one they are teaching, which is the one the
+   * students will come to them for.
+   */
+  const viewingTeacher = useTimetableStore((st) => st.selectedTeacherId);
+  const myOption = viewingTeacher != null ? myElectiveOption(slot, viewingTeacher) : null;
   const extra = names.length - 1;
   return (
   <div
@@ -112,7 +123,8 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       style={{ fontSize: compact ? "9px" : "11px" }}
       title={slot.subject_name ?? undefined}
     >
-      {slot.subject_code ?? slot.subject_name ?? (slot.is_elective ? "วิชาเสรี" : "")}
+      {myOption?.label ?? slot.subject_code ?? slot.subject_name
+        ?? (slot.is_elective ? "วิชาเสรี" : "")}
     </div>
 
     {/* ── Details ───────────────────────────────────────────────── */}
@@ -124,7 +136,9 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       >
         {/* A shared elective the class hasn't settled on has no single teacher —
             its students split across every option at once. Say how many. */}
-        {names.length
+        {myOption
+          ? `วิชาเสรี · ${slot.elective_options?.length ?? 0} วิชาในคาบนี้`
+          : names.length
           ? (slot.is_activity_block && names.length > 2
                ? `ครูผู้ดูแล ${names.length} คน`
                : names.join(" + "))

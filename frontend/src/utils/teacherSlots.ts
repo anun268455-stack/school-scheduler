@@ -16,7 +16,9 @@ export function teachesSlot(slot: TimetableSlot, teacherId: number): boolean {
   // ครูผู้ดูแลคาบกิจกรรม — ลูกเสือ, เนตรนารี, ชุมนุม. Standing with a class on
   // parade is duty, and duty belongs on the duty teacher's own sheet.
   if ((slot.activity_teacher_ids ?? []).includes(teacherId)) return true;
-  if (!slot.is_elective || slot.selected_option_id) return false;
+  // An elective window runs every option at once — the students sign up on
+  // the day — so it is on the sheet of every teacher offering something in it.
+  if (!slot.is_elective) return false;
   return (slot.elective_options ?? []).some((o) => o.teacher_id === teacherId);
 }
 
@@ -83,7 +85,6 @@ export function slotTeacherNames(slot: TimetableSlot): string[] {
 
 /** The option this teacher runs inside a shared elective window, if any. */
 export function myElectiveOption(slot: TimetableSlot, teacherId: number) {
-  if (slot.selected_option_id) return null;
   return (slot.elective_options ?? []).find((o) => o.teacher_id === teacherId) ?? null;
 }
 

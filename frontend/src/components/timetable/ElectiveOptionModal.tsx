@@ -5,7 +5,6 @@
 import React, { useMemo, useState } from "react";
 import { ModalShell } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
-import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { teachesSlot } from "../../utils/teacherSlots";
@@ -13,11 +12,22 @@ import { DAYS, periodLabel } from "../../types";
 import type { TimetableSlot } from "../../types";
 
 interface ElectiveOptionModalProps {
+  /** The window as it appears for one class — the one the list row opened. */
   slot:    TimetableSlot;
+  /**
+   * Every class's copy of the same window, when the list opened a group.
+   *
+   * Nobody edits one class's copy of a level-wide elective on its own: adding
+   * ศิลปะตกแต่ง means adding it for all eight classes. Left out, the dialog
+   * edits just the one cell, which is what it used to do.
+   */
+  siblings?: TimetableSlot[];
   onClose: () => void;
 }
 
-export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, onClose }) => {
+export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({
+  slot, siblings, onClose,
+}) => {
   const { subjects, teachers, departments, slots, requirements, loadSlots } = useTimetableStore();
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ subject_id: "", teacher_id: "", label: "" });
@@ -73,30 +83,25 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
       }));
   }, [teachers, subj, requirements, busyHere]);
 
-  const patchSlot = (updated: TimetableSlot) =>
-    useTimetableStore.setState((s) => ({ slots: s.slots.map((x) => x.id === slot.id ? updated : x) }));
-
-  // For double-period electives, re-sync both linked halves from the backend.
-  const syncIfDouble = async () => { if (slot.double_group_key) await loadSlots(); };
-
-  const handleSelect = async (optionId: number) => {
-    if (optionId === slot.selected_option_id) return;
-    setBusy(true);
-    try {
-      const updated = await api.selectElectiveOption(slot.id, optionId);
-      patchSlot(updated);
-      await syncIfDouble();
-    } finally {
-      setBusy(false);
-    }
-  };
+  /** Every cell this edit has to reach: the one opened, plus its siblings. */
+  const targets = useMemo(() => {
+    const all = [slot, ...(siblings ?? [])];
+    return [...new Map(all.map((x) => [x.id, x])).values()];
+  }, [slot, siblings]);
 
   const handleDelete = async (optionId: number) => {
     setBusy(true);
     try {
-      const updated = await api.deleteElectiveOption(slot.id, optionId);
-      patchSlot(updated);
-      await syncIfDouble();
+      // Each class's copy has its own option ids, so the others are matched
+      // by what the option IS, not by the id of the one that was clicked.
+      const opt = options.find((o) => o.id === optionId);
+      for (const t of targets) {
+        const mine = t.id === slot.id ? optionId
+          : (t.elective_options ?? []).find(
+              (o) => o.subject_id === opt?.subject_id && o.teacher_id === opt?.teacher_id)?.id;
+        if (mine != null) await api.deleteElectiveOption(t.id, mine);
+      }
+      await loadSlots();
     } finally {
       setBusy(false);
     }
@@ -106,13 +111,16 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
     if (!form.subject_id || !form.teacher_id) return;
     setBusy(true);
     try {
-      const updated = await api.addElectiveOption(slot.id, {
-        subject_id: Number(form.subject_id),
-        teacher_id: Number(form.teacher_id),
-        label: form.label || undefined,
-      });
-      patchSlot(updated);
-      await syncIfDouble();
+      for (const t of targets) {
+        if ((t.elective_options ?? []).some((o) => o.subject_id === Number(form.subject_id)
+            && o.teacher_id === Number(form.teacher_id))) continue;
+        await api.addElectiveOption(t.id, {
+          subject_id: Number(form.subject_id),
+          teacher_id: Number(form.teacher_id),
+          label: form.label || undefined,
+        });
+      }
+      await loadSlots();
       setForm({ subject_id: "", teacher_id: "", label: "" });
       setAdding(false);
     } finally {
@@ -144,28 +152,22 @@ export const ElectiveOptionModal: React.FC<ElectiveOptionModalProps> = ({ slot, 
           {options.map((opt) => {
             const subj = subjects.find((s) => s.id === opt.subject_id);
             const teacher = teachers.find((t) => t.id === opt.teacher_id);
-            const isActive = opt.id === slot.selected_option_id;
+            // Every วง runs at once — nothing here is "the" one. The
+            // students sign up on the day and go to that teacher.
             return (
               <div
                 key={opt.id}
-                className={clsx(
-                  "w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border transition-colors",
-                  isActive ? "bg-purple-50 border-purple-300" : "bg-white border-gray-200 hover:border-purple-300",
-                )}
+                className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border bg-purple-50/50 border-purple-200"
               >
-                <button
-                  onClick={() => handleSelect(opt.id)}
-                  disabled={busy}
-                  className="flex-1 min-w-0 text-left"
-                >
+                <div className="flex-1 min-w-0 text-left">
                   <p className="text-sm font-semibold text-gray-800 truncate">
-                    {opt.label} {isActive && <span className="text-purple-600 text-xs">(กำลังใช้)</span>}
+                    {opt.label}
                   </p>
                   <p className="text-xs text-gray-500 truncate">
                     {subj?.code ?? "?"} – {subj?.name} ·{" "}
                     {teacher?.name ?? <span className="text-amber-700">ยังไม่ได้เลือกครู</span>}
                   </p>
-                </button>
+                </div>
                 <button
                   onClick={() => handleDelete(opt.id)}
                   disabled={busy}
