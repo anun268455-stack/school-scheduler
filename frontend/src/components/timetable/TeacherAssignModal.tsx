@@ -80,6 +80,17 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
   // offering one elective to ten classes read as twenty hours and showed up
   // as overloaded when nothing was wrong.
   const electiveIds = useMemo(() => electiveSubjectIds(subjects), [subjects]);
+
+  /** Mark (or unmark) a subject as วิชาเสรี without leaving this dialog. */
+  const toggleElective = async (subjectId: number, on: boolean) => {
+    setBusy(true);
+    try {
+      const updated = await api.updateSubject(subjectId, { is_elective: on });
+      useTimetableStore.setState((st) => ({
+        subjects: st.subjects.map((x) => (x.id === subjectId ? { ...x, ...updated } : x)),
+      }));
+    } finally { setBusy(false); }
+  };
   const totalPeriods = useMemo(() => teacherLoad(mine, electiveIds), [mine, electiveIds]);
   const rawPeriods = mine.reduce((n, r) => n + (r.weekly_count ?? 0), 0);
   const coCount = mine.filter((r) => partnerOf(r, reqIndex) != null).length;
@@ -278,16 +289,29 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
               const sum = rows.reduce((n, r) => n + r.weekly_count, 0);
               const counted = isElective ? Math.max(...rows.map((r) => r.weekly_count)) : sum;
               return (
-              <div key={subjId} className={clsx("border rounded-lg overflow-hidden",
-                isElective ? "border-purple-300" : "border-gray-200")}>
+              // The whole block, not just its header: a teacher scanning
+              // thirty-one classes needs to see at a glance which of these
+              // rows are the elective and which are real lessons.
+              <div key={subjId} className={clsx("border-2 rounded-lg overflow-hidden",
+                isElective ? "border-purple-200 bg-purple-50/40" : "border-gray-200")}>
                 <div className={clsx("px-2.5 py-1.5 flex items-center gap-2",
-                  isElective ? "bg-purple-50" : "bg-gray-50")}>
+                  isElective ? "bg-purple-100/70" : "bg-gray-50")}>
                   <span className="text-sm font-semibold text-gray-800 truncate">{subjName(subjId)}</span>
-                  {isElective && (
-                    <span className="text-[10px] bg-purple-100 text-purple-800 border border-purple-200 rounded px-1 shrink-0">
-                      วิชาเสรี
-                    </span>
-                  )}
+                  {/* Marked right here, where the twenty-period row that gave
+                      the game away is sitting. Sending somebody to another
+                      page to tick a box is how it stays unticked. */}
+                  <button
+                    onClick={() => toggleElective(subjId, !isElective)}
+                    disabled={busy}
+                    title={isElective
+                      ? "วิชาเสรี — หลายห้องเรียนพร้อมกัน จึงนับเป็นชั่วโมงเดียว (กดเพื่อยกเลิก)"
+                      : "ทำเป็นวิชาเสรี — ถ้าหลายห้องนี้เรียนพร้อมกันในคาบเดียว"}
+                    className={clsx("text-[10px] rounded px-1 shrink-0 border transition-colors",
+                      isElective
+                        ? "bg-purple-100 text-purple-800 border-purple-300"
+                        : "bg-white text-gray-400 border-gray-200 hover:border-purple-300 hover:text-purple-700")}>
+                    {isElective ? "วิชาเสรี" : "+ วิชาเสรี"}
+                  </button>
                   <span className="ml-auto text-[11px] text-gray-500 shrink-0">
                     {isElective ? (
                       <span title={`${rows.length} ห้องเลือกเรียนวิชานี้ แต่เรียนพร้อมกัน จึงนับเป็น ${counted} คาบ`}>
