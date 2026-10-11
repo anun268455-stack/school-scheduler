@@ -13,7 +13,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
-import { electiveSubjectIds, teacherLoad } from "../../utils/teachingLoad";
+import { electiveCandidates, electiveSubjectIds, teacherLoad } from "../../utils/teachingLoad";
 import { coverageFor, windowsFor } from "../../utils/electiveCoverage";
 import { flattenGroups } from "../../utils/groupHierarchy";
 import { ModalShell } from "../common/ModalShell";
@@ -96,6 +96,19 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
   const electiveIds = useMemo(
     () => electiveSubjectIds(subjects, pools, slots), [subjects, pools, slots]);
 
+  /** 1 คาบ หรือ 2 คาบติดกัน — a property of the subject, set from here so it
+      is answered beside the question it belongs to. */
+  const subjDuration = subjects.find((s) => s.id === Number(subjectId))?.duration ?? 1;
+  const setSubjectDuration = async (subjectId: number, duration: 1 | 2) => {
+    setBusy(true);
+    try {
+      const updated = await api.updateSubject(subjectId, { duration });
+      useTimetableStore.setState((st) => ({
+        subjects: st.subjects.map((x) => (x.id === subjectId ? { ...x, ...updated } : x)),
+      }));
+    } finally { setBusy(false); }
+  };
+
   /** Mark (or unmark) a subject as วิชาเสรี without leaving this dialog. */
   const toggleElective = async (subjectId: number, on: boolean) => {
     setBusy(true);
@@ -110,6 +123,15 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
   const rawPeriods = mine.reduce((n, r) => n + (r.weekly_count ?? 0), 0);
   const coCount = mine.filter((r) => partnerOf(r, reqIndex) != null).length;
   const cap = (teacher.max_slots_per_day || 6) * 5;
+
+  // Which untikcked subjects are spread across a level, and what the week
+  // would come to if they really are electives. Shown only when over the cap,
+  // because that is the only time the question is worth asking.
+  const candidates = useMemo(
+    () => electiveCandidates(mine, electiveIds), [mine, electiveIds]);
+  const ifAllElective = useMemo(
+    () => teacherLoad(mine, new Set([...electiveIds, ...candidates.map((c) => c.subjectId)])),
+    [mine, electiveIds, candidates]);
 
   // Teachers of a subject's own department first, but every subject stays listed.
   const subjectOpts = useMemo(() => {
@@ -295,6 +317,46 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
           <p className="px-4 pt-3 pb-1.5 text-xs font-semibold text-gray-500 shrink-0">
             วิชาที่สอนอยู่ ({mine.length} ห้อง{coCount > 0 ? ` · สอนร่วม ${coCount}` : ""})
           </p>
+
+          {/* Over the cap, and the rows that explain it are almost always one
+              subject spread across a level — an elective nobody has ticked
+              yet. The arithmetic is the whole question, so it is done here
+              rather than left for someone to do on paper. */}
+          {totalPeriods > cap && candidates.length > 0 && (
+            <div className="mx-4 mb-2 shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+              <p className="text-[11px] text-amber-900 leading-snug">
+                <strong>เกินเพดาน {cap} คาบ</strong> — ตอนนี้นับได้ {totalPeriods} คาบ
+                เพราะวิชาข้างล่างนี้ถูกนับแยกทุกห้อง ถ้าห้องเหล่านี้เรียนพร้อมกันในคาบเสรี
+                ให้ติ๊กเป็นวิชาเสรี แล้วจะนับเป็นชั่วโมงเดียว
+              </p>
+              <div className="mt-1.5 space-y-1">
+                {candidates.slice(0, 4).map((c) => (
+                  <div key={c.subjectId} className="flex items-center gap-2 text-[11px]">
+                    <span className="flex-1 min-w-0 truncate text-gray-700">
+                      <strong>{subjName(c.subjectId)}</strong>
+                      <span className="text-gray-500">
+                        {" · "}{c.classes} ห้อง · {c.now} → {c.then} คาบ
+                      </span>
+                    </span>
+                    <button
+                      onClick={() => toggleElective(c.subjectId, true)}
+                      disabled={busy}
+                      className="shrink-0 px-2 py-0.5 rounded border border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100 disabled:opacity-40"
+                    >
+                      ติ๊กเป็นวิชาเสรี
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[11px] text-amber-900">
+                ติ๊กทั้งหมดแล้วจะเหลือ <strong>{ifAllElective} คาบ</strong>
+                {ifAllElective <= cap
+                  ? <span className="text-green-700"> — ไม่เกินเพดานแล้ว</span>
+                  : <span> — ยังเกินอยู่ {ifAllElective - cap} คาบ</span>}
+                {" · "}ติ๊กแล้วอย่าลืมลงคาบเสรีให้ห้องเหล่านี้ด้วย ระบบจะคอยเตือนให้เองถ้ายังไม่ได้ลง
+              </p>
+            </div>
+          )}
           <div className="flex-1 overflow-y-auto px-4 pb-3 space-y-2.5">
             {bySubject.length === 0 && (
               <p className="text-xs text-gray-400 text-center py-8">ยังไม่ได้กำหนดวิชาให้ครูคนนี้</p>
@@ -446,6 +508,37 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
                   value={weekly} onChange={(e) => setWeekly(Number(e.target.value))} />
               </div>
             </div>
+
+            {/* จำนวนคาบก่อน แล้วค่อยถามว่าติดกันไหม. Asked the other way round
+                — a "ความยาว" dropdown on one screen and a คาบคู่ tick on
+                another — the two settings read as the same question and the
+                school could not tell which one it had just answered. */}
+            {subjectId && weekly >= 2 && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50/60 px-2.5 py-2">
+                <p className="text-[11px] text-gray-600 mb-1">
+                  {weekly} คาบนี้เรียนยังไง
+                </p>
+                <div className="flex gap-1.5">
+                  {([[1, "แยกคาบ"], [2, "🔗 คาบคู่ (2 คาบติดกัน)"]] as const).map(([d, label]) => (
+                    <button key={d}
+                      onClick={() => setSubjectDuration(Number(subjectId), d)}
+                      disabled={busy}
+                      className={clsx("flex-1 px-2 py-1 rounded border text-[11px] transition-colors disabled:opacity-40",
+                        (subjDuration === 2 ? 2 : 1) === d
+                          ? "bg-blue-600 border-blue-600 text-white font-medium"
+                          : "bg-white border-gray-300 text-gray-600 hover:border-blue-400")}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  ตั้งให้ทั้งวิชา ใช้กับทุกห้องที่เรียนวิชานี้
+                  {weekly % 2 === 1 && subjDuration === 2 && (
+                    <span className="text-amber-700"> · {weekly} คาบเป็นเลขคี่ จะได้คาบคู่ {Math.floor(weekly / 2)} ครั้ง และคาบเดี่ยวอีก 1 คาบ</span>
+                  )}
+                </p>
+              </div>
+            )}
             {subjectId && classesInLevel.length > 0 && (
               <div className="space-y-1.5">
                 <button onClick={addAllInLevel} disabled={busy || freeCount === 0}

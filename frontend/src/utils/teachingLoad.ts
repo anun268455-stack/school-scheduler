@@ -41,6 +41,49 @@ export function electiveSubjectIds(
   return out;
 }
 
+/**
+ * วิชาที่น่าจะเป็นวิชาเสรี แต่ยังไม่ได้ติ๊ก — what is making this teacher
+ * look overloaded before a single คาบเสรี has been placed.
+ *
+ * A teacher down for one subject in eight classes at two periods each reads
+ * as sixteen hours. If those eight classes sit in one window it is two. The
+ * two cases are written down identically, so this cannot decide between them
+ * — a maths teacher really does teach eight classes separately. It only says
+ * which rows the question is about, and what the week would come to if the
+ * answer is yes. The staff tick it; nothing here ticks anything.
+ */
+export interface ElectiveCandidate {
+  subjectId: number;
+  /** How many classes are down for it. */
+  classes: number;
+  /** Hours it is counted as now, and after ticking. */
+  now: number;
+  then: number;
+  /** now − then: what the teacher's week would lose. */
+  saves: number;
+}
+
+export function electiveCandidates(
+  rows: LessonRequirement[], elective: Set<number>, minClasses = 3,
+): ElectiveCandidate[] {
+  const by = new Map<number, number[]>();
+  for (const r of rows) {
+    if (elective.has(r.subject_id)) continue;
+    const cur = by.get(r.subject_id);
+    if (cur) cur.push(r.weekly_count ?? 0);
+    else by.set(r.subject_id, [r.weekly_count ?? 0]);
+  }
+  const out: ElectiveCandidate[] = [];
+  for (const [subjectId, counts] of by) {
+    if (counts.length < minClasses) continue;
+    const now = counts.reduce((a, b) => a + b, 0);
+    const then = Math.max(...counts);
+    if (now <= then) continue;
+    out.push({ subjectId, classes: counts.length, now, then, saves: now - then });
+  }
+  return out.sort((a, b) => b.saves - a.saves);
+}
+
 /** One teacher's week, with each elective counted once however many classes. */
 export function teacherLoad(
   rows: LessonRequirement[], elective: Set<number>,
@@ -59,17 +102,58 @@ export function teacherLoad(
   return total;
 }
 
-/** One class's week, with all its electives collapsed into a single block. */
+/**
+ * One class's week: electives collapsed into one block, สอนร่วม counted once.
+ *
+ * สอนร่วม is written as a row per teacher — both really do walk into the
+ * room — but the class sits through the lesson once. Counting both halves
+ * put ม.1/1 at 49 periods in a 45-period week and told the school to cut
+ * four lessons that were never there.
+ */
 export function groupLoad(
   rows: LessonRequirement[], elective: Set<number>,
 ): number {
+  const halves = coTeachHalves(rows);
   let total = 0, block = 0;
   for (const r of rows) {
+    if (halves.has(r.id)) continue;
     const wc = r.weekly_count ?? 0;
     if (elective.has(r.subject_id)) block = Math.max(block, wc);
     else total += wc;
   }
   return total + block;
+}
+
+/**
+ * The second half of each สอนร่วม pair, by row id.
+ *
+ * Two rows for one class and one subject that name each other as partners.
+ * Rows that do NOT name each other are left alone: two teachers who each
+ * think the class is theirs is a real disagreement, not a pair.
+ */
+export function coTeachHalves(rows: LessonRequirement[]): Set<number> {
+  const byCell = new Map<string, LessonRequirement[]>();
+  for (const r of rows) {
+    const k = `${r.group_id}:${r.subject_id}`;
+    const cur = byCell.get(k);
+    if (cur) cur.push(r); else byCell.set(k, [r]);
+  }
+  const out = new Set<number>();
+  for (const cell of byCell.values()) {
+    for (let i = 0; i < cell.length; i++) {
+      const a = cell[i];
+      if (out.has(a.id)) continue;
+      for (let j = i + 1; j < cell.length; j++) {
+        const b = cell[j];
+        if (out.has(b.id)) continue;
+        if (a.co_teacher_id === b.teacher_id || b.co_teacher_id === a.teacher_id) {
+          out.add(b.id);
+          break;
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /** Every teacher's load, keyed by id. */

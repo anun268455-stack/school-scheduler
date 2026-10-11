@@ -29,6 +29,7 @@ import { electiveSubjectIds, teacherLoads, groupLoads } from "../utils/teachingL
 import { coverageProblems } from "../utils/electiveCoverage";
 import { HomeroomModal } from "../components/groups/HomeroomModal";
 import { HomeroomImportModal } from "../components/groups/HomeroomImportModal";
+import { ClassSubjectsModal } from "../components/groups/ClassSubjectsModal";
 import { DeptTeacherCodesModal } from "../components/departments/DeptTeacherCodesModal";
 import {
   classesAdvisedBy, HOMEROOM_MAX,
@@ -159,8 +160,16 @@ async function applyHomeroom(changes: { groupId: number; teacherIds: number[] }[
 }
 
 const GroupsPanel: React.FC = () => {
-  const { groups, rooms, teachers } = useTimetableStore();
+  const { groups, rooms, teachers, requirements, subjects, slots, periods } = useTimetableStore();
   const [homeroomFor, setHomeroomFor] = useState<number | null>(null);
+  // ตรวจรายวิชารายห้อง — read live off the plan when a row is clicked.
+  const [auditFor, setAuditFor] = useState<number | null>(null);
+  const [auditPools, setAuditPools] = useState<ElectivePool[]>([]);
+  useEffect(() => {
+    if (auditFor != null && auditPools.length === 0) {
+      api.fetchElectivePools().then(setAuditPools).catch(() => setAuditPools([]));
+    }
+  }, [auditFor, auditPools.length]);
 
   /** ปกติ → ไม่ออกลาน → ออกลานได้ → ปกติ */
   const toggleGroupYard = async (g: StudentGroup) => {
@@ -343,6 +352,13 @@ const GroupsPanel: React.FC = () => {
                               : "bg-white border-gray-200 text-gray-300 hover:border-green-400")}>
                           {g.allow_outdoor === false ? "🚫 ไม่ออกลาน" : "🌳"}
                         </button>
+                        {/* ตรวจรายวิชา — the plan read a class at a time,
+                            which is the only way วิชาซ้ำ and a week that
+                            does not fit the week are visible at all. */}
+                        <button onClick={() => setAuditFor(g.id)} className={btnEdit}
+                          title="ตรวจรายวิชาของห้องนี้ — วิชาซ้ำ ครูที่ยังไม่มี คาบรวมเกินสัปดาห์">
+                          📋 ตรวจวิชา
+                        </button>
                         <button onClick={() => { setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "", homeroom_teacher_id: g.homeroom_teacher_id ? String(g.homeroom_teacher_id) : "" }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteGroup(g.id); useTimetableStore.setState((s) => ({ groups: s.groups.filter((x) => x.id !== g.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
@@ -369,6 +385,20 @@ const GroupsPanel: React.FC = () => {
         <HomeroomImportModal
           onApply={applyHomeroom}
           onClose={() => setImportingHomeroom(false)}
+        />
+      )}
+
+      {auditFor != null && flat.find((g) => g.id === auditFor) && (
+        <ClassSubjectsModal
+          group={flat.find((g) => g.id === auditFor)!}
+          groups={flat}
+          requirements={requirements}
+          subjects={subjects}
+          teachers={teachers}
+          slots={slots}
+          pools={auditPools}
+          periods={periods}
+          onClose={() => setAuditFor(null)}
         />
       )}
     </Section>

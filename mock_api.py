@@ -341,6 +341,44 @@ def _elective_option_pairs(s: dict[str, Any]) -> set[tuple]:
             for o in (s.get("elective_options") or [])}
 
 
+def _fold_coteaching(rows: list[dict[str, Any]]) -> tuple[set[int], dict[int, int]]:
+    """สอนร่วม written from both sides: two rows, one lesson.
+
+    A school that imports its teaching plan gets a row per teacher — the Thai
+    teacher has ม.1/1 EN21204 and the foreign teacher has ม.1/1 EN21204 — and
+    both are true: each of them walks into that room. But the CLASS sits
+    through the lesson once. Counted row by row, ม.1/1 was asked for 49
+    periods in a 45-period week and the school was told to cut four lessons
+    that do not exist.
+
+    Returns the ids of the second halves, and for each surviving row the
+    period count the pair agreed on (the larger of the two, so a 2+3
+    disagreement is not silently rounded down).
+    """
+    by_cell: dict[tuple, list] = defaultdict(list)
+    for r in rows:
+        by_cell[(r["group_id"], r["subject_id"])].append(r)
+    folded: set[int] = set()
+    pair_count: dict[int, int] = {}
+    for cell in by_cell.values():
+        for i, a in enumerate(cell):
+            if a["id"] in folded:
+                continue
+            for b in cell[i + 1:]:
+                if b["id"] in folded:
+                    continue
+                # They have to name each other. Two teachers who each think
+                # the class is theirs are a real disagreement, and the
+                # ตรวจสอบวิชาซ้ำ warning should still say so.
+                if a.get("co_teacher_id") == b["teacher_id"] or \
+                   b.get("co_teacher_id") == a["teacher_id"]:
+                    folded.add(b["id"])
+                    pair_count[a["id"]] = max(a.get("weekly_count") or 0,
+                                              b.get("weekly_count") or 0)
+                    break
+    return folded, pair_count
+
+
 def _same_activity(a: dict[str, Any], b: dict[str, Any]) -> bool:
     """Two cells of one shared lesson — ลูกเสือ in ม.1/1 and ลูกเสือ in ม.1/2."""
     k = _shared_lesson_key(a)
@@ -556,19 +594,27 @@ def _requirement_problems() -> list[dict[str, Any]]:
     # for it. For the class: all its electives together are one block, the
     # largest of them, because a student picks one of them, not all.
     elective_ids = _elective_subject_ids()
+    # สอนร่วม is written as a row per teacher. Both teachers are in the room,
+    # so both carry the hours — but the class sits through the lesson once,
+    # and counting both halves is what told ม.1/1 to cut four periods it was
+    # never asked for.
+    co_halves, _ = _fold_coteaching(REQUIREMENTS)
     own: dict[int, int] = defaultdict(int)
     load_teacher: dict[int, int] = defaultdict(int)
     t_elect: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
     g_elect: dict[int, int] = defaultdict(int)
     for r in REQUIREMENTS:
         wc = r.get("weekly_count") or 0
+        mine = r["id"] not in co_halves          # only one half bills the class
         if r["subject_id"] in elective_ids:
             t = t_elect[r["teacher_id"]]
             t[r["subject_id"]] = max(t[r["subject_id"]], wc)
-            g_elect[r["group_id"]] = max(g_elect[r["group_id"]], wc)
+            if mine:
+                g_elect[r["group_id"]] = max(g_elect[r["group_id"]], wc)
             continue
         load_teacher[r["teacher_id"]] += wc
-        own[r["group_id"]] += wc
+        if mine:
+            own[r["group_id"]] += wc
     for tid, subs in t_elect.items():
         load_teacher[tid] += sum(subs.values())
     for gid, wc in g_elect.items():
@@ -1460,21 +1506,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     by_cell: dict[tuple, list] = defaultdict(list)
     for r in wanted:
         by_cell[(r["group_id"], r["subject_id"])].append(r)
-    folded: set[int] = set()
-    pair_count: dict[int, int] = {}
-    for rows in by_cell.values():
-        for i, a in enumerate(rows):
-            if a["id"] in folded:
-                continue
-            for b in rows[i + 1:]:
-                if b["id"] in folded:
-                    continue
-                if a.get("co_teacher_id") == b["teacher_id"] or \
-                   b.get("co_teacher_id") == a["teacher_id"]:
-                    folded.add(b["id"])
-                    pair_count[a["id"]] = max(a.get("weekly_count") or 0,
-                                              b.get("weekly_count") or 0)
-                    break
+    folded, pair_count = _fold_coteaching(wanted)
 
     # Separate parallel vs solo
     parallel: dict[str, list] = {}
