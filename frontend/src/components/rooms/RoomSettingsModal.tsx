@@ -14,6 +14,7 @@ import { useTimetableStore } from "../../store/timetableStore";
 import { ModalShell } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { roomReservedFor } from "../../utils/levels";
+import { groupLabel as labelOfGroup } from "../../utils/groupHierarchy";
 import type { Room, RoomType } from "../../types";
 
 const ROOM_TYPES: { v: RoomType; label: string; hint: string }[] = [
@@ -32,8 +33,7 @@ interface Props {
 export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
   const { buildings, teachers, departments, groups } = useTimetableStore();
   const flatGroups = groups.flatMap((g) => [g, ...(g.children ?? [])]);
-  const groupLabel = (id: number) =>
-    flatGroups.find((g) => g.id === id)?.name ?? String(id);
+  const groupLabel = (id: number) => labelOfGroup(flatGroups, id);
 
   const [name, setName]         = useState(room?.name ?? "");
   const [type, setType]         = useState<RoomType>(room?.type ?? "physical");

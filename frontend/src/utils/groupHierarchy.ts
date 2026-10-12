@@ -25,6 +25,24 @@ export function flattenGroups(groups: StudentGroup[]): StudentGroup[] {
   return out;
 }
 
+/**
+ * A class's name — or, when there is no such class, a label a person can act on.
+ *
+ * Every screen that lists a lesson against a class used to fall back to the raw
+ * id, which reads exactly like a room number: the school saw "82" and "86"
+ * beside two German subjects and had no way to know those were not classes.
+ * They were rows pointing at classes that had gone, which is why those lessons
+ * never reached the timetable and turned up nameless in คาบที่ลงไม่ได้.
+ */
+export function groupLabel(flat: StudentGroup[], id: number): string {
+  return flat.find((g) => g.id === id)?.name ?? `⚠ ไม่พบห้องเรียน #${id}`;
+}
+
+/** True when no class with this id exists any more. */
+export function groupMissing(flat: StudentGroup[], id: number): boolean {
+  return !flat.some((g) => g.id === id);
+}
+
 export type SharesStudents = (a: number, b: number) => boolean;
 
 /** Build a fast `sharesStudents(a, b)` predicate from the nested group tree. */

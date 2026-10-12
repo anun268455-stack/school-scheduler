@@ -21,6 +21,7 @@ import { DAYS, periodLabel } from "../../types";
 import { periodsForLevel, levelKeyOf } from "../../utils/levels";
 import { SubgroupAuditView } from "./SubgroupAuditView";
 import { auditAll } from "../../utils/subgroupAudit";
+import { groupLabel } from "../../utils/groupHierarchy";
 
 interface Props { onClose: () => void; initialParentId?: number | null; }
 
@@ -56,8 +57,7 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
 
   const nameOf = (id: number) =>
     subs.find((g) => g.id === id)?.name
-    ?? groups.flatMap((g) => [g, ...(g.children ?? [])]).find((g) => g.id === id)?.name
-    ?? String(id);
+    ?? groupLabel(groups.flatMap((g) => [g, ...(g.children ?? [])]), id);
   const subjName = (id: number) => {
     const s = subjects.find((x) => x.id === id);
     return s ? `${s.code} ${s.name}` : "—";

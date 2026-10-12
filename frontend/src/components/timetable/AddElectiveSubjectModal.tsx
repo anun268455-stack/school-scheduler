@@ -21,7 +21,7 @@ import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { ModalShell } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
-import { flattenGroups } from "../../utils/groupHierarchy";
+import { flattenGroups, groupLabel } from "../../utils/groupHierarchy";
 import { teachesSlot } from "../../utils/teacherSlots";
 import { DAYS, periodLabel } from "../../types";
 import type { ElectivePool, TimetableSlot } from "../../types";
@@ -60,7 +60,7 @@ export const AddElectiveSubjectModal: React.FC<Props> = ({ subjectId, onClose, o
   }, []);
 
   const flat = useMemo(() => flattenGroups(groups), [groups]);
-  const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
+  const gName = (id: number) => groupLabel(flat, id);
   const subj  = subjects.find((s) => s.id === Number(subject));
 
   // ── Who teaches this subject? ──────────────────────────────────────────────

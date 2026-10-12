@@ -14,7 +14,7 @@ import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
-import { flattenGroups } from "../../utils/groupHierarchy";
+import { flattenGroups, groupLabel } from "../../utils/groupHierarchy";
 import { SearchableSelect, teacherOptions } from "../common/SearchableSelect";
 import type { Subject } from "../../types";
 
@@ -120,11 +120,11 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
    * twice. Sorted for display only; the rows themselves keep their identity.
    */
   const shownRows = useMemo(() => {
-    const nameOf = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
+    const nameOf = (id: number) => groupLabel(flat, id);
     return [...rows].sort((a, b) =>
       nameOf(a.groupId).localeCompare(nameOf(b.groupId), "th", { numeric: true }));
   }, [rows, flat]);
-  const gName  = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
+  const gName  = (id: number) => groupLabel(flat, id);
 
   const toggleClass = (groupId: number) => {
     setRows((prev) =>

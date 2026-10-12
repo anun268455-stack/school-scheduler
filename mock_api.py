@@ -4795,6 +4795,14 @@ def purge_orphan_reqs():
 
 @app.put("/api/timetable/requirements/{i}")
 def update_req(i: int, body: dict[str, Any]):
+    # แก้ไขแถว: the class and the subject can both be changed from the teacher's
+    # page now, so they are checked here the same way the import checks them.
+    # A row may only ever be moved to a class that exists — moving it to one
+    # that does not is how a row becomes unplaceable and unexplainable.
+    if "group_id" in body and body["group_id"] not in {g["id"] for g in _flat_groups()}:
+        raise HTTPException(400, "ไม่พบห้องเรียนที่อ้างถึง")
+    if "subject_id" in body and body["subject_id"] not in {s["id"] for s in SUBJECTS}:
+        raise HTTPException(400, "ไม่พบรายวิชาที่อ้างถึง")
     for r in REQUIREMENTS:
         if r["id"] == i:
             r.update(body)

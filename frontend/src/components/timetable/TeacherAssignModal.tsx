@@ -60,11 +60,28 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
   );
   const isCo = (r: LessonRequirement) => r.teacher_id !== teacher.id;
 
+  const orphanRows = useMemo(
+    () => mine.filter((r) => !flat.some((g) => g.id === r.group_id)), [mine, flat]);
+  const orphanPeriods = orphanRows.reduce((n, r) => n + (r.weekly_count ?? 0), 0);
+
   const subjName = (id: number) => {
     const s = subjects.find((x) => x.id === id);
     return s ? `${s.code} – ${s.name}` : String(id);
   };
-  const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
+  /**
+   * The class's name — or, when there is no such class any more, something a
+   * person can act on.
+   *
+   * A bare id in this column reads like a room number ("82", "86") and the
+   * school has no way to tell it apart from a class that is simply named that
+   * way. It is in fact a row pointing at a class that is not in the system:
+   * it can never reach the timetable, and this is where it gets fixed.
+   */
+  const gMissing = (id: number) => !flat.some((g) => g.id === id);
+  const gName = (id: number) => {
+    const g = flat.find((x) => x.id === id);
+    return g ? g.name : `⚠ ไม่พบห้องเรียน #${id}`;
+  };
 
   // Group the load by subject so the list reads like a teaching timetable.
   const bySubject = useMemo(() => {
@@ -308,6 +325,38 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
     finally { setBusy(false); }
   };
 
+  /**
+   * แก้ไขแถวที่ลงไว้แล้ว — move a row to another class, or another subject.
+   *
+   * Until now the only things that could be changed here were the period count
+   * and "delete". A row written against the wrong class had to be deleted and
+   * typed again, and a row whose class is gone (the ⚠ rows) could only be
+   * deleted — taking the period count and the สอนร่วม partner with it. This
+   * repoints it instead, which is what the school actually wants to do.
+   */
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editGroup, setEditGroup] = useState("");
+  const [editSubject, setEditSubject] = useState("");
+
+  const startEdit = (r: LessonRequirement) => {
+    setEditing(r.id);
+    setEditGroup(String(r.group_id));
+    setEditSubject(String(r.subject_id));
+  };
+
+  const saveEdit = async (r: LessonRequirement) => {
+    const gid = Number(editGroup), sid = Number(editSubject);
+    if (!gid || !sid) { setError("ต้องเลือกทั้งวิชาและห้องเรียน"); return; }
+    setBusy(true); setError(null);
+    try {
+      await api.updateRequirement(r.id, { group_id: gid, subject_id: sid });
+      setEditing(null);
+      await refresh();
+    } catch {
+      setError("แก้ไขไม่สำเร็จ");
+    } finally { setBusy(false); }
+  };
+
   const changeWeekly = async (id: number, groupId: number, subjId: number, n: number) => {
     setBusy(true);
     try {
@@ -358,6 +407,21 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
           <p className="px-4 pt-3 pb-1.5 text-xs font-semibold text-gray-500 shrink-0">
             วิชาที่สอนอยู่ ({mine.length} ห้อง{coCount > 0 ? ` · สอนร่วม ${coCount}` : ""})
           </p>
+
+          {/* Rows pointing at a class that is gone. They still count towards
+              this teacher's คาบ/สัปดาห์, so the number on the header is real
+              work that can never happen — which is worth saying plainly. */}
+          {orphanRows.length > 0 && (
+            <div className="mx-4 mb-2 shrink-0 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+              <p className="text-xs font-semibold text-amber-900">
+                ⚠ {orphanRows.length} แถว · {orphanPeriods} คาบ ชี้ไปห้องเรียนที่ไม่มีในระบบแล้ว
+              </p>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                คาบพวกนี้ลงตารางไม่ได้เลย แต่ยังถูกนับรวมใน {totalPeriods} คาบข้างบน
+                — กด ✎ ที่แถวนั้นเพื่อย้ายไปห้องที่ถูกต้อง หรือกด ✕ เพื่อเอาออก
+              </p>
+            </div>
+          )}
 
           {/* Over the cap, and the rows that explain it are almost always one
               subject spread across a level — an elective nobody has ticked
@@ -500,10 +564,49 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
                     // somebody else's lesson or change its period count.
                     const joined = isCo(r);
                     const mate = partnerOf(r, reqIndex);
+                    if (editing === r.id) return (
+                      <div key={r.id} className="px-2.5 py-2 bg-indigo-50/60 space-y-1.5">
+                        <div className="flex gap-1.5">
+                          <div className="flex-1 min-w-0">
+                            <label className="block text-[10px] text-gray-500 mb-0.5">วิชา</label>
+                            <SearchableSelect value={editSubject} onChange={setEditSubject}
+                              options={subjectOpts} placeholder="เลือกวิชา" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <label className="block text-[10px] text-gray-500 mb-0.5">ห้องเรียน</label>
+                            <SearchableSelect value={editGroup} onChange={setEditGroup}
+                              options={flat.map((g) => ({ value: String(g.id), label: g.name,
+                                                          hint: g.level ?? undefined }))}
+                              placeholder="เลือกห้องเรียน" />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {gMissing(r.group_id) && (
+                            <span className="text-[10px] text-amber-800">
+                              แถวนี้ชี้ไปห้องเรียนที่ไม่มีแล้ว — เลือกห้องที่ถูกต้องเพื่อเอากลับมาใช้
+                            </span>
+                          )}
+                          <span className="flex-1" />
+                          <button onClick={() => setEditing(null)} disabled={busy}
+                            className="px-2 py-0.5 rounded border border-gray-300 text-xs text-gray-600
+                                       hover:bg-gray-50">ยกเลิก</button>
+                          <button onClick={() => saveEdit(r)} disabled={busy}
+                            className="px-2.5 py-0.5 rounded bg-indigo-600 text-white text-xs font-semibold
+                                       hover:bg-indigo-700 disabled:opacity-50">บันทึก</button>
+                        </div>
+                      </div>
+                    );
                     return (
                     <div key={r.id} className={clsx("flex items-center gap-1.5 px-2.5 py-1.5",
-                      joined && "bg-sky-50/60")}>
-                      <span className="text-sm text-gray-700 truncate">{gName(r.group_id)}</span>
+                      joined && "bg-sky-50/60",
+                      gMissing(r.group_id) && "bg-amber-50")}>
+                      <span className={clsx("text-sm truncate",
+                        gMissing(r.group_id) ? "text-amber-800 font-medium" : "text-gray-700")}
+                        title={gMissing(r.group_id)
+                          ? "ห้องเรียนนี้ไม่อยู่ในระบบแล้ว คาบนี้จึงลงตารางไม่ได้ — กด ✎ เพื่อย้ายไปห้องที่ถูกต้อง"
+                          : undefined}>
+                        {gName(r.group_id)}
+                      </span>
                       {/* Said after the class, because the class is the thing
                           that is wrong: this one is not in any คาบเสรี. */}
                       {isElective && cover && cover.missing.includes(r.group_id) && (
@@ -541,6 +644,11 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
                         onChange={(e) => changeWeekly(r.id, r.group_id, r.subject_id, Number(e.target.value))}
                       />
                       <span className="text-[11px] text-gray-400">คาบ</span>
+                      <button
+                        onClick={() => startEdit(r)}
+                        disabled={busy || joined}
+                        className="px-1.5 text-gray-400 hover:text-indigo-600 text-xs disabled:opacity-40"
+                        title={joined ? "แก้ได้ที่ครูผู้สอนหลัก" : "แก้ไขวิชาหรือห้องเรียนของแถวนี้"}>✎</button>
                       <button
                         onClick={() => joined ? leavePair(r) : removeReq(r.id)}
                         disabled={busy}

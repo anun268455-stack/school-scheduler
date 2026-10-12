@@ -20,7 +20,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
-import { flattenGroups } from "../../utils/groupHierarchy";
+import { flattenGroups, groupLabel } from "../../utils/groupHierarchy";
 import { TableSearch, matches } from "../common/TableSearch";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { AddElectiveSubjectModal } from "./AddElectiveSubjectModal";
@@ -328,7 +328,7 @@ const PoolCard: React.FC<{
 }> = ({ pool, expanded, onToggle, onChanged }) => {
   const { groups, periods } = useTimetableStore();
   const flat = useMemo(() => flattenGroups(groups), [groups]);
-  const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
+  const gName = (id: number) => groupLabel(flat, id);
 
   const [busy, setBusy] = useState(false);
   const [moving, setMoving] = useState(false);
@@ -557,7 +557,7 @@ export const ElectivePoolPanel: React.FC = () => {
   const [addingSubject, setAddingSubject] = useState(false);
 
   const flat = useMemo(() => flattenGroups(groups), [groups]);
-  const gName = (id: number) => flat.find((g) => g.id === id)?.name ?? String(id);
+  const gName = (id: number) => groupLabel(flat, id);
 
   const reload = async () => {
     setPools(await api.fetchElectivePools());
