@@ -232,17 +232,23 @@ export const updateLevelActivity = (activityKey: string, d: {
   teacher_id?: number | null;
   teacher_ids?: number[];
   room_mode?: "homeroom" | "none";
-}) => api.put<{
-  created: TimetableSlot[];
-  skipped: { group: string; reason: string }[];
-  warnings: string[];
-  activity_key: string;
-  replaced: number;
-}>(`/timetable/level-activity/${encodeURIComponent(activityKey)}`, d).then((r) => r.data);
+}) =>
+  // The key travels in the body, not in the path. Some keys already saved
+  // carry the activity's own name — "ACT-ลูกเสือ/เนตรนารี-3-1-7" — and a
+  // slash in a path is a new segment, so the route never matched and both
+  // แก้ไข and ลบ answered Not Found.
+  api.post<{
+    created: TimetableSlot[];
+    skipped: { group: string; reason: string }[];
+    warnings: string[];
+    activity_key: string;
+    replaced: number;
+  }>("/timetable/level-activity/update", { ...d, activity_key: activityKey })
+    .then((r) => r.data);
 
 export const deleteLevelActivity = (activityKey: string) =>
-  api.delete<{ removed: number }>(`/timetable/level-activity/${encodeURIComponent(activityKey)}`)
-    .then((r) => r.data);
+  api.post<{ removed: number }>("/timetable/level-activity/delete",
+    { activity_key: activityKey }).then((r) => r.data);
 
 // ── Live collaboration ───────────────────────────────────────────────────────
 /** Tiny poll: returns the server's data revision so we can detect other people's edits. */
