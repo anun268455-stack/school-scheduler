@@ -40,6 +40,28 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
       .sort((a, b) => a.groupName.localeCompare(b.groupName, "th", { numeric: true })),
     [requirements, subject.id, flat, teachers]);
 
+  /** ห้องที่วิชานี้ใช้ได้ — the list, falling back to the single old field. */
+  const subjectRooms: number[] = useMemo(() => {
+    const many = subject.fixed_room_ids;
+    if (Array.isArray(many) && many.length) return many;
+    return subject.fixed_room_id ? [subject.fixed_room_id] : [];
+  }, [subject.fixed_room_ids, subject.fixed_room_id]);
+
+  const saveRooms = async (ids: number[]) => {
+    setBusy(true);
+    try {
+      // The single field is kept in step with the list so the subjects table,
+      // the printed sheet and any older reader still show something sensible.
+      const updated = await api.updateSubject(subject.id, {
+        fixed_room_ids: ids,
+        fixed_room_id: ids[0] ?? null,
+      });
+      useTimetableStore.setState((st) => ({
+        subjects: st.subjects.map((x) => (x.id === subject.id ? { ...x, ...updated } : x)),
+      }));
+    } finally { setBusy(false); }
+  };
+
   const setRoom = async (reqId: number, roomId: string) => {
     setBusy(true);
     try {
@@ -80,6 +102,36 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
           </p>
         </div>
         <button onClick={onClose} className="text-sky-200 hover:text-white text-lg leading-none shrink-0">✕</button>
+      </div>
+
+      {/* ห้องที่วิชานี้ใช้ได้ — เลือกได้หลายห้อง */}
+      <div className="px-5 py-3 border-b border-gray-100 shrink-0">
+        <p className="text-[11px] font-semibold text-gray-500 mb-1">
+          ห้องที่วิชานี้ใช้ได้ (เลือกได้หลายห้อง — ห้องแรกที่ว่างจะถูกใช้)
+        </p>
+        <div className="flex flex-wrap gap-1.5 mb-1.5">
+          {subjectRooms.map((id) => (
+            <span key={id}
+              className="inline-flex items-center gap-1 text-xs bg-amber-50 text-amber-900 border border-amber-300 rounded-lg px-2 py-1">
+              🏟 {rooms.find((r) => r.id === id)?.name ?? `#${id}`}
+              <button onClick={() => saveRooms(subjectRooms.filter((x) => x !== id))}
+                disabled={busy} className="text-amber-500 hover:text-red-600">✕</button>
+            </span>
+          ))}
+          {subjectRooms.length === 0 && (
+            <span className="text-xs text-gray-400">ยังไม่ได้กำหนด — ระบบเลือกห้องให้ตามกฎปกติ</span>
+          )}
+        </div>
+        <SearchableSelect value="" onChange={(v) => {
+          const id = Number(v);
+          if (id && !subjectRooms.includes(id)) saveRooms([...subjectRooms, id]);
+        }}
+          options={roomOptions(rooms.filter((r) => !subjectRooms.includes(r.id)))}
+          placeholder="+ เพิ่มห้องที่วิชานี้ใช้ได้" disabled={busy} />
+        <p className="text-[11px] text-gray-400 mt-1">
+          เช่น ฟิสิกส์ลง 353 ไม่หมด ก็ใส่ห้องเคมีกับชีววิทยาไว้เป็นห้องสำรองได้ ·
+          ระบบจะเลือกห้องที่อยู่อาคารเดียวกับห้องเรียนก่อน
+        </p>
       </div>
 
       {/* เรียนห้องเดียวกันทุกห้องเรียน */}

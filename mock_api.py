@@ -245,6 +245,29 @@ def _subject_room_rule(subj: dict[str, Any]) -> str:
     return rule if rule in ("subject", "homeroom") else "auto"
 
 
+def _subject_rooms(subj: dict[str, Any] | None) -> list[int]:
+    """ห้องที่วิชานี้ใช้ได้ — one room, or several.
+
+    ฟิสิกส์ does not fit in 353 alone: there are more physics periods in a
+    week than the room has hours, and the overflow was landing in ordinary
+    classrooms. The school would rather it went to เคมี or ชีววิทยา, which
+    are the same kind of room with the same benches — so a subject may name
+    as many as it likes, in the order it prefers them.
+
+    The old single `fixed_room_id` is still read, so nothing has to be
+    re-entered.
+    """
+    if not subj:
+        return []
+    many = subj.get("fixed_room_ids")
+    if isinstance(many, list):
+        out = [int(x) for x in many if x]
+        if out:
+            return out
+    one = subj.get("fixed_room_id")
+    return [int(one)] if one else []
+
+
 def _subject_outdoor(subj: dict[str, Any]) -> bool | None:
     """เรียนที่ลานได้ไหม — True yes, False never, None not said."""
     v = subj.get("allow_outdoor")
@@ -678,7 +701,7 @@ def _requirement_problems() -> list[dict[str, Any]]:
         outdoor = subj.get("department_id") in dep_out
         dept = subj.get("department_id")
         for room in ROOMS:
-            if subj.get("fixed_room_id") and room["id"] == subj["fixed_room_id"]:
+            if room["id"] in _subject_rooms(subj):
                 return True
             if not _room_usable(room):
                 continue          # ห้องห้ามใช้ — a staff room or office
@@ -1369,22 +1392,48 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # 1. ห้องประจำวิชา — a room tied to the subject itself (gym, computer
         #    lab, music room). This outranks the class's homeroom: the students
         #    walk to the facility the subject needs.
-        subj_room = subj.get("fixed_room_id")
-        if subj_room and not room_taken(subj_room):
-            r = r_map.get(subj_room)
-            if r:
-                return subj_room, r["name"], r["type"]
+        #    A subject may name several: ฟิสิกส์ does not fit in 353 alone, so
+        #    the school adds เคมี and ชีววิทยา as places it will also do. Any
+        #    of them is right; the one in the class's own building is better.
+        subj_rooms = _subject_rooms(subj)
+        if subj_rooms:
+            here = room_building((grp.get("homeroom_room_id")
+                                  or anchor_room.get(group_id)) if group_id else None)
+            open_ = [r_map[i] for i in subj_rooms
+                     if i in r_map and not room_taken(i)]
+            if open_:
+                r = min(open_, key=lambda r: (
+                    0 if (here is not None and r.get("building_id") == here) else 1,
+                    subj_rooms.index(r["id"])))
+                return r["id"], r["name"], r["type"]
         # "ต้องเรียนที่ห้องประจำวิชา" and it is busy: wait for it rather than
         # take an ordinary classroom. A นาฏศิลป์ period in 247 is not the
         # lesson the school planned, so the cell is left for another time.
-        if rule == "subject" and (subj_room or want_dept):
+        if rule == "subject" and (subj_rooms or want_dept):
             own = [r for r in ROOMS
-                   if (r["id"] == subj_room or r.get("specialized_dept_id") == want_dept)
+                   if (r["id"] in subj_rooms or r.get("specialized_dept_id") == want_dept)
                    and eligible(r)]
             if own:
                 r = min(own, key=lambda r: r["id"])
                 return r["id"], r["name"], r["type"]
             return None, None, None
+
+        # 1b. ห้องพิเศษที่เป็นของครูคนนี้ — the band room, the lab they run.
+        #
+        #     The school's rule is that students stay put and the teacher
+        #     walks to them, and that is right for an ordinary lesson. It is
+        #     not right for a ห้องพิเศษ: the instruments, the microscopes and
+        #     the kiln do not travel, so for those the class comes to the
+        #     teacher. 138 ห้องวงโยฯ with a teacher's name on it is exactly
+        #     this case.
+        if teacher_id is not None and rule != "homeroom":
+            special = [r for r in ROOMS
+                       if (r["id"] == fr or teacher_id in _room_reserved_for(r))
+                       and r.get("type") == "special"
+                       and eligible(r) and not upstairs(r)]
+            if special:
+                r = min(special, key=lambda r: (r["id"] != fr, r["id"]))
+                return r["id"], r["name"], r["type"]
 
         # 1c. ห้องประจำของชั้นนี้จริง ๆ — a room the school has kept for this
         #     class, and which is also where they sit.
@@ -1753,10 +1802,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         subj = s_map.get(req.get("subject_id")) or {}
         if _subject_room_rule(subj) != "subject":
             return True
-        want = subj.get("fixed_room_id")
+        want = _subject_rooms(subj)
         dept = subj.get("department_id")
         rooms = [r for r in ROOMS
-                 if r["id"] == want or (dept and r.get("specialized_dept_id") == dept)]
+                 if r["id"] in want or (dept and r.get("specialized_dept_id") == dept)]
         if not rooms:
             return True
         bks = cell_buckets(req["group_id"], period)
@@ -2146,7 +2195,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         grp  = g_map.get(r["group_id"], {}) or {}
         needs_facility = (
             _subject_room_rule(subj) == "subject"
-            or subj.get("fixed_room_id")
+            or _subject_rooms(subj)
             or subj.get("department_id") in facility_depts)
         # A teacher who is off on Fridays has four days to fit a week into,
         # and วันที่ไม่สอน is now a hard rule — so their lessons are placed
@@ -2805,12 +2854,13 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         # teacher's own กลุ่มสาระ — a maths teacher taking a computer period
         # still needs the lab.
         t_dept = subj.get("department_id") or teacher.get("department_id")
-        subj_room = subj.get("fixed_room_id")
+        subj_rooms = _subject_rooms(subj)
         out = []
         for r in ROOMS:
-            # The subject's own designated room is always allowed — the school
-            # chose it deliberately, so capacity/type rules don't exclude it.
-            if subj_room and r["id"] == subj_room:
+            # The subject's own designated rooms are always allowed — the
+            # school chose them deliberately, so capacity/type rules do not
+            # exclude them.
+            if r["id"] in subj_rooms:
                 out.append(r)
                 continue
             if not _room_usable(r):
@@ -2860,7 +2910,8 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
             if rid and rid in by_id and rid not in picked:
                 picked[rid] = by_id[rid]
 
-        take(subj.get("fixed_room_id"))
+        for _sr in _subject_rooms(subj):
+            take(_sr)
         for r in rooms:
             if want_dept and r.get("specialized_dept_id") == want_dept:
                 take(r["id"])
@@ -2924,7 +2975,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         fixed = t_map.get(occ["teacher_id"], {}).get("fixed_room_id")
         subj = s_map.get(occ["subject_id"], {})
         wants_outdoor = subj.get("department_id") in dep_out
-        subj_room = subj.get("fixed_room_id")   # ห้องประจำวิชา
+        subj_room = set(_subject_rooms(subj))   # ห้องประจำวิชา (ได้หลายห้อง)
         own_rooms = dept_rooms.get(subj.get("department_id") or -1, set())
 
         occ_start_list = []
@@ -2960,7 +3011,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                 if subj_room:
                     # ห้องประจำวิชา wins over the class's homeroom — the subject
                     # needs that facility, so anything else is heavily penalised.
-                    if r["id"] != subj_room:
+                    if r["id"] not in subj_room:
                         penalty_terms.append((60, rv))
                 elif own_rooms:
                     # The department owns labs/studios. Use one if at all
@@ -3560,6 +3611,8 @@ def _purge_room(rid: int) -> dict[str, int]:
     for sub in SUBJECTS:
         if sub.get("fixed_room_id") == rid:
             sub["fixed_room_id"] = None
+        if isinstance(sub.get("fixed_room_ids"), list):
+            sub["fixed_room_ids"] = [x for x in sub["fixed_room_ids"] if x != rid]
     return {"slots_unassigned": freed}
 
 
