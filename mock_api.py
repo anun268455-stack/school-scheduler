@@ -772,7 +772,15 @@ def _requirement_problems() -> list[dict[str, Any]]:
         if not grp:
             reasons.append(("blocking", "ไม่พบห้องเรียนนี้แล้ว (อาจถูกลบไป)"))
         if not teach:
-            reasons.append(("blocking", "ไม่พบครูผู้สอนคนนี้แล้ว (อาจถูกลบไป)"))
+            # Two different things, and the school can only act on one of
+            # them: a row saved without a teacher on purpose (a เซ็ตห้องย่อย
+            # is about which subjects run together, and who teaches them is
+            # often settled later), and a row pointing at a teacher who has
+            # since been removed.
+            reasons.append(("blocking",
+                "ยังไม่ได้เลือกครู — เลือกที่ปุ่ม จัดห้อง/ครู ของวิชานี้ แล้วระบบจะจัดให้"
+                if r.get("teacher_id") in (None, "", 0)
+                else "ไม่พบครูผู้สอนคนนี้แล้ว (อาจถูกลบไป)"))
         if not subj:
             reasons.append(("blocking", "ไม่พบวิชานี้แล้ว (อาจถูกลบไป)"))
         if wc <= 0:
@@ -878,6 +886,11 @@ def _excluded_requirement_ids(body: dict[str, Any]) -> set[int]:
     # Already taught in a คาบเสรี — placing it again is a second lesson of a
     # subject the class takes once, with the teacher booked twice for it.
     ids |= _reqs_served_by_elective()
+    # ยังไม่ได้เลือกครู. A เซ็ตห้องย่อย can be written down before anyone
+    # knows who will teach it, and the row is kept — but a lesson with nobody
+    # in the room is not a lesson, so it is never placed, whatever the run was
+    # told to skip. It is reported instead, which is how it gets a teacher.
+    ids |= {r["id"] for r in REQUIREMENTS if not r.get("teacher_id")}
     return ids
 
 

@@ -185,6 +185,16 @@ export interface LessonRequirement {
   id:                 number;
   group_id:           number;
   subject_id:         number;
+  /**
+   * ครูผู้สอน — 0 while the school has not chosen one yet.
+   *
+   * A เซ็ตห้องย่อย says which subjects the subgroups take at the same hour,
+   * and that is often settled before anyone knows who will teach them. Such
+   * a row is kept and reported ("ยังไม่ได้เลือกครู"), and never placed: a
+   * lesson with nobody in the room is not a lesson. Zero rather than null so
+   * the dozen places that group and compare teachers keep working on a plain
+   * number; nothing real ever has id 0.
+   */
   teacher_id:         number;
   weekly_count:       number;
   parallel_group_key: string | null;

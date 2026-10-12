@@ -240,7 +240,8 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                         <SearchableSelect
                           value={row.teacherId ? String(row.teacherId) : ""}
                           onChange={(v) => setRowFor(g.id, { teacherId: Number(v) })}
-                          options={teacherOptions(teachers, departments)} emptyLabel="– เลือกครู –" />
+                          options={teacherOptions(teachers, departments)}
+                          emptyLabel="– ครู (เว้นว่างได้) –" />
                         <label className="flex items-center gap-1.5 text-xs text-gray-600">
                           คาบ/สัปดาห์
                           <input type="number" min={1} max={20} value={row.weekly}
@@ -327,7 +328,9 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
       <div className="px-5 py-3 border-t border-gray-100 bg-gray-50 shrink-0 flex items-center gap-2">
         <p className="text-[11px] text-gray-500 flex-1">
           เซ็ตหนึ่ง = หนึ่งชั่วโมงที่ห้องย่อยเรียนพร้อมกัน · ห้องที่ไม่ได้ใส่ในเซ็ตจะว่างคาบนั้น ·
-          ตัวจัดตารางจะวางทุกวิชาในเซ็ตลงคาบเดียวกันให้เอง
+          ตัวจัดตารางจะวางทุกวิชาในเซ็ตลงคาบเดียวกันให้เอง · ครูเว้นว่างไว้ก่อนได้
+          ค่อยไปเลือกทีหลังที่ปุ่ม 🧑‍🏫 จัดห้อง/ครู (คาบที่ยังไม่มีครูจะยังไม่ถูกจัดลงตาราง
+          และขึ้นในรายการคาบที่ลงไม่ได้)
         </p>
         <button onClick={onClose}
           className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100">

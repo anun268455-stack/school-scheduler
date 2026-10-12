@@ -23,6 +23,7 @@ export interface SetRow {
   requirementId?: number;
   groupId:   number;
   subjectId: number;
+  /** 0 = ยังไม่ได้เลือกครู, which is allowed: a เซ็ต is about subjects. */
   teacherId: number;
   weekly:    number;
 }
@@ -89,7 +90,7 @@ export function readSets(
     const cur = by.get(key) ?? { key, parentId: parsed.parentId, name: parsed.name, rows: [] };
     cur.rows.push({
       requirementId: r.id, groupId: r.group_id, subjectId: r.subject_id,
-      teacherId: r.teacher_id, weekly: r.weekly_count ?? 1,
+      teacherId: r.teacher_id ?? 0, weekly: r.weekly_count ?? 1,
     });
     by.set(key, cur);
   }
@@ -118,7 +119,11 @@ export function setProblems(
     }
   }
   if (rows.some((r) => !r.subjectId)) out.push("มีแถวที่ยังไม่ได้เลือกวิชา");
-  if (rows.some((r) => !r.teacherId)) out.push("มีแถวที่ยังไม่ได้เลือกครู");
+  // ครูไม่บังคับ. A เซ็ต says which subjects the subgroups take at the same
+  // hour, and the school often settles that before it knows who teaches
+  // what. The row is saved without a teacher and the จัดห้อง/ครู screen
+  // fills it in later; until then the lesson is reported as having no
+  // teacher rather than being placed with nobody in the room.
   const teachers = new Map<number, number>();
   for (const r of rows) {
     if (r.teacherId) teachers.set(r.teacherId, (teachers.get(r.teacherId) ?? 0) + 1);
@@ -162,11 +167,12 @@ export function planSetSave(
   const keptIds = new Set<number>();
 
   for (const r of rows) {
-    if (!r.groupId || !r.subjectId || !r.teacherId) continue;
+    if (!r.groupId || !r.subjectId) continue;        // ครูเว้นว่างได้
     const old = r.requirementId != null ? was.get(r.requirementId) : undefined;
     if (!old) {
       plan.create.push({
-        group_id: r.groupId, subject_id: r.subjectId, teacher_id: r.teacherId,
+        group_id: r.groupId, subject_id: r.subjectId,
+        teacher_id: r.teacherId || 0,
         weekly_count: r.weekly, parallel_group_key: key,
       });
       continue;
@@ -175,7 +181,7 @@ export function planSetSave(
     const patch: Partial<LessonRequirement> = {};
     if (old.groupId !== r.groupId) patch.group_id = r.groupId;
     if (old.subjectId !== r.subjectId) patch.subject_id = r.subjectId;
-    if (old.teacherId !== r.teacherId) patch.teacher_id = r.teacherId;
+    if (old.teacherId !== r.teacherId) patch.teacher_id = r.teacherId || 0;
     if (old.weekly !== r.weekly) patch.weekly_count = r.weekly;
     if (Object.keys(patch).length > 0) plan.update.push({ id: r.requirementId!, patch });
   }

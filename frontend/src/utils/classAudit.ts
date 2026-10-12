@@ -98,7 +98,7 @@ export function auditClass(
       coTaught,
       duplicate: rows.length > 1 && !coTaught,
       elective: electiveIds.has(subjectId),
-      noTeacher: rows.some((r) => r.teacher_id == null),
+      noTeacher: rows.some((r) => !r.teacher_id),
     });
   }
   out.sort((a, b) => (subjName.get(a.subjectId)?.code ?? "")
