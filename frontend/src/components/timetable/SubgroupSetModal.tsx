@@ -128,6 +128,18 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
         }
       }
       if (plan.create.length > 0) await api.bulkCreateRequirements(plan.create);
+      // คาบคู่ที่ติ๊กในเซ็ต ต้องตรงกับที่หน้ารายวิชาบอกด้วย — ไม่งั้นหน้าหนึ่ง
+      // บอกว่าเรียนทีละสองคาบ อีกหน้าบอกว่าคาบเดียว และคนอ่านไม่รู้ว่าอันไหนจริง
+      const want = when.double ? 2 : 1;
+      const touched = new Set(rows.map((r) => r.subjectId).filter(Boolean));
+      for (const sid of touched) {
+        const sb = subjects.find((x) => x.id === sid);
+        if (!sb || (sb.duration ?? 1) === want) continue;
+        const updated = await api.updateSubject(sid, { duration: want });
+        useTimetableStore.setState((st) => ({
+          subjects: st.subjects.map((x) => (x.id === sid ? { ...x, ...updated } : x)),
+        }));
+      }
       useTimetableStore.setState({ requirements: await api.fetchRequirements() });
       setNote(`บันทึก "${name}" แล้ว — ${rows.length} ห้องย่อยจะเรียนพร้อมกัน`);
       setEditing(null);
@@ -258,20 +270,22 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                 ))}
               </select>
               {/* คาบคู่ของทั้งเซ็ต — "ศุกร์ คาบ 3-4" ในแผนของโรงเรียน */}
-              <label className={clsx("flex items-center gap-1.5 text-xs rounded-lg border px-2 py-1",
-                when.period != null ? "cursor-pointer border-blue-300 bg-blue-50 text-gray-700"
-                  : "border-gray-200 bg-white text-gray-400 cursor-not-allowed")}>
+              {/* คาบคู่ยืนด้วยตัวเองได้ — "เรียนทีละสองคาบติดกัน" เป็นเรื่อง
+                  ของวิชา ไม่ได้ผูกกับว่าจะล็อกวันไหน ล็อกด้วยก็บอกช่วงให้ */}
+              <label className="flex items-center gap-1.5 text-xs rounded-lg border px-2 py-1
+                                cursor-pointer border-blue-300 bg-blue-50 text-gray-700">
                 <input type="checkbox" className="w-3.5 h-3.5 accent-blue-600"
-                  checked={when.double} disabled={busy || when.period == null}
+                  checked={when.double} disabled={busy}
                   onChange={(e) => setWhen((w) => ({ ...w, double: e.target.checked }))} />
                 🔗 คาบคู่
                 {when.double && when.period != null && secondPeriod != null && (
-                  <span className="text-gray-500">
-                    (คาบ {when.period}–{secondPeriod})
-                  </span>
+                  <span className="text-gray-500">(คาบ {when.period}–{secondPeriod})</span>
                 )}
                 {when.double && when.period != null && secondPeriod == null && (
                   <span className="text-amber-700">— คาบนี้เป็นคาบสุดท้าย ต่อคาบคู่ไม่ได้</span>
+                )}
+                {when.double && when.period == null && (
+                  <span className="text-gray-500">— 2 คาบติดกัน ระบบหาคาบให้เอง</span>
                 )}
               </label>
               {(when.day != null) !== (when.period != null) && (
@@ -281,7 +295,9 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
               )}
               <span className="text-[11px] text-gray-500">
                 ไม่เลือก = ให้ระบบหาคาบที่ว่างให้เอง · ล็อกแล้วจะไม่ถูกย้าย
-                ถ้าคาบนั้นไม่ว่างจะขึ้นในรายการคาบที่ลงไม่ได้
+                ถ้าคาบนั้นไม่ว่างจะขึ้นในรายการคาบที่ลงไม่ได้ ·
+                ติ๊กคาบคู่จะไปตั้ง “ความยาว = 2 คาบ” ให้วิชาในเซ็ตนี้ที่หน้ารายวิชาด้วย
+                ทุกห้องที่เรียนวิชานั้นจึงเป็นคาบคู่เหมือนกัน
               </span>
             </div>
 
