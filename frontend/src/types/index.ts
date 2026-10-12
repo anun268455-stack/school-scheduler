@@ -222,6 +222,8 @@ export interface LessonRequirement {
    */
   pinned_day?:        number | null;
   pinned_period?:     number | null;
+  /** คาบคู่ — คาบนี้กิน 2 คาบติดกันนับจากคาบที่ล็อกไว้. */
+  pinned_double?:     boolean;
   /**
    * เรียนที่ลานได้ไหม เฉพาะคาบนี้ — ทับค่าของห้องเรียนและของรายวิชา.
    * null/undefined = ไม่ระบุ ใช้ค่าที่ตั้งไว้ระดับบน

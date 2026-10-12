@@ -65,13 +65,13 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
 
   const open = (s: SubgroupSet) => {
     setEditing(s); setName(s.name); setRows(s.rows.map((r) => ({ ...r })));
-    setWhen({ day: s.day ?? null, period: s.period ?? null });
+    setWhen({ day: s.day ?? null, period: s.period ?? null, double: !!s.double });
     setErr(null); setNote(null);
   };
   const startNew = () => {
     const n = `เซ็ต ${String.fromCharCode(65 + saved.length)}`;
     setEditing({ key: "", parentId: parentId!, name: n, rows: [] });
-    setName(n); setRows([]); setWhen({ day: null, period: null });
+    setName(n); setRows([]); setWhen({ day: null, period: null, double: false });
     setErr(null); setNote(null);
   };
 
@@ -83,8 +83,16 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
   }, [periods, groups, parentId]);
 
   // ล็อกวัน/คาบของทั้งเซ็ต — ทุกแถวเรียนพร้อมกันอยู่แล้ว จึงเป็นค่าเดียว
-  const [when, setWhen] = useState<{ day: number | null; period: number | null }>(
-    { day: null, period: null });
+  const [when, setWhen] = useState<{ day: number | null; period: number | null;
+                                     double: boolean }>(
+    { day: null, period: null, double: false });
+
+  /** คาบที่สองของคาบคู่ — ข้ามคาบพักให้ตรงกับที่ตัวจัดตารางทำ */
+  const secondPeriod = useMemo(() => {
+    if (when.period == null) return null;
+    const i = classPeriods.findIndex((p) => p.period_num === when.period);
+    return i >= 0 && i + 1 < classPeriods.length ? classPeriods[i + 1].period_num : null;
+  }, [when.period, classPeriods]);
 
   /** One subgroup's row in the set being edited, or undefined if it is out. */
   const rowFor = (gid: number) => rows.find((r) => r.groupId === gid);
@@ -249,6 +257,23 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                   </option>
                 ))}
               </select>
+              {/* คาบคู่ของทั้งเซ็ต — "ศุกร์ คาบ 3-4" ในแผนของโรงเรียน */}
+              <label className={clsx("flex items-center gap-1.5 text-xs rounded-lg border px-2 py-1",
+                when.period != null ? "cursor-pointer border-blue-300 bg-blue-50 text-gray-700"
+                  : "border-gray-200 bg-white text-gray-400 cursor-not-allowed")}>
+                <input type="checkbox" className="w-3.5 h-3.5 accent-blue-600"
+                  checked={when.double} disabled={busy || when.period == null}
+                  onChange={(e) => setWhen((w) => ({ ...w, double: e.target.checked }))} />
+                🔗 คาบคู่
+                {when.double && when.period != null && secondPeriod != null && (
+                  <span className="text-gray-500">
+                    (คาบ {when.period}–{secondPeriod})
+                  </span>
+                )}
+                {when.double && when.period != null && secondPeriod == null && (
+                  <span className="text-amber-700">— คาบนี้เป็นคาบสุดท้าย ต่อคาบคู่ไม่ได้</span>
+                )}
+              </label>
               {(when.day != null) !== (when.period != null) && (
                 <span className="text-[11px] text-amber-700">
                   เลือกทั้งวันและคาบจึงจะล็อกได้ · เลือกอย่างเดียวจะยังไม่ล็อก

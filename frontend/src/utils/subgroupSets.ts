@@ -34,6 +34,8 @@ export interface SubgroupSet {
   /** วัน/คาบที่ล็อกไว้ — null = ปล่อยให้ตัวจัดตารางเลือกเอง. */
   day?:     number | null;
   period?:  number | null;
+  /** คาบคู่ — เซ็ตนี้กิน 2 คาบติดกัน เช่น "ศุกร์ คาบ 3-4". */
+  double?:  boolean;
   /** parallel_group_key — the thing that actually ties the lessons together. */
   key:      string;
   /** The parent class whose subgroups these are. */
@@ -101,6 +103,7 @@ export function readSets(
     // วัน/คาบที่ล็อกไว้เป็นของทั้งเซ็ต — ทุกแถวเรียนพร้อมกันอยู่แล้ว
     if (r.pinned_day != null && cur.day == null) {
       cur.day = r.pinned_day; cur.period = r.pinned_period ?? null;
+      cur.double = !!r.pinned_double;
     }
     by.set(key, cur);
   }
@@ -165,7 +168,8 @@ export interface SetPlan {
   create: { group_id: number; subject_id: number; teacher_id: number;
             weekly_count: number; parallel_group_key: string;
             room_id: number | null;
-            pinned_day: number | null; pinned_period: number | null }[];
+            pinned_day: number | null; pinned_period: number | null;
+            pinned_double: boolean }[];
   update: { id: number; patch: Partial<LessonRequirement> }[];
   remove: number[];
 }
@@ -173,7 +177,7 @@ export interface SetPlan {
 export function planSetSave(
   key: string, rows: SetRow[], existing: SetRow[],
   /** วัน/คาบที่ล็อกไว้ทั้งเซ็ต — null = ไม่ล็อก */
-  when?: { day: number | null; period: number | null },
+  when?: { day: number | null; period: number | null; double?: boolean },
 ): SetPlan {
   const plan: SetPlan = { create: [], update: [], remove: [] };
   const was = new Map(existing.filter((r) => r.requirementId != null)
@@ -190,6 +194,7 @@ export function planSetSave(
         weekly_count: r.weekly, parallel_group_key: key,
         room_id: r.roomId || null,
         pinned_day: when?.day ?? null, pinned_period: when?.period ?? null,
+        pinned_double: !!when?.double,
       });
       continue;
     }
@@ -202,6 +207,7 @@ export function planSetSave(
     if ((old.roomId ?? 0) !== (r.roomId ?? 0)) patch.room_id = r.roomId || null;
     if (when) {
       patch.pinned_day = when.day; patch.pinned_period = when.period;
+      patch.pinned_double = !!when.double;
     }
     if (Object.keys(patch).length > 0) plan.update.push({ id: r.requirementId!, patch });
   }

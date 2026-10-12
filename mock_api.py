@@ -2266,6 +2266,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         wants_morning = _prefers_morning(s_map.get(req["subject_id"]))
         # A คาบคู่ is meant to sit twice in a day; everything else is not.
         duration = (s_map.get(req["subject_id"], {}) or {}).get("duration", 1) or 1
+        if req.get("pinned_double"):
+            duration = 2            # this lesson is a pair, whatever the subject is
+            needed = max(needed, 2)         # …and a pair is two periods
         placed = 0
         for attempt in range(5):
             if placed >= needed:
@@ -2599,8 +2602,17 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         max_weekly = max(r["weekly_count"] for r in reqs)
         already    = sum(1 for s in SLOTS if s.get("parallel_group_key") == pgk) // max(len(reqs), 1)
         needed     = max(0, max_weekly - already)
+        # A เซ็ต marked คาบคู่ is at least one pair: "ศุกร์ คาบ 3-4" written
+        # with 1 คาบ/สัปดาห์ means one block of two, not a single period.
+        if already == 0 and needed == 1 and any(r.get("pinned_double") for r in reqs):
+            needed = 2
         # If any subject in the block is a double-period subject, place as pairs.
-        is_double  = any((s_map.get(r["subject_id"], {}).get("duration", 1) or 1) == 2 for r in reqs)
+        # คาบคู่: either the subject is always taught in pairs, or this เซ็ต
+        # was written down as one — "ศุกร์ คาบ 3-4" is a property of the
+        # arrangement, not of the subject, and the school writes it per set.
+        is_double  = (any((s_map.get(r["subject_id"], {}).get("duration", 1) or 1) == 2
+                          for r in reqs)
+                      or any(r.get("pinned_double") for r in reqs))
 
         # Detect same-teacher assignment (warn but still try). Not for a
         # sibling merge: one teacher taking both halves of a class at once is
@@ -2634,6 +2646,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         merged = pgk in merged_keys
 
         def place_block(day_, periods_to_fill):
+            # A block of two is one lesson, and each class's two halves have
+            # to say so — otherwise the grid draws them as two cards, and
+            # anything that moves or clears a cell can take half the lesson
+            # away. One key per class, since each sits in its own room.
+            dkeys = {r["group_id"]: f"DBL-{_next('slot')}"
+                     for r in reqs} if len(periods_to_fill) > 1 else {}
             for i, per_ in enumerate(periods_to_fill):
                 # Two halves of one class sit in one room, so the room is
                 # chosen once and the rest follow. Left to itself each half
@@ -2649,8 +2667,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                         else:
                             (slot["room_id"], slot["room_name"],
                              slot["room_type"]) = shared_room
-                    if i == 0 and len(periods_to_fill) > 1:
-                        slot["is_double_start"] = True
+                    if len(periods_to_fill) > 1:
+                        slot["double_group_key"] = dkeys.get(req["group_id"])
+                        slot["is_double_start"] = i == 0
+                        slot["is_double_cont"] = i > 0
                     SLOTS.append(slot)
                     note_subject(req["group_id"], req.get("subject_id"), day_)
                     # One lesson for the teacher however many halves are in
