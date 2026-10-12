@@ -109,6 +109,11 @@ export interface TeacherAdvanced {
   /** เวรคาบสุดท้าย per week; omitted = follow the school's, 0 = exempt. */
   min_last_period?:          number;
   require_ground_floor?:     boolean;  // ต้องสอนชั้น 1 เท่านั้น (เหตุสุขภาพ)
+  /**
+   * ห้องของครูคนนี้ กับ ห้องประจำชั้นของนักเรียน อันไหนมาก่อน.
+   * true = นักเรียนเดินมาหาครู · false = ครูเดินไปสอน · ไม่ใส่ = ตามโรงเรียน
+   */
+  room_over_homeroom?:       boolean;
   days_off?:                 number[]; // วันที่ไม่สอน [0=จ, 1=อ, ... 4=ศ]
   avoid_periods?:            number[]; // คาบที่หลีกเลี่ยง
   note?:                     string;   // หมายเหตุ
@@ -433,6 +438,14 @@ export interface SchoolConfig {
   min_last_period?:    number;
   /** เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 = ไม่จำกัด */
   max_last_period?:    number;
+  /**
+   * ห้องของครู กับ ห้องประจำชั้นของนักเรียน อันไหนมาก่อน.
+   *
+   * false (ค่าเริ่มต้น) = นักเรียนอยู่กับที่ ครูเดินไปสอน
+   * true = นักเรียนเดินไปเรียนที่ห้องของครู
+   * ครูแต่ละคนตั้งสวนทางได้ที่การตั้งค่าของตัวเอง
+   */
+  teacher_room_over_homeroom?: boolean;
 }
 
 // Drag item payload

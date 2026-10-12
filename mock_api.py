@@ -939,6 +939,11 @@ def _teacher_prefs(teacher: dict[str, Any] | None) -> dict[str, Any]:
         "avoid_periods": {int(p) for p in (adv.get("avoid_periods") or [])
                           if str(p).isdigit() or isinstance(p, int)},
         "ground_floor": bool(adv.get("require_ground_floor")),
+        # ห้องของครูคนนี้สำคัญกว่าห้องประจำชั้นไหม — True ครูอยู่กับที่
+        # นักเรียนเดินมาหา, False นักเรียนอยู่กับที่ ครูเดินไปสอน,
+        # None ตามค่าของโรงเรียน
+        "room_wins": (adv.get("room_over_homeroom")
+                      if isinstance(adv.get("room_over_homeroom"), bool) else None),
         # None = follow the school's figure; 0 = exempt this teacher.
         "min_last_period": None if adv.get("min_last_period") in (None, "") else num("min_last_period", 0),
     }
@@ -1270,7 +1275,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # สอนได้เฉพาะชั้น 1 — a teacher who cannot manage stairs. Honoured as a
         # ranking, not a filter: a hard rule here would simply lose the lesson
         # on a day the ground floor is full, which helps nobody.
-        ground_only = _teacher_prefs(t).get("ground_floor")
+        prefs = _teacher_prefs(t)
+        ground_only = prefs.get("ground_floor")
+        # Whose room comes first, the teacher's or the class's (see 2a' below).
+        teacher_room_wins = prefs.get("room_wins")
+        if teacher_room_wins is None:
+            teacher_room_wins = bool(
+                (SCHOOL_CONFIG if isinstance(SCHOOL_CONFIG, dict) else {})
+                .get("teacher_room_over_homeroom"))
 
         def upstairs(r: dict | None) -> bool:
             if not ground_only or not r:
@@ -1400,6 +1412,25 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     0 if (here is not None and r.get("building_id") == here) else 1,
                     r["id"]))
                 return r["id"], r["name"], r["type"]
+
+        # 2a'. ห้องประจำชั้นของนักเรียน, ahead of the teacher's own room.
+        #
+        #      Which of the two comes first is the school's decision, not
+        #      ours: "ครูอยู่กับที่ นักเรียนเดินมาหา" and "นักเรียนอยู่กับที่
+        #      ครูเดินไปสอน" are both real ways to run a school, and this one
+        #      runs the second. Set per teacher on their card, otherwise by
+        #      the school's own setting, which starts on the class's side.
+        #
+        #      Only a REAL ห้องประจำชั้น counts here. A class that has none is
+        #      given an anchor room further down, and an invented room is no
+        #      reason to keep a teacher out of their own.
+        real_home = grp.get("homeroom_room_id")
+        if (real_home and not wants_outdoor and not teacher_room_wins
+                and not room_taken(real_home)):
+            r = r_map.get(real_home)
+            if (r and _room_free_for(r, teacher_id) and not upstairs(r)
+                    and (r["type"] != "outdoor" or may_outdoor)):
+                return real_home, r["name"], r["type"]
 
         # 2a. ห้องของครูคนนี้ — their fixed room, or one the school has written
         #     their name on.
@@ -5316,6 +5347,14 @@ SCHOOL_CONFIG: dict[str, Any] = {
     # and how many they may be given at most. 0 = ไม่จำกัด.
     "min_last_period": LAST_PERIOD_MIN,
     "max_last_period": LAST_PERIOD_MAX,
+    # ห้องของครู กับ ห้องประจำชั้นของนักเรียน — อันไหนมาก่อน.
+    #
+    # False (ค่าเริ่มต้น): the class stays in its own room and the teacher
+    # walks to them. True: the students walk to the teacher's room.
+    # A วิชา that needs a facility, and a class with a room kept for it,
+    # are both decided before this is asked. One teacher can be set either
+    # way on their own card, which overrides this.
+    "teacher_room_over_homeroom": False,
 }
 
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")

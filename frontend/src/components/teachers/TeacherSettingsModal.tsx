@@ -32,6 +32,9 @@ export const TeacherSettingsModal: React.FC<Props> = ({
   const [daysOff, setDaysOff]   = useState<number[]>(adv.days_off ?? []);
   const [avoid, setAvoid]       = useState<number[]>(adv.avoid_periods ?? []);
   const [ground, setGround]     = useState(!!adv.require_ground_floor);
+  // ห้องของครูคนนี้ กับ ห้องประจำชั้นของนักเรียน — "" = ตามโรงเรียน
+  const [roomWins, setRoomWins] = useState<string>(
+    typeof adv.room_over_homeroom === "boolean" ? String(adv.room_over_homeroom) : "");
   const [noLimit, setNoLimit]   = useState(!!adv.ignore_consecutive_limit);
   const [maxConsec, setMaxConsec] = useState<string>(
     adv.max_consecutive != null ? String(adv.max_consecutive) : "");
@@ -59,6 +62,7 @@ export const TeacherSettingsModal: React.FC<Props> = ({
       days_off: daysOff,
       avoid_periods: avoid,
       require_ground_floor: ground,
+      room_over_homeroom: roomWins === "" ? undefined : roomWins === "true",
       ignore_consecutive_limit: noLimit,
       max_consecutive: maxConsec === "" ? undefined : Number(maxConsec),
       min_last_period: minLast === "" ? undefined : Number(minLast),
@@ -187,6 +191,20 @@ export const TeacherSettingsModal: React.FC<Props> = ({
               <span className="text-gray-600">สำหรับครูที่ขึ้นบันไดไม่สะดวก — ระบบจะเลือกเฉพาะห้องชั้น 1 ให้</span>
             </span>
           </label>
+          {/* ห้องของครูคนนี้ กับ ห้องประจำชั้นของนักเรียน */}
+          <div>
+            <label className={label}>ห้องของครูคนนี้ กับ ห้องประจำชั้นของนักเรียน</label>
+            <select className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+              value={roomWins} onChange={(e) => setRoomWins(e.target.value)}>
+              <option value="">ตามที่โรงเรียนตั้งไว้</option>
+              <option value="false">ครูคนนี้เดินไปสอนที่ห้องนักเรียน</option>
+              <option value="true">นักเรียนเดินมาเรียนที่ห้องของครูคนนี้</option>
+            </select>
+            <p className={hint}>
+              ใช้เมื่อครูคนนี้ต่างจากคนอื่นในโรงเรียน เช่น มีห้องปฏิบัติการของตัวเอง
+              ที่ขนอุปกรณ์ออกไปไม่ได้ · วิชาที่ตั้งว่าต้องเรียนห้องประจำวิชายังมาก่อนเสมอ
+            </p>
+          </div>
           <div>
             <label className={label}>หมายเหตุ</label>
             <input className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"

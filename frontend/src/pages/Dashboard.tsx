@@ -3040,6 +3040,37 @@ const SettingsPanel: React.FC = () => {
           </Field>
         </div>
 
+        {/* ใครเดินหาใคร — ห้องของครู vs ห้องประจำชั้นของนักเรียน */}
+        <div className="border-t border-gray-100 pt-4 mb-4">
+          <p className="text-xs font-semibold text-gray-500 mb-2">
+            เวลาคาบหนึ่งไม่ได้ต้องใช้ห้องพิเศษ ใครเดินไปหาใคร
+          </p>
+          <div className="flex flex-col gap-2">
+            {([[false, "🏫 นักเรียนอยู่กับที่ ครูเดินไปสอน",
+                "ห้องประจำชั้นของนักเรียนมาก่อน ห้องของครูใช้เมื่อชั้นนั้นไม่มีห้องประจำ หรือห้องไม่ว่าง"],
+               [true, "🚶 นักเรียนเดินไปหาครู",
+                "ห้องของครูมาก่อน ใช้กับโรงเรียนที่ครูประจำห้องตัวเองและนักเรียนเดินเรียน"],
+              ] as const).map(([val, title, hint]) => (
+              <label key={String(val)}
+                className={clsx("flex gap-2 items-start rounded-lg border px-3 py-2 cursor-pointer",
+                  !!schoolConfig.teacher_room_over_homeroom === val
+                    ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-blue-300")}>
+                <input type="radio" className="mt-0.5 accent-blue-600"
+                  checked={!!schoolConfig.teacher_room_over_homeroom === val}
+                  onChange={() => { setSchoolConfig({ teacher_room_over_homeroom: val }); setSaved(false); }} />
+                <span>
+                  <span className="text-sm font-medium text-gray-800">{title}</span>
+                  <span className="block text-[11px] text-gray-500">{hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1.5">
+            วิชาที่ตั้งว่า “ต้องเรียนที่ห้องประจำวิชา” และห้องที่กันไว้ให้ชั้นเรียน
+            ยังมาก่อนทั้งสองข้อนี้เสมอ · ตั้งสวนทางเป็นรายคนได้ที่การตั้งค่าของครูแต่ละคน
+          </p>
+        </div>
+
         {/* โลโก้โรงเรียน */}
         <div className="border-t border-gray-100 pt-4 mb-4">
           <p className="text-xs font-semibold text-gray-500 mb-2">โลโก้โรงเรียน (แสดงบนหัวตารางที่พิมพ์)</p>
