@@ -339,6 +339,8 @@ export interface UnplacedRow {
   subject_id: number; subject_code: string | null; subject_name: string | null;
   teacher_id: number; teacher_name: string | null;
   wanted: number; placed: number; missing: number;
+  /** Placed in the week, but with no room at all. */
+  roomless: number;
   is_elective: boolean;
   free_cells: { day: number; period: number }[];
   blockers: UnplacedBlocker[];
@@ -346,7 +348,9 @@ export interface UnplacedRow {
   week_size: number;
 }
 export const fetchUnplaced = () =>
-  api.get<{ unplaced: UnplacedRow[]; total_missing: number; last_run: unknown }>(
+  api.get<{ unplaced: UnplacedRow[]; total_missing: number;
+            total_roomless?: number; total_rows?: number; shown?: number;
+            last_run: unknown }>(
     "/timetable/unplaced").then((r) => r.data);
 
 export const fetchStateInfo = () =>

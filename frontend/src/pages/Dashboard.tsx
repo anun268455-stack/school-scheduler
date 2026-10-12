@@ -662,7 +662,7 @@ const outdoorChoice = (v: boolean | null | undefined) =>
   v === true ? "yes" : v === false ? "no" : "";
 
 const SubjectsPanel: React.FC = () => {
-  const { subjects, departments, requirements, rooms } = useTimetableStore();
+  const { subjects, departments, requirements, rooms, buildings } = useTimetableStore();
   const [form, setForm] = useState({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, is_elective: false, fixed_room_id: "", prefer_morning: false, allow_outdoor: "" as "" | "yes" | "no", room_rule: "" as "" | "subject" | "homeroom" });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
@@ -687,6 +687,15 @@ const SubjectsPanel: React.FC = () => {
   // How many classes each subject is already assigned to.
   const classCount = (subjectId: number) =>
     requirements.filter((r) => r.subject_id === subjectId).length;
+  /** อาคารที่วิชานี้เรียนได้ — the list, or the single older field. */
+  const subjectBuildings = (x: Subject): number[] => {
+    const many = x.building_ids;
+    if (Array.isArray(many) && many.length) return many;
+    return x.building_id ? [x.building_id] : [];
+  };
+  const buildingName = (id: number) =>
+    buildings.find((b) => b.id === id)?.name ?? `อาคาร ${id}`;
+
   /** How many of those classes have a room written out for them by hand. */
   const perClassRooms = (subjectId: number) =>
     requirements.filter((r) => r.subject_id === subjectId && r.room_id).length;
@@ -994,8 +1003,14 @@ const SubjectsPanel: React.FC = () => {
                             subject had six teachers in four rooms. This opens
                             the list and lets the school write it out class by
                             class. */}
+                        {subjectBuildings(s).length > 0 && (
+                          <span title="วิชานี้เรียนได้เฉพาะอาคารนี้"
+                            className="bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded whitespace-nowrap">
+                            🏢 {subjectBuildings(s).map(buildingName).join(" · ")}
+                          </span>
+                        )}
                         <button onClick={() => setRoomsFor(s.id)}
-                          title="กำหนดเองว่าห้องเรียนไหนเรียนวิชานี้ที่ห้องอะไร"
+                          title="กำหนดเองว่าห้องเรียนไหนเรียนวิชานี้ที่ห้องอะไร และอยู่อาคารไหนได้บ้าง"
                           className="px-1.5 py-0.5 rounded border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 whitespace-nowrap">
                           🚪 รายห้อง
                           {perClassRooms(s.id) > 0 && (

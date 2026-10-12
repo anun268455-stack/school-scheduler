@@ -11,6 +11,7 @@
  * The field at the top is for the common case: one room for all of them.
  */
 import { useMemo, useState } from "react";
+import clsx from "clsx";
 import { ModalShell } from "../common/ModalShell";
 import { SearchableSelect, roomOptions } from "../common/SearchableSelect";
 import * as api from "../../api/client";
@@ -24,7 +25,7 @@ interface Props {
 }
 
 export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
-  const { requirements, rooms, teachers, groups } = useTimetableStore();
+  const { requirements, rooms, teachers, groups, buildings } = useTimetableStore();
   const [busy, setBusy] = useState(false);
   const [bulk, setBulk] = useState("");
   const flat = useMemo(() => flattenGroups(groups), [groups]);
@@ -46,6 +47,25 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
     if (Array.isArray(many) && many.length) return many;
     return subject.fixed_room_id ? [subject.fixed_room_id] : [];
   }, [subject.fixed_room_ids, subject.fixed_room_id]);
+
+  /** อาคารที่วิชานี้เรียนได้ — the list, falling back to the single field. */
+  const subjectBuildings: number[] = useMemo(() => {
+    const many = subject.building_ids;
+    if (Array.isArray(many) && many.length) return many;
+    return subject.building_id ? [subject.building_id] : [];
+  }, [subject.building_ids, subject.building_id]);
+
+  const saveBuildings = async (ids: number[]) => {
+    setBusy(true);
+    try {
+      const updated = await api.updateSubject(subject.id, {
+        building_ids: ids, building_id: ids[0] ?? null,
+      });
+      useTimetableStore.setState((st) => ({
+        subjects: st.subjects.map((x) => (x.id === subject.id ? { ...x, ...updated } : x)),
+      }));
+    } finally { setBusy(false); }
+  };
 
   const saveRooms = async (ids: number[]) => {
     setBusy(true);
@@ -131,6 +151,40 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
         <p className="text-[11px] text-gray-400 mt-1">
           เช่น ฟิสิกส์ลง 353 ไม่หมด ก็ใส่ห้องเคมีกับชีววิทยาไว้เป็นห้องสำรองได้ ·
           ระบบจะเลือกห้องที่อยู่อาคารเดียวกับห้องเรียนก่อน
+        </p>
+      </div>
+
+      {/* อาคารที่เรียนได้ — ไม่ต้องไล่ใส่ห้องทีละห้อง */}
+      <div className="px-5 py-3 border-b border-gray-100 shrink-0">
+        <p className="text-[11px] font-semibold text-gray-500 mb-1">
+          อาคารที่วิชานี้เรียนได้ (ไม่เลือก = อาคารไหนก็ได้)
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {buildings.map((b) => {
+            const on = subjectBuildings.includes(b.id);
+            return (
+              <button key={b.id} disabled={busy}
+                onClick={() => saveBuildings(on
+                  ? subjectBuildings.filter((x) => x !== b.id)
+                  : [...subjectBuildings, b.id])}
+                className={clsx("px-2.5 py-1 rounded-lg border text-xs transition-colors disabled:opacity-40",
+                  on ? "bg-slate-700 border-slate-700 text-white font-medium"
+                     : "bg-white border-gray-300 text-gray-600 hover:border-slate-400")}>
+                🏢 {b.name}
+              </button>
+            );
+          })}
+          {subjectBuildings.length > 0 && (
+            <button onClick={() => saveBuildings([])} disabled={busy}
+              className="px-2.5 py-1 rounded-lg border border-gray-200 text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-40">
+              ล้าง (อาคารไหนก็ได้)
+            </button>
+          )}
+        </div>
+        <p className="text-[11px] text-gray-400 mt-1">
+          เลือกแล้วระบบจะไม่จัดวิชานี้ลงห้องนอกอาคารที่เลือกเลย แม้แต่ห้องประจำชั้นของนักเรียน
+          — เช่น แนะแนว ม.6 ต้องอยู่อาคาร 1 เท่านั้น · ถ้าอาคารนั้นไม่มีห้องว่าง
+          ระบบจะเลี่ยงไปคาบอื่นแทนที่จะออกนอกอาคาร
         </p>
       </div>
 

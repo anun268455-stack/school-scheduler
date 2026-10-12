@@ -268,6 +268,25 @@ def _subject_rooms(subj: dict[str, Any] | None) -> list[int]:
     return [int(one)] if one else []
 
 
+def _subject_buildings(subj: dict[str, Any] | None) -> set[int]:
+    """อาคารที่วิชานี้เรียนได้ — empty means anywhere.
+
+    แนะแนว ม.6 needs a room, and it has to be in อาคาร 1: the teachers and the
+    records are there and the period is too short to walk. Naming every room
+    of อาคาร 1 one by one would say the same thing, until the school adds a
+    room and has to remember to add it here too. The building is the rule.
+    """
+    if not subj:
+        return set()
+    many = subj.get("building_ids")
+    if isinstance(many, list):
+        out = {int(x) for x in many if x}
+        if out:
+            return out
+    one = subj.get("building_id")
+    return {int(one)} if one else set()
+
+
 def _subject_outdoor(subj: dict[str, Any]) -> bool | None:
     """เรียนที่ลานได้ไหม — True yes, False never, None not said."""
     v = subj.get("allow_outdoor")
@@ -891,12 +910,15 @@ def _unplaced_report(limit: int = 80) -> dict[str, Any]:
     teach_cell: dict[tuple, list] = defaultdict(list)     # (tid, day, period)
     class_week: dict[int, list]   = defaultdict(list)     # group_id
     placed_of:  dict[tuple, int]  = defaultdict(int)      # (group, subject)
+    roomless_of: dict[tuple, int] = defaultdict(int)      # …and with no room
     room_busy:  dict[tuple, set]  = defaultdict(set)      # (day, bucket)
     for s in SLOTS:
         cell_slots[(s["day"], s["period"])].append(s)
         class_week[s["group_id"]].append(s)
         if s.get("subject_id") is not None:
             placed_of[(s["group_id"], s["subject_id"])] += 1
+            if not s.get("room_id"):
+                roomless_of[(s["group_id"], s["subject_id"])] += 1
         for t in _slot_teachers(s):
             teach_cell[(t, s["day"], s["period"])].append(s)
         if s.get("room_id"):
@@ -978,14 +1000,19 @@ def _unplaced_report(limit: int = 80) -> dict[str, Any]:
         want = req.get("weekly_count") or 0
         if want <= 0 or req["id"] in co_halves or req["id"] in served:
             continue
-        got = placed_of.get((req["group_id"], req["subject_id"]), 0)
-        if got < want:
-            short.append((want - got, got, req))
-    short.sort(key=lambda x: -x[0])
+        got  = placed_of.get((req["group_id"], req["subject_id"]), 0)
+        # A lesson sitting in the week with no room at all is not "placed" in
+        # any sense the school cares about — it is the same question ("why
+        # can this not go in?") with the same answers, so it belongs in the
+        # same list.
+        bare = roomless_of.get((req["group_id"], req["subject_id"]), 0)
+        if got < want or bare:
+            short.append((want - got, got, req, bare))
+    short.sort(key=lambda x: (-(x[0] + x[3])))
     cut = short[:limit]
 
     rows = []
-    for missing, got, req in cut:
+    for missing, got, req, bare in cut:
         grp  = g_map.get(req["group_id"], {})
         subj = s_map.get(req["subject_id"], {}) or {}
         nums = _class_periods_for_level(_level_key(grp))
@@ -1029,6 +1056,7 @@ def _unplaced_report(limit: int = 80) -> dict[str, Any]:
             "teacher_id": req["teacher_id"],
             "teacher_name": (t_map.get(req["teacher_id"]) or {}).get("name"),
             "wanted": req.get("weekly_count") or 0, "placed": got, "missing": missing,
+            "roomless": bare,
             "is_elective": req["subject_id"] in elective_ids,
             "free_cells": free_cells,
             "blockers": [{"kind": k, "count": n, "example": examples.get(k, "")}
@@ -1037,10 +1065,11 @@ def _unplaced_report(limit: int = 80) -> dict[str, Any]:
             "week_size": len(nums) * 5,
         })
 
-    rows.sort(key=lambda r: (-r["missing"], r["group_name"] or ""))
+    rows.sort(key=lambda r: (-(r["missing"] + r["roomless"]), r["group_name"] or ""))
     return {
         "unplaced": rows,
-        "total_missing": sum(m for m, _g, _r in short),
+        "total_missing": sum(m for m, _g, _r, _b in short),
+        "total_roomless": sum(b for _m, _g, _r, b in short),
         "total_rows": len(short),
         "shown": len(rows),
         "last_run": LAST_RUN,
@@ -1544,8 +1573,22 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         for ch in (grp.get("children") or []):
             family.add(ch["id"] if isinstance(ch, dict) else ch)
 
+        # อาคารที่วิชานี้เรียนได้ — a hard filter, checked everywhere a room
+        # is returned, including the shortcuts that skip `eligible` below.
+        # "ต้องอยู่ตึก 1 เท่านั้น" has to beat the class's own homeroom too,
+        # or the rule would hold for every room except the one they are
+        # already sitting in.
+        want_buildings = _subject_buildings(subj)
+
+        def building_ok(r: dict | None) -> bool:
+            if not want_buildings or not r:
+                return not want_buildings
+            return r.get("building_id") in want_buildings
+
         def eligible(r: dict) -> bool:
             if room_taken(r["id"]):
+                return False
+            if not building_ok(r):
                 return False
             # ห้องห้ามใช้ — a staff room, an office, anything the school has
             # said is not a classroom. (capacity 0 meant this before the
@@ -1595,7 +1638,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         #    the whole class across the school to sit in it.
         if rule == "homeroom" and home and not room_taken(home):
             r = r_map.get(home)
-            if r:
+            if r and building_ok(r):
                 return home, r["name"], r["type"]
 
         # 1. ห้องประจำวิชา — a room tied to the subject itself (gym, computer
@@ -1609,7 +1652,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             here = room_building((grp.get("homeroom_room_id")
                                   or anchor_room.get(group_id)) if group_id else None)
             open_ = [r_map[i] for i in subj_rooms
-                     if i in r_map and not room_taken(i)]
+                     if i in r_map and not room_taken(i) and building_ok(r_map[i])]
             if open_:
                 r = min(open_, key=lambda r: (
                     0 if (here is not None and r.get("building_id") == here) else 1,
@@ -1656,7 +1699,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if (home and not wants_outdoor and not room_taken(home)
                 and group_id is not None):
             r = r_map.get(home)
-            if (r and _group_stays_home(grp, r, family) and _room_free_for(r, teacher_id)
+            if (r and building_ok(r)
+                    and _group_stays_home(grp, r, family) and _room_free_for(r, teacher_id)
                     and not upstairs(r)
                     and (r["type"] != "outdoor" or may_outdoor)):
                 return home, r["name"], r["type"]
@@ -1679,7 +1723,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if (real_home and not wants_outdoor and not teacher_room_wins
                 and not room_taken(real_home)):
             r = r_map.get(real_home)
-            if (r and _room_free_for(r, teacher_id) and not upstairs(r)
+            if (r and building_ok(r) and _room_free_for(r, teacher_id) and not upstairs(r)
                     and (r["type"] != "outdoor" or may_outdoor)):
                 return real_home, r["name"], r["type"]
 
@@ -1751,7 +1795,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # 3. Stay in the group's homeroom for ordinary subjects.
         if home and not wants_outdoor and not room_taken(home):
             r = r_map.get(home)
-            if (r and _room_free_for(r, teacher_id) and not upstairs(r)
+            if (r and building_ok(r) and _room_free_for(r, teacher_id) and not upstairs(r)
                     # …unless "home" is open ground and this subject is not
                     # allowed outside. A few classes here are recorded with a
                     # ลาน as their ห้องประจำชั้น, which quietly put ordinary

@@ -101,8 +101,9 @@ export const UnplacedModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
             <div key={r.requirement_id} className="border border-gray-200 rounded-lg overflow-hidden">
               <button onClick={() => setOpen(isOpen ? null : r.requirement_id)}
                 className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-50">
-                <span className="shrink-0 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[11px] font-bold">
-                  ขาด {r.missing}
+                <span className={clsx("shrink-0 px-1.5 py-0.5 rounded text-[11px] font-bold",
+                  r.missing > 0 ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-900")}>
+                  {r.missing > 0 ? `ขาด ${r.missing}` : `ไม่มีห้อง ${r.roomless}`}
                 </span>
                 <span className="flex-1 min-w-0">
                   <span className="text-sm font-semibold text-gray-800">
@@ -111,6 +112,7 @@ export const UnplacedModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                   <span className="text-xs text-gray-500"> {r.subject_name}</span>
                   <span className="block text-[11px] text-gray-500 truncate">
                     ครู {r.teacher_name} · ขอ {r.wanted} ลงได้ {r.placed}
+                    {r.roomless > 0 && ` · ลงแล้วแต่ไม่มีห้อง ${r.roomless} คาบ`}
                     {top && ` · ส่วนใหญ่ติดที่ ${BLOCKER_TH[top.kind] ?? top.kind}`}
                   </span>
                 </span>
