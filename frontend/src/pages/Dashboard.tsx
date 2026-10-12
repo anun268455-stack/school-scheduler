@@ -668,6 +668,19 @@ const SubjectsPanel: React.FC = () => {
   const [assigning, setAssigning] = useState<number | null>(null);
   const [electiveFor, setElectiveFor] = useState<number | null>(null);
   const [rowMenu, setRowMenu] = useState<number | null>(null);
+  /** Where the ⋯ menu sits on screen, measured from its button when opened. */
+  const [menuAt, setMenuAt] = useState<{ top?: number; bottom?: number; right: number }>({ top: 0, right: 0 });
+  // A menu pinned to the screen has to close when the page moves under it.
+  useEffect(() => {
+    if (rowMenu == null) return;
+    const close = () => setRowMenu(null);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [rowMenu]);
 
   // How many classes each subject is already assigned to.
   const classCount = (subjectId: number) =>
@@ -1029,15 +1042,32 @@ const SubjectsPanel: React.FC = () => {
                         </button>
                         <div className="relative">
                           <button
-                            onClick={() => setRowMenu(rowMenu === s.id ? null : s.id)}
+                            onClick={(e) => {
+                              if (rowMenu === s.id) { setRowMenu(null); return; }
+                              // Anchored to the button on screen, not to the
+                              // row: the table is clipped at its own edge, so
+                              // a menu hanging below the last row was cut off
+                              // completely — which looked like a dead button
+                              // whenever a search left only a row or two.
+                              const b = e.currentTarget.getBoundingClientRect();
+                              const below = window.innerHeight - b.bottom;
+                              setMenuAt({
+                                right: Math.max(8, window.innerWidth - b.right),
+                                ...(below < 190
+                                  ? { bottom: window.innerHeight - b.top + 4 }
+                                  : { top: b.bottom + 4 }),
+                              });
+                              setRowMenu(s.id);
+                            }}
                             title="เครื่องมืออื่น"
                             className="px-2 py-1 text-xs bg-gray-50 text-gray-500 rounded hover:bg-gray-100 border border-gray-200">
                             ⋯
                           </button>
                           {rowMenu === s.id && (
                             <>
-                              <div className="fixed inset-0 z-10" onClick={() => setRowMenu(null)} />
-                              <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-xl overflow-hidden min-w-[170px] py-1">
+                              <div className="fixed inset-0 z-[60]" onClick={() => setRowMenu(null)} />
+                              <div style={{ position: "fixed", ...menuAt }}
+                                className="z-[61] bg-white border border-gray-200 rounded-lg shadow-xl overflow-hidden min-w-[170px] py-1">
                                 <button
                                   onClick={() => { setElectiveFor(s.id); setRowMenu(null); }}
                                   className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-gray-700 hover:bg-purple-50">
