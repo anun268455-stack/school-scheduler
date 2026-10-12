@@ -173,6 +173,42 @@ def _room_reserved_for(room: dict[str, Any]) -> set[int]:
     return {int(one)} if one else set()
 
 
+def _room_kept_for_group(room: dict[str, Any], family: "set[int] | None") -> bool:
+    """Is this room given to THIS class in particular?
+
+    Not "may they sit here" — that is _room_allows_group, which is true of
+    every ordinary room. This is the stronger thing the school says when it
+    writes a class's name on a door: the room is theirs, so an ordinary lesson
+    does not move them out of it.
+    """
+    kept = room.get("reserved_group_ids")
+    if not isinstance(kept, list) or not kept:
+        return False
+    return bool({int(x) for x in kept if x} & set(family or ()))
+
+
+def _group_stays_home(group: dict[str, Any], room: dict[str, Any],
+                      family: "set[int] | None" = None) -> bool:
+    """Does this class stay in its own room rather than walk to a facility?
+
+    ห้องเพชร and the other programme classes have a room of their own and are
+    meant to sit in it: ม.6/3 was being walked to another building for a
+    science period while 255 — theirs, and empty — stood two floors below.
+
+    The school says so in one of two ways, and either is enough:
+      · ticking "เรียนในห้องประจำชั้น" on the class, or
+      · writing the class's name on the room (กันไว้ให้ชั้นเรียน).
+
+    Ticking it off wins over both. And it never holds a class back from a
+    subject that must have its facility — a วิชา marked ต้องเรียนที่ห้อง
+    ประจำวิชา, or one with a room of its own, is placed before this is asked.
+    """
+    said = group.get("stay_in_homeroom")
+    if isinstance(said, bool):
+        return said
+    return _room_kept_for_group(room, family)
+
+
 def _room_free_for(room: dict[str, Any], teacher_id: int | None) -> bool:
     kept = _room_reserved_for(room)
     return not kept or (teacher_id is not None and teacher_id in kept)
@@ -1277,10 +1313,19 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # กลุ่มสาระ: this school has one room three teachers of three
             # different subjects share, and asking for both shut all three out.
             reserved = bool(_room_reserved_for(r))
-            if reserved:
-                if not _room_free_for(r, teacher_id):
+            owns_it = (r.get("specialized_dept_id")
+                       and r["specialized_dept_id"] == want_dept)
+            if reserved and not _room_free_for(r, teacher_id):
+                # …unless it is this department's own facility. 353 ฟิสิกส์ has
+                # one teacher's name on it, which shut every other science
+                # teacher out: their lessons went to an ordinary room while the
+                # lab stood empty half the week. A name on a lab means first
+                # refusal, not sole use, so the owner is still preferred in the
+                # ranking below — but an empty lab beats a physics lesson in a
+                # general classroom.
+                if not owns_it:
                     return False
-            elif r.get("specialized_dept_id") and r["specialized_dept_id"] != want_dept:
+            if not reserved and r.get("specialized_dept_id") and not owns_it:
                 return False
             # ลาน: open ground is a last resort for an ordinary subject and
             # only when the school has said this one may go outside.
@@ -1318,6 +1363,23 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 return r["id"], r["name"], r["type"]
             return None, None, None
 
+        # 1c. ห้องประจำของชั้นนี้จริง ๆ — a room the school has kept for this
+        #     class, and which is also where they sit.
+        #
+        #     ม.6/3 ห้องเพชร has 255 to itself, and was still being walked to
+        #     another building for a science period because the department
+        #     owns a lab there. A room given to one class is that class's room:
+        #     they are not moved out of it for an ordinary lesson. A subject
+        #     that must have its facility (ห้องประจำวิชา, or ต้องเรียนที่ห้อง
+        #     ประจำวิชา) has already been handled above and is unaffected.
+        if (home and not wants_outdoor and not room_taken(home)
+                and group_id is not None):
+            r = r_map.get(home)
+            if (r and _group_stays_home(grp, r, family) and _room_free_for(r, teacher_id)
+                    and not upstairs(r)
+                    and (r["type"] != "outdoor" or may_outdoor)):
+                return home, r["name"], r["type"]
+
         # 2. A room this department owns. Several labs may serve one subject
         #    (5 computer rooms for 156 periods a week), so pin by department
         #    rather than by subject and take whichever is free.
@@ -1332,6 +1394,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                                       or anchor_room.get(group_id)) if group_id else None)
                 r = min(own, key=lambda r: (
                     r["type"] != "special",
+                    # A lab with a teacher's name on it is theirs first: taken
+                    # only when no unclaimed lab of the department is free.
+                    0 if _room_free_for(r, teacher_id) else 1,
                     0 if (here is not None and r.get("building_id") == here) else 1,
                     r["id"]))
                 return r["id"], r["name"], r["type"]
@@ -2008,7 +2073,33 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # is free for both of them; by the time the singles have taken their pick
     # there may be no such pair left, and the double breaks into two halves in
     # two rooms. Everything else can fit around them afterwards.
-    solo.sort(key=lambda r: 0 if (s_map.get(r["subject_id"], {}) or {}).get("duration") == 2 else 1)
+    #
+    # Then the order the school asked for, and it is the order a person would
+    # use: hardest first. A lesson that can only happen in one of five labs
+    # has far fewer places to go than a lesson that fits any classroom, and
+    # whoever books last gets what is left — which is how science lessons
+    # ended up in ordinary rooms with the labs still half empty. So:
+    #
+    #   1. lessons that need a facility (ห้องพิเศษ) — fill those rooms first
+    #   2. classes that have a room of their own — seat them in it
+    #   3. everything else, which can go anywhere
+    facility_depts = {r["specialized_dept_id"] for r in ROOMS
+                      if r.get("specialized_dept_id")}
+
+    def place_order(r: dict) -> tuple:
+        subj = s_map.get(r["subject_id"], {}) or {}
+        grp  = g_map.get(r["group_id"], {}) or {}
+        needs_facility = (
+            _subject_room_rule(subj) == "subject"
+            or subj.get("fixed_room_id")
+            or subj.get("department_id") in facility_depts)
+        return (
+            0 if subj.get("duration") == 2 else 1,   # คาบคู่ still first
+            0 if needs_facility else 1,
+            0 if grp.get("homeroom_room_id") else 1,
+        )
+
+    solo.sort(key=place_order)
     for req in solo:
         gid, tid = req["group_id"], req["teacher_id"]
         subj     = s_map.get(req["subject_id"], {})

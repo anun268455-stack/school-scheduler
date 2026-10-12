@@ -171,6 +171,18 @@ const GroupsPanel: React.FC = () => {
     }
   }, [auditFor, auditPools.length]);
 
+  /** ปกติ → อยู่ห้องประจำเสมอ → เดินเรียนตามปกติ → ปกติ */
+  const toggleStayHome = async (g: StudentGroup) => {
+    const next = g.stay_in_homeroom == null ? true : g.stay_in_homeroom ? false : null;
+    const updated = await api.updateGroup(g.id, { stay_in_homeroom: next });
+    useTimetableStore.setState((st) => ({
+      groups: st.groups.map((x) =>
+        x.id === g.id
+          ? { ...x, ...updated, children: x.children ?? [] }
+          : { ...x, children: (x.children ?? []).map((c) => c.id === g.id ? { ...c, ...updated } : c) }),
+    }));
+  };
+
   /** ปกติ → ไม่ออกลาน → ออกลานได้ → ปกติ */
   const toggleGroupYard = async (g: StudentGroup) => {
     const next = g.allow_outdoor == null ? false : g.allow_outdoor === false ? true : null;
@@ -351,6 +363,21 @@ const GroupsPanel: React.FC = () => {
                               : g.allow_outdoor === true ? "bg-green-50 border-green-300 text-green-700"
                               : "bg-white border-gray-200 text-gray-300 hover:border-green-400")}>
                           {g.allow_outdoor === false ? "🚫 ไม่ออกลาน" : "🌳"}
+                        </button>
+                        {/* เรียนในห้องประจำชั้นเสมอ — ห้องเพชรและห้อง
+                            โครงการที่มีห้องของตัวเอง ไม่ต้องเดินไปตึกอื่น */}
+                        <button onClick={() => toggleStayHome(g)}
+                          title={g.stay_in_homeroom === true
+                            ? "อยู่ห้องประจำชั้นเสมอ (ยกเว้นวิชาที่ตั้งว่าต้องเรียนห้องประจำวิชา) — กดเพื่อเปลี่ยน"
+                            : g.stay_in_homeroom === false
+                            ? "เดินไปห้องพิเศษได้ตามปกติ — กดเพื่อเปลี่ยน"
+                            : "ปกติ (ถ้ามีห้องกันไว้ให้ชั้นนี้ ก็จะอยู่ห้องนั้น) — กดเพื่อบังคับให้อยู่ห้องประจำชั้น"}
+                          className={clsx("px-2 py-1 rounded border text-xs",
+                            g.stay_in_homeroom === true ? "bg-indigo-100 border-indigo-400 text-indigo-800"
+                              : g.stay_in_homeroom === false ? "bg-gray-200 border-gray-400 text-gray-700"
+                              : "bg-white border-gray-200 text-gray-300 hover:border-indigo-400")}>
+                          {g.stay_in_homeroom === true ? "🏠 อยู่ห้องประจำ"
+                            : g.stay_in_homeroom === false ? "🚶 เดินเรียน" : "🏠"}
                         </button>
                         {/* ตรวจรายวิชา — the plan read a class at a time,
                             which is the only way วิชาซ้ำ and a week that
