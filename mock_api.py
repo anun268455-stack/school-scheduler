@@ -438,6 +438,61 @@ def _repair_activity_keys() -> int:
     return len(bad)
 
 
+def _repair_elective_doubles() -> int:
+    """Put back the missing half of a คาบเสรี that was set up as a คาบคู่.
+
+    A double-period elective is two linked slots. Several things can take one
+    of them away on its own — the school editing the period list, a lesson
+    being dropped into the second hour, an older version of this file — and
+    what is left is a single cell still wearing the 2× badge: "คาบเสรีทั้งที่
+    เป็นคาบคู่กลับเหลือคาบเดี่ยว".
+
+    So: if the other hour is free for that class, the half is re-created and
+    the pair is whole again. If something is sitting in it that cannot be
+    moved, the stale คาบคู่ marking is cleared instead — a single period
+    honestly labelled beats a pair that only exists on one cell.
+    """
+    fixed = 0
+    by_key: dict[str, list[dict]] = defaultdict(list)
+    for s in SLOTS:
+        if s.get("is_elective") and s.get("double_group_key"):
+            by_key[s["double_group_key"]].append(s)
+
+    for key, halves in by_key.items():
+        if len(halves) >= 2:
+            continue
+        s = halves[0]
+        grp = _find_group(s["group_id"])
+        p2 = _next_class_period_for(_level_key(grp), s["period"]) if grp else None
+        # The missing half may be the FIRST one, if that is the end that went.
+        if s.get("is_double_cont"):
+            nums = _class_periods_for_level(_level_key(grp)) if grp else []
+            i = nums.index(s["period"]) if s["period"] in nums else 0
+            p2 = nums[i - 1] if i > 0 else None
+        hits = [x for x in SLOTS
+                if x["day"] == s["day"] and x["period"] == p2
+                and x["group_id"] == s["group_id"]] if p2 is not None else []
+        if p2 is None or (hits and not _evict_ordinary(s["day"], [p2], hits)):
+            # Nowhere to put it: stop claiming this is half of a pair.
+            s["double_group_key"] = None
+            s["is_double_start"] = False
+            s["is_double_cont"] = False
+            fixed += 1
+            continue
+        mate = {**{k: v for k, v in s.items() if k not in ("id",)},
+                "id": _next("slot"), "period": p2,
+                "elective_options": [{**o, "id": _next("elective_option")}
+                                     for o in (s.get("elective_options") or [])]}
+        if s.get("is_double_cont"):
+            mate["is_double_start"], mate["is_double_cont"] = True, False
+        else:
+            mate["is_double_start"], mate["is_double_cont"] = False, True
+        SLOTS.append(mate)
+        _apply_selected_option(mate)
+        fixed += 1
+    return fixed
+
+
 def _fold_coteaching(rows: list[dict[str, Any]]) -> tuple[set[int], dict[int, int]]:
     """สอนร่วม written from both sides: two rows, one lesson.
 
@@ -1032,14 +1087,25 @@ def _unplaced_report(limit: int = 80) -> dict[str, Any]:
         tally: dict[str, int] = defaultdict(int)
         examples: dict[str, str] = {}
         free_cells = []
-        for day in range(5):
-            for period in nums:
-                kind, why = blocker(req, grp, subj, nums, day, period)
-                if not kind:
-                    free_cells.append({"day": day, "period": period})
-                    continue
-                tally[kind] += 1
-                examples.setdefault(kind, why)
+        # Two things make a row unplaceable before the week is even looked at,
+        # and walking thirty cells to say "the class is busy" about a class
+        # that does not exist is how these came back as a nameless "?" with
+        # no reason attached — 115 of the school's 184 missing periods.
+        if not grp:
+            tally["no_group"] = len(nums) * 5
+            examples["no_group"] = f"ไม่มีห้องเรียนรหัส {req['group_id']} ในระบบแล้ว"
+        elif not req.get("teacher_id"):
+            tally["no_teacher"] = len(nums) * 5
+            examples["no_teacher"] = "ยังไม่ได้เลือกครูผู้สอน"
+        else:
+            for day in range(5):
+                for period in nums:
+                    kind, why = blocker(req, grp, subj, nums, day, period)
+                    if not kind:
+                        free_cells.append({"day": day, "period": period})
+                        continue
+                    tally[kind] += 1
+                    examples.setdefault(kind, why)
 
         # วิชาที่ห้องนี้เรียนอยู่ และย้ายลงลานได้ — the lever the school has
         # when it is short of rooms.
@@ -1063,7 +1129,11 @@ def _unplaced_report(limit: int = 80) -> dict[str, Any]:
 
         rows.append({
             "requirement_id": req["id"],
-            "group_id": req["group_id"], "group_name": grp.get("name"),
+            "group_id": req["group_id"],
+            # Never blank. A row the school cannot name is a row it cannot act
+            # on, and these are exactly the rows that most need acting on.
+            "group_name": grp.get("name") or f"⚠ ไม่พบห้องเรียน #{req['group_id']}",
+            "orphan": not grp,
             "subject_id": req["subject_id"], "subject_code": subj.get("code"),
             "subject_name": subj.get("name"),
             "teacher_id": req["teacher_id"],
@@ -1324,6 +1394,11 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     skipped_reqs = _excluded_requirement_ids(body)
     unplaced_ids: list[int] = []
     consec_hard, consec_soft = _consec_settings(body)
+    # คาบเสรีมาก่อนทุกอย่าง, so before anything is placed the elective windows
+    # are made whole: a คาบคู่ that has lost a half gets it back now, while
+    # the hour beside it is still empty, rather than after the ordinary
+    # lessons have filled it.
+    healed_doubles = _repair_elective_doubles()
 
     # Keep only locked slots when clearing — elective slots always survive,
     # regardless of is_locked, so the solver never double-books their teacher/room.
@@ -1488,6 +1563,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     created    = 0
     violations = []
+    # Lessons that did not fit on the first run, kept so the room-shuffling
+    # pass at the end can have one more go at them before they are reported.
+    short_rows: list[tuple] = []
+    rescued_by_shuffle = 0
     # Things worth saying that are not faults — a timetable with these is
     # still a good one, so they must not turn the run INFEASIBLE.
     notes: list[str] = []
@@ -1499,7 +1578,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     def find_room(teacher_id: int, day: int, period: int, subject_id: int | None = None,
                   group_id: int | None = None, also_period: int | None = None,
                   allow_out_override: bool | None = None,
-                  pinned_room_id: int | None = None):
+                  pinned_room_id: int | None = None,
+                  pretend_free: bool = False,
+                  avoid: frozenset[int] = frozenset()):
         """Pick a room, minimising how far students/teachers must walk.
 
         Priority:
@@ -1577,6 +1658,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             bks = frozenset(bks) | _slot_buckets(grp, also_period)
 
         def room_taken(rid: int) -> bool:
+            # `pretend_free` asks a different question: not "which room is free"
+            # but "which rooms would this lesson accept at all" — the list the
+            # room-shuffling pass walks when it looks for a way to move the
+            # current occupants around. `avoid` are the rooms that pass has
+            # already tried, and they count as taken so it never goes in
+            # circles. Everything below is unchanged by either.
+            if rid in avoid:
+                return True
+            if pretend_free:
+                return False
             return any((rid, day, b) in room_busy for b in bks)
 
         # ม.5/1ก is ม.5/1 for the purpose of a room reserved for ม.5/1.
@@ -1918,6 +2009,136 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if sid is not None:
             subj_day[(gid, sid, day)] += delta
 
+    # ── ขยับห้องให้คาบที่ลงไม่ได้ (หาเส้นทางเหมาะสมที่สุด) ────────────────────
+    #
+    # "ถ้ายังไม่ได้ให้กลับไปเลื่อนห้องต่างๆให้ลงได้"
+    #
+    # The usual search asks one question of each room — is it free? — and gives
+    # up when the answer is no everywhere. But "no room free" is rarely the
+    # truth. The truth is usually that one of the rooms this lesson needs is
+    # being used by a lesson that would have been just as happy next door.
+    #
+    # So when a lesson has nowhere to go, this walks a chain instead: take the
+    # room somebody else is in, move THEM to another room they are equally
+    # allowed to use, and if that one is occupied too, move its occupant on
+    # again — until the chain ends on a room that is genuinely empty. Then the
+    # whole chain shifts along by one and everybody, including the new lesson,
+    # has a room. If no chain ends on an empty room, nothing is moved at all.
+    #
+    # Nobody changes day or period, only which door they walk through, so no
+    # teacher, class or back-to-back rule can break: the only thing being
+    # re-decided is the room, which is the one thing that was blocking.
+    # How long a chain may get, and how far down each lesson's room
+    # preferences to look for the next link. Measured on this school's data
+    # with twenty ordinary rooms closed, which is the shortage the school
+    # describes: a chain of 5 across 8 rooms got 3 lessons of 11 into a room,
+    # 9 across 20 got 7, and the solve took the same four seconds either way.
+    SHUFFLE_DEPTH = 9
+    SHUFFLE_WIDTH = 20
+    shuffle_on = False         # switched on for the repair pass at the end
+    # Who is sitting in each room at each hour. Kept as an index because the
+    # chain asks the question thousands of times.
+    room_holder: dict[tuple[int, int, int], dict] = {}
+
+    def index_rooms() -> None:
+        room_holder.clear()
+        for s in SLOTS:
+            if not s.get("room_id"):
+                continue
+            for b in cell_buckets(s["group_id"], s["period"]):
+                room_holder[(s["room_id"], s["day"], b)] = s
+
+    def hold_room(s: dict, rid: int | None) -> None:
+        """Move a placed lesson into a room (or out of the one it is in)."""
+        old = s.get("room_id")
+        bks = cell_buckets(s["group_id"], s["period"])
+        if old:
+            for b in bks:
+                room_busy.discard((old, s["day"], b))
+                room_holder.pop((old, s["day"], b), None)
+        s["room_id"] = rid
+        r = r_map.get(rid) if rid else None
+        s["room_name"] = r["name"] if r else None
+        s["room_type"] = r["type"] if r else None
+        if rid:
+            for b in bks:
+                room_busy.add((rid, s["day"], b))
+                room_holder[(rid, s["day"], b)] = s
+
+    def may_move_room(s: dict) -> bool:
+        """Lessons that must not be shuffled out of the room they are in."""
+        if s.get("is_locked") or s.get("is_elective") or s.get("is_activity_block"):
+            return False
+        # A คาบคู่ is one lesson two periods long and both halves share a room;
+        # moving one half alone would make the class pack up halfway through.
+        if s.get("double_group_key"):
+            return False
+        # The school wrote this room down for this lesson itself.
+        return not any(r.get("room_id") == s.get("room_id")
+                       and r["group_id"] == s["group_id"]
+                       and r["subject_id"] == s.get("subject_id")
+                       for r in REQUIREMENTS if r.get("room_id"))
+
+    def rooms_for(tid: int, gid: int, sid: int | None, day: int, period: int,
+                  also_period: int | None, pinned: int | None,
+                  allow_out: bool | None, tried: set[int]) -> list[int]:
+        """Rooms this lesson would accept at this hour, best first.
+
+        Occupancy is ignored — that is the whole point — so this is the list
+        the chain may walk. Everything else (ตึก, ห้องประจำวิชา, ห้องที่กันไว้,
+        ลาน) still decides, because it is the same function that places a
+        lesson normally, asked with one question switched off.
+        """
+        out: list[int] = []
+        seen = set(tried)
+        for _ in range(SHUFFLE_WIDTH):
+            rid, _n, _t = find_room(tid, day, period, sid, gid, also_period,
+                                    allow_out, pinned, pretend_free=True,
+                                    avoid=frozenset(seen))
+            if not rid:
+                break
+            out.append(rid)
+            seen.add(rid)
+        return out
+
+    def shuffle_for(tid: int, gid: int, sid: int | None, day: int, period: int,
+                    also_period: int | None = None, pinned: int | None = None,
+                    allow_out: bool | None = None,
+                    tried: set[int] | None = None, depth: int = 0) -> int | None:
+        """A room for this lesson, moving other lessons along if that is what it takes.
+
+        Returns the room id and leaves every lesson it moved in its new room,
+        or returns None having moved nothing.
+        """
+        tried = tried if tried is not None else set()
+        if depth >= SHUFFLE_DEPTH:
+            return None
+        bks = cell_buckets(gid, period)
+        if also_period is not None:
+            bks = frozenset(bks) | cell_buckets(gid, also_period)
+        for rid in rooms_for(tid, gid, sid, day, period, also_period,
+                             pinned, allow_out, tried):
+            tried.add(rid)
+            here = [room_holder.get((rid, day, b)) for b in bks]
+            here = [s for s in here if s is not None]
+            if not here:
+                return rid                       # empty after all — take it
+            if len(set(id(s) for s in here)) > 1:
+                continue                         # two lessons to move, not one
+            occ = here[0]
+            if not may_move_room(occ):
+                continue
+            was = occ["room_id"]
+            hold_room(occ, None)                 # free it, then look for a chain
+            moved = shuffle_for(occ["teacher_id"], occ["group_id"],
+                                occ.get("subject_id"), occ["day"], occ["period"],
+                                None, None, None, tried, depth + 1)
+            if moved:
+                hold_room(occ, moved)
+                return rid
+            hold_room(occ, was)                  # put them back, try the next room
+        return None
+
     def make_slot(req: dict, day: int, period: int,
                   room: tuple | None = None, also_period: int | None = None) -> dict:
         """One lesson in one cell. `room` pins it to a room already chosen.
@@ -1937,6 +2158,17 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # taught by six teachers in four rooms cannot be written as a
             # single ห้องประจำวิชา, so the school writes it out class by class.
             req.get("room_id"))
+        # Nothing free — but maybe only because the rooms this lesson needs are
+        # held by lessons that could sit elsewhere. Walk the chain.
+        if not rid and shuffle_on:
+            rid = shuffle_for(
+                req["teacher_id"], req["group_id"], req["subject_id"], day, period,
+                also_period, req.get("room_id"),
+                _may_use_outdoor(s_map.get(req["subject_id"]), req,
+                                 g_map.get(req["group_id"])))
+            if rid:
+                r = r_map.get(rid) or {}
+                rname, rtype = r.get("name"), r.get("type")
         if rid:                       # so the next cell knows where they are
             teacher_room[(req["teacher_id"], day, period)] = rid
         subj    = s_map.get(req["subject_id"], {})
@@ -1966,6 +2198,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if rid:
             for b in cell_buckets(req["group_id"], period):
                 room_busy.add((rid, day, b))
+                room_holder[(rid, day, b)] = slot
         return slot
 
     # สอนร่วมที่เขียนไว้สองแถว — one lesson, written from each teacher's side.
@@ -2642,6 +2875,11 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         needs_facility = (
             _subject_room_rule(subj) == "subject"
             or _subject_rooms(subj)
+            # ห้องที่โรงเรียนเขียนไว้เองสำหรับห้องเรียนนี้ (ตารางห้องประจำวิชา).
+            # One room and no alternative is as tight as a lab, and placing it
+            # late is why those lessons came back as "ไม่มีห้องว่าง": by then
+            # an ordinary lesson that could sit anywhere was already in it.
+            or r.get("room_id")
             or subj.get("department_id") in facility_depts)
         # A teacher who is off on Fridays has four days to fit a week into,
         # and วันที่ไม่สอน is now a hard rule — so their lessons are placed
@@ -2753,12 +2991,44 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             created  += got
 
         if placed < needed:
-            code = s_map.get(req["subject_id"], {}).get("code", "?")
-            unplaced_ids.append(req["id"])
-            violations.append(
-                f"ไม่สามารถจัด {code} ครบ {req['weekly_count']} คาบ "
-                f"(จัดได้ {placed + already}/{req['weekly_count']})"
-            )
+            short_rows.append((req, gid, tid, needed - placed, placed + already))
+
+    # ── ยังลงไม่ได้: กลับไปขยับห้อง แล้วลองใหม่ ───────────────────────────────
+    #
+    # "ถ้ายังไม่ได้ให้กลับไปเลื่อนห้องต่างๆให้ลงได้ หาเส้นทางเหมาะสมที่สุด"
+    #
+    # Everything that was going to fit has now fitted, and what is left is the
+    # lessons that found every room they are allowed to use already occupied.
+    # Most of those rooms are held by lessons with somewhere else to go. So
+    # the same placement runs once more, this time allowed to move the
+    # occupants along a chain (shuffle_for above) rather than give up.
+    #
+    # Last, not first: a chain only knows about rooms, so it would happily
+    # walk a dozen classes into other people's rooms to save one lesson that
+    # would have fitted on its own five minutes later. Tried at the end, every
+    # move it makes is one that genuinely bought a lesson.
+    if short_rows:
+        index_rooms()
+        shuffle_on = True
+        still_short, rescued = [], 0
+        for req, gid, tid, missing, already in short_rows:
+            got = place_single(req, gid, tid, missing)
+            rescued += got
+            if got < missing:
+                still_short.append((req, gid, tid, missing - got, already + got))
+        shuffle_on = False
+        short_rows = still_short
+        created += rescued
+        rescued_by_shuffle = rescued
+
+    for req, gid, tid, missing, done in short_rows:
+        code = s_map.get(req["subject_id"], {}).get("code", "?")
+        unplaced_ids.append(req["id"])
+        violations.append(
+            f"ไม่สามารถจัด {code} ครบ {req['weekly_count']} คาบ "
+            f"(จัดได้ {done}/{req['weekly_count']})"
+        )
+
 
     # ── เวรคาบสุดท้าย: a repair pass ──────────────────────────────────────────
     # Preferring the last period while placing gets most teachers there, but a
@@ -2867,6 +3137,28 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 rebook(tid, gid, a_day, a_period, a_room)
                 rebook(oid, gid, day, target, b_room)
 
+    # ── คาบที่ลงแล้วแต่ไม่มีห้อง: ขยับห้องให้เหมือนกัน ────────────────────────
+    #
+    # Last of all, because the passes above move lessons between cells and a
+    # lesson that had a room can lose it on the way. A chain may well find one
+    # without putting anybody into a room they would not have accepted anyway.
+    roomless = [s for s in SLOTS if not s.get("room_id") and not s.get("is_elective")
+                and not s.get("is_activity_block")]
+    if roomless:
+        index_rooms()
+        # A room the school wrote down for this lesson still outranks anything
+        # the chain would pick on its own, so carry it through.
+        pin_of = {(r["group_id"], r["subject_id"], r["teacher_id"]): r["room_id"]
+                  for r in REQUIREMENTS if r.get("room_id")}
+        for s in roomless:
+            rid = shuffle_for(
+                s.get("teacher_id"), s["group_id"], s.get("subject_id"),
+                s["day"], s["period"],
+                pinned=pin_of.get((s["group_id"], s.get("subject_id"), s.get("teacher_id"))))
+            if rid:
+                hold_room(s, rid)
+                rescued_by_shuffle += 1
+
     # Only teachers who actually have lessons can be given a last period.
     teaching = [t for t in TEACHERS if any(r["teacher_id"] == t["id"] for r in REQUIREMENTS)]
     expected = [t for t in teaching if last_period_target(t["id"]) > 0]
@@ -2911,6 +3203,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         "consecutive": _consecutive_report(),
         "walking": _walking_report(),
         "last_period": last_period_stats,
+        # คาบที่ลงได้เพราะขยับห้องให้ — worth saying out loud, because it is
+        # the difference between "ลงไม่ได้" and a lesson in a room.
+        "rescued_by_room_shuffle": rescued_by_shuffle,
+        "elective_doubles_repaired": healed_doubles,
     }
 
 
@@ -4451,9 +4747,51 @@ def get_requirements(group_id: int | None = None):
 
 @app.post("/api/timetable/requirements")
 def create_req(body: dict[str, Any]):
+    # Checked here as well as in the bulk import. A row naming a class that is
+    # not there can never be placed, and nothing downstream can tell the school
+    # why: it simply turns up in คาบที่ลงไม่ได้ for ever, with no class name
+    # against it. Far better to refuse it at the door.
+    if body.get("group_id") not in {g["id"] for g in _flat_groups()}:
+        raise HTTPException(400, "ไม่พบห้องเรียนที่อ้างถึง")
+    if body.get("subject_id") not in {s["id"] for s in SUBJECTS}:
+        raise HTTPException(400, "ไม่พบรายวิชาที่อ้างถึง")
     body["id"] = _next("requirement")
     REQUIREMENTS.append(body)
     return body
+
+
+@app.get("/api/timetable/requirements/orphans")
+def list_orphan_reqs():
+    """Rows whose ห้องเรียน is no longer in the system.
+
+    They cannot be placed and cannot be fixed from the timetable screen, so
+    they sat in คาบที่ลงไม่ได้ as a nameless "?" — the school's biggest single
+    block of missing periods was rows for classes that no longer exist.
+    """
+    gids = {g["id"] for g in _flat_groups()}
+    s_map = {s["id"]: s for s in SUBJECTS}
+    t_map = {t["id"]: t for t in TEACHERS}
+    rows = [r for r in REQUIREMENTS if r.get("group_id") not in gids]
+    return {
+        "count": len(rows),
+        "periods": sum(r.get("weekly_count") or 0 for r in rows),
+        "rows": [{"id": r["id"], "group_id": r.get("group_id"),
+                  "subject_code": (s_map.get(r.get("subject_id")) or {}).get("code"),
+                  "subject_name": (s_map.get(r.get("subject_id")) or {}).get("name"),
+                  "teacher_name": (t_map.get(r.get("teacher_id")) or {}).get("name"),
+                  "weekly_count": r.get("weekly_count") or 0}
+                 for r in rows[:200]],
+    }
+
+
+@app.delete("/api/timetable/requirements/orphans")
+def purge_orphan_reqs():
+    """Delete those rows. Asked for explicitly — never done behind the school's back."""
+    global REQUIREMENTS
+    gids = {g["id"] for g in _flat_groups()}
+    before = len(REQUIREMENTS)
+    REQUIREMENTS = [r for r in REQUIREMENTS if r.get("group_id") in gids]
+    return {"deleted": before - len(REQUIREMENTS)}
 
 @app.put("/api/timetable/requirements/{i}")
 def update_req(i: int, body: dict[str, Any]):
@@ -4848,6 +5186,29 @@ def create_level_activity(body: dict[str, Any]):
     # copies of the same sentence.
     created, skipped, warnings = [], [], []
     scope = f"{label} {len(targets)} ห้อง" if label else f"{len(targets)} ห้อง"
+    # ชุมนุม/สาธารณประโยชน์ มาก่อนคาบธรรมดา: ordinary lessons sitting in this
+    # hour are moved out and re-placed by the next จัดตาราง, rather than the
+    # class being the one room of the level that misses the activity.
+    #
+    # Done BEFORE the roster is checked, not after. The teachers who run an
+    # activity are often the same teachers who were teaching the lessons it
+    # displaces, and asking "are you free then?" while their lesson was still
+    # in the way dropped four of this school's five ลูกเสือ supervisors from
+    # their own activity.
+    evicted: list[dict] = []
+    blocked: set[int] = set()
+    for g in targets:
+        hits = [s for s in SLOTS
+                if s["day"] == day and s["period"] == period
+                and s["group_id"] == g["id"]]
+        gone = _evict_ordinary(day, [period], hits)
+        evicted.extend(gone)
+        if len(gone) < len(hits):
+            keeper = next(s for s in hits if s not in gone)
+            blocked.add(g["id"])
+            skipped.append({"group": g["name"],
+                            "reason": keeper.get("subject_code") or "มีคาบที่ล็อกไว้อยู่แล้ว"})
+
     free_roster = []
     for t in roster:
         if any(s["day"] == day and s["period"] == period and t in _slot_teachers(s)
@@ -4863,13 +5224,7 @@ def create_level_activity(body: dict[str, Any]):
     # to fix. The name lives on the slots; the key only has to be unique.
     key = f"ACT-{day}-{period}-{_next('activity')}"
     for g in targets:
-        # Skip classrooms that already have something in this cell.
-        clash = next((s for s in SLOTS
-                      if s["day"] == day and s["period"] == period
-                      and s["group_id"] == g["id"]), None)
-        if clash:
-            skipped.append({"group": g["name"],
-                            "reason": clash.get("subject_code") or "มีคาบอยู่แล้ว"})
+        if g["id"] in blocked:
             continue
 
         # The roster covers the activity as a whole, so it goes on every
@@ -4912,7 +5267,13 @@ def create_level_activity(body: dict[str, Any]):
         }
         SLOTS.append(slot)
         created.append(_enrich_slot(slot))
-    return {"created": created, "skipped": skipped, "warnings": warnings, "activity_key": key}
+    if evicted:
+        warnings.append(
+            f"ย้ายคาบเรียนออกจากชั่วโมงนี้ {len(evicted)} คาบ "
+            f"({', '.join(sorted({s.get('subject_code') or '?' for s in evicted})[:6])}) "
+            f"— กดจัดตารางอีกครั้งเพื่อหาที่ให้ใหม่")
+    return {"created": created, "skipped": skipped, "warnings": warnings,
+            "activity_key": key, "evicted": len(evicted)}
 
 
 @app.put("/api/timetable/level-activity/{activity_key}")
@@ -5021,6 +5382,31 @@ def _pool_periods(pool: dict[str, Any]) -> list[int]:
     return periods
 
 
+def _evict_ordinary(day: int, periods: list[int], hits: list[dict]) -> list[dict]:
+    """Lift ordinary lessons out of a window so a คาบเสรี/กิจกรรม can have it.
+
+    "ลงคาบเสรีก่อนอะไรทั้งหมด (รวมถึงชุมนุมสาธารณะ)."
+
+    A คาบเสรี or a ชุมนุม is a decision about one hour of the whole school's
+    week, taken once and the same for everybody. An ordinary lesson is one of
+    thirty cells and can sit in any of them. So when the two want the same
+    cell, the window wins and the lesson goes back into the pile — the next
+    จัดตาราง finds it somewhere else.
+
+    What is NOT evicted: a lesson the school locked itself, another elective,
+    and another activity period. Those are decisions of the same kind, and the
+    newer one does not get to overrule them silently.
+    """
+    movable = [s for s in hits
+               if not s.get("is_locked") and not s.get("is_elective")
+               and not s.get("is_activity_block")]
+    if not movable:
+        return []
+    doomed = {id(s) for s in movable}
+    SLOTS[:] = [s for s in SLOTS if id(s) not in doomed]
+    return movable
+
+
 def _sync_pool_slots(pool: dict[str, Any]) -> dict[str, Any]:
     """Rewrite this pool's slots so the timetable matches the pool.
 
@@ -5037,7 +5423,7 @@ def _sync_pool_slots(pool: dict[str, Any]) -> dict[str, Any]:
 
     day = pool["day"]
     shares = _shares_students_fn()
-    placed, skipped = 0, []
+    placed, skipped, evicted = 0, [], []
     for gid in pool["group_ids"]:
         grp = _find_group(gid)
         if not grp:
@@ -5045,14 +5431,17 @@ def _sync_pool_slots(pool: dict[str, Any]) -> dict[str, Any]:
             continue
         # A parent class and its subgroups hold the same students, so a lesson
         # on either blocks this window for the other.
-        clash = next(
-            (s for s in SLOTS
-             if s["day"] == day and s["period"] in periods and shares(s["group_id"], gid)),
-            None,
-        )
-        if clash:
+        hits = [s for s in SLOTS
+                if s["day"] == day and s["period"] in periods
+                and shares(s["group_id"], gid)]
+        # คาบเสรีมาก่อน: an ordinary lesson in the way is moved out rather
+        # than the class being left without its elective. Anything the school
+        # locked, or another elective or activity, still wins.
+        gone = _evict_ordinary(day, periods, hits)
+        evicted.extend(gone)
+        if len(gone) < len(hits):
             skipped.append({"group_id": gid, "group_name": grp.get("name"),
-                            "reason": "มีคาบอื่นอยู่แล้ว"})
+                            "reason": "มีคาบที่ล็อกไว้อยู่แล้ว"})
             continue
 
         key = f"ELEC-POOL-{pool['id']}-{gid}" if pool.get("is_double") else None
@@ -5082,7 +5471,11 @@ def _sync_pool_slots(pool: dict[str, Any]) -> dict[str, Any]:
             })
         placed += 1
 
-    return {"placed": placed, "skipped": skipped}
+    return {"placed": placed, "skipped": skipped,
+            "evicted": [{"group_id": s["group_id"], "group_name": s.get("group_name"),
+                         "subject_code": s.get("subject_code"),
+                         "day": s["day"], "period": s["period"]}
+                        for s in evicted]}
 
 
 def _teacher_busy_outside_pool(teacher_id: int, pool: dict[str, Any]) -> list[dict[str, Any]]:
@@ -5890,6 +6283,7 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
             (parent["children"] if parent else GROUPS).append(g)
 
     _repair_activity_keys()
+    _repair_elective_doubles()
 
     if data.get("school_config"):
         SCHOOL_CONFIG.update(dict(data["school_config"]))

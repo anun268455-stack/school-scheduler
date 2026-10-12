@@ -342,11 +342,24 @@ export interface UnplacedRow {
   /** Placed in the week, but with no room at all. */
   roomless: number;
   is_elective: boolean;
+  /** The ห้องเรียน this row names is not in the system any more. */
+  orphan?: boolean;
   free_cells: { day: number; period: number }[];
   blockers: UnplacedBlocker[];
   movable_outdoor: UnplacedMovable[];
   week_size: number;
 }
+
+/** แถวที่ผูกกับห้องเรียนที่ถูกลบไปแล้ว — never placeable, never explained. */
+export const fetchOrphanReqs = () =>
+  api.get<{ count: number; periods: number;
+            rows: { id: number; group_id: number; subject_code: string | null;
+                    subject_name: string | null; teacher_name: string | null;
+                    weekly_count: number }[] }>(
+    "/timetable/requirements/orphans").then((r) => r.data);
+
+export const purgeOrphanReqs = () =>
+  api.delete<{ deleted: number }>("/timetable/requirements/orphans").then((r) => r.data);
 export const fetchUnplaced = () =>
   api.get<{ unplaced: UnplacedRow[]; total_missing: number;
             total_roomless?: number; total_rows?: number; shown?: number;
