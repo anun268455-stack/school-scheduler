@@ -1,7 +1,7 @@
 import React from "react";
 import clsx from "clsx";
 import type { TimetableSlot } from "../../types";
-import { slotTeacherNames, teachingTogether, myElectiveOption } from "../../utils/teacherSlots";
+import { slotTeacherNames, teachingTogether, myElectiveOption, slotLabel } from "../../utils/teacherSlots";
 import { useTimetableStore } from "../../store/timetableStore";
 
 interface SlotCellProps {
@@ -42,12 +42,14 @@ export const SlotCell: React.FC<SlotCellProps> = ({
       )}
     >
       {isParallel ? (
-        /* Parallel slots — split vertically */
-        <div className="flex flex-col h-full">
-          {slots.map((s, i) => (
-            <div key={s.id} className={clsx("flex-1 overflow-hidden", i > 0 && "border-t border-gray-200")}>
-              <Layer slot={s} compact onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
-            </div>
+        /* ห้องย่อย ก/ข/ค เรียนคนละวิชาในชั่วโมงเดียวกัน.
+           Three lessons in one 88px cell used to be three full cards at 29px
+           each: the subject, the teacher, the room and the class, all cut off
+           — "สามช่องที่ซ่อนกัน". One line each instead, with the subgroup
+           letter in front, and the whole thing on hover. */
+        <div className="flex flex-col h-full divide-y divide-gray-200/70">
+          {slots.map((s) => (
+            <MiniLayer key={s.id} slot={s} label={shortName(s.group_name, slots)} />
           ))}
         </div>
       ) : (
@@ -228,5 +230,47 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       )}
     </div>
   </div>
+  );
+};
+
+/**
+ * ก / ข / ค — what is left of a subgroup's name once the part it shares with
+ * its siblings is taken away. Two unrelated classes sharing an hour share no
+ * prefix, so they keep their full names.
+ */
+function shortName(name: string | null | undefined, all: TimetableSlot[]): string {
+  const names = all.map((s) => s.group_name ?? "").filter(Boolean);
+  if (!name || names.length < 2) return name ?? "";
+  let i = 0;
+  while (i < name.length && names.every((n) => n[i] === name[i])) i++;
+  const rest = name.slice(i);
+  // Only a true suffix — ก, ข, ค, or a room number. Two unrelated classes
+  // sharing an hour have only "ม." in common, and "4/6" with the ม. filed
+  // off is not a name anyone would recognise at a glance.
+  return rest && rest.length <= 2 ? rest : name;
+}
+
+const MiniLayer: React.FC<{
+  slot: TimetableSlot;
+  label: string;
+  /** Declared because the type-check stub's React.FC does not carry it. */
+  key?: string | number;
+}> = ({ slot, label }) => {
+  const names = slotTeacherNames(slot);
+  const title = [slot.group_name, slotLabel(slot), slot.subject_name,
+                 names.join(" · "), slot.room_name].filter(Boolean).join(" · ");
+  return (
+    <div className={clsx("flex-1 min-h-0 flex items-center gap-1 px-1 overflow-hidden",
+      slotColors(slot))} title={title}>
+      <span className="shrink-0 font-bold text-[9px] bg-white/70 rounded px-0.5 leading-tight">
+        {label}
+      </span>
+      <span className="flex-1 min-w-0 truncate font-semibold text-[9px] leading-tight">
+        {slotLabel(slot)}
+      </span>
+      <span className="shrink-0 max-w-[42%] truncate text-[8px] text-gray-600 leading-tight">
+        {slot.room_name ?? names[0] ?? ""}
+      </span>
+    </div>
   );
 };

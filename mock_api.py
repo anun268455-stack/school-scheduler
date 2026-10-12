@@ -2453,150 +2453,20 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 pool.pop(taken)
         return placed
 
-    # ── Place solo requirements ──
+    # ── Place parallel groups first (ห้องย่อย ก/ข/ค และวิชาคู่ขนาน) ──────────
     #
-    # คาบคู่ first. A double needs two free periods in a row AND one room that
-    # is free for both of them; by the time the singles have taken their pick
-    # there may be no such pair left, and the double breaks into two halves in
-    # two rooms. Everything else can fit around them afterwards.
+    # A เซ็ตห้องย่อย is the hardest thing in the timetable to place, and it was
+    # being placed last. It needs ONE hour where the parent class is free (so
+    # all its subgroups are), three different teachers are free, and three
+    # rooms are free — all at once. ม.4/6 has eleven of those to fit into the
+    # same thirty hours its own ordinary lessons are competing for.
     #
-    # Then the order the school asked for, and it is the order a person would
-    # use: hardest first. A lesson that can only happen in one of five labs
-    # has far fewer places to go than a lesson that fits any classroom, and
-    # whoever books last gets what is left — which is how science lessons
-    # ended up in ordinary rooms with the labs still half empty. So:
+    # Ordinary lessons have thirty hours each and no such coupling, so they
+    # fit around anything. Placed first, they took the hours the sets needed
+    # and the sets were left with the gaps — which is why a set would come
+    # out with two of its three subgroups placed and the third missing.
     #
-    #   1. lessons that need a facility (ห้องพิเศษ) — fill those rooms first
-    #   2. classes that have a room of their own — seat them in it
-    #   3. everything else, which can go anywhere
-    facility_depts = {r["specialized_dept_id"] for r in ROOMS
-                      if r.get("specialized_dept_id")}
-
-    def place_order(r: dict) -> tuple:
-        subj = s_map.get(r["subject_id"], {}) or {}
-        grp  = g_map.get(r["group_id"], {}) or {}
-        needs_facility = (
-            _subject_room_rule(subj) == "subject"
-            or _subject_rooms(subj)
-            or subj.get("department_id") in facility_depts)
-        # A teacher who is off on Fridays has four days to fit a week into,
-        # and วันที่ไม่สอน is now a hard rule — so their lessons are placed
-        # while there is still room, rather than being handed whatever is
-        # left and reported as unplaceable.
-        tp = _teacher_prefs(t_map.get(r["teacher_id"]))
-        tight = len(tp["days_off"]) + (1 if tp["avoid_periods"] else 0)
-        return (
-            0 if subj.get("duration") == 2 else 1,   # คาบคู่ still first
-            -tight,                                  # the most constrained next
-            0 if needs_facility else 1,
-            0 if grp.get("homeroom_room_id") else 1,
-        )
-
-    solo.sort(key=place_order)
-    for req in solo:
-        gid, tid = req["group_id"], req["teacher_id"]
-        subj     = s_map.get(req["subject_id"], {})
-        duration = subj.get("duration", 1) or 1
-        already  = sum(1 for s in SLOTS
-                       if s["group_id"] == gid and s["subject_id"] == req["subject_id"])
-        needed   = max(0, req["weekly_count"] - already)
-        placed   = 0
-
-        # Double-period subjects (พลศึกษา ฯลฯ): place consecutive pairs first.
-        if duration == 2 and needed >= 2:
-            pairs_needed = needed // 2
-            hard = _consec_limit(t_map.get(tid), consec_hard)
-            lvl = _level_key(g_map.get(gid))
-            # A double is two in a row by definition, so it only has room to
-            # sit beside one more period before hitting the ceiling.
-            #
-            # Three passes, and the third exists because of ว32202: four
-            # periods a week is two doubles, and when only one of them fitted
-            # the other two periods fell through to the singles pass and were
-            # placed apart — the school saw "a คาบคู่ with its partner
-            # missing". Trying the pair once more, with the one-a-day rule
-            # lifted, keeps it a pair.
-            for attempt in range(3):
-                if pairs_needed <= 0:
-                    break
-                cells = double_starts(gid)
-                random.shuffle(cells)
-                for day, p in cells:
-                    if pairs_needed <= 0:
-                        break
-                    p2 = _next_class_period_for(lvl, p)
-                    if p2 is None:
-                        continue
-                    # Two doubles of one subject belong on two different days:
-                    # a class sitting through four periods of ฟิสิกส์ on one
-                    # Thursday is the timetable nobody wants, and nothing was
-                    # stopping it — the one-a-day rule was only ever applied
-                    # to single periods.
-                    if attempt < 2 and subj_day[(gid, req.get("subject_id"), day)] > 0:
-                        continue
-                    # วันที่ไม่สอน, here too: the double loop never asked, so a
-                    # teacher's day off could be filled by a คาบคู่ whatever
-                    # the single-period rules said.
-                    if day in _teacher_prefs(t_map.get(tid))["days_off"]:
-                        continue
-                    if not pair_free(req, day, p) or not pair_free(req, day, p2):
-                        continue
-                    if not teacher_free(tid, day, gid, p) or not teacher_free(tid, day, gid, p2):
-                        continue
-                    if group_occupied(gid, day, p) or group_occupied(gid, day, p2):
-                        continue
-                    # Measure the pair as a whole: placing the first then the
-                    # second separately would under-count the run.
-                    sp1, sp2 = span_of(gid, p), span_of(gid, p2)
-                    if sp1 and sp2:
-                        run = _run_length([*teacher_spans[(tid, day)], sp2], sp1[0], sp1[1])
-                        if attempt == 0 and run > consec_soft:
-                            continue
-                        if run > hard:
-                            continue
-                    s1 = make_slot(req, day, p, also_period=p2)
-                    # The two halves are one lesson, and they have to say so.
-                    # Marked only with is_double_start, the pair was two
-                    # ordinary lessons that happened to touch: the grid drew
-                    # the 2x badge on one of them, and anything that moved or
-                    # cleared a cell could take half the lesson away and leave
-                    # the other half stranded — "คาบคู่มีคู่หนึ่งที่หายไป".
-                    dkey = f"DBL-{s1['id']}"
-                    s1["is_double_start"] = True
-                    s1["double_group_key"] = dkey
-                    # The second half stays put. find_room would be asked
-                    # again and could answer differently — the first half has
-                    # just booked the room, so the second would be told it is
-                    # busy and sent somewhere else.
-                    s2 = make_slot(req, day, p2,
-                                   (s1.get("room_id"), s1.get("room_name"), s1.get("room_type")))
-                    s2["double_group_key"] = dkey
-                    s2["is_double_cont"] = True
-                    SLOTS.append(s1); SLOTS.append(s2)
-                    note_subject(gid, req.get("subject_id"), day, 2)
-                    for pp in (p, p2):
-                        book(tid, gid, day, pp)
-                        book_pair(req, day, pp)
-                    created      += 2
-                    placed       += 2
-                    pairs_needed -= 1
-
-        # Remaining periods (odd leftover, or any pairs that didn't fit) → singles.
-        remaining = needed - placed
-        if remaining > 0:
-            got = place_single(req, gid, tid, remaining)
-            placed   += got
-            created  += got
-
-        if placed < needed:
-            code = s_map.get(req["subject_id"], {}).get("code", "?")
-            unplaced_ids.append(req["id"])
-            violations.append(
-                f"ไม่สามารถจัด {code} ครบ {req['weekly_count']} คาบ "
-                f"(จัดได้ {placed + already}/{req['weekly_count']})"
-            )
-
-    # ── Place parallel groups (all siblings share same day+period) ──
+    # Hardest first: the sets choose, then everything else fits around them.
     for pgk, reqs in parallel.items():
         # Use max weekly_count across all siblings (most conservative)
         max_weekly = max(r["weekly_count"] for r in reqs)
@@ -2746,6 +2616,149 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 f"(ห้อง: {', '.join(str(r['group_id']) for r in reqs)})"
             )
 
+
+    # ── Place solo requirements ──
+    #
+    # คาบคู่ first. A double needs two free periods in a row AND one room that
+    # is free for both of them; by the time the singles have taken their pick
+    # there may be no such pair left, and the double breaks into two halves in
+    # two rooms. Everything else can fit around them afterwards.
+    #
+    # Then the order the school asked for, and it is the order a person would
+    # use: hardest first. A lesson that can only happen in one of five labs
+    # has far fewer places to go than a lesson that fits any classroom, and
+    # whoever books last gets what is left — which is how science lessons
+    # ended up in ordinary rooms with the labs still half empty. So:
+    #
+    #   1. lessons that need a facility (ห้องพิเศษ) — fill those rooms first
+    #   2. classes that have a room of their own — seat them in it
+    #   3. everything else, which can go anywhere
+    facility_depts = {r["specialized_dept_id"] for r in ROOMS
+                      if r.get("specialized_dept_id")}
+
+    def place_order(r: dict) -> tuple:
+        subj = s_map.get(r["subject_id"], {}) or {}
+        grp  = g_map.get(r["group_id"], {}) or {}
+        needs_facility = (
+            _subject_room_rule(subj) == "subject"
+            or _subject_rooms(subj)
+            or subj.get("department_id") in facility_depts)
+        # A teacher who is off on Fridays has four days to fit a week into,
+        # and วันที่ไม่สอน is now a hard rule — so their lessons are placed
+        # while there is still room, rather than being handed whatever is
+        # left and reported as unplaceable.
+        tp = _teacher_prefs(t_map.get(r["teacher_id"]))
+        tight = len(tp["days_off"]) + (1 if tp["avoid_periods"] else 0)
+        return (
+            0 if subj.get("duration") == 2 else 1,   # คาบคู่ still first
+            -tight,                                  # the most constrained next
+            0 if needs_facility else 1,
+            0 if grp.get("homeroom_room_id") else 1,
+        )
+
+    solo.sort(key=place_order)
+    for req in solo:
+        gid, tid = req["group_id"], req["teacher_id"]
+        subj     = s_map.get(req["subject_id"], {})
+        duration = subj.get("duration", 1) or 1
+        already  = sum(1 for s in SLOTS
+                       if s["group_id"] == gid and s["subject_id"] == req["subject_id"])
+        needed   = max(0, req["weekly_count"] - already)
+        placed   = 0
+
+        # Double-period subjects (พลศึกษา ฯลฯ): place consecutive pairs first.
+        if duration == 2 and needed >= 2:
+            pairs_needed = needed // 2
+            hard = _consec_limit(t_map.get(tid), consec_hard)
+            lvl = _level_key(g_map.get(gid))
+            # A double is two in a row by definition, so it only has room to
+            # sit beside one more period before hitting the ceiling.
+            #
+            # Three passes, and the third exists because of ว32202: four
+            # periods a week is two doubles, and when only one of them fitted
+            # the other two periods fell through to the singles pass and were
+            # placed apart — the school saw "a คาบคู่ with its partner
+            # missing". Trying the pair once more, with the one-a-day rule
+            # lifted, keeps it a pair.
+            for attempt in range(3):
+                if pairs_needed <= 0:
+                    break
+                cells = double_starts(gid)
+                random.shuffle(cells)
+                for day, p in cells:
+                    if pairs_needed <= 0:
+                        break
+                    p2 = _next_class_period_for(lvl, p)
+                    if p2 is None:
+                        continue
+                    # Two doubles of one subject belong on two different days:
+                    # a class sitting through four periods of ฟิสิกส์ on one
+                    # Thursday is the timetable nobody wants, and nothing was
+                    # stopping it — the one-a-day rule was only ever applied
+                    # to single periods.
+                    if attempt < 2 and subj_day[(gid, req.get("subject_id"), day)] > 0:
+                        continue
+                    # วันที่ไม่สอน, here too: the double loop never asked, so a
+                    # teacher's day off could be filled by a คาบคู่ whatever
+                    # the single-period rules said.
+                    if day in _teacher_prefs(t_map.get(tid))["days_off"]:
+                        continue
+                    if not pair_free(req, day, p) or not pair_free(req, day, p2):
+                        continue
+                    if not teacher_free(tid, day, gid, p) or not teacher_free(tid, day, gid, p2):
+                        continue
+                    if group_occupied(gid, day, p) or group_occupied(gid, day, p2):
+                        continue
+                    # Measure the pair as a whole: placing the first then the
+                    # second separately would under-count the run.
+                    sp1, sp2 = span_of(gid, p), span_of(gid, p2)
+                    if sp1 and sp2:
+                        run = _run_length([*teacher_spans[(tid, day)], sp2], sp1[0], sp1[1])
+                        if attempt == 0 and run > consec_soft:
+                            continue
+                        if run > hard:
+                            continue
+                    s1 = make_slot(req, day, p, also_period=p2)
+                    # The two halves are one lesson, and they have to say so.
+                    # Marked only with is_double_start, the pair was two
+                    # ordinary lessons that happened to touch: the grid drew
+                    # the 2x badge on one of them, and anything that moved or
+                    # cleared a cell could take half the lesson away and leave
+                    # the other half stranded — "คาบคู่มีคู่หนึ่งที่หายไป".
+                    dkey = f"DBL-{s1['id']}"
+                    s1["is_double_start"] = True
+                    s1["double_group_key"] = dkey
+                    # The second half stays put. find_room would be asked
+                    # again and could answer differently — the first half has
+                    # just booked the room, so the second would be told it is
+                    # busy and sent somewhere else.
+                    s2 = make_slot(req, day, p2,
+                                   (s1.get("room_id"), s1.get("room_name"), s1.get("room_type")))
+                    s2["double_group_key"] = dkey
+                    s2["is_double_cont"] = True
+                    SLOTS.append(s1); SLOTS.append(s2)
+                    note_subject(gid, req.get("subject_id"), day, 2)
+                    for pp in (p, p2):
+                        book(tid, gid, day, pp)
+                        book_pair(req, day, pp)
+                    created      += 2
+                    placed       += 2
+                    pairs_needed -= 1
+
+        # Remaining periods (odd leftover, or any pairs that didn't fit) → singles.
+        remaining = needed - placed
+        if remaining > 0:
+            got = place_single(req, gid, tid, remaining)
+            placed   += got
+            created  += got
+
+        if placed < needed:
+            code = s_map.get(req["subject_id"], {}).get("code", "?")
+            unplaced_ids.append(req["id"])
+            violations.append(
+                f"ไม่สามารถจัด {code} ครบ {req['weekly_count']} คาบ "
+                f"(จัดได้ {placed + already}/{req['weekly_count']})"
+            )
 
     # ── เวรคาบสุดท้าย: a repair pass ──────────────────────────────────────────
     # Preferring the last period while placing gets most teachers there, but a
