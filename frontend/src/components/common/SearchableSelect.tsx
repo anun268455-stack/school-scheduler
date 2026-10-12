@@ -40,6 +40,7 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
   const [query, setQuery]   = useState("");
   const [cursor, setCursor] = useState(0);
   const boxRef   = useRef<HTMLDivElement>(null);
+  const listRef  = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const selected = options.find((o) => o.value === value) ?? null;
@@ -90,17 +91,45 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
    * the whole browser out — which is how the school ended up reading their
    * timetable at 67%.
    */
-  const [dropUp, setDropUp] = useState(false);
   const [listMax, setListMax] = useState(288);        // 18rem, the old max-h-72
+  /**
+   * Measured against the screen, not against the row it sits in.
+   *
+   * Laid out inside the page, a picker in a table row was clipped by the
+   * table's own rounded-and-hidden edge: the list came out two lines tall
+   * with the other 350 rooms cut off below, which looks exactly like a
+   * dropdown that has only two rooms in it.
+   */
+  const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number }>(
+    { left: 0, width: 240 });
   useEffect(() => {
     if (!open) return;
-    const r = boxRef.current?.getBoundingClientRect();
-    if (!r) return;
-    const below = window.innerHeight - r.bottom - 12;
-    const above = r.top - 12;
-    const up = below < 240 && above > below;
-    setDropUp(up);
-    setListMax(Math.max(160, Math.min(288, (up ? above : below) - (showSearch ? 52 : 8))));
+    const place = () => {
+      const r = boxRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const below = window.innerHeight - r.bottom - 12;
+      const above = r.top - 12;
+      const up = below < 240 && above > below;
+      setListMax(Math.max(160, Math.min(288, (up ? above : below) - (showSearch ? 52 : 8))));
+      setPos({
+        left: Math.max(8, Math.min(r.left, window.innerWidth - 248)),
+        width: r.width,
+        ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
+      });
+    };
+    place();
+    // Follow the trigger rather than closing: the list has its own scrollbar,
+    // and closing on any scroll would shut it the moment someone used it.
+    const onScroll = (e: Event) => {
+      if (listRef.current?.contains(e.target as Node)) return;
+      place();
+    };
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", place);
+    };
   }, [open, showSearch]);
 
   return (
@@ -135,13 +164,15 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
 
       {open && (
         <div
-          className={clsx(
-            "absolute z-50 bg-white border border-gray-200 rounded-lg shadow-2xl overflow-hidden text-gray-900",
-            dropUp ? "bottom-full mb-1" : "top-full mt-1",
-          )}
+          ref={listRef}
+          className="fixed z-[70] bg-white border border-gray-200 rounded-lg shadow-2xl overflow-hidden text-gray-900"
           /* Always at least readable, however narrow the trigger is: a picker
              inside a table column was coming out a few characters wide. */
-          style={{ minWidth: "max(100%, 240px)", width: "max-content", maxWidth: "min(380px, 90vw)" }}
+          style={{
+            left: pos.left, top: pos.top, bottom: pos.bottom,
+            minWidth: Math.max(pos.width, 240),
+            width: "max-content", maxWidth: "min(380px, 90vw)",
+          }}
         >
           {showSearch && (
             <div className="p-2 border-b border-gray-100 bg-gray-50">

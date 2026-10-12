@@ -2015,11 +2015,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 pool.sort(key=rank)
                 taken = -1
                 for idx, (day, period) in enumerate(pool):
-                    if attempt < 3:
-                        if day in prefs["days_off"]:
-                            continue        # the teacher does not work this day
-                        if period in prefs["avoid_periods"]:
-                            continue
+                    # วันที่ไม่สอน is not a preference — the teacher is not in
+                    # the building. It used to be dropped on the last pass
+                    # along with the soft wishes, which is how a teacher who
+                    # had Friday off was given a Friday คาบ 9. A lesson that
+                    # cannot fit the other four days is reported as unplaced
+                    # instead, which is a question for the school to answer.
+                    if day in prefs["days_off"]:
+                        continue
+                    if attempt < 3 and period in prefs["avoid_periods"]:
+                        continue        # คาบที่ขอเลี่ยง is a wish, and gives way
                     if not teacher_free(tid, day, gid, period):
                         continue
                     if not pair_free(req, day, period):
@@ -2127,8 +2132,15 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             _subject_room_rule(subj) == "subject"
             or subj.get("fixed_room_id")
             or subj.get("department_id") in facility_depts)
+        # A teacher who is off on Fridays has four days to fit a week into,
+        # and วันที่ไม่สอน is now a hard rule — so their lessons are placed
+        # while there is still room, rather than being handed whatever is
+        # left and reported as unplaceable.
+        tp = _teacher_prefs(t_map.get(r["teacher_id"]))
+        tight = len(tp["days_off"]) + (1 if tp["avoid_periods"] else 0)
         return (
             0 if subj.get("duration") == 2 else 1,   # คาบคู่ still first
+            -tight,                                  # the most constrained next
             0 if needs_facility else 1,
             0 if grp.get("homeroom_room_id") else 1,
         )
@@ -2150,7 +2162,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             lvl = _level_key(g_map.get(gid))
             # A double is two in a row by definition, so it only has room to
             # sit beside one more period before hitting the ceiling.
-            for attempt in range(2):
+            #
+            # Three passes, and the third exists because of ว32202: four
+            # periods a week is two doubles, and when only one of them fitted
+            # the other two periods fell through to the singles pass and were
+            # placed apart — the school saw "a คาบคู่ with its partner
+            # missing". Trying the pair once more, with the one-a-day rule
+            # lifted, keeps it a pair.
+            for attempt in range(3):
                 if pairs_needed <= 0:
                     break
                 cells = double_starts(gid)
@@ -2160,6 +2179,18 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                         break
                     p2 = _next_class_period_for(lvl, p)
                     if p2 is None:
+                        continue
+                    # Two doubles of one subject belong on two different days:
+                    # a class sitting through four periods of ฟิสิกส์ on one
+                    # Thursday is the timetable nobody wants, and nothing was
+                    # stopping it — the one-a-day rule was only ever applied
+                    # to single periods.
+                    if attempt < 2 and subj_day[(gid, req.get("subject_id"), day)] > 0:
+                        continue
+                    # วันที่ไม่สอน, here too: the double loop never asked, so a
+                    # teacher's day off could be filled by a คาบคู่ whatever
+                    # the single-period rules said.
+                    if day in _teacher_prefs(t_map.get(tid))["days_off"]:
                         continue
                     if not pair_free(req, day, p) or not pair_free(req, day, p2):
                         continue
@@ -2177,13 +2208,23 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                         if run > hard:
                             continue
                     s1 = make_slot(req, day, p, also_period=p2)
+                    # The two halves are one lesson, and they have to say so.
+                    # Marked only with is_double_start, the pair was two
+                    # ordinary lessons that happened to touch: the grid drew
+                    # the 2x badge on one of them, and anything that moved or
+                    # cleared a cell could take half the lesson away and leave
+                    # the other half stranded — "คาบคู่มีคู่หนึ่งที่หายไป".
+                    dkey = f"DBL-{s1['id']}"
                     s1["is_double_start"] = True
+                    s1["double_group_key"] = dkey
                     # The second half stays put. find_room would be asked
                     # again and could answer differently — the first half has
                     # just booked the room, so the second would be told it is
                     # busy and sent somewhere else.
                     s2 = make_slot(req, day, p2,
                                    (s1.get("room_id"), s1.get("room_name"), s1.get("room_type")))
+                    s2["double_group_key"] = dkey
+                    s2["is_double_cont"] = True
                     SLOTS.append(s1); SLOTS.append(s2)
                     note_subject(gid, req.get("subject_id"), day, 2)
                     for pp in (p, p2):
