@@ -1054,7 +1054,7 @@ const SubjectsPanel: React.FC = () => {
 // ─── Rooms ───────────────────────────────────────────────────────────────────
 
 const RoomsPanel: React.FC = () => {
-  const { rooms, teachers, departments } = useTimetableStore();
+  const { rooms, teachers, departments, groups } = useTimetableStore();
   // Settings live in a dialog: a room carries enough of them that editing in
   // the row made that row several lines tall and hid every other room.
   const [settingsFor, setSettingsFor] = useState<Room | null>(null);
@@ -1065,6 +1065,10 @@ const RoomsPanel: React.FC = () => {
   const teacherName = (id: number) => teachers.find((t) => t.id === id)?.name ?? "–";
   const deptName = (id: number | null | undefined) =>
     id ? (departments.find((d) => d.id === id)?.name ?? "–") : null;
+  const flatGroups = useMemo(() => flattenGroups(groups), [groups]);
+  const groupName = (id: number) => flatGroups.find((g) => g.id === id)?.name ?? `#${id}`;
+  const forClasses = (r: Room) =>
+    Array.isArray(r.reserved_group_ids) ? r.reserved_group_ids : [];
 
   /** Take a room out of the timetable, or put it back — one click from the row. */
   const toggleUsable = async (r: Room) => {
@@ -1086,6 +1090,9 @@ const RoomsPanel: React.FC = () => {
     (!onlyBlocked || r.usable === false) &&
     matches(q, r.name, ROOM_TYPE_TH[r.type] ?? r.type, r.building_name, r.floor,
       roomReservedFor(r).map(teacherName).join(" "), deptName(r.specialized_dept_id),
+      // ค้นด้วยชื่อชั้นเรียนได้ด้วย — "247 เป็นของ ม.5/1" is a thing the
+      // school looks up by the class, not by the room number.
+      forClasses(r).map(groupName).join(" "),
       r.usable === false ? "ห้ามใช้" : "ใช้ได้"));
 
   return (
@@ -1144,7 +1151,20 @@ const RoomsPanel: React.FC = () => {
                           🏠 {kept.length === 1 ? teacherName(kept[0]) : `ครู ${kept.length} คน`}
                         </span>
                       )}
-                      {kept.length === 0 && !r.specialized_dept_id && <span className="text-gray-400">ห้องรวม</span>}
+                      {/* กันไว้ให้ชั้นเรียน. Set in the dialog but shown
+                          nowhere, so the table said ห้องรวม about a room that
+                          was reserved and the setting had to be opened room
+                          by room to find out. */}
+                      {forClasses(r).length > 0 && (
+                        <span className="bg-indigo-50 text-indigo-800 border border-indigo-200 px-1.5 py-0.5 rounded whitespace-nowrap"
+                          title={forClasses(r).map(groupName).join(", ")}>
+                          🎒 {forClasses(r).length <= 2
+                            ? forClasses(r).map(groupName).join(" · ")
+                            : `${groupName(forClasses(r)[0])} +${forClasses(r).length - 1} ห้อง`}
+                        </span>
+                      )}
+                      {kept.length === 0 && !r.specialized_dept_id && forClasses(r).length === 0
+                        && <span className="text-gray-400">ห้องรวม</span>}
                     </span>
                   </td>
                   <td className="px-3 py-2">
