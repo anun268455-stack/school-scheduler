@@ -102,9 +102,12 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
       {slot.is_elective && (
         <span className="shrink-0 inline-block bg-purple-500 text-white text-[7px] px-0.5 rounded-sm leading-tight">🎓</span>
       )}
-      {slot.double_group_key && (
-        <span className="shrink-0 inline-block bg-purple-300 text-purple-900 text-[7px] px-0.5 rounded-sm leading-tight" title="คาบคู่ (2 คาบติดกัน)">
-          🔗{slot.is_double_cont ? "ต่อ" : "คู่"}
+      {/* 2× already says คาบคู่ on the first half, and a merged pair is one
+          cell — so this only marks a second half still drawn on its own,
+          which happens when a break falls between the two periods. */}
+      {slot.double_group_key && slot.is_double_cont && (
+        <span className="shrink-0 inline-block bg-purple-300 text-purple-900 text-[7px] px-0.5 rounded-sm leading-tight" title="คาบที่สองของคาบคู่ (มีคาบพักคั่น)">
+          🔗ต่อ
         </span>
       )}
       {extra > 0 && (

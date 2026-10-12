@@ -225,6 +225,38 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     return m;
   }, [viewSlots]);
 
+  /**
+   * คาบคู่กินช่องเดียว — one lesson, one cell.
+   *
+   * A คาบคู่ is one lesson two periods long, and it was drawn as two
+   * identical cards side by side: the same subject, the same teacher and the
+   * same room printed twice, which reads as two lessons and makes a wide
+   * table wider for no reason. Merged, the pair is one cell across both
+   * columns, which is what it is.
+   *
+   * Only when the two columns are actually next to each other. A pair split
+   * by a break (คาบ 3 then คาบ 5 across lunch) is two cells, because merging
+   * would draw the lesson straight through the break.
+   */
+  const { spans, swallowed } = useMemo(() => {
+    const spans = new Map<string, number>();
+    const swallowed = new Set<string>();
+    for (let d = 0; d < DAYS.length; d++) {
+      for (let i = 0; i < gridPeriods.length - 1; i++) {
+        const here = slotGrid.get(`${d}-${gridPeriods[i].period_num}`) ?? [];
+        const next = slotGrid.get(`${d}-${gridPeriods[i + 1].period_num}`) ?? [];
+        // One lesson in each cell, and the same คาบคู่ in both.
+        if (here.length !== 1 || next.length !== 1) continue;
+        const a = here[0], b = next[0];
+        if (!a.double_group_key || a.double_group_key !== b.double_group_key) continue;
+        if (a.id === b.id) continue;
+        spans.set(`${d}-${gridPeriods[i].period_num}`, 2);
+        swallowed.add(`${d}-${gridPeriods[i + 1].period_num}`);
+      }
+    }
+    return { spans, swallowed };
+  }, [slotGrid, gridPeriods]);
+
   const onDragStart = useCallback((e: DragStartEvent) => {
     const item = e.active.data.current as DragItem;
     const src  = slots.find((s) => s.id === item.slotId);
@@ -557,12 +589,17 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
 
                   {gridPeriods.map((pm) => {
                     const key       = `${dayIdx}-${pm.period_num}`;
+                    // The second half of a merged คาบคู่ has no cell of its
+                    // own — the first half covers both columns.
+                    if (swallowed.has(key)) return null;
+                    const span      = spans.get(key) ?? 1;
                     const impact    = isDragActive ? (impactMap.get(key) ?? null) : null;
                     const cellSlots = slotGrid.get(key) ?? [];
 
                     return (
                       <td
                         key={pm.period_num}
+                        colSpan={span}
                         className="border border-gray-200 p-0.5 align-top"
                         style={{ height: `${CELL_H}px`, maxHeight: `${CELL_H}px` }}
                       >
