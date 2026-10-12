@@ -13,31 +13,76 @@ import type { RequirementProblem, SolverResult } from "../../types";
 /** How much of the problem list to leave out of a run. */
 type SkipMode = "none" | "blocking" | "all";
 
+/**
+ * The panel's settings and its last result, kept across open and close.
+ *
+ * Everything here used to live in the component, and the component is
+ * unmounted the moment the panel is closed — so the result of a run, with its
+ * list of what could not be placed and the แนวทางแก้ beneath it, was thrown
+ * away by clicking anywhere else, and the only way back to it was to run the
+ * whole thing again. The settings went with it.
+ *
+ * localStorage, because it should also survive a reload: the school reads
+ * this list, goes off to fix a timetable, and comes back to it.
+ */
+const KEEP = "solver.panel.v1";
+
+interface Kept {
+  clearExisting: boolean; maxConsec: number; minLast: number; maxLast: number;
+  skipMode: SkipMode; manual: Record<number, boolean>;
+  result: SolverResult | null; ranAt: string | null;
+}
+
+const BLANK: Kept = {
+  clearExisting: true, maxConsec: 3, minLast: 1, maxLast: 3,
+  skipMode: "blocking", manual: {}, result: null, ranAt: null,
+};
+
+function readKept(): Kept {
+  try {
+    const raw = localStorage.getItem(KEEP);
+    return raw ? { ...BLANK, ...JSON.parse(raw) } : BLANK;
+  } catch {
+    return BLANK;        // private window, full disk, anything — never fatal
+  }
+}
+
+function writeKept(v: Kept) {
+  try { localStorage.setItem(KEEP, JSON.stringify(v)); } catch { /* fine */ }
+}
+
 interface Props { onClose: () => void }
 
 export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   const { slots, isSolving, solverError, runSolver, groups, teachers, subjects } = useTimetableStore();
 
-  const [clearExisting, setClearExisting] = useState(true);
+  const kept0 = useMemo(readKept, []);
+  const [clearExisting, setClearExisting] = useState(kept0.clearExisting);
   const [showClear, setShowClear] = useState(false);
   // How many periods in a row one teacher may be given. The school's rule is
   // never more than three, and two if the timetable can bear it.
-  const [maxConsec, setMaxConsec] = useState(3);
+  const [maxConsec, setMaxConsec] = useState(kept0.maxConsec);
   // เวรคาบสุดท้าย: last-period lessons every teacher should carry each week.
-  const [minLast, setMinLast] = useState(1);
+  const [minLast, setMinLast] = useState(kept0.minLast);
   // …and the most any one of them should be given. A real trade, so it is
   // offered rather than chosen: tighter spreads the late afternoons around
   // but leaves a few lessons with nowhere to go.
-  const [maxLast, setMaxLast] = useState(3);
-  const [result, setResult]               = useState<SolverResult | null>(null);
+  const [maxLast, setMaxLast] = useState(kept0.maxLast);
+  const [result, setResult]               = useState<SolverResult | null>(kept0.result);
+  const [ranAt, setRanAt]                 = useState<string | null>(kept0.ranAt);
 
   // วิชาที่มีปัญหา — found before the run so they can be left out of it.
   const [problems, setProblems] = useState<RequirementProblem[]>([]);
-  const [skipMode, setSkipMode] = useState<SkipMode>("blocking");
+  const [skipMode, setSkipMode] = useState<SkipMode>(kept0.skipMode);
   const [showList, setShowList] = useState(false);
   const [showUnplaced, setShowUnplaced] = useState(false);
   // Rows the user ticked back ON or OFF by hand, overriding the mode.
-  const [manual, setManual] = useState<Record<number, boolean>>({});
+  const [manual, setManual] = useState<Record<number, boolean>>(kept0.manual);
+
+  // Written on every change, so closing the panel — or the tab — keeps it.
+  useEffect(() => {
+    writeKept({ clearExisting, maxConsec, minLast, maxLast, skipMode, manual, result, ranAt });
+  }, [clearExisting, maxConsec, minLast, maxLast, skipMode, manual, result, ranAt]);
 
   const loadProblems = () =>
     api.fetchRequirementProblems()
@@ -70,6 +115,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
         maxLastPeriod: maxLast,
       });
       setResult(r);
+      setRanAt(new Date().toISOString());
       await loadProblems();    // the run may have changed what fails
     } catch {
       /* error stored in store.solverError */
@@ -282,6 +328,16 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
         {/* ── Result ────────────────────────────────────────────────────────── */}
         {result && !isSolving && (
           <div className={clsx("rounded-lg border p-3 text-xs space-y-1", STATUS_STYLES[result.status] ?? STATUS_STYLES.UNKNOWN)}>
+            {/* An old result reads exactly like a fresh one, so it says when
+                it was. The school closes this panel, goes off to fix a few
+                rows, and comes back to the same list. */}
+            {ranAt && (
+              <div className="text-[10px] opacity-70 -mt-0.5 mb-1">
+                ผลการจัดเมื่อ {new Date(ranAt).toLocaleString("th-TH", {
+                  day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                {" · "}ยังอยู่จนกว่าจะกดจัดใหม่
+              </div>
+            )}
             <div className="font-bold text-sm mb-2">
               {result.status === "OPTIMAL"    ? "✅ ตารางที่ดีที่สุด (เดินน้อยสุด)" :
                result.status === "FEASIBLE"   ? "✅ จัดตารางสำเร็จ (ครบทุกเงื่อนไข)" :
