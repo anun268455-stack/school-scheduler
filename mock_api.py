@@ -1392,6 +1392,28 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     and (r["type"] != "outdoor" or may_outdoor)):
                 return home, r["name"], r["type"]
 
+        # 2'. ห้องประจำชั้นของนักเรียน, ahead of the department's facility
+        #     and of the teacher's own room.
+        #
+        #     Which of the three comes first is the school's decision, not
+        #     ours: "ครูอยู่กับที่ นักเรียนเดินมาหา" and "นักเรียนอยู่กับที่
+        #     ครูเดินไปสอน" are both real ways to run a school, and this one
+        #     runs the second — a class with a room of its own sits in it, and
+        #     only a subject that has been marked as needing its facility
+        #     (ต้องเรียนที่ห้องประจำวิชา, or a ห้องประจำวิชา of its own) takes
+        #     them out of it. Those two are decided above, before this.
+        #
+        #     Only a REAL ห้องประจำชั้น counts here. A class that has none is
+        #     given an anchor room further down, and an invented room is no
+        #     reason to keep anyone out of a lab or their own room.
+        real_home = grp.get("homeroom_room_id")
+        if (real_home and not wants_outdoor and not teacher_room_wins
+                and not room_taken(real_home)):
+            r = r_map.get(real_home)
+            if (r and _room_free_for(r, teacher_id) and not upstairs(r)
+                    and (r["type"] != "outdoor" or may_outdoor)):
+                return real_home, r["name"], r["type"]
+
         # 2. A room this department owns. Several labs may serve one subject
         #    (5 computer rooms for 156 periods a week), so pin by department
         #    rather than by subject and take whichever is free.
@@ -1412,25 +1434,6 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     0 if (here is not None and r.get("building_id") == here) else 1,
                     r["id"]))
                 return r["id"], r["name"], r["type"]
-
-        # 2a'. ห้องประจำชั้นของนักเรียน, ahead of the teacher's own room.
-        #
-        #      Which of the two comes first is the school's decision, not
-        #      ours: "ครูอยู่กับที่ นักเรียนเดินมาหา" and "นักเรียนอยู่กับที่
-        #      ครูเดินไปสอน" are both real ways to run a school, and this one
-        #      runs the second. Set per teacher on their card, otherwise by
-        #      the school's own setting, which starts on the class's side.
-        #
-        #      Only a REAL ห้องประจำชั้น counts here. A class that has none is
-        #      given an anchor room further down, and an invented room is no
-        #      reason to keep a teacher out of their own.
-        real_home = grp.get("homeroom_room_id")
-        if (real_home and not wants_outdoor and not teacher_room_wins
-                and not room_taken(real_home)):
-            r = r_map.get(real_home)
-            if (r and _room_free_for(r, teacher_id) and not upstairs(r)
-                    and (r["type"] != "outdoor" or may_outdoor)):
-                return real_home, r["name"], r["type"]
 
         # 2a. ห้องของครูคนนี้ — their fixed room, or one the school has written
         #     their name on.
