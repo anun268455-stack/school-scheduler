@@ -26,9 +26,14 @@ export interface SetRow {
   /** 0 = ยังไม่ได้เลือกครู, which is allowed: a เซ็ต is about subjects. */
   teacherId: number;
   weekly:    number;
+  /** ห้องเรียนที่ล็อกไว้สำหรับห้องย่อยนี้ — 0 = ให้ระบบจัดห้องตามปกติ. */
+  roomId?:   number;
 }
 
 export interface SubgroupSet {
+  /** วัน/คาบที่ล็อกไว้ — null = ปล่อยให้ตัวจัดตารางเลือกเอง. */
+  day?:     number | null;
+  period?:  number | null;
   /** parallel_group_key — the thing that actually ties the lessons together. */
   key:      string;
   /** The parent class whose subgroups these are. */
@@ -91,7 +96,12 @@ export function readSets(
     cur.rows.push({
       requirementId: r.id, groupId: r.group_id, subjectId: r.subject_id,
       teacherId: r.teacher_id ?? 0, weekly: r.weekly_count ?? 1,
+      roomId: r.room_id ?? 0,
     });
+    // วัน/คาบที่ล็อกไว้เป็นของทั้งเซ็ต — ทุกแถวเรียนพร้อมกันอยู่แล้ว
+    if (r.pinned_day != null && cur.day == null) {
+      cur.day = r.pinned_day; cur.period = r.pinned_period ?? null;
+    }
     by.set(key, cur);
   }
   return [...by.values()].sort((a, b) => a.name.localeCompare(b.name, "th", { numeric: true }));
@@ -153,13 +163,17 @@ export function setProblems(
  */
 export interface SetPlan {
   create: { group_id: number; subject_id: number; teacher_id: number;
-            weekly_count: number; parallel_group_key: string }[];
+            weekly_count: number; parallel_group_key: string;
+            room_id: number | null;
+            pinned_day: number | null; pinned_period: number | null }[];
   update: { id: number; patch: Partial<LessonRequirement> }[];
   remove: number[];
 }
 
 export function planSetSave(
   key: string, rows: SetRow[], existing: SetRow[],
+  /** วัน/คาบที่ล็อกไว้ทั้งเซ็ต — null = ไม่ล็อก */
+  when?: { day: number | null; period: number | null },
 ): SetPlan {
   const plan: SetPlan = { create: [], update: [], remove: [] };
   const was = new Map(existing.filter((r) => r.requirementId != null)
@@ -174,6 +188,8 @@ export function planSetSave(
         group_id: r.groupId, subject_id: r.subjectId,
         teacher_id: r.teacherId || 0,
         weekly_count: r.weekly, parallel_group_key: key,
+        room_id: r.roomId || null,
+        pinned_day: when?.day ?? null, pinned_period: when?.period ?? null,
       });
       continue;
     }
@@ -183,6 +199,10 @@ export function planSetSave(
     if (old.subjectId !== r.subjectId) patch.subject_id = r.subjectId;
     if (old.teacherId !== r.teacherId) patch.teacher_id = r.teacherId || 0;
     if (old.weekly !== r.weekly) patch.weekly_count = r.weekly;
+    if ((old.roomId ?? 0) !== (r.roomId ?? 0)) patch.room_id = r.roomId || null;
+    if (when) {
+      patch.pinned_day = when.day; patch.pinned_period = when.period;
+    }
     if (Object.keys(patch).length > 0) plan.update.push({ id: r.requirementId!, patch });
   }
 

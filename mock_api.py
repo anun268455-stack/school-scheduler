@@ -2271,6 +2271,19 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if placed >= needed:
                 break
             cells = cells_for(gid)
+            # ล็อควัน/คาบไว้แล้ว — the school has decided when this lesson
+            # happens, so there is nothing to search: the only candidates are
+            # the cells it named. If they are taken, the lesson is reported
+            # rather than quietly moved somewhere else, which is the whole
+            # point of pinning it.
+            pin_day, pin_period = req.get("pinned_day"), req.get("pinned_period")
+            if pin_day is not None and pin_period is not None:
+                cells = [(int(pin_day), int(pin_period))]
+                if duration == 2:
+                    nxt = _next_class_period_for(_level_key(g_map.get(gid)),
+                                                 int(pin_period))
+                    if nxt is not None:
+                        cells.append((int(pin_day), nxt))
             random.shuffle(cells)
             # Teachers still short of their last-period duty get those cells
             # first; a morning subject gets the morning first. Both are only an
@@ -2652,10 +2665,17 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
         placed = 0
         created_here = 0
+        # ล็อกวัน/คาบไว้ทั้งเซ็ต — every row of a เซ็ตห้องย่อย carries the
+        # same pin, because they are one hour by definition. With it set,
+        # there is nothing to search for.
+        pinned = next(((r.get("pinned_day"), r.get("pinned_period")) for r in reqs
+                       if r.get("pinned_day") is not None
+                       and r.get("pinned_period") is not None), None)
         if is_double and needed >= 2:
             pairs = needed // 2
             lead_lvl = _level_key(g_map.get(reqs[0]["group_id"]))
-            cells = double_starts(reqs[0]["group_id"])
+            cells = (double_starts(reqs[0]["group_id"]) if pinned is None
+                     else [(int(pinned[0]), int(pinned[1]))])
             random.shuffle(cells)
             for day, p in cells:
                 if pairs <= 0:
@@ -2671,7 +2691,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # Remaining single periods
         remaining = needed - placed
         if remaining > 0:
-            cells = cells_for(reqs[0]["group_id"])
+            cells = (cells_for(reqs[0]["group_id"]) if pinned is None
+                     else [(int(pinned[0]), int(pinned[1]))])
             random.shuffle(cells)
 
             def already_today(day_: int) -> bool:
@@ -4420,13 +4441,21 @@ def bulk_create_reqs(body: list[dict[str, Any]]):
     created, rejected, updated = [], [], []
     unchanged = 0
     for i, row in enumerate(body):
-        if not row.get("group_id") or not row.get("subject_id") or not row.get("teacher_id"):
-            rejected.append({"row": i, "reason": "ข้อมูลไม่ครบ (ต้องมีห้องเรียน วิชา และครู)"})
+        if not row.get("group_id") or not row.get("subject_id"):
+            rejected.append({"row": i, "reason": "ข้อมูลไม่ครบ (ต้องมีห้องเรียนและวิชา)"})
             continue
+        # ครูเว้นว่างได้. A เซ็ตห้องย่อย is written down before anyone knows
+        # who will teach it, and rejecting those rows meant the เซ็ต saved
+        # nothing at all: the list stayed empty and there was nothing to edit.
+        # The row is kept with no teacher, reported as "ยังไม่ได้เลือกครู",
+        # and never placed until one is chosen.
+        row["teacher_id"] = row.get("teacher_id") or 0
         missing = [label for label, val, pool in
                    (("ห้องเรียน", row["group_id"], gids),
-                    ("วิชา", row["subject_id"], sids),
-                    ("ครู", row["teacher_id"], tids)) if val not in pool]
+                    ("วิชา", row["subject_id"], sids))
+                   if val not in pool]
+        if row["teacher_id"] and row["teacher_id"] not in tids:
+            missing.append("ครู")
         if missing:
             rejected.append({"row": i, "reason": f"ไม่พบ{'/'.join(missing)}ที่อ้างถึง"})
             continue

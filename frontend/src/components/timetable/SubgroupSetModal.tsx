@@ -10,20 +10,22 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import { ModalShell } from "../common/ModalShell";
-import { SearchableSelect, subjectOptions, teacherOptions } from "../common/SearchableSelect";
+import { SearchableSelect, subjectOptions, teacherOptions, roomOptions } from "../common/SearchableSelect";
 import { useTimetableStore } from "../../store/timetableStore";
 import * as api from "../../api/client";
 import {
   classesWithSubgroups, subgroupsOf, readSets, makeSetKey, planSetSave, setProblems,
   type SubgroupSet, type SetRow,
 } from "../../utils/subgroupSets";
+import { DAYS, periodLabel } from "../../types";
+import { periodsForLevel, levelKeyOf } from "../../utils/levels";
 import { SubgroupAuditView } from "./SubgroupAuditView";
 import { auditAll } from "../../utils/subgroupAudit";
 
 interface Props { onClose: () => void; initialParentId?: number | null; }
 
 export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
-  const { groups, subjects, teachers, departments, requirements, slots } = useTimetableStore();
+  const { groups, subjects, teachers, departments, requirements, slots, rooms, periods } = useTimetableStore();
 
   const parents = useMemo(() => classesWithSubgroups(groups), [groups]);
   const [parentId, setParentId] = useState<number | null>(
@@ -63,13 +65,26 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
 
   const open = (s: SubgroupSet) => {
     setEditing(s); setName(s.name); setRows(s.rows.map((r) => ({ ...r })));
+    setWhen({ day: s.day ?? null, period: s.period ?? null });
     setErr(null); setNote(null);
   };
   const startNew = () => {
     const n = `เซ็ต ${String.fromCharCode(65 + saved.length)}`;
     setEditing({ key: "", parentId: parentId!, name: n, rows: [] });
-    setName(n); setRows([]); setErr(null); setNote(null);
+    setName(n); setRows([]); setWhen({ day: null, period: null });
+    setErr(null); setNote(null);
   };
+
+  /** คาบเรียนของชั้นนี้ — ม.ต้น กับ ม.ปลาย พักคนละคาบ */
+  const classPeriods = useMemo(() => {
+    const parent = groups.flatMap((g) => [g, ...(g.children ?? [])])
+      .find((g) => g.id === parentId);
+    return periodsForLevel(periods, levelKeyOf(parent)).filter((p) => p.type === "class");
+  }, [periods, groups, parentId]);
+
+  // ล็อกวัน/คาบของทั้งเซ็ต — ทุกแถวเรียนพร้อมกันอยู่แล้ว จึงเป็นค่าเดียว
+  const [when, setWhen] = useState<{ day: number | null; period: number | null }>(
+    { day: null, period: null });
 
   /** One subgroup's row in the set being edited, or undefined if it is out. */
   const rowFor = (gid: number) => rows.find((r) => r.groupId === gid);
@@ -91,7 +106,7 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
     setBusy(true); setErr(null); setNote(null);
     try {
       const key = makeSetKey(parentId, name);
-      const plan = planSetSave(key, rows, editing.rows);
+      const plan = planSetSave(key, rows, editing.rows, when);
       // Renaming moves every row to the new key, which the plan does not know
       // about — so a changed name re-stamps the rows that stayed.
       const renamed = editing.key && editing.key !== key;
@@ -213,6 +228,38 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
               </span>
             </div>
 
+            {/* ล็อกวัน/คาบของทั้งเซ็ต — ไม่เลือก = ให้ระบบหาคาบให้เอง */}
+            <div className="flex flex-wrap items-center gap-2 mb-2 rounded-lg border border-indigo-200 bg-indigo-50/60 px-2.5 py-2">
+              <span className="text-xs font-semibold text-gray-600">ล็อกเวลา</span>
+              <select value={when.day ?? ""} disabled={busy}
+                onChange={(e) => setWhen((w) => ({
+                  ...w, day: e.target.value === "" ? null : Number(e.target.value) }))}
+                className="border border-gray-300 rounded px-2 py-1 text-sm bg-white">
+                <option value="">– วันไหนก็ได้ –</option>
+                {DAYS.map((d, i) => <option key={i} value={i}>{d}</option>)}
+              </select>
+              <select value={when.period ?? ""} disabled={busy}
+                onChange={(e) => setWhen((w) => ({
+                  ...w, period: e.target.value === "" ? null : Number(e.target.value) }))}
+                className="border border-gray-300 rounded px-2 py-1 text-sm bg-white">
+                <option value="">– คาบไหนก็ได้ –</option>
+                {classPeriods.map((p) => (
+                  <option key={p.period_num} value={p.period_num}>
+                    {periodLabel(p.period_num, periods)}
+                  </option>
+                ))}
+              </select>
+              {(when.day != null) !== (when.period != null) && (
+                <span className="text-[11px] text-amber-700">
+                  เลือกทั้งวันและคาบจึงจะล็อกได้ · เลือกอย่างเดียวจะยังไม่ล็อก
+                </span>
+              )}
+              <span className="text-[11px] text-gray-500">
+                ไม่เลือก = ให้ระบบหาคาบที่ว่างให้เอง · ล็อกแล้วจะไม่ถูกย้าย
+                ถ้าคาบนั้นไม่ว่างจะขึ้นในรายการคาบที่ลงไม่ได้
+              </span>
+            </div>
+
             <div className="grid gap-2" style={{
               gridTemplateColumns: `repeat(${Math.min(subs.length || 1, 3)}, minmax(0, 1fr))`,
             }}>
@@ -248,6 +295,12 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                             onChange={(e) => setRowFor(g.id, { weekly: Number(e.target.value) })}
                             className="border border-gray-300 rounded px-1.5 py-1 text-sm w-16" />
                         </label>
+                        {/* ห้องเรียนของห้องย่อยนี้ — เว้นว่าง = จัดห้องตามปกติ */}
+                        <SearchableSelect
+                          value={row.roomId ? String(row.roomId) : ""}
+                          onChange={(v) => setRowFor(g.id, { roomId: Number(v) || 0 })}
+                          options={roomOptions(rooms)}
+                          emptyLabel="– ห้องเรียน (ไม่ล็อกก็ได้) –" />
                       </div>
                     ) : (
                       <button onClick={() => setRowFor(g.id, {})}
