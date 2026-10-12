@@ -1224,7 +1224,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     def find_room(teacher_id: int, day: int, period: int, subject_id: int | None = None,
                   group_id: int | None = None, also_period: int | None = None,
-                  allow_out_override: bool | None = None):
+                  allow_out_override: bool | None = None,
+                  pinned_room_id: int | None = None):
         """Pick a room, minimising how far students/teachers must walk.
 
         Priority:
@@ -1344,6 +1345,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if r["type"] == "outdoor" and not may_outdoor:
                 return False
             return True
+
+        # ห้องที่โรงเรียนกำหนดไว้เองสำหรับคาบนี้. Nothing outranks it — the
+        # school has already answered the question this function exists to
+        # ask. If it is busy at this hour the cell is left for another time,
+        # the same way ต้องเรียนที่ห้องประจำวิชา behaves.
+        if pinned_room_id:
+            r = r_map.get(pinned_room_id)
+            if r and not room_taken(pinned_room_id):
+                return pinned_room_id, r["name"], r["type"]
+            return None, None, None
 
         # 0. "เรียนที่ห้องของนักเรียน" — แนะแนว, โฮมรูม, anything where the
         #    teacher walks to the class. Ahead of everything, including the
@@ -1605,7 +1616,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             req["teacher_id"], day, period, req["subject_id"], req["group_id"],
             also_period,
             _may_use_outdoor(s_map.get(req["subject_id"]), req,
-                             g_map.get(req["group_id"])))
+                             g_map.get(req["group_id"])),
+            # ห้องที่โรงเรียนกำหนดไว้เองสำหรับคาบนี้ของห้องนี้ — above every
+            # rule, because it is not a rule, it is an answer. One subject
+            # taught by six teachers in four rooms cannot be written as a
+            # single ห้องประจำวิชา, so the school writes it out class by class.
+            req.get("room_id"))
         if rid:                       # so the next cell knows where they are
             teacher_room[(req["teacher_id"], day, period)] = rid
         subj    = s_map.get(req["subject_id"], {})

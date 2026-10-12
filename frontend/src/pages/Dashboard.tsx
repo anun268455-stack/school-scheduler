@@ -22,6 +22,7 @@ import { clashesByRequirement } from "../utils/teachingConflicts";
 import { findSubjectDuplicates } from "../utils/duplicateCheck";
 import { indexRequirements, partnerOf, mismatchedPairs, autoPairable, coTeachingPairs } from "../utils/coTeaching";
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
+import { SubjectRoomsModal } from "../components/timetable/SubjectRoomsModal";
 import { SubgroupSetModal } from "../components/timetable/SubgroupSetModal";
 import { auditAll } from "../utils/subgroupAudit";
 import { groupElectiveSlots } from "../utils/electiveGroups";
@@ -667,6 +668,7 @@ const SubjectsPanel: React.FC = () => {
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [assigning, setAssigning] = useState<number | null>(null);
   const [electiveFor, setElectiveFor] = useState<number | null>(null);
+  const [roomsFor, setRoomsFor] = useState<number | null>(null);
   const [rowMenu, setRowMenu] = useState<number | null>(null);
   /** Where the ⋯ menu sits on screen, measured from its button when opened. */
   const [menuAt, setMenuAt] = useState<{ top?: number; bottom?: number; right: number }>({ top: 0, right: 0 });
@@ -685,6 +687,9 @@ const SubjectsPanel: React.FC = () => {
   // How many classes each subject is already assigned to.
   const classCount = (subjectId: number) =>
     requirements.filter((r) => r.subject_id === subjectId).length;
+  /** How many of those classes have a room written out for them by hand. */
+  const perClassRooms = (subjectId: number) =>
+    requirements.filter((r) => r.subject_id === subjectId && r.room_id).length;
   const assigningSubject = assigning != null ? subjects.find((s) => s.id === assigning) ?? null : null;
 
   const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : null;
@@ -985,6 +990,18 @@ const SubjectsPanel: React.FC = () => {
                         {roomName(s.fixed_room_id)
                           ? <span className="bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded">🏟 {roomName(s.fixed_room_id)}</span>
                           : <span className="text-gray-400">–</span>}
+                        {/* One room per subject stopped being enough once a
+                            subject had six teachers in four rooms. This opens
+                            the list and lets the school write it out class by
+                            class. */}
+                        <button onClick={() => setRoomsFor(s.id)}
+                          title="กำหนดเองว่าห้องเรียนไหนเรียนวิชานี้ที่ห้องอะไร"
+                          className="px-1.5 py-0.5 rounded border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 whitespace-nowrap">
+                          🚪 รายห้อง
+                          {perClassRooms(s.id) > 0 && (
+                            <span className="ml-1 text-[10px] bg-sky-600 text-white px-1 rounded-full">{perClassRooms(s.id)}</span>
+                          )}
+                        </button>
                         {s.room_rule === "subject" && (
                           <span title="ต้องเรียนที่ห้องประจำวิชาเท่านั้น ถ้าไม่ว่างจะรอคาบอื่น"
                             className="bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.5 rounded">เท่านั้น</span>
@@ -1103,6 +1120,10 @@ const SubjectsPanel: React.FC = () => {
       )}
       {assigningSubject && (
         <SubjectAssignModal subject={assigningSubject} onClose={() => setAssigning(null)} />
+      )}
+      {roomsFor != null && subjects.find((x) => x.id === roomsFor) && (
+        <SubjectRoomsModal subject={subjects.find((x) => x.id === roomsFor)!}
+          onClose={() => setRoomsFor(null)} />
       )}
     </Section>
   );
