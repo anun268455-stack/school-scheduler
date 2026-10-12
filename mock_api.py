@@ -843,6 +843,187 @@ def _excluded_requirement_ids(body: dict[str, Any]) -> set[int]:
     return ids
 
 
+# ── คาบที่ลงไม่ได้ ───────────────────────────────────────────────────────────
+#
+# "ไม่สามารถจัด ค32205 ครบ 3 คาบ (จัดได้ 1/3)" says what happened and nothing
+# about why, so the only way forward was to guess: cut a period, add a teacher,
+# unlock something, run it again. The answer is knowable — every cell of that
+# class's week was rejected for a reason, and the reasons can be counted.
+#
+# So for each lesson that did not fit, this walks the week cell by cell and
+# reports what stood in the way, how often, and which of the class's existing
+# lessons could move outdoors to free a room. The school reads it and decides.
+
+def _cell_blocker(req: dict[str, Any], day: int, period: int,
+                  *, shares, by_cell_group, by_teacher) -> tuple[str, str]:
+    """Why this lesson cannot go in this cell. ("", "") means it can."""
+    grp = _find_group(req["group_id"]) or {}
+    tid = req["teacher_id"]
+    teach = next((t for t in TEACHERS if t["id"] == tid), None)
+
+    if day in _teacher_prefs(teach)["days_off"]:
+        return "teacher_off", "ครูหยุดวันนี้"
+
+    # The class — or its parent/child, which is the same students.
+    for s in by_cell_group.get((day, period), ()):
+        if shares(s["group_id"], req["group_id"]):
+            label = s.get("subject_code") or s.get("activity_name") or "คาบอื่น"
+            where = _find_group(s["group_id"]) or {}
+            same  = where.get("id") == req["group_id"]
+            return "group_busy", (f"ห้องนี้เรียน {label} อยู่แล้ว" if same
+                                  else f"{where.get('name','ห้องแม่/ห้องลูก')} เรียน {label} อยู่")
+
+    for s in by_teacher.get((tid, day, period), ()):
+        where = _find_group(s["group_id"]) or {}
+        label = s.get("subject_code") or "คาบอื่น"
+        return "teacher_busy", f"ครูสอน {where.get('name','ห้องอื่น')} {label} อยู่"
+
+    # Back-to-back ceiling for this teacher on this day.
+    nums = _class_periods_for_level(_level_key(grp))
+    mine = {p for p in nums if by_teacher.get((tid, day, p))}
+    before = after = 0
+    idx = nums.index(period) if period in nums else -1
+    if idx >= 0:
+        i = idx - 1
+        while i >= 0 and nums[i] in mine:
+            before += 1; i -= 1
+        i = idx + 1
+        while i < len(nums) and nums[i] in mine:
+            after += 1; i += 1
+    run = before + 1 + after
+    if run > _consec_limit(teach):
+        return "consecutive", f"จะทำให้ครูสอนติดกัน {run} คาบ (เพดาน {_consec_limit(teach)})"
+
+    if not _rooms_free_at(req, day, period):
+        return "no_room", "ไม่มีห้องว่างที่วิชานี้ใช้ได้"
+
+    return "", ""
+
+
+def _rooms_free_at(req: dict[str, Any], day: int, period: int) -> list[dict[str, Any]]:
+    """Rooms this lesson could actually use at this hour."""
+    grp  = _find_group(req["group_id"]) or {}
+    subj = next((s for s in SUBJECTS if s["id"] == req["subject_id"]), {}) or {}
+    tid  = req["teacher_id"]
+    bks  = _slot_buckets(grp, period)
+    busy = {s["room_id"] for s in SLOTS
+            if s.get("room_id") and s["day"] == day
+            and _slot_buckets(_find_group(s["group_id"]), s["period"]) & bks}
+    family = {req["group_id"], grp.get("parent_id")} | {
+        (c["id"] if isinstance(c, dict) else c) for c in (grp.get("children") or [])}
+    family.discard(None)
+    want = _subject_rooms(subj)
+    out = []
+    for r in ROOMS:
+        if r["id"] in busy or not _room_usable(r):
+            continue
+        if not _room_allows_group(r, req["group_id"], family):
+            continue
+        if r["id"] in want:
+            out.append(r); continue
+        if _room_reserved_for(r) and not _room_free_for(r, tid):
+            continue
+        if (r.get("specialized_dept_id")
+                and r["specialized_dept_id"] != subj.get("department_id")):
+            continue
+        if r["type"] == "outdoor" and not _may_use_outdoor(subj, req, grp):
+            continue
+        out.append(r)
+    return out
+
+
+@app.get("/api/timetable/unplaced")
+def get_unplaced():
+    """Every lesson the plan asks for and the timetable does not hold."""
+    shares = _shares_students_fn()
+    by_cell_group: dict[tuple, list] = defaultdict(list)
+    by_teacher: dict[tuple, list] = defaultdict(list)
+    for s in SLOTS:
+        by_cell_group[(s["day"], s["period"])].append(s)
+        for t in _slot_teachers(s):
+            by_teacher[(t, s["day"], s["period"])].append(s)
+
+    g_name = {g["id"]: g["name"] for g in _flat_groups()}
+    t_name = {t["id"]: t["name"] for t in TEACHERS}
+    s_map  = {x["id"]: x for x in SUBJECTS}
+    r_name = {r["id"]: r["name"] for r in ROOMS}
+    co_halves, _ = _fold_coteaching(REQUIREMENTS)
+    elective_ids = _elective_subject_ids()
+    served = _reqs_served_by_elective()
+
+    rows = []
+    for req in REQUIREMENTS:
+        want = req.get("weekly_count") or 0
+        if want <= 0 or req["id"] in co_halves or req["id"] in served:
+            continue
+        placed = [s for s in SLOTS
+                  if s["group_id"] == req["group_id"]
+                  and s.get("subject_id") == req["subject_id"]]
+        missing = want - len(placed)
+        if missing <= 0:
+            continue
+
+        grp  = _find_group(req["group_id"]) or {}
+        subj = s_map.get(req["subject_id"], {}) or {}
+        nums = _class_periods_for_level(_level_key(grp))
+        tally: dict[str, int] = defaultdict(int)
+        examples: dict[str, str] = {}
+        free_cells = []
+        for day in range(5):
+            for period in nums:
+                kind, why = _cell_blocker(req, day, period, shares=shares,
+                                          by_cell_group=by_cell_group,
+                                          by_teacher=by_teacher)
+                if not kind:
+                    free_cells.append({"day": day, "period": period})
+                    continue
+                tally[kind] += 1
+                examples.setdefault(kind, why)
+
+        # วิชาที่ห้องนี้เรียนอยู่ และย้ายลงลานได้ — the school is short of
+        # rooms, and this is the list it needs to look at: lessons sitting in
+        # a classroom whose subject nobody has forbidden from going outside.
+        movable = []
+        for s in by_cell_group_all(req["group_id"]):
+            sb = s_map.get(s.get("subject_id") or -1) or {}
+            if not sb or s.get("room_type") == "outdoor":
+                continue
+            if _subject_outdoor(sb) is False:
+                continue
+            movable.append({
+                "slot_id": s["id"], "day": s["day"], "period": s["period"],
+                "subject_id": sb.get("id"), "subject_code": sb.get("code"),
+                "subject_name": sb.get("name"),
+                "room_name": r_name.get(s.get("room_id")),
+                "already_allowed": _may_use_outdoor(sb, None, grp),
+            })
+
+        rows.append({
+            "requirement_id": req["id"],
+            "group_id": req["group_id"], "group_name": g_name.get(req["group_id"]),
+            "subject_id": req["subject_id"], "subject_code": subj.get("code"),
+            "subject_name": subj.get("name"),
+            "teacher_id": req["teacher_id"], "teacher_name": t_name.get(req["teacher_id"]),
+            "wanted": want, "placed": len(placed), "missing": missing,
+            "is_elective": req["subject_id"] in elective_ids,
+            "free_cells": free_cells,
+            "blockers": [{"kind": k, "count": n, "example": examples.get(k, "")}
+                         for k, n in sorted(tally.items(), key=lambda kv: -kv[1])],
+            "movable_outdoor": movable[:12],
+            "week_size": len(nums) * 5,
+        })
+
+    rows.sort(key=lambda r: (-r["missing"], r["group_name"] or ""))
+    return {"unplaced": rows, "total_missing": sum(r["missing"] for r in rows),
+            "last_run": LAST_RUN}
+
+
+def by_cell_group_all(group_id: int) -> list[dict[str, Any]]:
+    """This class's own week, in order."""
+    return sorted((s for s in SLOTS if s["group_id"] == group_id),
+                  key=lambda s: (s["day"], s["period"]))
+
+
 @app.get("/api/timetable/problems")
 def get_requirement_problems():
     probs = _requirement_problems()

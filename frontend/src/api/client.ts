@@ -310,6 +310,39 @@ export const renumberPeriods = () =>
   api.post<{ columns: number; slots_moved: number }>("/periods/renumber", {})
     .then((r) => r.data);
 
+/**
+ * คาบที่ลงไม่ได้ และเหตุผล.
+ *
+ * "ไม่สามารถจัด ค32205 ครบ 3 คาบ" says what happened and nothing about why.
+ * This walks the class's week cell by cell and reports what stood in the way,
+ * how often, and which of its lessons could move outdoors to free a room.
+ */
+export interface UnplacedBlocker {
+  kind: "teacher_off" | "group_busy" | "teacher_busy" | "consecutive" | "no_room";
+  count: number;
+  example: string;
+}
+export interface UnplacedMovable {
+  slot_id: number; day: number; period: number;
+  subject_id: number | null; subject_code: string | null; subject_name: string | null;
+  room_name: string | null; already_allowed: boolean;
+}
+export interface UnplacedRow {
+  requirement_id: number;
+  group_id: number; group_name: string | null;
+  subject_id: number; subject_code: string | null; subject_name: string | null;
+  teacher_id: number; teacher_name: string | null;
+  wanted: number; placed: number; missing: number;
+  is_elective: boolean;
+  free_cells: { day: number; period: number }[];
+  blockers: UnplacedBlocker[];
+  movable_outdoor: UnplacedMovable[];
+  week_size: number;
+}
+export const fetchUnplaced = () =>
+  api.get<{ unplaced: UnplacedRow[]; total_missing: number; last_run: unknown }>(
+    "/timetable/unplaced").then((r) => r.data);
+
 export const fetchStateInfo = () =>
   api.get<{
     revision: number;

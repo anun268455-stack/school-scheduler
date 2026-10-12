@@ -7,6 +7,7 @@ import clsx from "clsx";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
 import { ClearTimetableModal } from "../timetable/ClearTimetableModal";
+import { UnplacedModal } from "./UnplacedModal";
 import type { RequirementProblem, SolverResult } from "../../types";
 
 /** How much of the problem list to leave out of a run. */
@@ -34,6 +35,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   const [problems, setProblems] = useState<RequirementProblem[]>([]);
   const [skipMode, setSkipMode] = useState<SkipMode>("blocking");
   const [showList, setShowList] = useState(false);
+  const [showUnplaced, setShowUnplaced] = useState(false);
   // Rows the user ticked back ON or OFF by hand, overriding the mode.
   const [manual, setManual] = useState<Record<number, boolean>>({});
 
@@ -368,6 +370,14 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
                 <div className="font-semibold">สิ่งที่จัดไม่ได้:</div>
                 {result.violations.map((v, i) => <div key={i}>• {v}</div>)}
                 <div className="mt-1 text-amber-300/80">แนวทางแก้: ลดคาบ/สัปดาห์ เพิ่มครูหรือห้อง หรือปลดล็อกบางคาบ แล้วกดใหม่</div>
+                {/* "ไม่สามารถจัด ค32205 ครบ 3 คาบ" says what happened and
+                    nothing about why. This opens the reasons. */}
+                <button
+                  onClick={() => setShowUnplaced(true)}
+                  className="mt-1.5 w-full px-2 py-1 rounded bg-rose-700/50 border border-rose-500/60 text-rose-100 text-[10px] font-semibold hover:bg-rose-700/70"
+                >
+                  🧩 ดูว่าทำไมลงไม่ได้ และแก้อย่างไร
+                </button>
                 {(result.unplaced_requirement_ids?.length ?? 0) > 0 && (
                   <button
                     onClick={() => {
@@ -445,6 +455,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
           </div>
         )}
         {showClear && <ClearTimetableModal onClose={() => setShowClear(false)} />}
+        {showUnplaced && <UnplacedModal onClose={() => setShowUnplaced(false)} />}
       </div>
     </div>
   );
