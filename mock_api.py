@@ -467,9 +467,18 @@ def _merge_teacherless_rows() -> int:
     doomed: set[int] = set()
     merged = 0
     for rows in by_pair.values():
-        if len(rows) < 2 or all(r.get("teacher_id") for r in rows):
-            # Two rows that both name a teacher are สอนร่วม written from each
-            # side, which _fold_coteaching already understands. Not this.
+        if len(rows) < 2:
+            continue
+        # Two rows naming two DIFFERENT teachers are สอนร่วม written from each
+        # side, or two teachers splitting the week. Left alone — _fold_coteaching
+        # understands those. Rows that agree on the teacher, or say nothing
+        # about one, are the same lesson written twice.
+        if len({r["teacher_id"] for r in rows if r.get("teacher_id")}) > 1:
+            continue
+        # Two different เซ็ต naming the same subject for the same class are two
+        # hours the school arranged separately, not one written twice.
+        if len({r["parallel_group_key"] for r in rows
+                if r.get("parallel_group_key")}) > 1:
             continue
         keeper = (next((r for r in rows if r.get("parallel_group_key")), None)
                   or next((r for r in rows if r.get("teacher_id")), rows[0]))

@@ -242,3 +242,42 @@ export function planSetSave(
   for (const id of was.keys()) if (!keptIds.has(id)) plan.remove.push(id);
   return plan;
 }
+
+/**
+ * ครูของวิชานี้ — looked up the moment a subject is chosen for a subgroup.
+ *
+ * "เมื่อเลือกรหัสวิชานี้แล้วก็ตรวจหาชื่อครูอัตโนมัติให้มาอยู่ในช่องครู ซึ่ง
+ *  ทั้งหมดเป็นการจับคู่คาบ จะไม่มีการสร้างวิชาเพิ่ม"
+ *
+ * A เซ็ต is a statement about WHEN, not a new lesson: the subject is almost
+ * always already on the plan with a teacher against it. Finding that teacher
+ * here means the row saved from this screen matches the row that is already
+ * there, so it is paired with it instead of being written as a second lesson
+ * nobody teaches.
+ *
+ * Two places to look, in order:
+ *   1. this very class's own row for the subject — that IS this lesson, so
+ *      its teacher and its period count come with it;
+ *   2. the subject's teacher elsewhere, but only when the school has one
+ *      answer: a single teacher for it, and not one already taken by another
+ *      subgroup of this set — siblings sit down at the same hour, so one
+ *      teacher cannot have two of them.
+ * Anything less certain is left blank rather than guessed at.
+ */
+export function suggestTeacher(
+  reqs: LessonRequirement[], groupId: number, subjectId: number,
+  usedInSet: number[] = [],
+): { teacherId: number; weekly?: number } | null {
+  if (!groupId || !subjectId) return null;
+
+  const own = reqs.find(
+    (r) => r.group_id === groupId && r.subject_id === subjectId && r.teacher_id);
+  if (own) return { teacherId: own.teacher_id, weekly: own.weekly_count };
+
+  const others = [...new Set(reqs
+    .filter((r) => r.subject_id === subjectId && r.teacher_id)
+    .map((r) => r.teacher_id))];
+  if (others.length !== 1) return null;
+  if (usedInSet.includes(others[0])) return null;
+  return { teacherId: others[0] };
+}

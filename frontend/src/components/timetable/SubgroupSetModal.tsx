@@ -15,6 +15,7 @@ import { useTimetableStore } from "../../store/timetableStore";
 import * as api from "../../api/client";
 import {
   classesWithSubgroups, subgroupsOf, readSets, makeSetKey, planSetSave, setProblems,
+  suggestTeacher,
   type SubgroupSet, type SetRow,
 } from "../../utils/subgroupSets";
 import { DAYS, periodLabel } from "../../types";
@@ -127,6 +128,24 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
       return prev.map((r, i) => (i === at ? { ...r, ...patch } : r));
     });
   const dropRow = (gid: number) => setRows((prev) => prev.filter((r) => r.groupId !== gid));
+
+  /**
+   * เลือกวิชาแล้วไปหาครูของวิชานั้นมาใส่ให้เลย.
+   *
+   * The set is a statement about when, not a new lesson — the subject is
+   * nearly always already on the plan with a teacher against it. Bringing
+   * that teacher (and the period count the school already recorded) in here
+   * is what makes the saved row PAIR with the existing one instead of
+   * becoming a second lesson taught by nobody.
+   */
+  const pickSubject = (gid: number, sid: number) => {
+    const used = rows.filter((r) => r.groupId !== gid)
+      .map((r) => r.teacherId).filter(Boolean);
+    const hit = suggestTeacher(requirements, gid, sid, used);
+    setRowFor(gid, hit
+      ? { subjectId: sid, teacherId: hit.teacherId, ...(hit.weekly ? { weekly: hit.weekly } : {}) }
+      : { subjectId: sid, teacherId: 0 });
+  };
 
   const problems = useMemo(() => setProblems(rows, nameOf), [rows, subs]);
   const canSave = !!editing && rows.length > 0 && problems.length === 0 && !!name.trim() && !busy;
@@ -355,7 +374,7 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                       <div className="space-y-1.5">
                         <SearchableSelect
                           value={row.subjectId ? String(row.subjectId) : ""}
-                          onChange={(v) => setRowFor(g.id, { subjectId: Number(v) })}
+                          onChange={(v) => pickSubject(g.id, Number(v))}
                           options={subjectOptions(subjects)} emptyLabel="– เลือกวิชา –" />
                         <SearchableSelect
                           value={row.teacherId ? String(row.teacherId) : ""}
