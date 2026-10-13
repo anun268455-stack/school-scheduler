@@ -2826,14 +2826,38 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     #
     # Hardest first: the sets choose, then everything else fits around them.
     for pgk, reqs in parallel.items():
-        # Use max weekly_count across all siblings (most conservative)
+        # ── คาบของแต่ละห้องย่อยไม่จำเป็นต้องเท่ากัน ──────────────────────────
+        #
+        # "ห้อง ข ต้องเรียนวิชาหนึ่ง 3 คาบ ซึ่งไม่เหมือนอีกห้องที่ต้องเรียน
+        #  สามวิชาถึงได้ชั่วโมงเท่ากับห้อง ข"
+        #
+        # ม.4/6ข does ค31218 for three periods while ม.4/6ก does ท30214 for
+        # two and fills its third hour with something else entirely. The set
+        # says WHEN they sit down together; it does not say they all study
+        # for the same number of hours.
+        #
+        # Taking the largest count and giving it to everyone — which is what
+        # this did — hands ม.4/6ก a third period of a two-period subject, and
+        # the school then has to go and change the subject's real hours to
+        # make the set stop doing it. So each row owes what its own plan says,
+        # the set runs for as long as the longest of them, and a row that has
+        # had its hours simply sits out the rest.
+        owed = {}
+        for i, r in enumerate(reqs):
+            done = sum(1 for s in SLOTS if s.get("parallel_group_key") == pgk
+                       and s["group_id"] == r["group_id"]
+                       and s.get("subject_id") == r.get("subject_id"))
+            owed[i] = max(0, (r.get("weekly_count") or 0) - done)
         max_weekly = max(r["weekly_count"] for r in reqs)
         already    = sum(1 for s in SLOTS if s.get("parallel_group_key") == pgk) // max(len(reqs), 1)
-        needed     = max(0, max_weekly - already)
+        needed     = max(owed.values()) if owed else 0
         # A เซ็ต marked คาบคู่ is at least one pair: "ศุกร์ คาบ 3-4" written
         # with 1 คาบ/สัปดาห์ means one block of two, not a single period.
-        if already == 0 and needed == 1 and any(r.get("pinned_double") for r in reqs):
-            needed = 2
+        if already == 0 and any(r.get("pinned_double") for r in reqs):
+            for i in owed:
+                if owed[i] == 1:
+                    owed[i] = 2
+            needed = max(owed.values()) if owed else 0
         # If any subject in the block is a double-period subject, place as pairs.
         # คาบคู่: either the subject is always taught in pairs, or this เซ็ต
         # was written down as one — "ศุกร์ คาบ 3-4" is a property of the
@@ -2846,16 +2870,25 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # sibling merge: one teacher taking both halves of a class at once is
         # the whole point of it, and the two halves sit in one room together.
         # Rows still waiting for a teacher are not "the same teacher twice".
-        teacher_ids = [r["teacher_id"] for r in reqs if r.get("teacher_id")]
+        # Two rows with one teacher and ONE subject are that teacher taking the
+        # two subgroups together — the school's "ม.4/6ขค". Only two different
+        # subjects in one hour would actually need them in two places.
+        teacher_subjects = [(r["teacher_id"], r.get("subject_id"))
+                            for r in reqs if r.get("teacher_id")]
+        teacher_ids = [t for t, _s in set(teacher_subjects)]
         if pgk not in merged_keys and len(set(teacher_ids)) < len(teacher_ids):
             violations.append(
                 f"[{pgk}] ครูคนเดียวสอนหลายห้องพร้อมกันไม่ได้ "
                 f"กรุณาตั้งครูคนละคนสำหรับแต่ละห้อง"
             )
 
-        def all_free(periods_to_check):
+        def live_rows(n: int = 1) -> list[dict]:
+            """The rows that still owe at least n more periods of this set."""
+            return [r for i, r in enumerate(reqs) if owed[i] >= n]
+
+        def all_free(periods_to_check, rows=None):
             for day_, per_ in periods_to_check:
-                for r in reqs:
+                for r in (reqs if rows is None else rows):
                     # The period must be a lesson period for THIS class's level
                     # and the teacher free at the matching time of day.
                     lvl = _level_key(g_map.get(r["group_id"]))
@@ -2874,28 +2907,45 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
         merged = pgk in merged_keys
 
-        def place_block(day_, periods_to_fill):
+        def place_block(day_, periods_to_fill, rows=None):
+            # Only the rows that still owe periods take part — the others have
+            # had their hours and sit this one out (see owed above).
+            rows = reqs if rows is None else rows
             # A block of two is one lesson, and each class's two halves have
             # to say so — otherwise the grid draws them as two cards, and
             # anything that moves or clears a cell can take half the lesson
             # away. One key per class, since each sits in its own room.
             dkeys = {r["group_id"]: f"DBL-{_next('slot')}"
-                     for r in reqs} if len(periods_to_fill) > 1 else {}
+                     for r in rows} if len(periods_to_fill) > 1 else {}
+            # ห้องย่อยที่เรียนวิชาเดียวกันกับครูคนเดียวกัน = ห้องเดียวกัน.
+            #
+            # ม.4/6ข and ม.4/6ค both doing ค31218 with ครูศศิกัลป์ are one
+            # roomful, not two: the teacher cannot be in two places, so the
+            # school meant them together. ม.4/6ก, doing a different subject in
+            # the same hour, is beside them in its own room as usual — so this
+            # is decided per pair of (วิชา, ครู), not for the whole set.
+            together = {}
+            for r_ in rows:
+                if r_.get("teacher_id"):
+                    together.setdefault(
+                        (r_.get("subject_id"), r_["teacher_id"]), []).append(r_)
+            shares = {k for k, v in together.items() if len(v) > 1}
             for i, per_ in enumerate(periods_to_fill):
-                # Two halves of one class sit in one room, so the room is
-                # chosen once and the rest follow. Left to itself each half
-                # would find the first room taken by the other and wander off
-                # to a different one.
-                shared_room = None
-                for req in reqs:
+                room_of: dict[tuple, tuple] = {}
+                booked: set[tuple] = set()
+                for req in rows:
                     slot = make_slot(req, day_, per_)
-                    if merged:
-                        if shared_room is None:
-                            shared_room = (slot.get("room_id"), slot.get("room_name"),
-                                           slot.get("room_type"))
+                    pair = (req.get("subject_id"), req.get("teacher_id"))
+                    shared = pair in shares
+                    if shared:
+                        if pair in room_of:
+                            # Same room as the sibling it sits with. Released
+                            # properly, so the room make_slot had picked for
+                            # this one does not stay held by nobody.
+                            hold_room(slot, room_of[pair][0])
                         else:
-                            (slot["room_id"], slot["room_name"],
-                             slot["room_type"]) = shared_room
+                            room_of[pair] = (slot.get("room_id"), slot.get("room_name"),
+                                             slot.get("room_type"))
                     if len(periods_to_fill) > 1:
                         slot["double_group_key"] = dkeys.get(req["group_id"])
                         slot["is_double_start"] = i == 0
@@ -2905,12 +2955,13 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     # One lesson for the teacher however many halves are in
                     # the room: booking them twice counts the same hour twice
                     # against their run of back-to-back periods.
-                    if merged and req is not reqs[0]:
+                    if shared and pair in booked:
                         group_busy.add((req["group_id"], day_, per_))
                         class_period_load[(req["group_id"], per_)] += 1
                     else:
                         book(req["teacher_id"], req["group_id"], day_, per_)
                         book_pair(req, day_, per_)
+                        booked.add(pair)
 
         placed = 0
         created_here = 0
@@ -2929,11 +2980,18 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             for day, p in cells:
                 if pairs <= 0:
                     break
+                rows = live_rows(2)          # a pair costs two of a row's hours
+                if not rows:
+                    break
                 p2 = _next_class_period_for(lead_lvl, p)
-                if p2 is None or not all_free([(day, p), (day, p2)]):
+                if p2 is None or not all_free([(day, p), (day, p2)], rows):
                     continue
-                place_block(day, [p, p2])
-                created_here += 2 * len(reqs)
+                place_block(day, [p, p2], rows)
+                alive = {id(x) for x in rows}
+                for i, r in enumerate(reqs):
+                    if id(r) in alive:
+                        owed[i] -= 2
+                created_here += 2 * len(rows)
                 placed       += 2
                 pairs        -= 1
 
@@ -2946,7 +3004,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
             def already_today(day_: int) -> bool:
                 return any(subj_day[(r["group_id"], r.get("subject_id"), day_)] > 0
-                           for r in reqs)
+                           for r in live_rows())
 
             # Same rule as an ordinary lesson: one period of the subject a day
             # for every class in the block. Tried first with the rule on and
@@ -2956,12 +3014,20 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 for day, period in cells:
                     if remaining <= 0:
                         break
+                    rows = live_rows()
+                    if not rows:
+                        remaining = 0
+                        break
                     if spread and already_today(day):
                         continue
-                    if not all_free([(day, period)]):
+                    if not all_free([(day, period)], rows):
                         continue
-                    place_block(day, [period])
-                    created_here += len(reqs)
+                    place_block(day, [period], rows)
+                    alive = {id(x) for x in rows}
+                    for i, r in enumerate(reqs):
+                        if id(r) in alive:
+                            owed[i] -= 1
+                    created_here += len(rows)
                     placed       += 1
                     remaining    -= 1
                 if remaining <= 0:

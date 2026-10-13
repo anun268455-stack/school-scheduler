@@ -175,15 +175,22 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
       if (plan.create.length > 0) await api.bulkCreateRequirements(plan.create);
       // คาบคู่ที่ติ๊กในเซ็ต ต้องตรงกับที่หน้ารายวิชาบอกด้วย — ไม่งั้นหน้าหนึ่ง
       // บอกว่าเรียนทีละสองคาบ อีกหน้าบอกว่าคาบเดียว และคนอ่านไม่รู้ว่าอันไหนจริง
-      const want = when.double ? 2 : 1;
-      const touched = new Set(rows.map((r) => r.subjectId).filter(Boolean));
-      for (const sid of touched) {
-        const sb = subjects.find((x) => x.id === sid);
-        if (!sb || (sb.duration ?? 1) === want) continue;
-        const updated = await api.updateSubject(sid, { duration: want });
-        useTimetableStore.setState((st) => ({
-          subjects: st.subjects.map((x) => (x.id === sid ? { ...x, ...updated } : x)),
-        }));
+      //
+      // แต่เฉพาะตอนที่ติ๊กนี้ "เปลี่ยน" เท่านั้น. ความยาวคาบเป็นค่าของวิชา
+      // ซึ่งใช้ร่วมกันทุกห้องทั้งโรงเรียน — การเปิดเซ็ตขึ้นมาแก้ชื่อแล้วกด
+      // บันทึก เคยไปตั้งความยาวของทุกวิชาในเซ็ตเป็น 1 คาบให้ทั้งโรงเรียน
+      // ทั้งที่ไม่ได้แตะช่องนั้นเลย
+      if (when.double !== !!editing.double) {
+        const want = when.double ? 2 : 1;
+        const touched = new Set(rows.map((r) => r.subjectId).filter(Boolean));
+        for (const sid of touched) {
+          const sb = subjects.find((x) => x.id === sid);
+          if (!sb || (sb.duration ?? 1) === want) continue;
+          const updated = await api.updateSubject(sid, { duration: want });
+          useTimetableStore.setState((st) => ({
+            subjects: st.subjects.map((x) => (x.id === sid ? { ...x, ...updated } : x)),
+          }));
+        }
       }
       useTimetableStore.setState({ requirements: await api.fetchRequirements() });
       setNote(`บันทึก "${name}" แล้ว — ${rows.length} ห้องย่อยจะเรียนพร้อมกัน`);
@@ -345,6 +352,9 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                 </span>
               )}
               <span className="text-[11px] text-gray-500">
+                แต่ละห้องย่อยใส่คาบจริงของวิชาตัวเองได้เลย ไม่ต้องทำให้เท่ากัน —
+                เซ็ตจับชั่วโมงให้ตรงกันเท่าที่มี ห้องที่คาบน้อยกว่าจะว่างในชั่วโมงที่เหลือ
+                ไปเรียนวิชาอื่นของตัวเอง ·
                 ไม่เลือก = ให้ระบบหาคาบที่ว่างให้เอง · ล็อกแล้วจะไม่ถูกย้าย
                 ถ้าคาบนั้นไม่ว่างจะขึ้นในรายการคาบที่ลงไม่ได้ ·
                 ติ๊กคาบคู่จะไปตั้ง “ความยาว = 2 คาบ” ให้วิชาในเซ็ตนี้ที่หน้ารายวิชาด้วย
@@ -395,6 +405,7 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                           คาบ/สัปดาห์
                           <input type="number" min={1} max={20} value={row.weekly}
                             onChange={(e) => setRowFor(g.id, { weekly: Number(e.target.value) })}
+                            title="คาบจริงของวิชานี้สำหรับห้องนี้ — ไม่ต้องทำให้เท่ากับห้องอื่น"
                             className="border border-gray-300 rounded px-1.5 py-1 text-sm w-16" />
                         </label>
                         {/* ห้องเรียนของห้องย่อยนี้ — เว้นว่าง = จัดห้องตามปกติ */}
@@ -444,7 +455,7 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-gray-800">{s.name}</span>
                   <span className="text-[11px] text-gray-500">
-                    {s.rows.length} ห้องย่อย · {s.rows[0]?.weekly ?? 1} คาบ/สัปดาห์
+                    {s.rows.length} ห้องย่อย · {Math.max(...s.rows.map((r) => r.weekly ?? 1), 1)} คาบ/สัปดาห์
                   </span>
                   <span className="ml-auto flex gap-1">
                     <button onClick={() => open(s)}
