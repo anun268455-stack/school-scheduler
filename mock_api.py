@@ -2602,12 +2602,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     def place_single(req, gid, tid, needed):
         """Place up to `needed` single periods; returns how many placed.
 
-        Tried in four passes, each loosening what we will settle for:
+        Tried in six passes, each loosening what we will settle for:
           1. the teacher's own preferences AND a short run away from lunch
           2. preferences honoured, run still short, lunch allowed
           3. preferences honoured, up to the teacher's hard ceiling
           4. preferences dropped — better a lesson placed than a lesson lost
-          5. the same-hour limits dropped too, as the very last thing tried
+          5. the same-hour limits dropped, but still one period of a subject
+             a day
+          6. that last rule dropped too, as the very last thing tried
         A lesson that cannot be placed even then is reported, rather than
         stacking a teacher up to seven periods in a row as it used to.
 
@@ -2616,6 +2618,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         that cannot be lifted turns "this teacher's week is lopsided" into
         "this class never gets the subject". Lopsided is the lesser harm, so
         it is tried only once everything else has failed.
+
+        Pass 6 is the same argument one step further, and the order of those
+        last two matters: a teacher taking the same hour four days running is
+        a worse week for one person, but a class sitting through อ22102 twice
+        in one Tuesday is a worse DAY for forty of them. So the teacher's
+        spread gives way first, and the one-a-day rule is the very last thing
+        this gives up — which took the school's repeated subjects from 42 a
+        week to single figures.
         """
         hard = _consec_limit(t_map.get(tid), consec_hard)
         prefs = _teacher_prefs(t_map.get(tid))
@@ -2628,7 +2638,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             duration = 2            # this lesson is a pair, whatever the subject is
             needed = max(needed, 2)         # …and a pair is two periods
         placed = 0
-        for attempt in range(5):
+        for attempt in range(6):
             if placed >= needed:
                 break
             cells = cells_for(gid)
@@ -2749,13 +2759,21 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     if attempt == 0 and run > consec_soft:
                         continue
 
-                    # One period of a subject per day, unless it is a คาบคู่ —
-                    # a class should not sit through the same subject twice in
-                    # a day. Held for the first three passes and released on
-                    # the last, because a subject needing more periods a week
-                    # than there are days has no other way to fit, and a lesson
-                    # placed twice in a day still beats one not placed at all.
-                    if (attempt < 3 and duration == 1
+                    # หนึ่งรหัสวิชา หนึ่งครั้งต่อวัน — a class should not sit
+                    # through the same subject twice in one day.
+                    #
+                    # Held to the very last pass now, and held for every
+                    # lesson, not only the single-period ones. The old rule
+                    # let go at pass 4 of 5 and skipped anything whose subject
+                    # is taught in pairs, which is how ม.4/10ก came out with
+                    # ย31206 twice on a Tuesday: the leftover periods of a
+                    # คาบคู่ subject were never asked the question at all.
+                    #
+                    # Released only on the final pass, because a subject with
+                    # more periods a week than there are days has no other way
+                    # to fit, and a lesson placed twice in a day still beats a
+                    # lesson not placed at all.
+                    if (attempt < 5
                             and subj_day[(gid, req.get("subject_id"), day)] > 0):
                         continue
 
@@ -2977,23 +2995,34 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             cells = (double_starts(reqs[0]["group_id"]) if pinned is None
                      else [(int(pinned[0]), int(pinned[1]))])
             random.shuffle(cells)
-            for day, p in cells:
+            # หนึ่งรหัสวิชา หนึ่งครั้งต่อวัน, here too. This loop never asked,
+            # so a เซ็ต of two คาบคู่ could put both of them on one day —
+            # ม.4/10ก sat through ย31206 for four periods of one Tuesday.
+            # Tried first with the rule on, then again without, so a set that
+            # genuinely cannot spread any further is still placed.
+            for spread in (True, False):
                 if pairs <= 0:
                     break
-                rows = live_rows(2)          # a pair costs two of a row's hours
-                if not rows:
-                    break
-                p2 = _next_class_period_for(lead_lvl, p)
-                if p2 is None or not all_free([(day, p), (day, p2)], rows):
-                    continue
-                place_block(day, [p, p2], rows)
-                alive = {id(x) for x in rows}
-                for i, r in enumerate(reqs):
-                    if id(r) in alive:
-                        owed[i] -= 2
-                created_here += 2 * len(rows)
-                placed       += 2
-                pairs        -= 1
+                for day, p in cells:
+                    if pairs <= 0:
+                        break
+                    rows = live_rows(2)      # a pair costs two of a row's hours
+                    if not rows:
+                        break
+                    if spread and any(subj_day[(r["group_id"], r.get("subject_id"), day)] > 0
+                                      for r in rows):
+                        continue
+                    p2 = _next_class_period_for(lead_lvl, p)
+                    if p2 is None or not all_free([(day, p), (day, p2)], rows):
+                        continue
+                    place_block(day, [p, p2], rows)
+                    alive = {id(x) for x in rows}
+                    for i, r in enumerate(reqs):
+                        if id(r) in alive:
+                            owed[i] -= 2
+                    created_here += 2 * len(rows)
+                    placed       += 2
+                    pairs        -= 1
 
         # Remaining single periods
         remaining = needed - placed
@@ -3127,7 +3156,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     # stopping it — the one-a-day rule was only ever applied
                     # to single periods.
                     if attempt < 2 and subj_day[(gid, req.get("subject_id"), day)] > 0:
-                        continue
+                        continue      # สองคาบคู่ของวิชาเดียวกัน คนละวัน
                     # วันที่ไม่สอน, here too: the double loop never asked, so a
                     # teacher's day off could be filled by a คาบคู่ whatever
                     # the single-period rules said.
@@ -3239,6 +3268,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     def swappable(x: dict) -> bool:
         return (not x.get("is_locked") and not x.get("is_elective")
                 and not x.get("parallel_group_key")
+                # A คาบคู่ is one lesson two periods long. Moving half of it
+                # leaves the class packing up in the middle of its own double
+                # — the "คาบคู่เหลือครึ่งเดียว" the school has reported before.
+                # Both halves would have to travel together, and no pass here
+                # does that, so neither touches one.
+                and not x.get("double_group_key")
                 and x.get("co_teacher_id") is None
                 and not x.get("activity_teacher_ids"))
 
@@ -3328,6 +3363,98 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     break
                 rebook(tid, gid, a_day, a_period, a_room)
                 rebook(oid, gid, day, target, b_room)
+
+    # ── วิชาเดียวกันซ้ำวันเดียวกัน: ย้ายไปวันอื่น ────────────────────────────
+    #
+    # "ไม่ให้รหัสเดียวเรียนในวันเดียวกัน"
+    #
+    # The placement rules hold this as hard as they can, but a lesson placed
+    # near the end has only the cells nobody else wanted, and sometimes every
+    # one of them is on a day the class already has that subject. By then the
+    # week is full and there is nothing more the placer can do about it.
+    #
+    # Afterwards there is: the rest of the week has been arranged, so a cell
+    # on another day may well have come free. This looks at every subject a
+    # class has twice in one day and tries to move the second one — first to
+    # a free cell on a day the subject is not on yet, then by trading places
+    # with one of the class's own lessons from such a day. Nothing is created
+    # or lost; a lesson changes cell, and only if every rule still holds there.
+    dup_moved = 0
+    dup_swapped = 0
+
+    def day_of_subject(gid: int, sid: int) -> set[int]:
+        return {x["day"] for x in SLOTS
+                if x["group_id"] == gid and x.get("subject_id") == sid}
+
+    def lift(x: dict) -> None:
+        unbook(x["teacher_id"], x["group_id"], x["day"], x["period"], x.get("room_id"))
+        note_subject(x["group_id"], x.get("subject_id"), x["day"], -1)
+
+    def drop(x: dict, day: int, period: int) -> None:
+        reseat(x, day, period)
+        note_subject(x["group_id"], x.get("subject_id"), day)
+
+    repeats: dict[tuple, list] = defaultdict(list)
+    for x in SLOTS:
+        if x.get("subject_id") is not None and swappable(x):
+            repeats[(x["group_id"], x["subject_id"], x["day"])].append(x)
+    for (gid, sid, day), group in sorted(repeats.items(), key=lambda kv: kv[0][:2]):
+        if len(group) < 2:
+            continue
+        lvl = _level_key(g_map.get(gid))
+        nums = _class_periods_for_level(lvl)
+        for x in group[1:]:
+            teacher = t_map.get(x["teacher_id"])
+            if not teacher:
+                continue
+            used = day_of_subject(gid, sid)
+            home_day, home_period = x["day"], x["period"]
+            lift(x)
+            moved = False
+            # 1. a free cell on a day this class does not have the subject
+            cells = [(d, p) for d in range(5) for p in nums if d not in used]
+            random.shuffle(cells)
+            for d, pr in cells:
+                if group_occupied(gid, d, pr) or not can_take(teacher, gid, d, pr):
+                    continue
+                drop(x, d, pr)
+                dup_moved += 1
+                moved = True
+                break
+            if moved:
+                continue
+            # 2. trade with one of the class's own lessons on such a day
+            others = [y for y in SLOTS
+                      if y["group_id"] == gid and y is not x and swappable(y)
+                      and y["day"] not in used
+                      and y.get("subject_id") != sid]
+            random.shuffle(others)
+            for y in others:
+                y_teacher = t_map.get(y["teacher_id"])
+                if not y_teacher:
+                    continue
+                d, pr = y["day"], y["period"]
+                lift(y)
+                # The two must be able to stand in each other's cell, and the
+                # lesson coming back must not itself land on a day its class
+                # already studies that subject — one repeat traded for another
+                # is no trade at all.
+                if (can_take(teacher, gid, d, pr)
+                        and can_take(y_teacher, gid, home_day, home_period)
+                        and subj_day[(gid, y.get("subject_id"), home_day)] == 0):
+                    drop(x, d, pr)
+                    drop(y, home_day, home_period)
+                    dup_swapped += 1
+                    moved = True
+                    break
+                drop(y, d, pr)          # put it back, try the next one
+            if not moved:
+                drop(x, home_day, home_period)   # nothing better — leave it
+    if dup_moved or dup_swapped:
+        notes.append(
+            f"ย้ายวิชาที่ซ้ำวันเดียวกันออกไปวันอื่น {dup_moved + dup_swapped} คาบ"
+            f"{f' (สลับที่กับคาบอื่น {dup_swapped})' if dup_swapped else ''}"
+        )
 
     # ── คาบที่ลงแล้วแต่ไม่มีห้อง: ขยับห้องให้เหมือนกัน ────────────────────────
     #
