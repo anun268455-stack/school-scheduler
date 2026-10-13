@@ -149,7 +149,13 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
                : names.join(" + "))
           : (slot.is_elective && slot.elective_options?.length
                 ? `${slot.elective_options.length} ตัวเลือก`
-                : null)}
+                /* A เซ็ตห้องย่อย may be written down before anyone knows who
+                   will teach it — the hour is the point. The lesson is placed
+                   and the cell says what is still missing, rather than showing
+                   a blank line that reads like a bug. */
+                : (!slot.is_activity_block
+                     ? <span className="text-amber-700">ยังไม่ได้เลือกครู</span>
+                     : null))}
       </div>
       {/* On a teacher's own timetable a คาบกิจกรรม belongs to many classrooms
           at once, so the cell says the scope rather than one of them. */}

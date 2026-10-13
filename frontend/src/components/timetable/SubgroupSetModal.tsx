@@ -114,7 +114,11 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
     setBusy(true); setErr(null); setNote(null);
     try {
       const key = makeSetKey(parentId, name);
-      const plan = planSetSave(key, rows, editing.rows, when);
+      // แถวเดิมที่ไม่ได้อยู่ในเซ็ตไหนเลย — ดึงเข้าเซ็ตแทนที่จะสร้างแถวใหม่ซ้ำ
+      const plain = requirements
+        .filter((r) => !r.parallel_group_key)
+        .map((r) => ({ id: r.id, groupId: r.group_id, subjectId: r.subject_id }));
+      const plan = planSetSave(key, rows, editing.rows, when, plain);
       // Renaming moves every row to the new key, which the plan does not know
       // about — so a changed name re-stamps the rows that stayed.
       const renamed = editing.key && editing.key !== key;
@@ -278,8 +282,14 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                   checked={when.double} disabled={busy}
                   onChange={(e) => setWhen((w) => ({ ...w, double: e.target.checked }))} />
                 🔗 คาบคู่
+                {/* The school's own labels, not the raw period numbers. This
+                    school calls period 4 "คาบ 3" because the morning break has
+                    a number of its own, so "(คาบ 4–5)" beside a dropdown
+                    reading "คาบ 3" looked like the set had moved itself. */}
                 {when.double && when.period != null && secondPeriod != null && (
-                  <span className="text-gray-500">(คาบ {when.period}–{secondPeriod})</span>
+                  <span className="text-gray-500">
+                    ({periodLabel(when.period, periods)}–{periodLabel(secondPeriod, periods)})
+                  </span>
                 )}
                 {when.double && when.period != null && secondPeriod == null && (
                   <span className="text-amber-700">— คาบนี้เป็นคาบสุดท้าย ต่อคาบคู่ไม่ได้</span>

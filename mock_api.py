@@ -367,9 +367,12 @@ def _slot_teachers(slot: dict[str, Any]) -> set[int]:
     missed by whichever one was forgotten.
     """
     out: set[int] = set()
-    if slot.get("teacher_id") is not None:
+    # 0 means ยังไม่ได้เลือกครู, not a teacher. Counted as one, every lesson
+    # still waiting for a teacher would be "the same person" and they could
+    # never share an hour.
+    if slot.get("teacher_id"):
         out.add(slot["teacher_id"])
-    if slot.get("co_teacher_id") is not None:
+    if slot.get("co_teacher_id"):
         out.add(slot["co_teacher_id"])
     # ครูผู้ดูแลคาบกิจกรรม — ลูกเสือ, เนตรนารี, ชุมนุม. The roster belongs to
     # the activity, not to one classroom, so the same names sit on every slot
@@ -941,11 +944,33 @@ def _excluded_requirement_ids(body: dict[str, Any]) -> set[int]:
     # Already taught in a คาบเสรี — placing it again is a second lesson of a
     # subject the class takes once, with the teacher booked twice for it.
     ids |= _reqs_served_by_elective()
-    # ยังไม่ได้เลือกครู. A เซ็ตห้องย่อย can be written down before anyone
-    # knows who will teach it, and the row is kept — but a lesson with nobody
-    # in the room is not a lesson, so it is never placed, whatever the run was
-    # told to skip. It is reported instead, which is how it gets a teacher.
-    ids |= {r["id"] for r in REQUIREMENTS if not r.get("teacher_id")}
+    # ยังไม่ได้เลือกครู.
+    #
+    # A plain row with no teacher is not a lesson — nothing says when it
+    # happens or who is in the room — so it is reported rather than placed.
+    #
+    # A row in a เซ็ตห้องย่อย is different, and the set screen says so on the
+    # field itself ("ครู (เว้นว่างได้)"). The point of a set is the HOUR: ก and
+    # ข sit down at the same time, whoever ends up teaching them. Skipping
+    # those rows meant a set saved without teachers placed nothing at all —
+    # the subgroups' own ordinary lessons were then scheduled independently
+    # and the school saw exactly what it did not ask for: "วิชาที่ทำเป็นเซ็ต
+    # มาแค่วิชาเดี่ยวเอง". So they are placed, with no teacher booked.
+    ids |= {r["id"] for r in REQUIREMENTS
+            if not r.get("teacher_id") and not r.get("parallel_group_key")}
+    # วิชาเดียวกันเขียนไว้สองที่: in a เซ็ตห้องย่อย and as an ordinary row for
+    # the same class. It is one lesson, not two — the class does not sit
+    # through ว32290 twice — and the set is the more specific statement of
+    # when it happens. So the plain row gives way.
+    #
+    # This is how a set could place nothing and the school still see both
+    # subjects in the grid: the ordinary rows were being scheduled on their
+    # own, separately, which is exactly what the set exists to prevent.
+    in_a_set = {(r["group_id"], r["subject_id"]) for r in REQUIREMENTS
+                if r.get("parallel_group_key")}
+    ids |= {r["id"] for r in REQUIREMENTS
+            if not r.get("parallel_group_key")
+            and (r["group_id"], r["subject_id"]) in in_a_set}
     return ids
 
 
@@ -1094,7 +1119,7 @@ def _unplaced_report(limit: int = 80) -> dict[str, Any]:
         if not grp:
             tally["no_group"] = len(nums) * 5
             examples["no_group"] = f"ไม่มีห้องเรียนรหัส {req['group_id']} ในระบบแล้ว"
-        elif not req.get("teacher_id"):
+        elif not req.get("teacher_id") and not req.get("parallel_group_key"):
             tally["no_teacher"] = len(nums) * 5
             examples["no_teacher"] = "ยังไม่ได้เลือกครูผู้สอน"
         else:
@@ -2270,6 +2295,11 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     class_period_set = set(class_periods)
     def teacher_free(tid, day, gid, period) -> bool:
+        # ยังไม่ได้เลือกครู (tid 0). Nobody is booked, so nobody can clash — and
+        # two such lessons must not be treated as "the same teacher" and kept
+        # apart, which is what happened while 0 was handled like a real id.
+        if not tid:
+            return True
         return not any((tid, day, b) in teacher_busy for b in cell_buckets(gid, period))
 
     def home_free(req: dict, day: int, period: int) -> bool:
@@ -2399,13 +2429,16 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         return 0 if (cut is not None and period <= cut) else 1
 
     def book(tid, gid, day, period) -> None:
+        # The class is always booked; the teacher only when there is one.
+        group_busy.add((gid, day, period))
+        class_period_load[(gid, period)] += 1
+        if not tid:
+            return
         for b in cell_buckets(gid, period):
             teacher_busy.add((tid, day, b))
         sp = span_of(gid, period)
         if sp:
             teacher_spans[(tid, day)].append(sp)
-        group_busy.add((gid, day, period))
-        class_period_load[(gid, period)] += 1
         teacher_half[(tid, _half(gid, period))] += 1
         teacher_period[(tid, period)] += 1
         teacher_day[(tid, day)] += 1
@@ -2720,7 +2753,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # Detect same-teacher assignment (warn but still try). Not for a
         # sibling merge: one teacher taking both halves of a class at once is
         # the whole point of it, and the two halves sit in one room together.
-        teacher_ids = [r["teacher_id"] for r in reqs]
+        # Rows still waiting for a teacher are not "the same teacher twice".
+        teacher_ids = [r["teacher_id"] for r in reqs if r.get("teacher_id")]
         if pgk not in merged_keys and len(set(teacher_ids)) < len(teacher_ids):
             violations.append(
                 f"[{pgk}] ครูคนเดียวสอนหลายห้องพร้อมกันไม่ได้ "

@@ -178,16 +178,43 @@ export function planSetSave(
   key: string, rows: SetRow[], existing: SetRow[],
   /** วัน/คาบที่ล็อกไว้ทั้งเซ็ต — null = ไม่ล็อก */
   when?: { day: number | null; period: number | null; double?: boolean },
+  /**
+   * แถวเดิมของวิชานี้ที่ไม่ได้อยู่ในเซ็ต — rows the class already had for the
+   * same subject, written the ordinary way.
+   *
+   * Without this the set adds a SECOND row for the same class and subject, and
+   * the class is then down to study it twice: once at the set's hour and once
+   * wherever the ordinary row lands. That is what the school saw — the set's
+   * subjects turning up on their own, apart from each other. The existing row
+   * is pulled into the set instead of a new one being made, so the hours the
+   * school already recorded, and anything else attached to that row, survive.
+   */
+  plain?: { id: number; groupId: number; subjectId: number }[],
 ): SetPlan {
   const plan: SetPlan = { create: [], update: [], remove: [] };
   const was = new Map(existing.filter((r) => r.requirementId != null)
     .map((r) => [r.requirementId!, r]));
   const keptIds = new Set<number>();
+  const taken = new Set<number>();
 
   for (const r of rows) {
     if (!r.groupId || !r.subjectId) continue;        // ครูเว้นว่างได้
     const old = r.requirementId != null ? was.get(r.requirementId) : undefined;
     if (!old) {
+      const same = (plain ?? []).find(
+        (p) => p.groupId === r.groupId && p.subjectId === r.subjectId && !taken.has(p.id));
+      if (same) {
+        taken.add(same.id);
+        plan.update.push({ id: same.id, patch: {
+          teacher_id: r.teacherId || 0,
+          weekly_count: r.weekly,
+          parallel_group_key: key,
+          room_id: r.roomId || null,
+          pinned_day: when?.day ?? null, pinned_period: when?.period ?? null,
+          pinned_double: !!when?.double,
+        } });
+        continue;
+      }
       plan.create.push({
         group_id: r.groupId, subject_id: r.subjectId,
         teacher_id: r.teacherId || 0,
