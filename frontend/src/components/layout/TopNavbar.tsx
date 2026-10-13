@@ -7,6 +7,7 @@ import { useReactToPrint } from "react-to-print";
 
 import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
+import { ConsistencyModal } from "../solver/ConsistencyModal";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
@@ -119,6 +120,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showTools,   setShowTools]   = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showPrintOpts, setShowPrintOpts] = useState(false);
+  const [showCheck,   setShowCheck]   = useState(false);
 
   // Toolbar popovers close when you click anywhere else, or press Esc.
   const solverRef = useRef<HTMLDivElement>(null);
@@ -335,6 +337,15 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
               className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700 disabled:text-gray-500">
               📥 <span>{isExporting ? "กำลังบันทึก…" : "บันทึกเป็น PDF"}</span>
             </button>
+            <div className="border-t border-gray-700 my-1" />
+            {/* The one place to ask "is everything still agreeing with
+                everything else?" — renames, deletes and half-finished edits
+                all leave their mark somewhere, and this finds them. */}
+            <button
+              onClick={() => { setShowCheck(true); setShowTools(false); }}
+              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+              🧭 <span>ตรวจความสอดคล้องของข้อมูล</span>
+            </button>
           </div>
         )}
       </div>
@@ -383,6 +394,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       </div>
 
       <div className="ml-auto" />
+      {showCheck && <ConsistencyModal onClose={() => setShowCheck(false)} />}
       {/* Print options */}
       {showPrintOpts && (
         <PrintOptionsModal

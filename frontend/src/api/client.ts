@@ -413,3 +413,32 @@ export const fetchSchoolConfig = () =>
 
 export const updateSchoolConfig = (c: Partial<SchoolConfig>) =>
   api.put<SchoolConfig>("/school/config", c).then((r) => r.data);
+
+/** ตรวจความสอดคล้องของข้อมูล — จุดที่แก้ที่หนึ่งแล้วอีกที่ไม่ตาม */
+export interface ConsistencyFinding {
+  code: string;
+  title: string;
+  why: string;
+  count: number;
+  examples: string[];
+  fixable: boolean;
+  fix?: string | null;
+  severity: "blocking" | "warning";
+}
+export interface ConsistencyReport {
+  findings: ConsistencyFinding[];
+  total: number;
+  blocking: number;
+  checked: {
+    requirements: number; slots: number; groups: number;
+    teachers: number; subjects: number; rooms: number; pools: number;
+  };
+}
+
+export const fetchConsistency = () =>
+  api.get<ConsistencyReport>("/diagnostics/consistency").then((r) => r.data);
+
+export const repairConsistency = (codes?: string[]) =>
+  api.post<{ fixed: Record<string, number>; total: number;
+             remaining: ConsistencyFinding[] }>(
+    "/diagnostics/repair", codes ? { codes } : {}).then((r) => r.data);

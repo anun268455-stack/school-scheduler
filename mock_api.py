@@ -3420,6 +3420,588 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
 
 
+
+# ── ตรวจความสอดคล้องของข้อมูล ────────────────────────────────────────────────
+#
+# "ฉันแก้จุดหนึ่ง อีกจุดก็มีปัญหา เหมือนกับว่าข้อมูลทั้งหมดไม่ซิงค์กัน"
+#
+# The school's data says the same thing in more than one place on purpose —
+# a class names its ห้องประจำชั้น and the room names its class; a lesson in
+# the timetable carries the teacher's NAME as well as their id, so a printed
+# sheet needs nothing else. That is fine while the two agree. The trouble is
+# that nothing was checking, so a rename here and a delete there left the
+# halves disagreeing, and the only way to find out was for a timetable to
+# come out wrong weeks later.
+#
+# This walks every one of those pairs and reports where they have come apart.
+# Each finding says how many, shows a few, and whether ซ่อมอัตโนมัติ can put
+# it right — which it only claims when the answer is not a judgement call.
+
+def _consistency_findings() -> list[dict[str, Any]]:
+    g_map = {g["id"]: g for g in _flat_groups()}
+    t_map = {t["id"]: t for t in TEACHERS}
+    s_map = {s["id"]: s for s in SUBJECTS}
+    r_map = {r["id"]: r for r in ROOMS}
+    d_map = {d["id"]: d for d in DEPARTMENTS}
+    b_ids = {b["id"] for b in BUILDINGS}
+    out: list[dict[str, Any]] = []
+
+    def add(code, title, why, rows, fix=None, severity="warning"):
+        if rows:
+            out.append({"code": code, "title": title, "why": why,
+                        "count": len(rows), "examples": rows[:8],
+                        "fixable": bool(fix), "fix": fix, "severity": severity})
+
+    def gname(i):
+        g = g_map.get(i)
+        return g["name"] if g else f"#{i}"
+
+    # ── 1. อ้างถึงของที่ไม่มีอยู่แล้ว ────────────────────────────────────────
+    rows = [f"{gname(r['group_id'])} · {(s_map.get(r.get('subject_id')) or {}).get('code', r.get('subject_id'))}"
+            for r in REQUIREMENTS if r.get("group_id") not in g_map]
+    add("req_group", "รายวิชาที่ผูกกับห้องเรียนที่ไม่มีแล้ว",
+        "ลงตารางไม่ได้เลย และแก้จากหน้าห้องเรียนก็ไม่ได้", rows,
+        fix="ลบแถวเหล่านี้", severity="blocking")
+
+    rows = [f"{gname(r['group_id'])} · วิชา #{r.get('subject_id')}"
+            for r in REQUIREMENTS if r.get("subject_id") not in s_map]
+    add("req_subject", "รายวิชาที่ผูกกับวิชาที่ถูกลบไปแล้ว",
+        "ลงตารางไม่ได้ และไม่มีชื่อวิชาให้อ่าน", rows,
+        fix="ลบแถวเหล่านี้", severity="blocking")
+
+    rows = [f"{gname(r['group_id'])} · {(s_map.get(r.get('subject_id')) or {}).get('code', '?')} → ครู #{r['teacher_id']}"
+            for r in REQUIREMENTS if r.get("teacher_id") and r["teacher_id"] not in t_map]
+    add("req_teacher", "รายวิชาที่ผูกกับครูที่ถูกลบไปแล้ว",
+        "ตารางจะจองเวลาให้ครูที่ไม่มีอยู่", rows,
+        fix="ล้างครูออกจากแถวเหล่านี้", severity="blocking")
+
+    rows = [f"{gname(r['group_id'])} · {(s_map.get(r.get('subject_id')) or {}).get('code', '?')}"
+            for r in REQUIREMENTS
+            if r.get("co_teacher_id") and r["co_teacher_id"] not in t_map]
+    add("req_coteacher", "ครูสอนร่วมที่ถูกลบไปแล้ว",
+        "คาบจะถูกจองให้ครูที่ไม่มีอยู่", rows, fix="ล้างครูสอนร่วมออก")
+
+    rows = [f"{gname(r['group_id'])} · {(s_map.get(r.get('subject_id')) or {}).get('code', '?')} → ห้อง #{r['room_id']}"
+            for r in REQUIREMENTS if r.get("room_id") and r["room_id"] not in r_map]
+    add("req_room", "รายวิชาที่กำหนดห้องเรียนที่ถูกลบไปแล้ว",
+        "วิชานี้จะหาห้องไม่ได้ตลอดไป เพราะห้องที่กำหนดไว้ไม่มีอยู่", rows,
+        fix="ล้างห้องที่กำหนดไว้ออก", severity="blocking")
+
+    # ── 2. คาบในตารางที่อ้างถึงของที่หายไป ───────────────────────────────────
+    rows = [f"วัน {s.get('day')} คาบ {s.get('period')} · {gname(s.get('group_id'))}"
+            for s in SLOTS if s.get("group_id") not in g_map]
+    add("slot_group", "คาบในตารางของห้องเรียนที่ไม่มีแล้ว",
+        "ขึ้นในตารางแต่ไม่มีใครเรียน", rows, fix="ลบคาบเหล่านี้")
+
+    rows = [f"วัน {s.get('day')} คาบ {s.get('period')} · {gname(s.get('group_id'))}"
+            for s in SLOTS if s.get("teacher_id") and s["teacher_id"] not in t_map]
+    add("slot_teacher", "คาบในตารางของครูที่ถูกลบไปแล้ว",
+        "ตารางครูจะไม่ตรงกับตารางห้อง", rows, fix="ลบคาบเหล่านี้")
+
+    rows = [f"วัน {s.get('day')} คาบ {s.get('period')} · {gname(s.get('group_id'))} → ห้อง #{s['room_id']}"
+            for s in SLOTS if s.get("room_id") and s["room_id"] not in r_map]
+    add("slot_room", "คาบในตารางที่อยู่ในห้องที่ถูกลบไปแล้ว",
+        "ตารางห้องสอนจะว่าง ทั้งที่ตารางเรียนบอกว่ามีคาบ", rows,
+        fix="ล้างห้องออกจากคาบเหล่านี้")
+
+    # ── 3. ชื่อที่ค้างอยู่ในตาราง หลังเปลี่ยนชื่อจริง ────────────────────────
+    stale = []
+    for s in SLOTS:
+        for field, src, key in (("teacher_name", t_map.get(s.get("teacher_id")), "name"),
+                                ("group_name",   g_map.get(s.get("group_id")), "name"),
+                                ("subject_name", s_map.get(s.get("subject_id")), "name"),
+                                ("subject_code", s_map.get(s.get("subject_id")), "code"),
+                                ("room_name",    r_map.get(s.get("room_id")), "name")):
+            if src and s.get(field) is not None and s.get(field) != src.get(key):
+                stale.append(f"{gname(s.get('group_id'))} วัน {s.get('day')} คาบ {s.get('period')}: "
+                             f"{s.get(field)} → {src.get(key)}")
+                break
+    add("stale_names", "ชื่อที่ค้างอยู่ในตาราง",
+        "เปลี่ยนชื่อครู/ห้อง/วิชาแล้ว แต่คาบที่ลงไว้ยังเป็นชื่อเดิม "
+        "ตารางที่พิมพ์ออกไปจึงเป็นชื่อเก่า", stale,
+        fix="อัปเดตชื่อในคาบเหล่านี้")
+
+    # ── 4. ของที่กันไว้ให้คนหรือห้องที่ไม่มีแล้ว ─────────────────────────────
+    rows = [f"{r['name']} → ครู #{', '.join(str(x) for x in sorted(_room_reserved_for(r) - set(t_map)))}"
+            for r in ROOMS if _room_reserved_for(r) - set(t_map)]
+    add("room_teacher_gone", "ห้องที่กันไว้ให้ครูที่ถูกลบไปแล้ว",
+        "ห้องนั้นถูกล็อกไว้ให้คนที่ไม่มีอยู่ ครูคนอื่นจึงใช้ไม่ได้เลย", rows,
+        fix="ปลดชื่อครูที่ไม่มีแล้วออกจากห้อง", severity="blocking")
+
+    rows = [f"{r['name']} → ห้องเรียน #{', '.join(str(x) for x in sorted(set(r.get('reserved_group_ids') or []) - set(g_map)))}"
+            for r in ROOMS
+            if set(r.get("reserved_group_ids") or []) - set(g_map)]
+    add("room_group_gone", "ห้องที่กันไว้ให้ชั้นเรียนที่ไม่มีแล้ว",
+        "ห้องถูกกันไว้ให้ห้องเรียนที่ถูกลบไปแล้ว", rows,
+        fix="ปลดชั้นเรียนที่ไม่มีแล้วออกจากห้อง")
+
+    rows = [f"{t['name']} → ห้อง #{t['fixed_room_id']}"
+            for t in TEACHERS if t.get("fixed_room_id") and t["fixed_room_id"] not in r_map]
+    add("teacher_room_gone", "ครูที่ผูกกับห้องประจำที่ถูกลบไปแล้ว",
+        "ระบบจะพยายามพาคาบของครูไปห้องที่ไม่มีอยู่", rows,
+        fix="ล้างห้องประจำของครูเหล่านี้")
+
+    rows = [f"{g['name']} → ห้อง #{g['homeroom_room_id']}"
+            for g in _flat_groups()
+            if g.get("homeroom_room_id") and g["homeroom_room_id"] not in r_map]
+    add("group_room_gone", "ห้องเรียนที่ผูกกับห้องประจำชั้นที่ถูกลบไปแล้ว",
+        "นักเรียนจะถูกจัดไปห้องที่ไม่มีอยู่", rows,
+        fix="ล้างห้องประจำชั้นเหล่านี้")
+
+    rows = [f"{g['name']} → ครู #{i}" for g in _flat_groups()
+            for i in _homeroom_ids(g) if i not in t_map]
+    add("group_teacher_gone", "ครูประจำชั้นที่ถูกลบไปแล้ว",
+        "ใบรายชื่อจะพิมพ์ออกมาว่าง", rows, fix="ปลดครูที่ไม่มีแล้วออก")
+
+    rows = [f"{s.get('code')} → ห้อง #{i}" for s in SUBJECTS
+            for i in _subject_rooms(s) if i not in r_map]
+    add("subject_room_gone", "วิชาที่กำหนดห้องประจำวิชาที่ถูกลบไปแล้ว",
+        "วิชานี้จะหาห้องไม่ได้", rows, fix="ล้างห้องที่ไม่มีแล้วออกจากวิชา",
+        severity="blocking")
+
+    rows = [f"{s.get('code')} → ตึก #{i}" for s in SUBJECTS
+            for i in _subject_buildings(s) if i not in b_ids]
+    add("subject_building_gone", "วิชาที่จำกัดตึกที่ถูกลบไปแล้ว",
+        "ไม่มีห้องไหนอยู่ในตึกนั้น วิชานี้จึงลงไม่ได้เลย", rows,
+        fix="ล้างตึกที่ไม่มีแล้วออกจากวิชา", severity="blocking")
+
+    rows = [f"{s.get('code')} → กลุ่มสาระ #{s['department_id']}" for s in SUBJECTS
+            if s.get("department_id") and s["department_id"] not in d_map]
+    add("subject_dept_gone", "วิชาที่อยู่ในกลุ่มสาระที่ถูกลบไปแล้ว",
+        "การจัดห้องตามกลุ่มสาระจะไม่ทำงานกับวิชานี้", rows,
+        fix="ล้างกลุ่มสาระออกจากวิชา")
+
+    # ── 5. สองฝั่งไม่ตรงกัน ──────────────────────────────────────────────────
+    rows = []
+    for r in ROOMS:
+        gid = r.get("homeroom_group_id")
+        if gid and g_map.get(gid, {}).get("homeroom_room_id") not in (None, r["id"]):
+            rows.append(f"ห้อง {r['name']} บอกว่าเป็นของ {gname(gid)} "
+                        f"แต่ {gname(gid)} บอกว่าอยู่ห้องอื่น")
+    add("homeroom_disagree", "ห้องประจำชั้นสองฝั่งไม่ตรงกัน",
+        "หน้าห้องเรียนกับหน้าห้องสอนบอกคนละอย่าง", rows,
+        fix="ให้ยึดตามที่ตั้งไว้ในหน้าห้องเรียน")
+
+    rows = []
+    for g in _flat_groups():
+        p = g.get("parent_id")
+        if p and (p not in g_map
+                  or not any((c["id"] if isinstance(c, dict) else c) == g["id"]
+                             for c in (g_map.get(p, {}).get("children") or []))):
+            rows.append(f"{g['name']} บอกว่าเป็นห้องย่อยของ #{p}")
+    add("group_tree", "ห้องย่อยที่หลุดจากห้องแม่",
+        "ห้องย่อยบอกว่ามีห้องแม่ แต่ห้องแม่ไม่มีมันอยู่ในรายการ "
+        "การตรวจคาบซ้อนของห้องแม่-ห้องลูกจะพลาด", rows,
+        fix="ผูกกลับเข้าห้องแม่", severity="blocking")
+
+    # ── 6. เซ็ตห้องย่อยที่ข้อมูลในเซ็ตไม่ตรงกันเอง ───────────────────────────
+    by_key: dict[str, list] = defaultdict(list)
+    for r in REQUIREMENTS:
+        if r.get("parallel_group_key"):
+            by_key[r["parallel_group_key"]].append(r)
+    rows = []
+    for key, grp in by_key.items():
+        pins = {(r.get("pinned_day"), r.get("pinned_period"), bool(r.get("pinned_double")))
+                for r in grp}
+        if len(pins) > 1:
+            rows.append(f"{key.split(':')[-1]} — {len(pins)} แบบ: {sorted(pins)}")
+    add("set_pins", "เซ็ตห้องย่อยที่แต่ละห้องล็อกเวลาไว้ไม่ตรงกัน",
+        "ทุกห้องในเซ็ตต้องเรียนชั่วโมงเดียวกัน ถ้าล็อกไว้คนละคาบ เซ็ตจะลงไม่ได้", rows,
+        fix="ใช้เวลาที่ล็อกไว้ของแถวแรกกับทุกแถวในเซ็ต", severity="blocking")
+
+    # ── 7. วิชาเดียวกันของห้องเดียวกัน เขียนไว้ซ้ำ ───────────────────────────
+    pair: dict[tuple, list] = defaultdict(list)
+    for r in REQUIREMENTS:
+        pair[(r.get("group_id"), r.get("subject_id"))].append(r)
+    rows = [f"{gname(k[0])} · {(s_map.get(k[1]) or {}).get('code', k[1])} ({len(v)} แถว)"
+            for k, v in pair.items() if len(v) > 1
+            and len({x["teacher_id"] for x in v if x.get("teacher_id")}) <= 1
+            and len({x["parallel_group_key"] for x in v if x.get("parallel_group_key")}) <= 1]
+    add("dup_rows", "วิชาเดียวกันของห้องเดียวกันเขียนไว้หลายแถว",
+        "คาบจะถูกจัดซ้ำ ห้องเรียนได้คาบเกินที่ควรเป็น", rows,
+        fix="รวมเป็นแถวเดียว")
+
+    # ── 8. คาบที่ล็อกเวลาไว้บนคาบที่ไม่มีอยู่จริง ────────────────────────────
+    rows = []
+    for r in REQUIREMENTS:
+        p = r.get("pinned_period")
+        if p is None:
+            continue
+        lvl = _level_key(g_map.get(r.get("group_id")))
+        if p not in _class_periods_for_level(lvl):
+            rows.append(f"{gname(r['group_id'])} · "
+                        f"{(s_map.get(r.get('subject_id')) or {}).get('code', '?')} → คาบ {p}")
+    add("pin_period", "คาบที่ล็อกไว้บนคาบที่ไม่ใช่คาบเรียนของระดับชั้นนั้น",
+        "เช่น ล็อกไว้ที่คาบพัก หรือคาบที่ระดับชั้นนั้นไม่มี — จะลงไม่ได้ตลอดไป", rows,
+        fix="ปลดล็อกเวลาของแถวเหล่านี้", severity="blocking")
+
+    rows = []
+    for s in SLOTS:
+        lvl = _level_key(g_map.get(s.get("group_id")))
+        if s.get("period") not in _class_periods_for_level(lvl):
+            rows.append(f"{gname(s.get('group_id'))} วัน {s.get('day')} คาบ {s.get('period')}")
+    add("slot_period", "คาบในตารางที่ตกอยู่บนคาบพักหรือคาบที่ระดับชั้นนั้นไม่มี",
+        "มักเกิดหลังแก้ตารางเวลา — คาบยังอยู่ที่เดิมทั้งที่คาบนั้นไม่มีแล้ว", rows,
+        fix="ลบคาบเหล่านี้")
+
+    # ── 9. วงคาบเสรี ─────────────────────────────────────────────────────────
+    rows = [f"{p.get('name')} → ห้องเรียน #{i}" for p in ELECTIVE_POOLS
+            for i in (p.get("group_ids") or []) if i not in g_map]
+    add("pool_group", "วงคาบเสรีที่มีห้องเรียนที่ถูกลบไปแล้ว",
+        "จำนวนห้องที่เรียนวิชาเสรีจะไม่ตรง", rows, fix="ปลดห้องที่ไม่มีแล้วออกจากวง")
+
+    rows = [f"{p.get('name')} → วิชา #{o.get('subject_id')} / ครู #{o.get('teacher_id')}"
+            for p in ELECTIVE_POOLS for o in (p.get("options") or [])
+            if o.get("subject_id") not in s_map
+            or (o.get("teacher_id") and o["teacher_id"] not in t_map)]
+    add("pool_option", "ตัวเลือกในวงคาบเสรีที่วิชาหรือครูถูกลบไปแล้ว",
+        "นักเรียนเลือกวิชาที่ไม่มีอยู่", rows, fix="ลบตัวเลือกเหล่านี้")
+
+    rows = [f"วัน {s.get('day')} คาบ {s.get('period')} · {gname(s.get('group_id'))}"
+            for s in SLOTS if s.get("elective_pool_id")
+            and s["elective_pool_id"] not in {p["id"] for p in ELECTIVE_POOLS}]
+    add("slot_pool", "คาบเสรีในตารางที่วงของมันถูกลบไปแล้ว",
+        "ลบวงแล้วแต่คาบยังค้างอยู่ในตาราง", rows, fix="ลบคาบเหล่านี้")
+
+    # ── 10. คาบคู่ที่เหลือครึ่งเดียว ─────────────────────────────────────────
+    halves: dict[str, list] = defaultdict(list)
+    for s in SLOTS:
+        if s.get("double_group_key"):
+            halves[s["double_group_key"]].append(s)
+    rows = [f"{gname(v[0].get('group_id'))} วัน {v[0].get('day')} คาบ {v[0].get('period')}"
+            for v in halves.values() if len(v) == 1]
+    add("half_double", "คาบคู่ที่เหลือครึ่งเดียว",
+        "ขึ้นป้าย 2× แต่มีคาบเดียว", rows, fix="ซ่อมให้เป็นคาบคู่ หรือลบป้ายออก")
+
+    # ── 11. กิจกรรมที่คาบไม่ตรงกันทั้งระดับ ──────────────────────────────────
+    acts: dict[str, set] = defaultdict(set)
+    for s in SLOTS:
+        if s.get("activity_key"):
+            acts[s["activity_key"]].add((s.get("day"), s.get("period")))
+    rows = [f"{k} — {len(v)} เวลา" for k, v in acts.items() if len(v) > 1]
+    add("activity_split", "คาบกิจกรรมที่กระจายอยู่หลายเวลา",
+        "กิจกรรมเดียวกันควรอยู่เวลาเดียวกันทุกห้อง", rows)
+
+    # ── 12. คาบที่ชนกันจริง ๆ ในตาราง ────────────────────────────────────────
+    seen_t: dict[tuple, list] = defaultdict(list)
+    seen_r: dict[tuple, list] = defaultdict(list)
+    seen_g: dict[tuple, list] = defaultdict(list)
+    for s in SLOTS:
+        grp = g_map.get(s.get("group_id"))
+        for bk in _slot_buckets(grp, s.get("period")):
+            for t in _slot_teachers(s):
+                seen_t[(t, s.get("day"), bk)].append(s)
+            if s.get("room_id"):
+                seen_r[(s["room_id"], s.get("day"), bk)].append(s)
+        seen_g[(s.get("group_id"), s.get("day"), s.get("period"))].append(s)
+
+    def real_clash(group_of_slots):
+        """More than one lesson, and not the same shared lesson seen twice."""
+        if len(group_of_slots) < 2:
+            return False
+        first = group_of_slots[0]
+        return not all(_same_activity(first, x) for x in group_of_slots[1:])
+
+    def one_roomful(v) -> bool:
+        """ห้องย่อยพี่น้องที่เรียนวิชาเดียวกันกับครูคนเดียวกัน = คาบเดียว.
+
+        ม.4/6ขค นั่งด้วยกันใน ค31218 กับครูคนเดียว — ไม่ใช่การชนกัน. แต่สอง
+        ห้องเรียนที่ไม่ได้เป็นพี่น้องกัน ต่อให้วิชาและครูตรงกัน ก็คือครูคนเดียว
+        ถูกจองไว้สองที่จริง ๆ
+        """
+        if len({(x.get("subject_id"), x.get("teacher_id")) for x in v}) > 1:
+            return False
+        parents = {(g_map.get(x.get("group_id")) or {}).get("parent_id") for x in v}
+        return len(parents) == 1 and None not in parents
+
+    rows = [f"ครู {t_map.get(k[0], {}).get('name', k[0])} วัน {k[1]}: "
+            + " / ".join(sorted({gname(x.get('group_id')) for x in v}))
+            for k, v in seen_t.items() if real_clash(v)
+            and len({x.get("group_id") for x in v}) > 1
+            and not one_roomful(v)]
+    add("clash_teacher", "ครูอยู่สองที่พร้อมกัน",
+        "ยกเว้นกรณีสอนร่วมหรือสอนห้องย่อยพี่น้องพร้อมกันในวิชาเดียวกัน", rows,
+        severity="blocking")
+
+    rows = [f"ห้อง {r_map.get(k[0], {}).get('name', k[0])} วัน {k[1]}: "
+            + " / ".join(sorted({gname(x.get('group_id')) for x in v}))
+            for k, v in seen_r.items() if real_clash(v)
+            and len({x.get("group_id") for x in v}) > 1
+            and not one_roomful(v)]
+    add("clash_room", "ห้องเรียนถูกใช้สองคาบพร้อมกัน",
+        "ยกเว้นห้องย่อยพี่น้องที่เรียนวิชาเดียวกันกับครูคนเดียวกัน", rows,
+        severity="blocking")
+
+    rows = [f"{gname(k[0])} วัน {k[1]} คาบ {k[2]}" for k, v in seen_g.items()
+            if real_clash(v)]
+    add("clash_group", "ห้องเรียนมีสองคาบในชั่วโมงเดียวกัน",
+        "นักเรียนห้องเดียวอยู่สองที่พร้อมกันไม่ได้", rows, severity="blocking")
+
+    # ── 13. แผนกับตารางไม่ตรงกัน ─────────────────────────────────────────────
+    skipped = _excluded_requirement_ids({})
+    co_halves, _ = _fold_coteaching(REQUIREMENTS)
+    placed: dict[tuple, int] = defaultdict(int)
+    for s in SLOTS:
+        if s.get("subject_id") is not None:
+            placed[(s.get("group_id"), s.get("subject_id"))] += 1
+    rows = []
+    for r in REQUIREMENTS:
+        if r["id"] in skipped or r["id"] in co_halves:
+            continue
+        want = r.get("weekly_count") or 0
+        got = placed.get((r.get("group_id"), r.get("subject_id")), 0)
+        if got > want:
+            rows.append(f"{gname(r['group_id'])} · "
+                        f"{(s_map.get(r.get('subject_id')) or {}).get('code', '?')} "
+                        f"— แผนว่า {want} คาบ แต่ในตารางมี {got}")
+    add("over_placed", "ในตารางมีคาบมากกว่าที่แผนการสอนบอกไว้",
+        "มักเกิดจากการเพิ่มคาบในตารางด้วยมือ หรือแถวที่เขียนซ้ำ", rows)
+
+    order = {"blocking": 0, "warning": 1}
+    out.sort(key=lambda f: (order.get(f["severity"], 2), -f["count"]))
+    return out
+
+
+@app.get("/api/diagnostics/consistency")
+def consistency_check():
+    findings = _consistency_findings()
+    return {
+        "findings": findings,
+        "total": sum(f["count"] for f in findings),
+        "blocking": sum(f["count"] for f in findings if f["severity"] == "blocking"),
+        "checked": {
+            "requirements": len(REQUIREMENTS), "slots": len(SLOTS),
+            "groups": len(_flat_groups()), "teachers": len(TEACHERS),
+            "subjects": len(SUBJECTS), "rooms": len(ROOMS),
+            "pools": len(ELECTIVE_POOLS),
+        },
+    }
+
+
+@app.post("/api/diagnostics/repair")
+def consistency_repair(body: dict[str, Any] | None = None):
+    """ซ่อมเฉพาะข้อที่คำตอบไม่กำกวม. Asked for explicitly, never automatic."""
+    global SLOTS, REQUIREMENTS
+    only = set((body or {}).get("codes") or [])
+    def want(code: str) -> bool:
+        return not only or code in only
+    fixed: dict[str, int] = {}
+
+    def note(code: str, n: int) -> None:
+        if n:
+            fixed[code] = fixed.get(code, 0) + n
+
+    g_map = {g["id"]: g for g in _flat_groups()}
+    t_ids = {t["id"] for t in TEACHERS}
+    s_ids = {s["id"] for s in SUBJECTS}
+    r_ids = {r["id"] for r in ROOMS}
+    b_ids = {b["id"] for b in BUILDINGS}
+    d_ids = {d["id"] for d in DEPARTMENTS}
+
+    if want("req_group") or want("req_subject"):
+        before = len(REQUIREMENTS)
+        REQUIREMENTS = [r for r in REQUIREMENTS
+                        if (r.get("group_id") in g_map or not want("req_group"))
+                        and (r.get("subject_id") in s_ids or not want("req_subject"))]
+        note("req_rows_removed", before - len(REQUIREMENTS))
+
+    if want("req_teacher"):
+        n = 0
+        for r in REQUIREMENTS:
+            if r.get("teacher_id") and r["teacher_id"] not in t_ids:
+                r["teacher_id"] = 0; n += 1
+        note("req_teacher", n)
+    if want("req_coteacher"):
+        n = 0
+        for r in REQUIREMENTS:
+            if r.get("co_teacher_id") and r["co_teacher_id"] not in t_ids:
+                r["co_teacher_id"] = None; n += 1
+        note("req_coteacher", n)
+    if want("req_room"):
+        n = 0
+        for r in REQUIREMENTS:
+            if r.get("room_id") and r["room_id"] not in r_ids:
+                r["room_id"] = None; n += 1
+        note("req_room", n)
+
+    if want("slot_group") or want("slot_teacher") or want("slot_pool") or want("slot_period"):
+        pool_ids = {p["id"] for p in ELECTIVE_POOLS}
+        def keep(s):
+            if want("slot_group") and s.get("group_id") not in g_map:
+                return False
+            if want("slot_teacher") and s.get("teacher_id") and s["teacher_id"] not in t_ids:
+                return False
+            if want("slot_pool") and s.get("elective_pool_id") and s["elective_pool_id"] not in pool_ids:
+                return False
+            if want("slot_period"):
+                lvl = _level_key(g_map.get(s.get("group_id")))
+                if s.get("period") not in _class_periods_for_level(lvl):
+                    return False
+            return True
+        before = len(SLOTS)
+        SLOTS = [s for s in SLOTS if keep(s)]
+        note("slots_removed", before - len(SLOTS))
+
+    if want("slot_room"):
+        n = 0
+        for s in SLOTS:
+            if s.get("room_id") and s["room_id"] not in r_ids:
+                s["room_id"] = None; s["room_name"] = None; s["room_type"] = None; n += 1
+        note("slot_room", n)
+
+    if want("stale_names"):
+        n = 0
+        for s in SLOTS:
+            before = (s.get("teacher_name"), s.get("group_name"),
+                      s.get("subject_name"), s.get("subject_code"), s.get("room_name"))
+            _enrich_slot(s)
+            if before != (s.get("teacher_name"), s.get("group_name"),
+                          s.get("subject_name"), s.get("subject_code"), s.get("room_name")):
+                n += 1
+        note("stale_names", n)
+
+    if want("room_teacher_gone"):
+        n = 0
+        for r in ROOMS:
+            ids = _room_reserved_for(r)
+            if ids - t_ids:
+                r["reserved_teacher_ids"] = sorted(ids & t_ids)
+                r.pop("reserved_teacher_id", None)
+                n += 1
+        note("room_teacher_gone", n)
+    if want("room_group_gone"):
+        n = 0
+        for r in ROOMS:
+            kept = [x for x in (r.get("reserved_group_ids") or []) if x in g_map]
+            if len(kept) != len(r.get("reserved_group_ids") or []):
+                r["reserved_group_ids"] = kept; n += 1
+        note("room_group_gone", n)
+    if want("teacher_room_gone"):
+        n = 0
+        for t in TEACHERS:
+            if t.get("fixed_room_id") and t["fixed_room_id"] not in r_ids:
+                t["fixed_room_id"] = None; n += 1
+        note("teacher_room_gone", n)
+    if want("group_room_gone"):
+        n = 0
+        for g in _flat_groups():
+            if g.get("homeroom_room_id") and g["homeroom_room_id"] not in r_ids:
+                g["homeroom_room_id"] = None; n += 1
+        note("group_room_gone", n)
+    if want("group_teacher_gone"):
+        n = 0
+        for g in _flat_groups():
+            ids = _homeroom_ids(g)
+            if set(ids) - t_ids:
+                g["homeroom_teacher_ids"] = [i for i in ids if i in t_ids]
+                _sync_homeroom(g); n += 1
+        note("group_teacher_gone", n)
+    if want("subject_room_gone"):
+        n = 0
+        for s in SUBJECTS:
+            rooms = [i for i in _subject_rooms(s) if i in r_ids]
+            if rooms != _subject_rooms(s):
+                s["fixed_room_ids"] = rooms
+                s["fixed_room_id"] = rooms[0] if rooms else None
+                n += 1
+        note("subject_room_gone", n)
+    if want("subject_building_gone"):
+        n = 0
+        for s in SUBJECTS:
+            bs = {i for i in _subject_buildings(s) if i in b_ids}
+            if bs != _subject_buildings(s):
+                s["building_ids"] = sorted(bs)
+                s["building_id"] = sorted(bs)[0] if bs else None
+                n += 1
+        note("subject_building_gone", n)
+    if want("subject_dept_gone"):
+        n = 0
+        for s in SUBJECTS:
+            if s.get("department_id") and s["department_id"] not in d_ids:
+                s["department_id"] = None; n += 1
+        note("subject_dept_gone", n)
+
+    if want("homeroom_disagree"):
+        n = 0
+        for r in ROOMS:
+            gid = r.get("homeroom_group_id")
+            if gid and g_map.get(gid, {}).get("homeroom_room_id") not in (None, r["id"]):
+                r["homeroom_group_id"] = None; n += 1
+        note("homeroom_disagree", n)
+
+    if want("group_tree"):
+        n = 0
+        for g in list(_flat_groups()):
+            p = g.get("parent_id")
+            if not p:
+                continue
+            parent = g_map.get(p)
+            if parent is None:
+                g["parent_id"] = None; n += 1
+                continue
+            kids = parent.setdefault("children", [])
+            if not any((c["id"] if isinstance(c, dict) else c) == g["id"] for c in kids):
+                _detach_group(g["id"]); kids.append(g); n += 1
+        note("group_tree", n)
+
+    if want("set_pins"):
+        by_key: dict[str, list] = defaultdict(list)
+        for r in REQUIREMENTS:
+            if r.get("parallel_group_key"):
+                by_key[r["parallel_group_key"]].append(r)
+        n = 0
+        for grp in by_key.values():
+            lead = next((r for r in grp if r.get("pinned_day") is not None
+                         and r.get("pinned_period") is not None), grp[0])
+            for r in grp:
+                if (r.get("pinned_day"), r.get("pinned_period"),
+                        bool(r.get("pinned_double"))) != (
+                        lead.get("pinned_day"), lead.get("pinned_period"),
+                        bool(lead.get("pinned_double"))):
+                    r["pinned_day"] = lead.get("pinned_day")
+                    r["pinned_period"] = lead.get("pinned_period")
+                    r["pinned_double"] = bool(lead.get("pinned_double"))
+                    n += 1
+        note("set_pins", n)
+
+    if want("pin_period"):
+        n = 0
+        for r in REQUIREMENTS:
+            p = r.get("pinned_period")
+            if p is None:
+                continue
+            lvl = _level_key(g_map.get(r.get("group_id")))
+            if p not in _class_periods_for_level(lvl):
+                r["pinned_day"] = None; r["pinned_period"] = None; n += 1
+        note("pin_period", n)
+
+    if want("pool_group"):
+        n = 0
+        for p in ELECTIVE_POOLS:
+            kept = [i for i in (p.get("group_ids") or []) if i in g_map]
+            if len(kept) != len(p.get("group_ids") or []):
+                p["group_ids"] = kept; _sync_pool_slots(p); n += 1
+        note("pool_group", n)
+    if want("pool_option"):
+        n = 0
+        for p in ELECTIVE_POOLS:
+            kept = [o for o in (p.get("options") or [])
+                    if o.get("subject_id") in s_ids
+                    and (not o.get("teacher_id") or o["teacher_id"] in t_ids)]
+            if len(kept) != len(p.get("options") or []):
+                p["options"] = kept; _sync_pool_slots(p); n += 1
+        note("pool_option", n)
+
+    if want("half_double"):
+        note("half_double", _repair_elective_doubles())
+    if want("dup_rows"):
+        note("dup_rows", _merge_teacherless_rows())
+
+    # The revision counter is bumped by the middleware on every POST, so
+    # browsers watching for each other's edits pick this up like any other.
+    return {"fixed": fixed, "total": sum(fixed.values()),
+            "remaining": _consistency_findings()}
+
 def _walking_report() -> dict[str, Any]:
     """How much walking the timetable actually asks for.
 
@@ -4352,8 +4934,37 @@ def _purge_teacher(tid: int) -> dict[str, int]:
             g["homeroom_teacher_ids"] = [x for x in ids if x != tid]
             _sync_homeroom(g)
             homerooms += 1
+    # ครูสอนร่วม. The lesson belongs to the other teacher and stays — but with
+    # a partner who is gone, the cell showed two names and booked an id that
+    # no longer answers to anybody.
+    co = 0
+    for row in (*SLOTS, *REQUIREMENTS):
+        if row.get("co_teacher_id") == tid:
+            row["co_teacher_id"] = None
+            row.pop("co_teacher_name", None)
+            co += 1
+    # ครูผู้ดูแลคาบกิจกรรม — ลูกเสือ, ชุมนุม. Their hour is still busy for
+    # everyone else on the roster; only this name comes off.
+    roster = 0
+    for sl in SLOTS:
+        ids = sl.get("activity_teacher_ids") or []
+        if tid in ids:
+            sl["activity_teacher_ids"] = [x for x in ids if x != tid]
+            sl["activity_teacher_names"] = [
+                t["name"] for t in TEACHERS if t["id"] in sl["activity_teacher_ids"]]
+            roster += 1
+    # ห้องที่เขียนชื่อครูคนนี้ไว้. Left behind, the room stays locked to
+    # somebody who is gone and every other teacher is shut out of it.
+    rooms = 0
+    for room in ROOMS:
+        ids = _room_reserved_for(room)
+        if tid in ids:
+            room["reserved_teacher_ids"] = sorted(ids - {tid})
+            room.pop("reserved_teacher_id", None)
+            rooms += 1
     return {"slots": before_s - len(SLOTS), "requirements": before_r - len(REQUIREMENTS),
-            "elective_options": opts, "homerooms": homerooms}
+            "elective_options": opts, "homerooms": homerooms,
+            "co_teacher": co, "activity_roster": roster, "rooms_freed": rooms}
 
 
 def _purge_subject(sid: int) -> dict[str, int]:
@@ -4408,10 +5019,15 @@ def _purge_group(gid: int) -> dict[str, int]:
         if len(keep) != len(pool.get("group_ids", [])):
             pool["group_ids"] = keep
             _sync_pool_slots(pool)
-    # A homeroom that no longer belongs to anyone must not stay reserved.
+    # A homeroom that no longer belongs to anyone must not stay reserved —
+    # nor a room kept for a class that is gone (ห้องเพชร of a class that has
+    # been removed went on being treated as somebody's own room).
     for r in ROOMS:
         if r.get("homeroom_group_id") in doomed:
             r["homeroom_group_id"] = None
+        kept = r.get("reserved_group_ids")
+        if isinstance(kept, list) and any(x in doomed for x in kept):
+            r["reserved_group_ids"] = [x for x in kept if x not in doomed]
     return {"groups": len(doomed), "slots": before_s - len(SLOTS),
             "requirements": before_r - len(REQUIREMENTS)}
 
@@ -4437,7 +5053,15 @@ def _purge_room(rid: int) -> dict[str, int]:
             sub["fixed_room_id"] = None
         if isinstance(sub.get("fixed_room_ids"), list):
             sub["fixed_room_ids"] = [x for x in sub["fixed_room_ids"] if x != rid]
-    return {"slots_unassigned": freed}
+    # ห้องที่โรงเรียนกำหนดไว้ให้ห้องเรียนนี้เรียนวิชานี้ (ตารางห้องประจำวิชา).
+    # Left pointing at a room that is gone, find_room answers "นัดไว้ที่ห้องนี้
+    # เท่านั้น" for a room that does not exist and the lesson never gets one.
+    pinned = 0
+    for req in REQUIREMENTS:
+        if req.get("room_id") == rid:
+            req["room_id"] = None
+            pinned += 1
+    return {"slots_unassigned": freed, "requirements_unpinned": pinned}
 
 
 @app.get("/api/rooms/")
@@ -4452,11 +5076,37 @@ def create_room(body: dict[str, Any]):
     ROOMS.append(body)
     return body
 
+
+def _refresh_names_for(*, teacher_id=None, room_id=None, subject_id=None,
+                       group_id=None) -> int:
+    """ไล่แก้ชื่อที่ค้างอยู่ในคาบที่ลงไว้แล้ว หลังเปลี่ยนชื่อจริง
+
+    Every lesson in the timetable carries the teacher's name, the room's name
+    and the subject's code as well as their ids — that is what lets a printed
+    sheet, an export or another browser show a cell without looking anything
+    up. The cost is that renaming the teacher leaves eighty-one cells still
+    showing the old name, and the school only finds out when the sheet comes
+    off the printer. So a rename comes through here.
+    """
+    hit = 0
+    for s in SLOTS:
+        if ((teacher_id is not None and (s.get("teacher_id") == teacher_id
+                                         or s.get("co_teacher_id") == teacher_id
+                                         or teacher_id in (s.get("activity_teacher_ids") or [])))
+                or (room_id is not None and s.get("room_id") == room_id)
+                or (subject_id is not None and s.get("subject_id") == subject_id)
+                or (group_id is not None and s.get("group_id") == group_id)):
+            _enrich_slot(s)
+            hit += 1
+    return hit
+
+
 @app.put("/api/rooms/{i}")
 def update_room(i: int, body: dict[str, Any]):
     for r in ROOMS:
         if r["id"] == i:
             r.update(body)
+            _refresh_names_for(room_id=i)
             return r
     return {}
 
@@ -4840,6 +5490,7 @@ def update_teacher(i: int, body: dict[str, Any]):
     for t in TEACHERS:
         if t["id"] == i:
             t.update(body)
+            _refresh_names_for(teacher_id=i)
             return t
     return {}
 
@@ -4884,6 +5535,7 @@ def update_subject(i: int, body: dict[str, Any]):
     for s in SUBJECTS:
         if s["id"] == i:
             s.update(body)
+            _refresh_names_for(subject_id=i)
             return s
     return {}
 
