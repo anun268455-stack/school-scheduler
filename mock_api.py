@@ -441,6 +441,99 @@ def _repair_activity_keys() -> int:
     return len(bad)
 
 
+def _merge_teacherless_rows() -> int:
+    """วิชาเดียวกันของห้องเดียวกันที่เขียนไว้ซ้ำโดยไม่มีครู คือคาบเดียวกัน
+
+    Saving a เซ็ตห้องย่อย with the teacher left blank used to write a SECOND
+    row for a class that already had that subject: ม.5/10ก ended up with
+    จ32221 twice, once with ครูทิพิชา and once with nobody. The timetable then
+    did as it was told and scheduled both — "มีวิชาเกินมา", six periods of
+    ก32208 for a class that takes two.
+
+    A row with no teacher is never a second lesson. Nobody writes down "this
+    class also studies this subject, taught by no one": it is the same lesson
+    written again, from the other screen. So the rows are folded into one.
+
+    The surviving row is the one that says WHEN (the set, which carries the
+    hour its subgroups share) and it takes the teacher, the สอนร่วม partner
+    and the room from the row that says WHO. Nothing is lost — the blank row
+    held no information that the other one did not.
+    """
+    global REQUIREMENTS
+    by_pair: dict[tuple, list[dict]] = defaultdict(list)
+    for r in REQUIREMENTS:
+        by_pair[(r.get("group_id"), r.get("subject_id"))].append(r)
+
+    doomed: set[int] = set()
+    merged = 0
+    for rows in by_pair.values():
+        if len(rows) < 2 or all(r.get("teacher_id") for r in rows):
+            # Two rows that both name a teacher are สอนร่วม written from each
+            # side, which _fold_coteaching already understands. Not this.
+            continue
+        keeper = (next((r for r in rows if r.get("parallel_group_key")), None)
+                  or next((r for r in rows if r.get("teacher_id")), rows[0]))
+        for r in rows:
+            if r is keeper:
+                continue
+            if not keeper.get("teacher_id") and r.get("teacher_id"):
+                keeper["teacher_id"] = r["teacher_id"]
+                if r.get("co_teacher_id") and not keeper.get("co_teacher_id"):
+                    keeper["co_teacher_id"] = r["co_teacher_id"]
+            for k in ("parallel_group_key", "pinned_day", "pinned_period",
+                      "pinned_double", "room_id"):
+                if not keeper.get(k) and r.get(k):
+                    keeper[k] = r[k]
+            # The class studies it as many times as the fuller row says, not
+            # the two added together — that is the "extra lessons" complaint.
+            keeper["weekly_count"] = max(keeper.get("weekly_count") or 0,
+                                         r.get("weekly_count") or 0)
+            doomed.add(id(r))
+            merged += 1
+    if doomed:
+        REQUIREMENTS = [r for r in REQUIREMENTS if id(r) not in doomed]
+    return merged
+
+
+def _fill_set_teachers() -> int:
+    """เซ็ตที่เว้นช่องครูไว้ — ยืมครูของวิชานั้นมาให้ เมื่อบอกได้แน่ชัด
+
+    "เปลี่ยนเป็นเวลาที่เลือกเว้นให้ เอามาจากวิชาของครูที่สอนวิชานั้นมา."
+
+    Only when there is one answer: exactly one teacher in the school teaches
+    that subject, and they are not already taking another subgroup of the same
+    เซ็ต — sibling subgroups sit down at the same hour, so one teacher cannot
+    have two of them. Anything less certain is left blank rather than guessed,
+    and the cell says so.
+    """
+    by_subject: dict[int, set[int]] = defaultdict(set)
+    for r in REQUIREMENTS:
+        if r.get("teacher_id"):
+            by_subject[r.get("subject_id")].add(r["teacher_id"])
+
+    filled = 0
+    for r in REQUIREMENTS:
+        if r.get("teacher_id") or not r.get("parallel_group_key"):
+            continue
+        cands = by_subject.get(r.get("subject_id")) or set()
+        if len(cands) != 1:
+            continue
+        tid = next(iter(cands))
+        if any(x is not r and x.get("parallel_group_key") == r["parallel_group_key"]
+               and x.get("teacher_id") == tid for x in REQUIREMENTS):
+            continue
+        r["teacher_id"] = tid
+        filled += 1
+    return filled
+
+
+def _tidy_requirements() -> dict[str, int]:
+    """Both repairs, in the order they have to happen."""
+    merged = _merge_teacherless_rows()
+    filled = _fill_set_teachers()
+    return {"merged": merged, "teachers_filled": filled}
+
+
 def _repair_elective_doubles() -> int:
     """Put back the missing half of a คาบเสรี that was set up as a คาบคู่.
 
@@ -958,19 +1051,6 @@ def _excluded_requirement_ids(body: dict[str, Any]) -> set[int]:
     # มาแค่วิชาเดี่ยวเอง". So they are placed, with no teacher booked.
     ids |= {r["id"] for r in REQUIREMENTS
             if not r.get("teacher_id") and not r.get("parallel_group_key")}
-    # วิชาเดียวกันเขียนไว้สองที่: in a เซ็ตห้องย่อย and as an ordinary row for
-    # the same class. It is one lesson, not two — the class does not sit
-    # through ว32290 twice — and the set is the more specific statement of
-    # when it happens. So the plain row gives way.
-    #
-    # This is how a set could place nothing and the school still see both
-    # subjects in the grid: the ordinary rows were being scheduled on their
-    # own, separately, which is exactly what the set exists to prevent.
-    in_a_set = {(r["group_id"], r["subject_id"]) for r in REQUIREMENTS
-                if r.get("parallel_group_key")}
-    ids |= {r["id"] for r in REQUIREMENTS
-            if not r.get("parallel_group_key")
-            and (r["group_id"], r["subject_id"]) in in_a_set}
     return ids
 
 
@@ -1424,6 +1504,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # the hour beside it is still empty, rather than after the ordinary
     # lessons have filled it.
     healed_doubles = _repair_elective_doubles()
+    # วิชาซ้ำที่เกิดจากเซ็ตที่เว้นครูไว้ — folded before anything is counted or
+    # placed, so the class is not scheduled for the same lesson twice.
+    tidy = _tidy_requirements()
 
     # Keep only locked slots when clearing — elective slots always survive,
     # regardless of is_locked, so the solver never double-books their teacher/room.
@@ -3219,6 +3302,19 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             f"({', '.join(missing_last[:4])}{' …' if len(missing_last) > 4 else ''})"
         )
 
+    # Said out loud, because it changes what the school will see on the other
+    # screens: rows they may remember adding are no longer there.
+    if tidy["merged"]:
+        notes.append(
+            f"รวมรายวิชาที่เขียนซ้ำ {tidy['merged']} แถว — ห้องเดียวกันวิชาเดียวกัน "
+            f"ที่มีแถวหนึ่งยังไม่ได้เลือกครู ถือเป็นคาบเดียวกัน จึงไม่ถูกจัดซ้ำสองรอบ"
+        )
+    if tidy["teachers_filled"]:
+        notes.append(
+            f"เติมครูให้แถวในเซ็ตที่เว้นไว้ {tidy['teachers_filled']} แถว "
+            f"โดยใช้ครูที่สอนวิชานั้นอยู่แล้ว"
+        )
+
     status = "FEASIBLE" if not violations else "INFEASIBLE"
     LAST_RUN["unplaced_requirement_ids"] = unplaced_ids
     LAST_RUN["skipped_requirement_ids"] = sorted(skipped_reqs)
@@ -3241,6 +3337,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # the difference between "ลงไม่ได้" and a lesson in a room.
         "rescued_by_room_shuffle": rescued_by_shuffle,
         "elective_doubles_repaired": healed_doubles,
+        # แถวที่ถูกรวมเพราะเป็นคาบเดียวกัน และครูที่ยืมมาให้เซ็ต
+        "rows_merged": tidy["merged"],
+        "set_teachers_filled": tidy["teachers_filled"],
     }
 
 
@@ -4908,9 +5007,17 @@ def bulk_create_reqs(body: list[dict[str, Any]]):
         row.setdefault("parallel_group_key", None)
         REQUIREMENTS.append(row)
         created.append(row)
-    if rejected or updated or unchanged:
+    # Folded here, where the duplicates are born: a เซ็ต saved with the teacher
+    # left blank writes a row for a class that may already have that subject,
+    # and two rows for one lesson is how the school ended up with six periods
+    # of a two-period subject. Merging now means the screen the school goes
+    # back to already shows one row, with its teacher.
+    tidy = _tidy_requirements()
+    created = [r for r in created if r in REQUIREMENTS]
+    if rejected or updated or unchanged or tidy["merged"] or tidy["teachers_filled"]:
         return {"created": created, "rejected": rejected,
-                "updated": updated, "unchanged": unchanged}
+                "updated": updated, "unchanged": unchanged,
+                "merged": tidy["merged"], "teachers_filled": tidy["teachers_filled"]}
     return created
 
 @app.delete("/api/timetable/requirements/{i}")
@@ -6326,6 +6433,7 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
 
     _repair_activity_keys()
     _repair_elective_doubles()
+    _tidy_requirements()
 
     if data.get("school_config"):
         SCHOOL_CONFIG.update(dict(data["school_config"]))

@@ -58,6 +58,28 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
   const nameOf = (id: number) =>
     subs.find((g) => g.id === id)?.name
     ?? groupLabel(groups.flatMap((g) => [g, ...(g.children ?? [])]), id);
+  /**
+   * ครูที่แถวนี้จะได้ ถ้าเว้นช่องครูไว้.
+   *
+   * Same rule the server follows when it tidies up: whoever already teaches
+   * this subject to this class, or — when the subject has exactly one teacher
+   * in the whole school — that teacher. Anything less certain stays blank,
+   * and nothing is shown.
+   */
+  const inheritedName = (gid: number, sid: number): string | null => {
+    if (!sid) return null;
+    const same = requirements.find(
+      (r) => r.group_id === gid && r.subject_id === sid && r.teacher_id);
+    const pick = same?.teacher_id ?? (() => {
+      const all = [...new Set(requirements
+        .filter((r) => r.subject_id === sid && r.teacher_id)
+        .map((r) => r.teacher_id))];
+      return all.length === 1 ? all[0] : null;
+    })();
+    if (!pick) return null;
+    return teachers.find((t) => t.id === pick)?.name ?? null;
+  };
+
   const subjName = (id: number) => {
     const s = subjects.find((x) => x.id === id);
     return s ? `${s.code} ${s.name}` : "—";
@@ -339,7 +361,17 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                           value={row.teacherId ? String(row.teacherId) : ""}
                           onChange={(v) => setRowFor(g.id, { teacherId: Number(v) })}
                           options={teacherOptions(teachers, departments)}
-                          emptyLabel="– ครู (เว้นว่างได้) –" />
+                          emptyLabel={inheritedName(g.id, row.subjectId)
+                            ? `– ใช้ครูเดิม: ${inheritedName(g.id, row.subjectId)} –`
+                            : "– ครู (เว้นว่างได้) –"} />
+                        {/* Left blank, the lesson keeps whoever already teaches
+                            it. Saying so here is the difference between "เว้น
+                            ว่างได้" and the school finding out afterwards. */}
+                        {!row.teacherId && inheritedName(g.id, row.subjectId) && (
+                          <p className="text-[11px] text-gray-500 -mt-1">
+                            เว้นว่างไว้ = ใช้ {inheritedName(g.id, row.subjectId)} ที่สอนวิชานี้อยู่แล้ว
+                          </p>
+                        )}
                         <label className="flex items-center gap-1.5 text-xs text-gray-600">
                           คาบ/สัปดาห์
                           <input type="number" min={1} max={20} value={row.weekly}
