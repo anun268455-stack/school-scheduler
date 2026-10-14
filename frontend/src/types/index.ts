@@ -374,6 +374,14 @@ export interface SolverResult {
   /** เวรคาบสุดท้าย: how many teachers ended up with their share. */
   last_period?: {
     teachers: number; met: number; moved: number; swapped?: number; school_min: number;
+    /** คาบสุดท้ายของวัน — how freely this run was allowed to use it. */
+    mode?: "reserve" | "never" | "free";
+    /** คาบที่ดึงกลับลงมาให้เรียนก่อนหน้าได้ */
+    drained?: number;
+    /** คาบสุดท้ายที่ยังเหลืออยู่ทั้งโรงเรียน */
+    left?: number;
+    /** ชื่อห้อง → จำนวนคาบสุดท้ายที่ห้องนั้นยังต้องเรียน */
+    classes?: Record<string, number>;
   };
   /** How the teaching runs actually came out — the check on the ceiling. */
   consecutive?: {

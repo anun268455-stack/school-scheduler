@@ -280,6 +280,11 @@ export const runSolver = (p: {
   min_last_period?: number;
   /** เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 = ไม่จำกัด */
   max_last_period?: number;
+  /**
+   * คาบสุดท้ายของวัน — "reserve" ใช้เมื่อจำเป็น (ค่าเริ่มต้น),
+   * "never" ไม่ใช้เลย, "free" ใช้ได้ตามปกติ
+   */
+  last_period_mode?: "reserve" | "never" | "free";
 }) => api.post<SolverResult>("/timetable/solve", p).then((r) => r.data);
 
 /** วิชาที่มีปัญหา — what cannot be scheduled, checked before a run. */

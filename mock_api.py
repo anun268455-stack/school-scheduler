@@ -1511,6 +1511,43 @@ def _last_period_for(level: str) -> int | None:
     return nums[-1] if nums else None
 
 
+# ── คาบสุดท้ายของวัน: ใช้เมื่อจำเป็นเท่านั้น ──────────────────────────────────
+#
+# "ช่วยทำให้ไม่มีคาบ 9 เลย เพราะยังมีคาบว่างอยู่ ... ถ้าระบบลงไม่ได้จริงๆ
+#  ก็ไม่ต้องลงให้ เพราะเดี๋ยวฉันจะไปกำหนดเอง"
+#
+# A class whose lessons fit inside คาบ 1-8 should go home when คาบ 8 ends.
+# The last period is not another cell like the rest: it is the one the school
+# would rather leave empty, and only a class with more lessons than the rest
+# of the day can hold has any business sitting through it. Before this, the
+# last period was simply discouraged by a tie-break inside the single-lesson
+# placer — which left เซ็ตห้องย่อย, คาบคู่ and everything placed by the other
+# loops free to fill it while คาบ 1 of the same class stood empty.
+
+LAST_PERIOD_MODE = "reserve"      # reserve | never | free
+
+_LAST_PERIOD_MODES = ("reserve", "never", "free")
+
+
+def _school_last_period_mode(body: dict[str, Any] | None = None) -> str:
+    """How the school wants the last period of the day used.
+
+    reserve  ใช้เมื่อจำเป็น — fill every other period first; a class only gets
+             the last period when its own week has nowhere else to put the
+             lesson. (the default)
+    never    ไม่ใช้เลย — never place anything there. What will not fit is
+             reported instead, for the school to seat by hand.
+    free     ใช้ได้ตามปกติ — the old behaviour, just another cell.
+    """
+    for src in (body or {}, SCHOOL_CONFIG if isinstance(SCHOOL_CONFIG, dict) else {}):
+        v = src.get("last_period_mode")
+        if isinstance(v, bool):
+            return "free" if v else "reserve"
+        if isinstance(v, str) and v in _LAST_PERIOD_MODES:
+            return v
+    return LAST_PERIOD_MODE
+
+
 # ── วิชายากควรอยู่ช่วงเช้า ────────────────────────────────────────────────────
 # Maths and science in the last period of the afternoon is a lesson half the
 # room sleeps through. This is a nudge, not a rule: a subject marked this way
@@ -1704,6 +1741,36 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     def cells_for(gid: int):
         lvl = _level_key(g_map.get(gid))
         return [(d, p) for d in range(5) for p in _class_periods_for_level(lvl)]
+
+    # ── คาบสุดท้ายของวันไว้ใช้เมื่อจำเป็น ─────────────────────────────────────
+    tail_mode = _school_last_period_mode(body)
+
+    def uses_tail(lvl: str, period: int, pair: bool = False) -> bool:
+        """Would seating a lesson here use the last period of the day?
+
+        `pair` asks the question for a คาบคู่ STARTING at this period: the
+        second half lands an hour later, so a double beginning at คาบ 8 is
+        every bit as much a คาบ 9 as one beginning at คาบ 9.
+        """
+        last = _last_period_for(lvl)
+        if last is None:
+            return False
+        return period == last or (pair and _next_class_period_for(lvl, period) == last)
+
+    def by_tail(cells: list, lvl: str, pair: bool = False) -> list:
+        """Shuffle, then send the last period's cells to the back of the queue.
+
+        Every loop that picks a cell goes through here, so เซ็ตห้องย่อย and
+        คาบคู่ obey the rule as well as ordinary lessons — they are placed
+        first, on an empty grid, so left to themselves they were the ones
+        most likely to take คาบ 9 when the whole week was still free.
+        """
+        random.shuffle(cells)
+        if tail_mode == "free":
+            return cells
+        if tail_mode == "never":
+            return [c for c in cells if not uses_tail(lvl, c[1], pair)]
+        return sorted(cells, key=lambda c: uses_tail(lvl, c[1], pair))
 
     class_periods = sorted({p["period_num"] for p in PERIODS if p["type"] == "class"})
     all_cells     = [(d, p) for d in range(5) for p in class_periods]
@@ -2737,6 +2804,13 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                                                  int(pin_period))
                     if nxt is not None:
                         cells.append((int(pin_day), nxt))
+            # คาบสุดท้ายของวัน — "ไม่ใช้เลย" takes those cells off the board
+            # entirely, and a lesson left with nowhere to go is reported so the
+            # school can seat it by hand. In "ใช้เมื่อจำเป็น" they stay, ranked
+            # last by tail_cost below. A cell the school pinned is its own
+            # decision and is never filtered out.
+            if tail_mode == "never" and (pin_day is None or pin_period is None):
+                cells = [c for c in cells if not uses_tail(lvl, c[1])]
             random.shuffle(cells)
             # Teachers still short of their last-period duty get those cells
             # first; a morning subject gets the morning first. Both are only an
@@ -3227,9 +3301,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if is_double and needed >= 2:
             pairs = needed // 2
             lead_lvl = _level_key(g_map.get(reqs[0]["group_id"]))
-            cells = (double_starts(reqs[0]["group_id"]) if pinned is None
-                     else [(int(pinned[0]), int(pinned[1]))])
-            random.shuffle(cells)
+            # ล็อกเวลาไว้ = ชั่วโมงนั้นชั่วโมงเดียว, คาบสุดท้ายหรือไม่ก็ตาม —
+            # โรงเรียนเลือกเอง by_tail จึงไม่แตะ
+            cells = (by_tail(double_starts(reqs[0]["group_id"]), lead_lvl, pair=True)
+                     if pinned is None else [(int(pinned[0]), int(pinned[1]))])
             # หนึ่งรหัสวิชา หนึ่งครั้งต่อวัน, here too. This loop never asked,
             # so a เซ็ต of two คาบคู่ could put both of them on one day —
             # ม.4/10ก sat through ย31206 for four periods of one Tuesday.
@@ -3265,9 +3340,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # Remaining single periods
         remaining = needed - placed
         if remaining > 0:
-            cells = (cells_for(reqs[0]["group_id"]) if pinned is None
-                     else [(int(pinned[0]), int(pinned[1]))])
-            random.shuffle(cells)
+            cells = (by_tail(cells_for(reqs[0]["group_id"]),
+                             _level_key(g_map.get(reqs[0]["group_id"])))
+                     if pinned is None else [(int(pinned[0]), int(pinned[1]))])
 
             def already_today(day_: int) -> bool:
                 return any(subj_day[(r["group_id"], r.get("subject_id"), day_)] > 0
@@ -3416,8 +3491,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             for attempt in range(3):
                 if pairs_needed <= 0:
                     break
-                cells = double_starts(gid)
-                random.shuffle(cells)
+                cells = by_tail(double_starts(gid), lvl, pair=True)
                 for day, p in cells:
                     if pairs_needed <= 0:
                         break
@@ -3592,7 +3666,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     last_period_fixed = 0
     last_period_swapped = 0
-    for teacher in TEACHERS:
+    # เวรคาบสุดท้าย shares out whatever lessons the last period holds. Asked to
+    # keep that period clear, there is nothing left to share: spreading a duty
+    # across the staff only makes sense when the duty exists. So the trade is
+    # skipped, and the note about teachers who did not get one is skipped with
+    # it — it would be a warning about the very thing the school asked for.
+    for teacher in (TEACHERS if tail_mode == "free" else []):
         tid = teacher["id"]
         short = last_period_shortfall(tid)
         if short <= 0:
@@ -3747,6 +3826,229 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             f"{f' (สลับที่กับคาบอื่น {dup_swapped})' if dup_swapped else ''}"
         )
 
+    # ── คาบสุดท้ายของวัน: ดึงที่ลงไว้แล้วกลับลงมา ─────────────────────────────
+    #
+    # "ช่วยทำให้ไม่มีคาบ 9 เลย เพราะยังมีคาบว่างอยู่"
+    #
+    # The ordering rules keep the last period for last, but they decide one
+    # lesson at a time and cannot see the week that comes after. A lesson
+    # seated in คาบ 9 early on — when คาบ 1 was still held by something that
+    # has since moved — then stays there for no reason at all.
+    #
+    # This is the pass that goes back and looks. Every lesson sitting in the
+    # last period is offered the class's free cells earlier in the week and
+    # takes one if every rule still holds there: the teacher free and willing,
+    # a room free, the run not too long, and the class not already studying
+    # that subject that day. Failing that it offers to trade places with one
+    # of the class's own earlier lessons. Rooms may be chained, as they are
+    # during placement, so "the only free cell has no room" is not the end of
+    # it either.
+    #
+    # Nothing is created, nothing is lost, and nothing NEW lands in the last
+    # period. A lesson with nowhere earlier to go stays where it is: that
+    # class genuinely has more lessons than the rest of the day can hold,
+    # which is the one case the school accepts a last period for.
+    drained = 0
+    drained_pairs = 0
+    if tail_mode != "free":
+        index_rooms()
+        pinned_pairs = {(r["group_id"], r.get("subject_id")) for r in REQUIREMENTS
+                        if r.get("pinned_day") is not None
+                        and r.get("pinned_period") is not None}
+        req_room = {(r["group_id"], r.get("subject_id"), r.get("teacher_id")):
+                    r.get("room_id")
+                    for r in REQUIREMENTS if r.get("room_id")}
+
+        def can_leave(x: dict) -> bool:
+            """May this lesson be moved out of the last period?
+
+            The school's own decisions stay where the school put them: a
+            locked lesson, คาบเสรี, กิจกรรม, a เซ็ตห้องย่อย (every subgroup
+            would have to travel together) and anything pinned to an hour.
+            """
+            return (not x.get("is_locked") and not x.get("is_elective")
+                    and not x.get("is_activity_block")
+                    and not x.get("parallel_group_key")
+                    and x.get("co_teacher_id") is None
+                    and not x.get("activity_teacher_ids")
+                    and bool(x.get("teacher_id"))
+                    and t_map.get(x["teacher_id"]) is not None
+                    and (x["group_id"], x.get("subject_id")) not in pinned_pairs)
+
+        def room_for(x: dict, day: int, period: int, also: int | None = None):
+            """A room for this lesson at this cell, chaining if need be.
+
+            Asked only once every other rule has said yes, because a chain
+            that succeeds leaves other lessons in new rooms — worth doing for
+            a move that will happen, not for one that is about to be refused.
+            """
+            pin = req_room.get((x["group_id"], x.get("subject_id"), x.get("teacher_id")))
+            rid, _n, _t = find_room(x["teacher_id"], day, period, x.get("subject_id"),
+                                    x["group_id"], also, None, pin)
+            if rid:
+                return rid
+            return shuffle_for(x["teacher_id"], x["group_id"], x.get("subject_id"),
+                               day, period, also, pin)
+
+        def pull(x: dict) -> tuple:
+            """Lift the lesson out of its cell, remembering where it sat."""
+            home = (x["day"], x["period"], x.get("room_id"))
+            hold_room(x, None)
+            lift(x)
+            return home
+
+        def seat(x: dict, day: int, period: int, rid: int | None) -> None:
+            x["day"], x["period"] = day, period
+            hold_room(x, rid)
+            book(x["teacher_id"], x["group_id"], day, period)
+            note_subject(x["group_id"], x.get("subject_id"), day)
+
+        def tail_total() -> int:
+            return sum(1 for x in SLOTS
+                       if x["period"] == _last_period_for(
+                           _level_key(g_map.get(x["group_id"]))))
+
+        def drain_round() -> int:
+            moved_here = 0
+            # The tail half of a คาบคู่ is dealt with as the pair it belongs
+            # to, so a double beginning one period before the end travels
+            # whole or not at all.
+            for s in sorted(list(SLOTS),
+                            key=lambda x: (x["group_id"], x["day"], x["period"])):
+                lvl  = _level_key(g_map.get(s["group_id"]))
+                last = _last_period_for(lvl)
+                if last is None or s["period"] != last or not can_leave(s):
+                    continue
+                gid, tid = s["group_id"], s["teacher_id"]
+                teacher  = t_map.get(tid)
+                sid      = s.get("subject_id")
+                nums     = [p for p in _class_periods_for_level(lvl) if p != last]
+
+                if s.get("double_group_key"):
+                    pair = [x for x in SLOTS
+                            if x.get("double_group_key") == s["double_group_key"]]
+                    if len(pair) != 2 or any(not can_leave(x) for x in pair):
+                        continue
+                    pair.sort(key=lambda x: x["period"])
+                    head, tailh = pair
+                    homes = [pull(x) for x in pair]
+                    starts = [(d, p) for d in range(5) for p in nums
+                              if _next_class_period_for(lvl, p) in nums]
+                    random.shuffle(starts)
+                    moved = False
+                    for d, p in starts:
+                        p2 = _next_class_period_for(lvl, p)
+                        if subj_day[(gid, sid, d)] > 0:
+                            continue
+                        if group_occupied(gid, d, p) or group_occupied(gid, d, p2):
+                            continue
+                        if not can_take(teacher, gid, d, p) or not can_take(teacher, gid, d, p2):
+                            continue
+                        rid = room_for(head, d, p, p2)
+                        if not rid and homes[0][2]:
+                            continue
+                        # Both halves of a คาบคู่ sit in the one room.
+                        seat(head, d, p, rid)
+                        seat(tailh, d, p2, rid)
+                        pairs_moved[0] += 1
+                        moved_here += 2
+                        moved = True
+                        break
+                    if not moved:
+                        for x, home in zip(pair, homes):
+                            seat(x, home[0], home[1], home[2])
+                    continue
+
+                if not swappable(s):
+                    continue
+                home = pull(s)
+                cells = [(d, p) for d in range(5) for p in nums]
+                random.shuffle(cells)
+                moved = False
+                for d, p in cells:
+                    if subj_day[(gid, sid, d)] > 0 or group_occupied(gid, d, p):
+                        continue
+                    if not can_take(teacher, gid, d, p):
+                        continue
+                    rid = room_for(s, d, p)
+                    if not rid and home[2]:
+                        continue
+                    seat(s, d, p, rid)
+                    moved_here += 1
+                    moved = True
+                    break
+                if moved:
+                    continue
+                # Nowhere this lesson itself can go — so move somebody else
+                # out of the way and take THEIR cell.
+                #
+                # Two steps, never one. A straight trade with an earlier
+                # lesson would simply put that lesson at the end of the day
+                # instead: the class finishes just as late, with a different
+                # subject. What actually empties the cell is finding a lesson
+                # of this class that CAN reach one of the free hours this one
+                # cannot — a different teacher, a different day for the
+                # one-a-day rule — moving it there, and stepping into the cell
+                # it leaves behind.
+                free_now = [(d, p) for d in range(5) for p in nums
+                            if not group_occupied(gid, d, p)]
+                random.shuffle(free_now)
+                others = [y for y in SLOTS
+                          if y["group_id"] == gid and y is not s and swappable(y)
+                          and can_leave(y) and y["period"] != last
+                          and y.get("subject_id") != sid]
+                random.shuffle(others)
+                for y in others:
+                    y_teacher = t_map.get(y["teacher_id"])
+                    if not y_teacher:
+                        continue
+                    yd, yp = y["day"], y["period"]
+                    # This lesson has to be able to stand where the other one
+                    # is now, or there is no point moving them at all.
+                    if subj_day[(gid, sid, yd)] > 0 or not can_take(teacher, gid, yd, yp):
+                        continue
+                    y_home = pull(y)
+                    for d, p in free_now:
+                        if subj_day[(gid, y.get("subject_id"), d)] > 0:
+                            continue
+                        if group_occupied(gid, d, p) or not can_take(y_teacher, gid, d, p):
+                            continue
+                        rid_b = room_for(y, d, p)
+                        if not rid_b and y_home[2]:
+                            continue
+                        rid_a = room_for(s, yd, yp)
+                        if not rid_a and home[2]:
+                            continue
+                        seat(y, d, p, rid_b)
+                        seat(s, yd, yp, rid_a)
+                        moved_here += 1
+                        moved = True
+                        break
+                    if moved:
+                        break
+                    seat(y, y_home[0], y_home[1], y_home[2])
+                if not moved:
+                    seat(s, home[0], home[1], home[2])
+            return moved_here
+
+        # A second round, because a trade in the first can free the very cell
+        # another class needed. It stops as soon as a round moves nothing.
+        pairs_moved = [0]          # คาบคู่ที่ย้ายไปทั้งคู่
+        before_tail = tail_total()
+        for _round in range(2):
+            if not drain_round():
+                break
+        # Counted as the last period actually emptying, not as moves made: a
+        # trade moves two lessons and empties one cell.
+        drained = max(0, before_tail - tail_total())
+        drained_pairs = pairs_moved[0]
+
+    if drained:
+        notes.append(
+            f"คาบสุดท้ายของวันไว้ใช้เมื่อจำเป็น — ย้ายลงมาคาบก่อนหน้าได้ {drained} คาบ"
+            f"{f' (คาบคู่ {drained_pairs} คู่)' if drained_pairs else ''}"
+        )
+
     # ── คาบที่ลงแล้วแต่ไม่มีห้อง: ขยับห้องให้เหมือนกัน ────────────────────────
     #
     # Last of all, because the passes above move lessons between cells and a
@@ -3780,13 +4082,35 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # Only teachers who actually have lessons can be given a last period.
     teaching = [t for t in TEACHERS if any(r["teacher_id"] == t["id"] for r in REQUIREMENTS)]
     expected = [t for t in teaching if last_period_target(t["id"]) > 0]
+    # ห้องที่ยังต้องเรียนถึงคาบสุดท้าย — the ones whose week genuinely does not
+    # fit in คาบ 1-8, named so the school can see at a glance whether that
+    # matches what it expects of each class.
+    tail_left: dict[str, int] = defaultdict(int)
+    for s_ in SLOTS:
+        if s_["period"] == _last_period_for(_level_key(g_map.get(s_["group_id"]))):
+            tail_left[(g_map.get(s_["group_id"]) or {}).get("name", "?")] += 1
     last_period_stats = {
         "teachers": len(expected),
         "met": sum(1 for t in expected if last_period_shortfall(t["id"]) <= 0),
         "moved": last_period_fixed,
         "swapped": last_period_swapped,
         "school_min": school_last_min,
+        "mode": tail_mode,
+        "drained": drained,
+        "left": sum(tail_left.values()),
+        "classes": dict(sorted(tail_left.items())),
     }
+    if tail_mode != "free":
+        if tail_left:
+            top = sorted(tail_left.items(), key=lambda kv: (-kv[1], kv[0]))
+            notes.append(
+                f"ยังต้องใช้คาบสุดท้ายอยู่ {sum(tail_left.values())} คาบ ใน "
+                f"{len(tail_left)} ห้อง — ห้องเหล่านี้มีวิชาเกินกว่าคาบ 1-8 จะรับไหว "
+                f"({', '.join(f'{n} {c}' for n, c in top[:5])}"
+                f"{' …' if len(top) > 5 else ''})"
+            )
+        else:
+            notes.append("ไม่มีห้องไหนต้องเรียนถึงคาบสุดท้ายเลย")
 
     # Not a violation. Nothing is wrong with a timetable in which a teacher
     # has no last period — the school would rather that than keep a class
@@ -3795,7 +4119,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     missing_last = sorted(
         t["name"] for t in teaching
         if last_period_shortfall(t["id"]) > 0
-    )
+    ) if tail_mode == "free" else []
     if missing_last:
         notes.append(
             f"ครู {len(missing_last)} คนไม่ได้เวรคาบสุดท้าย — "

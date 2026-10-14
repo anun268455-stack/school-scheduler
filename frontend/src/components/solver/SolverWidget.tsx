@@ -14,6 +14,14 @@ import type { RequirementProblem, SolverResult } from "../../types";
 type SkipMode = "none" | "blocking" | "all";
 
 /**
+ * คาบสุดท้ายของวัน — how freely the solver may use it.
+ *
+ * "ช่วยทำให้ไม่มีคาบ 9 เลย เพราะยังมีคาบว่างอยู่ ... ถ้าระบบลงไม่ได้จริงๆ
+ *  ก็ไม่ต้องลงให้ เพราะเดี๋ยวฉันจะไปกำหนดเอง"
+ */
+type LastMode = "reserve" | "never" | "free";
+
+/**
  * The panel's settings and its last result, kept across open and close.
  *
  * Everything here used to live in the component, and the component is
@@ -29,12 +37,14 @@ const KEEP = "solver.panel.v1";
 
 interface Kept {
   clearExisting: boolean; maxConsec: number; minLast: number; maxLast: number;
+  lastMode: LastMode;
   skipMode: SkipMode; manual: Record<number, boolean>;
   result: SolverResult | null; ranAt: string | null;
 }
 
 const BLANK: Kept = {
   clearExisting: true, maxConsec: 3, minLast: 1, maxLast: 3,
+  lastMode: "reserve",
   skipMode: "blocking", manual: {}, result: null, ranAt: null,
 };
 
@@ -68,6 +78,8 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   // offered rather than chosen: tighter spreads the late afternoons around
   // but leaves a few lessons with nowhere to go.
   const [maxLast, setMaxLast] = useState(kept0.maxLast);
+  // คาบสุดท้ายของวัน: kept for the class, not for the timetable's convenience.
+  const [lastMode, setLastMode] = useState<LastMode>(kept0.lastMode ?? "reserve");
   const [result, setResult]               = useState<SolverResult | null>(kept0.result);
   const [ranAt, setRanAt]                 = useState<string | null>(kept0.ranAt);
 
@@ -81,8 +93,8 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
 
   // Written on every change, so closing the panel — or the tab — keeps it.
   useEffect(() => {
-    writeKept({ clearExisting, maxConsec, minLast, maxLast, skipMode, manual, result, ranAt });
-  }, [clearExisting, maxConsec, minLast, maxLast, skipMode, manual, result, ranAt]);
+    writeKept({ clearExisting, maxConsec, minLast, maxLast, lastMode, skipMode, manual, result, ranAt });
+  }, [clearExisting, maxConsec, minLast, maxLast, lastMode, skipMode, manual, result, ranAt]);
 
   const loadProblems = () =>
     api.fetchRequirementProblems()
@@ -113,6 +125,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
         preferConsecutive: Math.min(2, maxConsec),
         minLastPeriod: minLast,
         maxLastPeriod: maxLast,
+        lastPeriodMode: lastMode,
       });
       setResult(r);
       setRanAt(new Date().toISOString());
@@ -204,8 +217,46 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
           </p>
         </div>
 
-        {/* ── เวรคาบสุดท้าย ──────────────────────────────────────────────── */}
+        {/* ── คาบสุดท้ายของวัน ─────────────────────────────────────────── */}
         <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+            คาบสุดท้ายของวัน
+          </p>
+          <div className="flex gap-1.5">
+            {([
+              ["reserve", "ใช้เมื่อจำเป็น"],
+              ["never",   "ไม่ใช้เลย"],
+              ["free",    "ใช้ได้ตามปกติ"],
+            ] as [LastMode, string][]).map(([v, label]) => (
+              <button key={v} onClick={() => setLastMode(v)}
+                className={clsx("flex-1 px-2 py-1.5 rounded text-xs font-semibold border transition-colors",
+                  lastMode === v
+                    ? "bg-indigo-600 border-indigo-500 text-white"
+                    : "bg-gray-800 border-gray-600 text-gray-300 hover:bg-gray-700")}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            {lastMode === "reserve"
+              ? "แนะนำ — ลงคาบ 1-8 ให้เต็มก่อน ห้องไหนวิชาไม่เกินก็ไม่มีคาบสุดท้ายเลย "
+                + "เหลือไว้ให้ห้องที่วิชาเยอะจริงๆ เท่านั้น และคาบที่เผลอไปอยู่ท้ายวัน "
+                + "จะถูกดึงกลับลงมาให้อัตโนมัติ"
+              : lastMode === "never"
+                ? "ไม่ลงคาบสุดท้ายเด็ดขาด — วิชาที่เหลือจะขึ้นเป็น “ลงไม่ได้” "
+                  + "ให้ไปกำหนดเองว่าห้องไหนเรียนคาบไหน"
+                : "ถือเป็นคาบธรรมดาคาบหนึ่ง — ใช้เมื่ออยากให้ครูมีเวรคาบสุดท้ายทั่วถึง"}
+          </p>
+          {lastMode !== "free" && (
+            <p className="text-[11px] text-amber-300/80 leading-relaxed">
+              คาบที่ล็อกไว้ · คาบเสรี · กิจกรรม · เซ็ตห้องย่อยที่ล็อกเวลา
+              ยังอยู่ที่เดิมเสมอ เพราะเป็นสิ่งที่โรงเรียนกำหนดเอง
+            </p>
+          )}
+        </div>
+
+        {/* ── เวรคาบสุดท้าย ──────────────────────────────────────────────── */}
+        <div className={clsx("space-y-2", lastMode !== "free" && "opacity-50")}>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
             เวรคาบสุดท้าย — ขั้นต่ำต่อสัปดาห์
           </p>
@@ -239,6 +290,12 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
             ยิ่งเข้มยิ่งมีบางคาบที่หาที่ลงไม่ได้ (ข้อมูลโรงเรียนนี้: 3 วัน ลงได้ 2,157 คาบ ·
             2 วัน ลงได้ 2,125 · ไม่จำกัด ลงได้ 2,180 แต่มีครูอยู่คาบสุดท้ายถึง 5 วัน)
           </p>
+          {lastMode !== "free" && (
+            <p className="text-[11px] text-amber-300/80 leading-relaxed">
+              ตอนนี้ปิดอยู่ เพราะตั้งให้คาบสุดท้ายว่างไว้ — จะแบ่งเวรคาบสุดท้ายได้
+              ก็ต่อเมื่อมีคาบสุดท้ายให้แบ่ง
+            </p>
+          )}
           <p className="text-[11px] text-gray-500 leading-relaxed">
             แบ่งเวรคาบสุดท้ายให้ทั่วถึง ไม่ตกกับคนเดิมๆ ·
             <strong>นักเรียนมาก่อน</strong> — ระบบจะไม่เพิ่มคาบท้ายวันให้ห้องที่เลิกเรียนแล้ว
@@ -367,7 +424,31 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
                 </div>
               </>
             )}
-            {result.last_period && result.last_period.teachers > 0 && (
+            {result.last_period && result.last_period.mode
+             && result.last_period.mode !== "free" && (
+              <>
+                <ResultRow
+                  label="ห้องที่ต้องเรียนถึงคาบสุดท้าย"
+                  value={result.last_period.left
+                    ? `${Object.keys(result.last_period.classes ?? {}).length} ห้อง `
+                      + `(${result.last_period.left} คาบ)`
+                    : "ไม่มีเลย"} />
+                <div className="text-[10px] opacity-80 pt-0.5 leading-relaxed">
+                  {(result.last_period.drained ?? 0) > 0 &&
+                    <>ดึงกลับลงมาให้เรียนก่อนหน้าได้ {result.last_period.drained} คาบ · </>}
+                  {result.last_period.left
+                    ? "ห้องที่เหลือมีวิชาเกินกว่าคาบก่อนหน้าจะรับไหว — "
+                      + Object.entries(result.last_period.classes ?? {})
+                          .sort((a, b) => b[1] - a[1]).slice(0, 6)
+                          .map(([n, c]) => `${n} ${c}`).join(" · ")
+                    : "ทุกห้องเลิกเรียนก่อนคาบสุดท้าย"}
+                </div>
+              </>
+            )}
+            {/* A result kept from before this setting existed has no mode;
+                it was made the old way, so it is shown the old way. */}
+            {result.last_period && result.last_period.teachers > 0
+             && (result.last_period.mode ?? "free") === "free" && (
               <>
                 <ResultRow
                   label="ครูที่ได้เวรคาบสุดท้าย"

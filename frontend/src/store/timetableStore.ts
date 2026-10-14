@@ -172,6 +172,7 @@ interface TimetableStore {
     minLastPeriod?: number;
     /** เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 = ไม่จำกัด */
     maxLastPeriod?: number;
+    lastPeriodMode?: "reserve" | "never" | "free";
   }) => Promise<SolverResult>;
 
   // Bulk operations
@@ -571,6 +572,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         prefer_consecutive: opts?.preferConsecutive,
         min_last_period: opts?.minLastPeriod,
         max_last_period: opts?.maxLastPeriod,
+        last_period_mode: opts?.lastPeriodMode,
       });
       await get().loadSlots();
       return result;
