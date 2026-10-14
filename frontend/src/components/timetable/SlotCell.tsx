@@ -1,7 +1,8 @@
-import React from "react";
+import React, { useMemo } from "react";
 import clsx from "clsx";
 import type { TimetableSlot } from "../../types";
 import { slotTeacherNames, teachingTogether, myElectiveOption, slotLabel } from "../../utils/teacherSlots";
+import { problemOf, type SlotProblem } from "../../utils/slotProblems";
 import { useTimetableStore } from "../../store/timetableStore";
 
 interface SlotCellProps {
@@ -15,11 +16,10 @@ interface SlotCellProps {
   compact?:    boolean;
 }
 
-function slotColors(s: TimetableSlot): string {
-  // คาบที่ยังจัดไม่ลงตัว — วางไว้ให้เห็นเฉยๆ ยังไม่มีห้อง และครูอาจติดสอนอยู่
-  // ที่อื่นในชั่วโมงนั้น ต้องเด่นกว่าทุกสีที่เหลือ เพราะเป็นคาบเดียวในตารางที่
-  // ยังต้องตัดสินใจด้วยมือ
-  if (s.is_overflow)            return "bg-rose-50 border-rose-500 text-rose-900";
+function slotColors(s: TimetableSlot, bad?: boolean): string {
+  // คาบที่ยังไม่เรียบร้อย — ไม่มีห้อง ครูติดสอนที่อื่น หรือระบบวางไว้ให้เห็น
+  // เฉยๆ ต้องเด่นกว่าทุกสีที่เหลือ เพราะเป็นคาบที่ยังต้องตัดสินใจด้วยมือ
+  if (bad)                      return "bg-rose-50 border-rose-500 text-rose-900";
   if (s.is_elective)            return "bg-purple-50 border-purple-300 text-purple-900";
   // สอนร่วม before ล็อก: two teachers in one room is the thing the school is
   // scanning the grid for, and the dark locked cell hid the badge entirely.
@@ -33,17 +33,26 @@ function slotColors(s: TimetableSlot): string {
 export const SlotCell: React.FC<SlotCellProps> = ({
   slots, isDragging, isOver, onLock, onDelete, onSwapRoom, onOpenElective, compact,
 }) => {
+  // ทุกคาบในตาราง เพราะ "ครูติดสอนห้องอื่นในชั่วโมงนี้" ดูจากคาบของตัวเองไม่ได้
+  const all = useTimetableStore((st) => st.slots);
+  const probs = useMemo(() => {
+    const m = new Map<number, SlotProblem | null>();
+    for (const s of slots) m.set(s.id, problemOf(s, all));
+    return m;
+  }, [slots, all]);
+
   if (!slots.length) return null;
 
   const isParallel = slots.length > 1;
+  const anyBad = slots.some((s) => probs.get(s.id));
 
   return (
     <div
       className={clsx(
         "relative w-full h-full rounded border overflow-hidden transition-shadow",
-        // กรอบแดงของคาบที่ยังจัดไม่ลงตัว อยู่ที่กรอบนอก เพราะกรอบของการ์ด
+        // กรอบแดงของคาบที่ยังไม่เรียบร้อย อยู่ที่กรอบนอก เพราะกรอบของการ์ด
         // ข้างในถูกปิดไว้ (border-0) สีจากในนั้นจึงไม่ขึ้น
-        slots.some((s) => s.is_overflow) && "border-rose-500 ring-2 ring-rose-400",
+        anyBad && "border-rose-500 ring-2 ring-rose-400",
         isDragging && "opacity-40 shadow-lg",
         isOver     && "ring-2 ring-blue-400",
       )}
@@ -56,11 +65,14 @@ export const SlotCell: React.FC<SlotCellProps> = ({
            letter in front, and the whole thing on hover. */
         <div className="flex flex-col h-full divide-y divide-gray-200/70">
           {slots.map((s) => (
-            <MiniLayer key={s.id} slot={s} label={shortName(s.group_name, slots)} />
+            <MiniLayer key={s.id} slot={s} label={shortName(s.group_name, slots)}
+              problem={probs.get(s.id) ?? null} />
           ))}
         </div>
       ) : (
-        <Layer slot={slots[0]} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} compact={compact} />
+        <Layer slot={slots[0]} problem={probs.get(slots[0].id) ?? null}
+          onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom}
+          onOpenElective={onOpenElective} compact={compact} />
       )}
     </div>
   );
@@ -68,6 +80,7 @@ export const SlotCell: React.FC<SlotCellProps> = ({
 
 interface LayerProps {
   slot:      TimetableSlot;
+  problem?:  SlotProblem | null;
   compact?:  boolean;
   onLock?:   (id: number) => void;
   onDelete?: (id: number) => void;
@@ -75,7 +88,7 @@ interface LayerProps {
   onOpenElective?: (slot: TimetableSlot) => void;
 }
 
-const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRoom, onOpenElective }) => {
+const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete, onSwapRoom, onOpenElective }) => {
   // สอนร่วม and a คาบกิจกรรม duty roster both put more than one teacher in the
   // room. The line truncates, so the count goes in a badge that cannot.
   const names = slotTeacherNames(slot);
@@ -94,17 +107,18 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
   <div
     className={clsx(
       "relative flex flex-col h-full p-1 group border-0 overflow-hidden",
-      slotColors(slot),
+      slotColors(slot, !!problem),
     )}
   >
     {/* ── Badges row (fixed 14px height) ────────────────────────── */}
     <div className="flex items-center gap-0.5 mb-0.5 overflow-hidden" style={{ minHeight: "14px", maxHeight: "14px" }}>
-      {slot.is_overflow && (
+      {problem && (
         <span
           className="shrink-0 inline-block bg-rose-600 text-white text-[7px] px-0.5 rounded-sm leading-tight font-bold"
-          title="คาบนี้ยังจัดไม่ลงตัว — ระบบวางไว้ให้เห็นเฉยๆ ยังไม่ได้กำหนดห้อง และครูอาจติดสอนห้องอื่นในชั่วโมงนี้ ลากไปวางที่อื่นหรือเปลี่ยนครู/ห้องได้เลย แล้วกรอบแดงจะหายไป"
+          title={`${problem.text} — ${problem.fix}`}
         >
-          ⚠ ยังไม่ลงตัว
+          ⚠ {problem.kinds.includes("no_room") && !problem.kinds.includes("teacher_clash")
+            ? "ไม่มีห้อง" : "ต้องแก้"}
         </span>
       )}
       {slot.is_locked && (
@@ -274,20 +288,19 @@ function shortName(name: string | null | undefined, all: TimetableSlot[]): strin
 const MiniLayer: React.FC<{
   slot: TimetableSlot;
   label: string;
+  problem?: SlotProblem | null;
   /** Declared because the type-check stub's React.FC does not carry it. */
   key?: string | number;
-}> = ({ slot, label }) => {
+}> = ({ slot, label, problem }) => {
   const names = slotTeacherNames(slot);
   const title = [slot.group_name, slotLabel(slot), slot.subject_name,
                  names.join(" · "), slot.room_name].filter(Boolean).join(" · ");
   return (
     <div className={clsx("flex-1 min-h-0 flex items-center gap-1 px-1 overflow-hidden",
-      slotColors(slot))}
-      title={slot.is_overflow
-        ? `${title} — คาบนี้ยังจัดไม่ลงตัว ยังไม่ได้กำหนดห้อง`
-        : title}>
+      slotColors(slot, !!problem))}
+      title={problem ? `${title} — ${problem.text}` : title}>
       <span className="shrink-0 font-bold text-[9px] bg-white/70 rounded px-0.5 leading-tight">
-        {slot.is_overflow ? `⚠${label}` : label}
+        {problem ? `⚠${label}` : label}
       </span>
       <span className="flex-1 min-w-0 truncate font-semibold text-[9px] leading-tight">
         {slotLabel(slot)}

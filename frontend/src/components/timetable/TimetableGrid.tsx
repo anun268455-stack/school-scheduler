@@ -17,11 +17,13 @@ import { SwapRouteModal } from "./SwapRouteModal";
 import { RoomSwapModal } from "./RoomSwapModal";
 import { ElectiveOptionModal } from "./ElectiveOptionModal";
 import { AddLessonModal } from "./AddLessonModal";
+import { ClassProblemsModal, type ShortRow } from "./ClassProblemsModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
 import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
 import { slotsForTeacher } from "../../utils/teacherSlots";
+import { problemOf, type SlotProblem } from "../../utils/slotProblems";
 import { TableSearch, matches } from "../common/TableSearch";
 import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../utils/levels";
 import { DAYS, type Period, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
@@ -183,6 +185,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   const [roomSwapSlot, setRoomSwapSlot] = useState<TimetableSlot | null>(null);
   const [addCell, setAddCell] = useState<{ day: number; period: number } | null>(null);
   const [electiveSlotId, setElectiveSlotId] = useState<number | null>(null);
+  const [showProblems, setShowProblems] = useState(false);
   const electiveSlot = electiveSlotId != null ? slots.find((s) => s.id === electiveSlotId) ?? null : null;
 
   const sensors = useSensors(
@@ -213,6 +216,41 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     if (selectedRoomId    != null) return slots.filter((s) => s.room_id    === selectedRoomId);
     return [];
   }, [slots, shares, selectedGroupId, selectedTeacherId, selectedRoomId]);
+
+  // ── อะไรยังค้างอยู่ในตารางที่กำลังดู ────────────────────────────────────
+  //
+  // "ถ้าชนหรือมีปัญหาอะไรก็มีไอคอนปุ่มด้านล่างเด่นออกมาให้กด ว่ามีปัญหาตรงไหน"
+  //
+  // คาบกรอบแดงบอกว่า "ตรงนี้มีเรื่อง" แต่ไม่ได้บอกว่าทั้งห้องมีกี่เรื่อง และ
+  // วิชาที่ลงไม่ได้เลยก็ไม่มีคาบให้ขึ้นกรอบ ปุ่มนี้จึงรวมสองอย่างไว้ที่เดียว
+  const problems: SlotProblem[] = useMemo(
+    () => viewSlots
+      .map((s) => problemOf(s, slots))
+      .filter((p): p is SlotProblem => p !== null)
+      .sort((a, b) => a.slot.day - b.slot.day || a.slot.period - b.slot.period),
+    [viewSlots, slots]);
+
+  // วิชาของห้องนี้ที่ยังลงไม่ครบ — คาบกรอบแดงนับเป็นยังไม่ลง
+  const shortRows: ShortRow[] = useMemo(() => {
+    if (selectedGroupId == null && selectedTeacherId == null) return [];
+    const mine = requirements.filter((r) => (selectedGroupId != null
+      ? shares(r.group_id, selectedGroupId)
+      : r.teacher_id === selectedTeacherId));
+    const out: ShortRow[] = [];
+    for (const r of mine) {
+      const placed = slots.filter((s) => s.group_id === r.group_id
+        && s.subject_id === r.subject_id && !s.is_overflow).length;
+      if (placed < (r.weekly_count ?? 0)) out.push({ requirement: r, placed });
+    }
+    return out;
+  }, [requirements, slots, shares, selectedGroupId, selectedTeacherId]);
+
+  const problemCount = problems.length + shortRows.length;
+  const viewTitle = selectedGroupId != null
+    ? (flattenGroups(groups).find((g) => g.id === selectedGroupId)?.name ?? "ห้องนี้")
+    : selectedTeacherId != null
+      ? (teachers.find((t) => t.id === selectedTeacherId)?.name ?? "ครูคนนี้")
+      : (rooms.find((r) => r.id === selectedRoomId)?.name ?? "ห้องสอนนี้");
 
   // Grid lookup map: "day-period" → TimetableSlot[]
   const slotGrid = useMemo(() => {
@@ -640,13 +678,32 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         </DndContext>
       </div>
 
+      {/* ปุ่มแจ้งเตือนของห้องนี้ — เด่นอยู่ใต้ตาราง ไม่ต้องไปหาในเมนู */}
+      {problemCount > 0 && (
+        <div className="shrink-0 px-4 py-2 border-t border-rose-200 bg-rose-50">
+          <button
+            onClick={() => setShowProblems(true)}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-sm transition-colors"
+          >
+            <span className="text-base leading-none">⚠</span>
+            <span>{viewTitle} — มี {problemCount} จุดที่ต้องแก้</span>
+            <span className="font-normal opacity-90 hidden sm:inline">
+              {[problems.length ? `คาบที่ยังไม่เรียบร้อย ${problems.length}` : "",
+                shortRows.length ? `วิชาที่ลงไม่ครบ ${shortRows.length}` : ""]
+                .filter(Boolean).join(" · ")}
+            </span>
+            <span className="ml-auto underline">ดูว่าติดตรงไหน</span>
+          </button>
+        </div>
+      )}
+
       {/* Footer legend */}
       <div className="shrink-0 flex flex-wrap gap-3 px-4 py-2 border-t border-gray-200 bg-white text-[10px] text-gray-500">
         <LegendDot color="bg-amber-400"   label="☀ กลางแจ้ง" />
         <LegendDot color="bg-emerald-300" label="↔ คู่ขนาน" />
         <LegendDot color="bg-sky-400"     label="👥 สอนร่วม" />
         <LegendDot color="bg-slate-500"   label="🔒 ล็อก" />
-        <LegendDot color="bg-rose-500"    label="⚠ ยังจัดไม่ลงตัว (ไม่มีห้อง)" />
+        <LegendDot color="bg-rose-500"    label="⚠ ยังไม่เรียบร้อย (ไม่มีห้อง/ครูชน)" />
         <span className="flex items-center gap-1">
           <span className="inline-block bg-blue-500 text-white text-[8px] px-1 rounded font-bold">2×</span> คาบคู่
         </span>
@@ -655,6 +712,16 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         )}
       </div>
     </div>
+    {showProblems && (
+      <ClassProblemsModal
+        title={viewTitle}
+        problems={problems}
+        short={shortRows}
+        subjects={subjects}
+        groups={groups}
+        onClose={() => setShowProblems(false)}
+      />
+    )}
     </>
   );
 };

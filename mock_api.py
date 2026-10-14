@@ -4262,6 +4262,59 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 hold_room(s, rid)
                 rescued_by_shuffle += 1
 
+    # ── ยังไม่มีห้อง: สลับคาบกันเองในห้องเรียนเดียวกัน ────────────────────────
+    #
+    # "ที่ฉันบอกว่าลงไปได้เลย ให้ลงไปก่อน"
+    #
+    # The chain above asks "is another room free at this hour", and sometimes
+    # the honest answer is no — every room this lesson may use is taken at
+    # ten past one on a Thursday. But the class's own week has other hours in
+    # it, and one of its other lessons may be far easier to house: ค31102
+    # needs an ordinary classroom and they are all full, while the ง31231 two
+    # hours later is in a ห้องการงาน nobody else wants.
+    #
+    # So the two trade places. The class is busy in both cells either way, so
+    # nothing about its week changes except which subject is when — and both
+    # lessons end up in a room. Only done when BOTH come out housed; anything
+    # less and they go straight back where they were.
+    swapped_for_room = 0
+    stranded = [s for s in SLOTS if not s.get("room_id") and not s.get("is_elective")
+                and not s.get("is_activity_block") and swappable(s) and can_leave(s)]
+    for lesson in stranded:
+        gid = lesson["group_id"]
+        mates = [m for m in SLOTS
+                 if m["group_id"] == gid and m is not lesson and m.get("room_id")
+                 and swappable(m) and can_leave(m)]
+        random.shuffle(mates)
+        for mate in mates:
+            here = (lesson["day"], lesson["period"])
+            there = (mate["day"], mate["period"])
+            if here == there:
+                continue
+            l_home = pull(lesson)
+            m_home = pull(mate)
+            done = False
+            if (can_take(t_map.get(lesson["teacher_id"]), gid, there[0], there[1])
+                    and can_take(t_map.get(mate["teacher_id"]), gid, here[0], here[1])
+                    and subj_day[(gid, lesson.get("subject_id"), there[0])] == 0
+                    and subj_day[(gid, mate.get("subject_id"), here[0])] == 0):
+                rid_l = room_for(lesson, there[0], there[1])
+                rid_m = room_for(mate, here[0], here[1], None, m_home[2])
+                if rid_l and rid_m:
+                    seat(lesson, there[0], there[1], rid_l)
+                    seat(mate, here[0], here[1], rid_m)
+                    swapped_for_room += 1
+                    done = True
+            if not done:
+                seat(mate, m_home[0], m_home[1], m_home[2])
+                seat(lesson, l_home[0], l_home[1], l_home[2])
+            else:
+                break
+    if swapped_for_room:
+        notes.append(
+            f"สลับคาบกันเองในห้องเรียนเดิมเพื่อหาห้องให้ {swapped_for_room} คาบ "
+            f"— ห้องเรียนยังเรียนครบชั่วโมงเดิมทุกประการ")
+
     # ── จับคาบคู่ที่กระจายอยู่สองเซ็ตให้เป็นก้อนเดียว ────────────────────────
     # Last, once nothing else will move a lesson: two adjacent periods of one
     # คาบคู่ subject are one lesson whether they were written as one or as two
