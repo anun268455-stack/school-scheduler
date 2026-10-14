@@ -8,6 +8,7 @@ import { useReactToPrint } from "react-to-print";
 import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
 import { ConsistencyModal } from "../solver/ConsistencyModal";
+import { PeriodCheckModal } from "../solver/PeriodCheckModal";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
@@ -121,6 +122,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [isExporting, setIsExporting] = useState(false);
   const [showPrintOpts, setShowPrintOpts] = useState(false);
   const [showCheck,   setShowCheck]   = useState(false);
+  const [showPeriods, setShowPeriods] = useState(false);
 
   // Toolbar popovers close when you click anywhere else, or press Esc.
   const solverRef = useRef<HTMLDivElement>(null);
@@ -346,6 +348,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
               className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
               🧭 <span>ตรวจความสอดคล้องของข้อมูล</span>
             </button>
+            {/* คาบสุดท้ายกับคาบว่างของแต่ละห้อง เทียบกับที่โรงเรียนตั้งไว้ —
+                ตัวเลขที่โรงเรียนรู้ดีกว่าระบบ เพราะมาจากหลักสูตรของห้องนั้น */}
+            <button
+              onClick={() => { setShowPeriods(true); setShowTools(false); }}
+              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+              📐 <span>ตรวจคาบสุดท้าย / คาบว่าง</span>
+            </button>
           </div>
         )}
       </div>
@@ -395,6 +404,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
 
       <div className="ml-auto" />
       {showCheck && <ConsistencyModal onClose={() => setShowCheck(false)} />}
+      {showPeriods && <PeriodCheckModal onClose={() => setShowPeriods(false)} />}
       {/* Print options */}
       {showPrintOpts && (
         <PrintOptionsModal

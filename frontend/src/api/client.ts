@@ -287,6 +287,47 @@ export const runSolver = (p: {
   last_period_mode?: "reserve" | "never" | "free";
 }) => api.post<SolverResult>("/timetable/solve", p).then((r) => r.data);
 
+// ── ตรวจคาบสุดท้าย / คาบว่าง ของแต่ละห้อง ───────────────────────────────────
+export interface PeriodCheckRow {
+  group_id: number;
+  name: string | null;
+  parent_id: number | null;
+  level: string;
+  /** เลขคาบสุดท้ายของระดับชั้นนี้ (เช่น 9) */
+  last_period_num: number;
+  /** คาบที่ห้องนี้เรียนในคาบสุดท้าย ทั้งสัปดาห์ */
+  last: number;
+  /** ช่องว่างในคาบก่อนคาบสุดท้าย */
+  free: number;
+  /** ช่องว่างที่ยังมีคาบเรียนตามมาในวันเดียวกัน */
+  gaps: number;
+  /** คาบที่ยังจัดไม่ลงตัว (กรอบแดง) */
+  overflow: number;
+  lessons: number;
+  want_last: number | null;
+  want_free: number | null;
+  verdict_last: string | null;
+  verdict_free: string | null;
+}
+
+export interface PeriodCheckReport {
+  rows: PeriodCheckRow[];
+  total: number;
+  with_last: number;
+  last_slots: number;
+  overflow: number;
+  set: number;
+  off: number;
+}
+
+export const fetchPeriodCheck = () =>
+  api.get<PeriodCheckReport>("/diagnostics/period-check").then((r) => r.data);
+
+export const savePeriodTargets = (
+  targets: { group_id: number; last?: number | null; free?: number | null }[],
+) => api.put<PeriodCheckReport>("/diagnostics/period-check", { targets })
+  .then((r) => r.data);
+
 /** วิชาที่มีปัญหา — what cannot be scheduled, checked before a run. */
 export const fetchRequirementProblems = () =>
   api.get<RequirementProblemReport>("/timetable/problems").then((r) => r.data);

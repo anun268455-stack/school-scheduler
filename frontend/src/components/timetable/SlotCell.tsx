@@ -16,6 +16,10 @@ interface SlotCellProps {
 }
 
 function slotColors(s: TimetableSlot): string {
+  // คาบที่ยังจัดไม่ลงตัว — วางไว้ให้เห็นเฉยๆ ยังไม่มีห้อง และครูอาจติดสอนอยู่
+  // ที่อื่นในชั่วโมงนั้น ต้องเด่นกว่าทุกสีที่เหลือ เพราะเป็นคาบเดียวในตารางที่
+  // ยังต้องตัดสินใจด้วยมือ
+  if (s.is_overflow)            return "bg-rose-50 border-rose-500 text-rose-900";
   if (s.is_elective)            return "bg-purple-50 border-purple-300 text-purple-900";
   // สอนร่วม before ล็อก: two teachers in one room is the thing the school is
   // scanning the grid for, and the dark locked cell hid the badge entirely.
@@ -37,6 +41,9 @@ export const SlotCell: React.FC<SlotCellProps> = ({
     <div
       className={clsx(
         "relative w-full h-full rounded border overflow-hidden transition-shadow",
+        // กรอบแดงของคาบที่ยังจัดไม่ลงตัว อยู่ที่กรอบนอก เพราะกรอบของการ์ด
+        // ข้างในถูกปิดไว้ (border-0) สีจากในนั้นจึงไม่ขึ้น
+        slots.some((s) => s.is_overflow) && "border-rose-500 ring-2 ring-rose-400",
         isDragging && "opacity-40 shadow-lg",
         isOver     && "ring-2 ring-blue-400",
       )}
@@ -92,6 +99,14 @@ const Layer: React.FC<LayerProps> = ({ slot, compact, onLock, onDelete, onSwapRo
   >
     {/* ── Badges row (fixed 14px height) ────────────────────────── */}
     <div className="flex items-center gap-0.5 mb-0.5 overflow-hidden" style={{ minHeight: "14px", maxHeight: "14px" }}>
+      {slot.is_overflow && (
+        <span
+          className="shrink-0 inline-block bg-rose-600 text-white text-[7px] px-0.5 rounded-sm leading-tight font-bold"
+          title="คาบนี้ยังจัดไม่ลงตัว — ระบบวางไว้ให้เห็นเฉยๆ ยังไม่ได้กำหนดห้อง และครูอาจติดสอนห้องอื่นในชั่วโมงนี้ ลากไปวางที่อื่นหรือเปลี่ยนครู/ห้องได้เลย แล้วกรอบแดงจะหายไป"
+        >
+          ⚠ ยังไม่ลงตัว
+        </span>
+      )}
       {slot.is_locked && (
         <span className="shrink-0 inline-block bg-slate-500 text-white text-[7px] px-0.5 rounded-sm leading-tight">🔒</span>
       )}
@@ -267,9 +282,12 @@ const MiniLayer: React.FC<{
                  names.join(" · "), slot.room_name].filter(Boolean).join(" · ");
   return (
     <div className={clsx("flex-1 min-h-0 flex items-center gap-1 px-1 overflow-hidden",
-      slotColors(slot))} title={title}>
+      slotColors(slot))}
+      title={slot.is_overflow
+        ? `${title} — คาบนี้ยังจัดไม่ลงตัว ยังไม่ได้กำหนดห้อง`
+        : title}>
       <span className="shrink-0 font-bold text-[9px] bg-white/70 rounded px-0.5 leading-tight">
-        {label}
+        {slot.is_overflow ? `⚠${label}` : label}
       </span>
       <span className="flex-1 min-w-0 truncate font-semibold text-[9px] leading-tight">
         {slotLabel(slot)}

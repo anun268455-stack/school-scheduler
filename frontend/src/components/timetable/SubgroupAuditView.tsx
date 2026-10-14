@@ -140,10 +140,19 @@ export const SubgroupAuditView = ({ parentId }: Props) => {
                             </div>
                           )}
                           {c.roomClashes.map((x) => (
-                            <div key={x} className="text-red-700">⚠ ห้อง {x} ซ้ำ</div>
+                            <div key={x} className="text-red-700">
+                              ⚠ ห้อง {x} มีสองคาบพร้อมกัน
+                            </div>
                           ))}
                           {c.teacherClashes.map((x) => (
-                            <div key={x} className="text-red-700">⚠ {x} ซ้ำ</div>
+                            <div key={x} className="text-red-700">
+                              ⚠ {x} ต้องสอนสองคาบพร้อมกัน
+                            </div>
+                          ))}
+                          {c.roomSplits.map((x) => (
+                            <div key={`sp-${x}`} className="text-red-700">
+                              ⚠ {x} สอนห้องย่อยพร้อมกันแต่ถูกแยกคนละห้องเรียน
+                            </div>
                           ))}
                           {/* Which subgroup is missing, by name. "เรียน 2/3
                               ห้อง" tells the school that something is wrong
@@ -176,7 +185,10 @@ export const SubgroupAuditView = ({ parentId }: Props) => {
 
       <p className="text-[11px] text-gray-400 leading-relaxed">
         ห้องที่ขึ้นว่า “ว่าง” ไม่ใช่ข้อผิดพลาด — ห้องย่อยไม่จำเป็นต้องมีคู่ทุกคาบ ·
-        สีแดงคือคาบที่สอนจริงไม่ได้เท่านั้น (ห้องแม่เรียนทับ · ห้องสอนซ้ำ · ครูซ้ำ)
+        ห้องย่อยที่เรียน<strong>วิชาเดียวกันกับครูคนเดียวกัน</strong>ถือเป็นคาบเดียวกัน
+        นั่งห้องเดียวกันได้ ไม่ใช่ข้อผิดพลาดเช่นกัน ·
+        สีแดงคือคาบที่สอนจริงไม่ได้เท่านั้น (ห้องแม่เรียนทับ · ห้องเดียวมีสองคาบ ·
+        ครูต้องสอนสองคาบพร้อมกัน)
       </p>
     </div>
   );

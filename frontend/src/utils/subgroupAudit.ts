@@ -38,6 +38,11 @@ export interface SubgroupCell {
   roomClashes:    string[];
   /** Teachers expected in more than one subgroup at once. */
   teacherClashes: string[];
+  /**
+   * หนึ่งคาบที่ถูกแยกห้อง — ห้องย่อยที่เรียนวิชาเดียวกันกับครูคนเดียวกัน
+   * ควรนั่งห้องเดียวกัน ถ้าคนละห้องแปลว่าครูต้องยืนสองที่
+   */
+  roomSplits: string[];
 }
 
 export interface SubgroupAudit {
@@ -59,7 +64,8 @@ const flatten = (groups: StudentGroup[]): StudentGroup[] =>
 
 /** Does this cell hold a real mistake, as opposed to an uneven hour? */
 export function cellHasProblem(c: SubgroupCell): boolean {
-  return !!c.parentSlot || c.roomClashes.length > 0 || c.teacherClashes.length > 0;
+  return !!c.parentSlot || c.roomClashes.length > 0
+      || c.teacherClashes.length > 0 || c.roomSplits.length > 0;
 }
 
 export function auditSubgroups(
@@ -89,24 +95,53 @@ export function auditSubgroups(
     }));
     const here = entries.map((e) => e.slot).filter((s): s is TimetableSlot => !!s);
 
-    const byRoom = new Map<string, number>();
+    // ห้องย่อยที่เรียนวิชาเดียวกันกับครูคนเดียวกัน = คาบเดียวกัน ไม่ใช่สองคาบ.
+    //
+    // "มีการแจ้งเตือนห้องซ้ำแบบนี้ ถ้าไม่มีผลต่อระบบไม่ต้องแก้ไข" — ข กับ ค
+    // ที่เรียน ค31218 กับครูศศิกัลป์พร้อมกัน นั่งห้องเดียวกันอยู่แล้ว ครูคนเดียว
+    // สอนทีเดียว จึงไม่ใช่ความผิดพลาด สิ่งที่ยังผิดจริงคือครูคนเดียวกันอยู่ใน
+    // "คาบคนละคาบ" พร้อมกัน หรือห้องเดียวถูกใช้โดยคาบที่ต่างกันสองคาบ
+    // A lesson with no subject recorded is its own lesson — never folded in
+    // with another one just because neither says what it is.
+    const unitOf = (s: TimetableSlot) =>
+      (s.subject_id == null ? `one:${s.id}` : `${s.subject_id}:${s.teacher_id ?? 0}`);
+
+    const seen = (key: (s: TimetableSlot) => string | null) => {
+      const m = new Map<string, Set<string>>();
+      for (const s of here) {
+        const k = key(s);
+        if (k == null) continue;
+        const set = m.get(k) ?? new Set<string>();
+        set.add(unitOf(s));
+        m.set(k, set);
+      }
+      return [...m].filter(([, units]) => units.size > 1).map(([name]) => name);
+    };
+
+    // คาบเดียวกันแต่ถูกแยกห้อง — ครูคนเดียวยืนสองห้องไม่ได้ จึงยังเป็นปัญหา
+    const split = new Map<string, Set<number | string>>();
     for (const s of here) {
-      if (s.room_id == null) continue;
-      const name = s.room_name ?? String(s.room_id);
-      byRoom.set(name, (byRoom.get(name) ?? 0) + 1);
+      if (!s.teacher_id) continue;
+      const set = split.get(unitOf(s)) ?? new Set<number | string>();
+      set.add(s.room_id ?? "—");
+      split.set(unitOf(s), set);
     }
-    const byTeacher = new Map<string, number>();
-    for (const s of here) {
-      if (s.teacher_id == null) continue;
-      const name = s.teacher_name ?? String(s.teacher_id);
-      byTeacher.set(name, (byTeacher.get(name) ?? 0) + 1);
-    }
+    const roomSplits = [...split]
+      .filter(([u, roomIds]) => roomIds.size > 1
+        && here.filter((s) => unitOf(s) === u).length > 1)
+      .map(([u]) => {
+        const s = here.find((x) => unitOf(x) === u)!;
+        return s.teacher_name ?? String(s.teacher_id);
+      });
 
     cells.push({
       day, period, entries, busy: here.length,
       parentSlot: parentSlots.find((s) => s.day === day && s.period === period) ?? null,
-      roomClashes:    [...byRoom].filter(([, n]) => n > 1).map(([name]) => name),
-      teacherClashes: [...byTeacher].filter(([, n]) => n > 1).map(([name]) => name),
+      roomClashes:    seen((s) => (s.room_id == null
+        ? null : s.room_name ?? String(s.room_id))),
+      teacherClashes: seen((s) => (s.teacher_id == null
+        ? null : s.teacher_name ?? String(s.teacher_id))),
+      roomSplits,
     });
   }
 

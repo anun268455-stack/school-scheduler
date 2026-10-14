@@ -328,6 +328,12 @@ export interface TimetableSlot {
   /** เช่น "ม.1–ม.3 14 ห้อง" — ใช้แทนชื่อห้องในตารางของครูผู้ดูแล */
   activity_scope?:         string | null;
   is_locked:          boolean;    // pre-lock flag
+  /**
+   * คาบที่ยังจัดไม่ลงตัว — ระบบหาที่ลงตามกติกาไม่ได้ จึงวางไว้ในช่องที่
+   * นักเรียนว่าง เพื่อให้เห็นว่ายังมีวิชานี้ค้างอยู่ ขึ้นกรอบแดง ไม่กำหนดห้อง
+   * และไม่นับเป็นคาบที่จัดสำเร็จ พอย้ายหรือให้ห้อง/ครูที่ว่างแล้ว ธงนี้หายไปเอง
+   */
+  is_overflow?:       boolean;
   // วิชาเสรี — pinned slot with a swappable catalog of subject+teacher choices
   is_elective?:        boolean;
   elective_options?:   ElectiveOption[];

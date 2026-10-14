@@ -136,6 +136,11 @@ def _fresh() -> None:
         _CACHE.pop("day_load", None)
         by_day: dict[int, list[dict]] = {}
         for s in _t("slots")():
+            # คาบกรอบแดง (is_overflow) ยังไม่ใช่คาบที่จัดลงตัว — ไม่มีห้อง และ
+            # ครูอาจติดสอนที่อื่นอยู่ในชั่วโมงนั้น หาครูสอนแทนจากมันไม่ได้ และ
+            # มันก็ไม่ควรทำให้ครูดูไม่ว่างทั้งที่ยังไม่มีคาบนั้นจริง
+            if s.get("is_overflow"):
+                continue
             by_day.setdefault(s["day"], []).append(s)
         _CACHE["by_day"] = by_day
 

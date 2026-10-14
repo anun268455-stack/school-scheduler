@@ -646,6 +646,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         <LegendDot color="bg-emerald-300" label="↔ คู่ขนาน" />
         <LegendDot color="bg-sky-400"     label="👥 สอนร่วม" />
         <LegendDot color="bg-slate-500"   label="🔒 ล็อก" />
+        <LegendDot color="bg-rose-500"    label="⚠ ยังจัดไม่ลงตัว (ไม่มีห้อง)" />
         <span className="flex items-center gap-1">
           <span className="inline-block bg-blue-500 text-white text-[8px] px-1 rounded font-bold">2×</span> คาบคู่
         </span>
