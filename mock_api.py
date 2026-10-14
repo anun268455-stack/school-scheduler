@@ -1749,6 +1749,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # Lessons that did not fit on the first run, kept so the room-shuffling
     # pass at the end can have one more go at them before they are reported.
     short_rows: list[tuple] = []
+    # Lessons lifted out of a cell that a pinned lesson claimed. They are owed
+    # a period somewhere else, and the repair pass at the end gives it to them.
+    displaced: list[dict] = []
     rescued_by_shuffle = 0
     # Things worth saying that are not faults — a timetable with these is
     # still a good one, so they must not turn the run INFEASIBLE.
@@ -2704,6 +2707,19 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             duration = 2            # this lesson is a pair, whatever the subject is
             needed = max(needed, 2)         # …and a pair is two periods
         placed = 0
+        # ล็อกวัน/คาบไว้ = บังคับลงตรงนั้น, for an ordinary lesson too: an
+        # unlocked lesson sitting in the cell the school named is lifted out
+        # and re-placed later, rather than the pinned lesson being the one
+        # reported as not fitting.
+        pin_d, pin_p = req.get("pinned_day"), req.get("pinned_period")
+        if pin_d is not None and pin_p is not None:
+            want_cells = [(int(pin_d), int(pin_p))]
+            if duration == 2:
+                nxt = _next_class_period_for(lvl, int(pin_p))
+                if nxt is not None:
+                    want_cells.append((int(pin_d), nxt))
+            for cd, cp in want_cells:
+                force_pin_cell(gid, cd, cp, req.get("subject_id"))
         for attempt in range(6):
             if placed >= needed:
                 break
@@ -2895,6 +2911,61 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 pool.pop(taken)
         return placed
 
+    # ── ล็อกวัน/คาบไว้ = บังคับลงตรงนั้น ──────────────────────────────────────
+    #
+    # "วิชา ว30286 ได้ล็อคคาบเอาไว้ ทีนี้ฉันอยากให้เป็นการบังคับลงไปเลย"
+    #
+    # A pin is the school answering the question this program exists to ask.
+    # It was being treated as a wish: if anything at all was sitting in that
+    # cell the lesson was quietly reported as unplaced — and for a เซ็ต, ALL
+    # of its subgroups with it. ม.4/6ข already had ว30286 locked into พฤหัส
+    # คาบ 1 from an earlier run, so the เซ็ต that wanted exactly that hour
+    # found the cell busy and ก and ค got nothing.
+    #
+    # Now the pin is taken. Three cases, in this order:
+    #   · the SAME lesson is already there — it is adopted, not fought over.
+    #     A lesson the school locked into the cell it asked for is the right
+    #     answer already, and it keeps its lock.
+    #   · an ordinary lesson is in the way — it is lifted out and re-placed
+    #     later, the same way a คาบเสรี window takes its hour.
+    #   · a คาบเสรี, a คาบกิจกรรม, or a lesson the school locked there itself
+    #     stays. Two deliberate decisions about one cell is a question only
+    #     the school can answer, so it is reported rather than guessed at.
+    def force_pin_cell(gid: int, day: int, period: int, sid: int | None,
+                       pgk: str | None = None) -> str:
+        here = [s for s in SLOTS if s["group_id"] == gid
+                and s["day"] == day and s["period"] == period]
+        if not here:
+            return "free"
+        same = next((s for s in here if s.get("subject_id") == sid), None)
+        if same is not None and len(here) == 1:
+            if pgk and not same.get("parallel_group_key"):
+                same["parallel_group_key"] = pgk
+            return "adopted"
+        kept = []
+        for s in here:
+            # A lesson the school locked, a คาบเสรี, a คาบกิจกรรม — and a
+            # lesson of another เซ็ตห้องย่อย, which is a pinned arrangement of
+            # its own and must not be taken apart to serve this one.
+            if (s.get("is_locked") or s.get("is_elective")
+                    or s.get("is_activity_block") or s.get("parallel_group_key")):
+                kept.append(s)
+                continue
+            unbook(s.get("teacher_id"), s["group_id"], s["day"], s["period"],
+                   s.get("room_id"))
+            note_subject(s["group_id"], s.get("subject_id"), s["day"], -1)
+            SLOTS.remove(s)
+            # It owes its class a period again. Remembered so the repair pass
+            # at the end gives it one somewhere else, rather than the lesson
+            # simply vanishing to make room for the pinned one.
+            owner = next((r for r in REQUIREMENTS
+                          if r.get("group_id") == s.get("group_id")
+                          and r.get("subject_id") == s.get("subject_id")
+                          and r.get("teacher_id") == s.get("teacher_id")), None)
+            if owner is not None:
+                displaced.append(owner)
+        return "blocked" if kept else "evicted"
+
     # ── Place parallel groups first (ห้องย่อย ก/ข/ค และวิชาคู่ขนาน) ──────────
     #
     # A เซ็ตห้องย่อย is the hardest thing in the timetable to place, and it was
@@ -3055,6 +3126,29 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         pinned = next(((r.get("pinned_day"), r.get("pinned_period")) for r in reqs
                        if r.get("pinned_day") is not None
                        and r.get("pinned_period") is not None), None)
+        # ล็อกไว้แล้ว = บังคับลงตรงนั้น. Clear the hour for every subgroup of
+        # the set before asking whether it is free, so one class's leftover
+        # lesson cannot take the whole set down with it.
+        if pinned is not None:
+            pin_d, pin_p = int(pinned[0]), int(pinned[1])
+            cells_to_clear = [(pin_d, pin_p)]
+            if is_double or any(r.get("pinned_double") for r in reqs):
+                nxt = _next_class_period_for(
+                    _level_key(g_map.get(reqs[0]["group_id"])), pin_p)
+                if nxt is not None and max(owed.values(), default=0) >= 2:
+                    cells_to_clear.append((pin_d, nxt))
+            for i, r in enumerate(reqs):
+                for cd, cp in cells_to_clear:
+                    what = force_pin_cell(r["group_id"], cd, cp,
+                                          r.get("subject_id"), pgk)
+                    if what == "adopted":
+                        owed[i] = max(0, owed[i] - 1)
+                    elif what == "blocked":
+                        violations.append(
+                            f"[{pgk}] {(g_map.get(r['group_id']) or {}).get('name', r['group_id'])} "
+                            f"มีคาบที่ล็อกไว้หรือคาบเสรีอยู่ในวัน/คาบที่เซ็ตนี้ล็อกไว้แล้ว "
+                            f"— ต้องปลดคาบนั้นก่อน หรือย้ายเซ็ตไปคาบอื่น")
+            needed = max(owed.values()) if owed else 0
         if is_double and needed >= 2:
             pairs = needed // 2
             lead_lvl = _level_key(g_map.get(reqs[0]["group_id"]))
@@ -3175,6 +3269,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         tp = _teacher_prefs(t_map.get(r["teacher_id"]))
         tight = len(tp["days_off"]) + (1 if tp["avoid_periods"] else 0)
         return (
+            # ล็อกวัน/คาบไว้ = ไม่มีอะไรให้เลือกเลย. Placed before anything
+            # else, so the cell it names is still empty when it gets there —
+            # otherwise it has to turn an ordinary lesson out of the cell and
+            # that lesson has to be found somewhere else to go.
+            0 if (r.get("pinned_day") is not None
+                  and r.get("pinned_period") is not None) else 1,
             0 if subj.get("duration") == 2 else 1,   # คาบคู่ still first
             -tight,                                  # the most constrained next
             0 if needs_facility else 1,
@@ -3294,6 +3394,15 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # walk a dozen classes into other people's rooms to save one lesson that
     # would have fitted on its own five minutes later. Tried at the end, every
     # move it makes is one that genuinely bought a lesson.
+    # Anything turned out of its cell by a pin is owed a period again.
+    for req in displaced:
+        gid, tid = req["group_id"], req["teacher_id"]
+        want = req.get("weekly_count") or 0
+        got = sum(1 for s in SLOTS
+                  if s["group_id"] == gid and s.get("subject_id") == req["subject_id"])
+        if got < want:
+            short_rows.append((req, gid, tid, want - got, got))
+
     if short_rows:
         index_rooms()
         shuffle_on = True
