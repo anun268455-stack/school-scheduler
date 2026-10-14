@@ -238,6 +238,10 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       : r.teacher_id === selectedTeacherId));
     const out: ShortRow[] = [];
     for (const r of mine) {
+      // วิชาเสรีที่ห้องนี้นั่งอยู่ในคาบเสรีอยู่แล้ว และครึ่งหลังของสอนร่วม
+      // ไม่ใช่คาบที่ต้องหาที่ลงให้ — ม.4/6ข ขึ้นว่า ศ31210 ลงได้ 0/2 คาบ
+      // ทั้งที่มันอยู่ในคาบเสรีบ่ายอังคารเรียบร้อยแล้ว
+      if (r.served_by_elective || r.co_half) continue;
       const placed = slots.filter((s) => s.group_id === r.group_id
         && s.subject_id === r.subject_id && !s.is_overflow).length;
       if (placed < (r.weekly_count ?? 0)) out.push({ requirement: r, placed });

@@ -199,6 +199,15 @@ export interface LessonRequirement {
   weekly_count:       number;
   parallel_group_key: string | null;
   /**
+   * แถวนี้ไม่ต้องหาที่ลงเอง — คิดจากข้อมูลอื่น ไม่ได้เก็บไว้ในแถว
+   *
+   * served_by_elective: ห้องนี้นั่งอยู่ในคาบเสรีที่เปิดวิชานี้ให้เลือกอยู่แล้ว
+   *                     คาบเสรีคือชั่วโมงที่สอนจริง แถวในแผนคือสิทธิ์ที่จะเลือก
+   * co_half:            สอนร่วมที่เขียนไว้สองแถว แถวนี้คือครึ่งหลัง คาบเดียวกัน
+   */
+  served_by_elective?: boolean;
+  co_half?:            boolean;
+  /**
    * สอนร่วม — a second teacher in the room for the same lesson.
    *
    * For a student teacher with their mentor, or a foreign teacher paired with

@@ -6822,11 +6822,44 @@ def set_prefer_morning(body: dict[str, Any]):
 
 
 # ── Requirements ──────────────────────────────────────────────────────────────
+# สองอย่างที่คิดจากข้อมูลอื่น ไม่ได้เก็บไว้ในแถว — ส่งออกไปให้หน้าจอใช้ แต่ถ้า
+# หน้าจอส่งกลับมาตอนแก้ไข ต้องทิ้ง ไม่งั้นค่าที่คิดไว้วันนี้จะถูกฝังไว้เป็นของจริง
+_DERIVED_REQ_KEYS = ("served_by_elective", "co_half")
+
+
+def _requirement_rows() -> list[dict[str, Any]]:
+    """แถวของแผนการสอน พร้อมบอกว่าแถวไหน "ไม่ต้องจัดเอง"
+
+    สองกรณีที่แถวหนึ่งไม่ใช่คาบที่ต้องหาที่ลงให้:
+
+      วิชาเสรี   ห้องนี้นั่งอยู่ในคาบเสรีที่เปิดวิชานี้ให้เลือกอยู่แล้ว คาบเสรี
+                 คือชั่วโมงที่สอนจริง แถวในแผนคือ "ห้องนี้เลือกวิชานี้ได้"
+      สอนร่วม    สองแถวที่อ้างถึงกัน คือคาบเดียวที่เขียนจากมุมครูสองคน
+
+    ตัวจัดตารางกับรายการ "คาบที่ลงไม่ได้" รู้เรื่องนี้อยู่แล้ว แต่หน้าจอที่
+    นับเองไม่รู้ — ม.4/6ข จึงขึ้นว่า ศ31210 ลงได้ 0/2 คาบ ทั้งที่มันอยู่ใน
+    คาบเสรีบ่ายอังคารเรียบร้อยแล้ว ส่งออกไปจากที่เดียวกันเสียเลย จะได้ไม่มีสอง
+    คำตอบสำหรับคำถามเดียว
+    """
+    served = _reqs_served_by_elective()
+    halves, _pairs = _fold_coteaching(REQUIREMENTS)
+    out = []
+    for r in REQUIREMENTS:
+        row = dict(r)
+        if r["id"] in served:
+            row["served_by_elective"] = True
+        if r["id"] in halves:
+            row["co_half"] = True
+        out.append(row)
+    return out
+
+
 @app.get("/api/timetable/requirements")
 def get_requirements(group_id: int | None = None):
+    rows = _requirement_rows()
     if group_id:
-        return [r for r in REQUIREMENTS if r["group_id"] == group_id]
-    return REQUIREMENTS
+        return [r for r in rows if r["group_id"] == group_id]
+    return rows
 
 @app.post("/api/timetable/requirements")
 def create_req(body: dict[str, Any]):
@@ -6838,6 +6871,8 @@ def create_req(body: dict[str, Any]):
         raise HTTPException(400, "ไม่พบห้องเรียนที่อ้างถึง")
     if body.get("subject_id") not in {s["id"] for s in SUBJECTS}:
         raise HTTPException(400, "ไม่พบรายวิชาที่อ้างถึง")
+    for k in _DERIVED_REQ_KEYS:
+        body.pop(k, None)
     body["id"] = _next("requirement")
     REQUIREMENTS.append(body)
     return body
@@ -6886,6 +6921,8 @@ def update_req(i: int, body: dict[str, Any]):
         raise HTTPException(400, "ไม่พบห้องเรียนที่อ้างถึง")
     if "subject_id" in body and body["subject_id"] not in {s["id"] for s in SUBJECTS}:
         raise HTTPException(400, "ไม่พบรายวิชาที่อ้างถึง")
+    for k in _DERIVED_REQ_KEYS:
+        body.pop(k, None)
     for r in REQUIREMENTS:
         if r["id"] == i:
             r.update(body)
@@ -6903,6 +6940,8 @@ def bulk_create_reqs(body: list[dict[str, Any]]):
     created, rejected, updated = [], [], []
     unchanged = 0
     for i, row in enumerate(body):
+        for k in _DERIVED_REQ_KEYS:
+            row.pop(k, None)
         if not row.get("group_id") or not row.get("subject_id"):
             rejected.append({"row": i, "reason": "ข้อมูลไม่ครบ (ต้องมีห้องเรียนและวิชา)"})
             continue
