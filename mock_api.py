@@ -441,6 +441,63 @@ def _repair_activity_keys() -> int:
     return len(bad)
 
 
+
+def _tie_adjacent_doubles() -> int:
+    """จับสองคาบติดกันของวิชาคาบคู่ ให้เป็นคาบคู่ก้อนเดียว
+
+    A school with subgroups writes its doubles in a way the solver cannot see
+    as one lesson. ม.4/6ข does ว30286 for two periods running while ม.4/6ก,
+    beside it, does a different subject in each of those two hours — so the
+    school writes two small เซ็ต, one per hour, and says which subject each
+    subgroup takes in each. That is exactly right, and it lands correctly.
+
+    What it does not do by itself is say that ข's two hours are ONE lesson.
+    The two slots come from two different เซ็ต, so nothing ties them: the grid
+    draws two cards where the school expects one block, and the วิชาคาบคู่
+    setting the school made on ว30286 is nowhere to be seen on its own
+    timetable.
+
+    So afterwards: two adjacent periods, one class, one subject, one teacher,
+    and the subject marked คาบคู่ — that is a double, however it was written
+    down. Tied together here, the pair moves and clears as one, and the second
+    half sits in the first half's room.
+    """
+    s_map = {s["id"]: s for s in SUBJECTS}
+    g_map = {g["id"]: g for g in _flat_groups()}
+    r_map = {r["id"]: r for r in ROOMS}
+    by_class: dict[tuple, dict[int, dict]] = defaultdict(dict)
+    for s in SLOTS:
+        if (s.get("subject_id") is None or s.get("is_elective")
+                or s.get("is_activity_block")):
+            continue
+        by_class[(s["group_id"], s["day"])][s["period"]] = s
+
+    tied = 0
+    for (gid, _day), cells in by_class.items():
+        nums = _class_periods_for_level(_level_key(g_map.get(gid)))
+        for i in range(len(nums) - 1):
+            a, b = cells.get(nums[i]), cells.get(nums[i + 1])
+            if not a or not b or a.get("double_group_key") or b.get("double_group_key"):
+                continue
+            if (a.get("subject_id") != b.get("subject_id")
+                    or a.get("teacher_id") != b.get("teacher_id")):
+                continue
+            if ((s_map.get(a["subject_id"], {}) or {}).get("duration", 1) or 1) != 2:
+                continue        # the school has not called this one a คาบคู่
+            key = f"DBL-{_next('slot')}"
+            a["double_group_key"] = b["double_group_key"] = key
+            a["is_double_start"], a["is_double_cont"] = True, False
+            b["is_double_start"], b["is_double_cont"] = False, True
+            # One lesson, one room — the class does not pack up halfway.
+            if a.get("room_id") and b.get("room_id") != a["room_id"]:
+                room = r_map.get(a["room_id"]) or {}
+                b["room_id"] = a["room_id"]
+                b["room_name"] = room.get("name")
+                b["room_type"] = room.get("type")
+            tied += 1
+    return tied
+
+
 def _merge_teacherless_rows() -> int:
     """วิชาเดียวกันของห้องเดียวกันที่เขียนไว้ซ้ำโดยไม่มีครู คือคาบเดียวกัน
 
@@ -560,13 +617,22 @@ def _repair_elective_doubles() -> int:
     fixed = 0
     by_key: dict[str, list[dict]] = defaultdict(list)
     for s in SLOTS:
-        if s.get("is_elective") and s.get("double_group_key"):
+        if s.get("double_group_key"):
             by_key[s["double_group_key"]].append(s)
 
     for key, halves in by_key.items():
         if len(halves) >= 2:
             continue
         s = halves[0]
+        # An ordinary lesson that has lost its partner cannot be re-created
+        # from here — nothing says who was meant to teach the other half or
+        # where. What it must stop doing is wearing the 2× badge on its own.
+        if not s.get("is_elective"):
+            s["double_group_key"] = None
+            s["is_double_start"] = False
+            s["is_double_cont"] = False
+            fixed += 1
+            continue
         grp = _find_group(s["group_id"])
         p2 = _next_class_period_for(_level_key(grp), s["period"]) if grp else None
         # The missing half may be the FIRST one, if that is the end that went.
@@ -3478,6 +3544,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 hold_room(s, rid)
                 rescued_by_shuffle += 1
 
+    # ── จับคาบคู่ที่กระจายอยู่สองเซ็ตให้เป็นก้อนเดียว ────────────────────────
+    # Last, once nothing else will move a lesson: two adjacent periods of one
+    # คาบคู่ subject are one lesson whether they were written as one or as two
+    # small เซ็ต, and the grid should show them that way.
+    tied_doubles = _tie_adjacent_doubles()
+    if tied_doubles:
+        notes.append(f"จับคาบติดกันของวิชาคาบคู่ให้เป็นก้อนเดียว {tied_doubles} คู่")
+
     # Only teachers who actually have lessons can be given a last period.
     teaching = [t for t in TEACHERS if any(r["teacher_id"] == t["id"] for r in REQUIREMENTS)]
     expected = [t for t in teaching if last_period_target(t["id"]) > 0]
@@ -3871,15 +3945,21 @@ def _consistency_findings() -> list[dict[str, Any]]:
     for s in SLOTS:
         if s.get("subject_id") is not None:
             placed[(s.get("group_id"), s.get("subject_id"))] += 1
-    rows = []
+    # Summed per (ห้องเรียน, วิชา), not per row. A class can take one subject
+    # from two different เซ็ต — ม.4/6ข does ว30286 in the first hour's set and
+    # again in the second's, one period each — and asking each row on its own
+    # whether the timetable has too many made every one of those look wrong.
+    asked: dict[tuple, int] = defaultdict(int)
     for r in REQUIREMENTS:
         if r["id"] in skipped or r["id"] in co_halves:
             continue
-        want = r.get("weekly_count") or 0
-        got = placed.get((r.get("group_id"), r.get("subject_id")), 0)
+        asked[(r.get("group_id"), r.get("subject_id"))] += r.get("weekly_count") or 0
+    rows = []
+    for key, want in asked.items():
+        got = placed.get(key, 0)
         if got > want:
-            rows.append(f"{gname(r['group_id'])} · "
-                        f"{(s_map.get(r.get('subject_id')) or {}).get('code', '?')} "
+            rows.append(f"{gname(key[0])} · "
+                        f"{(s_map.get(key[1]) or {}).get('code', '?')} "
                         f"— แผนว่า {want} คาบ แต่ในตารางมี {got}")
     add("over_placed", "ในตารางมีคาบมากกว่าที่แผนการสอนบอกไว้",
         "มักเกิดจากการเพิ่มคาบในตารางด้วยมือ หรือแถวที่เขียนซ้ำ", rows)
