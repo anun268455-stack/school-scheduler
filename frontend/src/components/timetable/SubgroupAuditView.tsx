@@ -145,9 +145,19 @@ export const SubgroupAuditView = ({ parentId }: Props) => {
                           {c.teacherClashes.map((x) => (
                             <div key={x} className="text-red-700">⚠ {x} ซ้ำ</div>
                           ))}
+                          {/* Which subgroup is missing, by name. "เรียน 2/3
+                              ห้อง" tells the school that something is wrong
+                              but not which room to go and look at, and the
+                              one that is missing is the whole question. */}
                           {!bad && c.busy < r.subgroups.length && (
-                            <span className="text-gray-400">
-                              เรียน {c.busy}/{r.subgroups.length} ห้อง
+                            <span className="text-amber-700">
+                              ขาด {c.entries
+                                .filter((e) => !e.slot)
+                                .map((e) => e.groupName)
+                                .join(", ")}
+                              <span className="text-gray-400">
+                                {" "}— เรียน {c.busy}/{r.subgroups.length} ห้อง
+                              </span>
                             </span>
                           )}
                           {!bad && c.busy === r.subgroups.length && (

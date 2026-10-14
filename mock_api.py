@@ -2931,6 +2931,51 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     #   · a คาบเสรี, a คาบกิจกรรม, or a lesson the school locked there itself
     #     stays. Two deliberate decisions about one cell is a question only
     #     the school can answer, so it is reported rather than guessed at.
+    def free_teacher_for_pin(tid: int | None, gid: int, day: int, period: int) -> str:
+        """ปลดครูให้ว่างในชั่วโมงที่ถูกล็อกไว้
+
+        "ข้อมูลที่สร้างเงื่อนไขห้องนี้เป็นเงื่อนไขพิเศษ"
+
+        A pinned hour is the school's own decision, and the lesson that most
+        often stands in its way is not in that class's own column at all — it
+        is the teacher, booked at that hour by some other class that the
+        timetable filled in without knowing. ม.4/6ก's ครูศิรวิทย์ teaching
+        somebody else at พุธ คาบ 7 is why ง31231 never appeared, while ข and
+        ค sat down together in the hour that had been chosen for all three.
+
+        So an ordinary lesson of another class is moved off that teacher's
+        hour and given another one later. Anything the school decided itself —
+        a locked lesson, a คาบเสรี, a คาบกิจกรรม, another เซ็ต — is left where
+        it is and reported instead.
+        """
+        if not tid:
+            return "free"
+        bks = cell_buckets(gid, period)
+        clash = [s for s in SLOTS
+                 if s["day"] == day and s["group_id"] != gid
+                 and tid in _slot_teachers(s)
+                 and (cell_buckets(s["group_id"], s["period"]) & bks)]
+        if not clash:
+            return "free"
+        kept = []
+        for s in clash:
+            if (s.get("is_locked") or s.get("is_elective")
+                    or s.get("is_activity_block") or s.get("parallel_group_key")
+                    or s.get("double_group_key")):
+                kept.append(s)
+                continue
+            unbook(s.get("teacher_id"), s["group_id"], s["day"], s["period"],
+                   s.get("room_id"))
+            note_subject(s["group_id"], s.get("subject_id"), s["day"], -1)
+            SLOTS.remove(s)
+            owner = next((r for r in REQUIREMENTS
+                          if r.get("group_id") == s.get("group_id")
+                          and r.get("subject_id") == s.get("subject_id")
+                          and r.get("teacher_id") == s.get("teacher_id")), None)
+            if owner is not None:
+                displaced.append(owner)
+        return "blocked" if kept else "evicted"
+
     def force_pin_cell(gid: int, day: int, period: int, sid: int | None,
                        pgk: str | None = None) -> str:
         here = [s for s in SLOTS if s["group_id"] == gid
@@ -3161,8 +3206,18 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 for cd, cp in cells_to_clear:
                     what = force_pin_cell(r["group_id"], cd, cp,
                                           r.get("subject_id"), pgk)
+                    # …and the teacher's own hour, which is where the real
+                    # obstacle usually is: another class holding them at the
+                    # very hour this set was promised.
+                    held = free_teacher_for_pin(r.get("teacher_id"),
+                                                r["group_id"], cd, cp)
                     if what == "adopted":
                         owed[i] = max(0, owed[i] - 1)
+                    elif held == "blocked" and what != "blocked":
+                        violations.append(
+                            f"[{pgk}] ครู {(t_map.get(r.get('teacher_id')) or {}).get('name', '')} "
+                            f"ติดคาบที่ล็อกไว้หรือคาบเสรีของห้องอื่นในชั่วโมงนี้ "
+                            f"— ต้องปลดคาบนั้นก่อน หรือเปลี่ยนครูของแถวนี้")
                     elif what == "blocked":
                         violations.append(
                             f"[{pgk}] {(g_map.get(r['group_id']) or {}).get('name', r['group_id'])} "
@@ -3447,6 +3502,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # walk a dozen classes into other people's rooms to save one lesson that
     # would have fitted on its own five minutes later. Tried at the end, every
     # move it makes is one that genuinely bought a lesson.
+    if displaced:
+        names = sorted({(g_map.get(r["group_id"]) or {}).get("name", "?")
+                        for r in displaced})
+        notes.append(
+            f"ชั่วโมงที่ล็อกไว้เป็นเงื่อนไขพิเศษ — ย้ายคาบของห้องอื่นออกให้ "
+            f"{len(displaced)} คาบ แล้วจัดใหม่ให้ที่อื่น "
+            f"({', '.join(names[:5])}{' …' if len(names) > 5 else ''})")
+
     # Anything turned out of its cell by a pin is owed a period again.
     for req in displaced:
         gid, tid = req["group_id"], req["teacher_id"]
