@@ -137,21 +137,55 @@ export function setProblems(
   // what. The row is saved without a teacher and the จัดห้อง/ครู screen
   // fills it in later; until then the lesson is reported as having no
   // teacher rather than being placed with nobody in the room.
-  const teachers = new Map<number, number>();
+  // ครูคนเดียวกันสองแถว เป็นปัญหาก็ต่อเมื่อ "คนละวิชา".
+  //
+  // ม.4/6ข กับ ม.4/6ค เรียน ค31218 กับครูศศิกัลป์เหมือนกัน คือครูคนนั้นรับ
+  // ห้องย่อยสองห้องมานั่งรวมกันเป็นห้องเดียว — ซึ่งเป็นสิ่งที่โรงเรียนเขียนว่า
+  // "ม.4/6ขค" และตัวจัดตารางก็เข้าใจแบบนั้น (นั่งห้องเดียวกัน นับเป็นชั่วโมง
+  // เดียวของครู) ห้ามไว้เสียหมด เซ็ตที่ถูกต้องก็บันทึกไม่ได้
+  //
+  // สองวิชาคนละวิชาในชั่วโมงเดียวกันต่างหากที่เป็นไปไม่ได้ — ครูคนเดียว
+  // อยู่สองห้องพร้อมกันไม่ได้จริง ๆ
+  const byTeacher = new Map<number, SetRow[]>();
   for (const r of rows) {
-    if (r.teacherId) teachers.set(r.teacherId, (teachers.get(r.teacherId) ?? 0) + 1);
+    if (r.teacherId) byTeacher.set(r.teacherId, [...(byTeacher.get(r.teacherId) ?? []), r]);
   }
-  for (const [, n] of teachers) {
-    if (n > 1) {
-      out.push("ครูคนเดียวกันสอนสองห้องย่อยในเซ็ตนี้ — "
-        + "ทุกวิชาในเซ็ตเรียนพร้อมกัน ครูจึงต้องไม่ซ้ำกัน");
-      break;
+  for (const [, mine] of byTeacher) {
+    const subjects = new Set(mine.map((r) => r.subjectId).filter(Boolean));
+    if (mine.length > 1 && subjects.size > 1) {
+      out.push(`ครูคนเดียวกันสอน ${mine.map((r) => nameOf(r.groupId)).join(" และ ")} `
+        + "คนละวิชาในชั่วโมงเดียวกัน — อยู่สองห้องพร้อมกันไม่ได้ "
+        + "(ถ้าเป็นวิชาเดียวกัน คือเรียนรวมกัน ซึ่งทำได้)");
     }
   }
-  const weeks = new Set(rows.map((r) => r.weekly));
-  if (weeks.size > 1) {
-    out.push(`คาบ/สัปดาห์ไม่เท่ากัน (${[...weeks].sort((a, b) => a - b).join(", ")}) — `
-      + "ทุกวิชาในเซ็ตเรียนพร้อมกัน จึงต้องมีจำนวนคาบเท่ากัน");
+  return out;
+}
+
+/**
+ * เรื่องที่ควรรู้ไว้ แต่ไม่ได้ผิด — shown beside the set, never blocking it.
+ */
+export function setNotes(
+  rows: SetRow[], nameOf: (id: number) => string,
+  subjectName: (id: number) => string = String,
+): string[] {
+  const out: string[] = [];
+  const byTeacher = new Map<number, SetRow[]>();
+  for (const r of rows) {
+    if (r.teacherId) byTeacher.set(r.teacherId, [...(byTeacher.get(r.teacherId) ?? []), r]);
+  }
+  for (const [, mine] of byTeacher) {
+    const subjects = new Set(mine.map((r) => r.subjectId).filter(Boolean));
+    if (mine.length > 1 && subjects.size === 1) {
+      out.push(`${mine.map((r) => nameOf(r.groupId)).join(" และ ")} `
+        + `เรียน ${subjectName(mine[0].subjectId)} รวมกันกับครูคนเดียว — `
+        + "จะนั่งห้องเดียวกัน และนับเป็นชั่วโมงเดียวของครู");
+    }
+  }
+  const weeks = [...new Set(rows.map((r) => r.weekly))].sort((a, b) => a - b);
+  if (weeks.length > 1) {
+    out.push(`คาบ/สัปดาห์ของแต่ละห้องไม่เท่ากัน (${weeks.join(", ")}) — `
+      + "เซ็ตจะจับชั่วโมงให้ตรงกันเท่าที่มี ห้องที่คาบน้อยกว่าจะว่างในชั่วโมงที่เหลือ "
+      + "ไปเรียนวิชาอื่นของตัวเอง");
   }
   return out;
 }

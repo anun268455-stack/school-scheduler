@@ -15,6 +15,7 @@ import { useTimetableStore } from "../../store/timetableStore";
 import * as api from "../../api/client";
 import {
   classesWithSubgroups, subgroupsOf, readSets, makeSetKey, planSetSave, setProblems,
+  setNotes,
   suggestTeacher,
   type SubgroupSet, type SetRow,
 } from "../../utils/subgroupSets";
@@ -148,6 +149,8 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
   };
 
   const problems = useMemo(() => setProblems(rows, nameOf), [rows, subs]);
+  // สิ่งที่ควรรู้ แต่ไม่ได้ผิด — ไม่กันไม่ให้บันทึก
+  const notes = useMemo(() => setNotes(rows, nameOf, subjName), [rows, subs, subjects]);
   const canSave = !!editing && rows.length > 0 && problems.length === 0 && !!name.trim() && !busy;
 
   const save = async () => {
@@ -429,6 +432,11 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
             {problems.length > 0 && (
               <ul className="mt-2 text-xs text-red-700 list-disc list-inside space-y-0.5">
                 {problems.map((p, i) => <li key={i}>{p}</li>)}
+              </ul>
+            )}
+            {notes.length > 0 && (
+              <ul className="mt-2 text-xs text-sky-800 list-disc list-inside space-y-0.5">
+                {notes.map((p, i) => <li key={i}>{p}</li>)}
               </ul>
             )}
             {rows.length === 0 && problems.length === 0 && (
