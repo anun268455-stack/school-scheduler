@@ -3041,6 +3041,26 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             """The rows that still owe at least n more periods of this set."""
             return [r for i, r in enumerate(reqs) if owed[i] >= n]
 
+        def usable_rows(rows, cells_to_use):
+            """Which of these rows can actually take this hour.
+
+            Unpinned, the answer has to be all of them: the whole point of a
+            เซ็ต is that the subgroups sit down together, and if one cannot
+            make this hour there is another hour to go and look for.
+
+            Pinned, there is no other hour. The school has named it. One
+            subgroup's teacher being busy elsewhere then took the entire set
+            down with it — ม.4/6ก's ครูศิรวิทย์ teaching another class at
+            พุธ คาบ 7 meant ข and ค got nothing either, and the hour the
+            school had chosen stood empty for two of the three. So the ones
+            who can make it are seated, together, and the one who cannot is
+            reported — which is the question the school has to answer anyway,
+            and it can now answer it with the rest of the set already in place.
+            """
+            if pinned is None:
+                return rows if all_free(cells_to_use, rows) else []
+            return [r for r in rows if all_free(cells_to_use, [r])]
+
         def all_free(periods_to_check, rows=None):
             for day_, per_ in periods_to_check:
                 for r in (reqs if rows is None else rows):
@@ -3173,7 +3193,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                                       for r in rows):
                         continue
                     p2 = _next_class_period_for(lead_lvl, p)
-                    if p2 is None or not all_free([(day, p), (day, p2)], rows):
+                    if p2 is None:
+                        continue
+                    rows = usable_rows(rows, [(day, p), (day, p2)])
+                    if not rows:
                         continue
                     place_block(day, [p, p2], rows)
                     alive = {id(x) for x in rows}
@@ -3209,7 +3232,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                         break
                     if spread and already_today(day):
                         continue
-                    if not all_free([(day, period)], rows):
+                    rows = usable_rows(rows, [(day, period)])
+                    if not rows:
                         continue
                     place_block(day, [period], rows)
                     alive = {id(x) for x in rows}
@@ -3224,11 +3248,40 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
         created += created_here
 
-        if placed < needed:
-            violations.append(
-                f"[{pgk}] วิชาคู่ขนานจัดได้ {placed}/{needed} คาบ "
-                f"(ห้อง: {', '.join(str(r['group_id']) for r in reqs)})"
-            )
+        # Reported per subgroup now, because they no longer stand or fall
+        # together: naming the one that could not make the hour, and why, is
+        # what the school needs in order to fix it.
+        short_now = [(i, r) for i, r in enumerate(reqs) if owed[i] > 0]
+        if short_now:
+            def why(r, i):
+                if pinned is None:
+                    return "หาชั่วโมงที่ทุกห้องย่อยว่างพร้อมกันไม่ได้"
+                d, pr = int(pinned[0]), int(pinned[1])
+                if not r.get("teacher_id"):
+                    return "ยังไม่ได้เลือกครู"
+                if not teacher_free(r["teacher_id"], d, r["group_id"], pr):
+                    # Their own lesson, just seated in this very hour, is not
+                    # what is stopping them.
+                    clash = next((x for x in SLOTS
+                                  if x["day"] == d and x["period"] == pr
+                                  and r["teacher_id"] in _slot_teachers(x)
+                                  and x["group_id"] != r["group_id"]), None)
+                    if clash is None:
+                        return "ชั่วโมงที่ล็อกไว้ไม่พอกับจำนวนคาบที่ตั้งไว้"
+                    where = (g_map.get(clash["group_id"], {}) or {}).get("name") if clash else None
+                    return ("ครู " + (t_map.get(r["teacher_id"], {}) or {}).get("name", "")
+                            + " ติดสอน" + (f" {where}" if where else "ห้องอื่น") + " ในคาบนี้")
+                if group_occupied(r["group_id"], d, pr):
+                    return "ห้องย่อยนี้มีคาบอื่นอยู่ในชั่วโมงนี้แล้ว"
+                if run_if_placed(r["teacher_id"], r["group_id"], d, pr) > _consec_limit(
+                        t_map.get(r["teacher_id"]), consec_hard):
+                    return "จะทำให้ครูสอนติดกันเกินเพดาน"
+                return "ชั่วโมงที่ล็อกไว้ไม่พอกับจำนวนคาบที่ตั้งไว้"
+            name = pgk.split(":")[-1]
+            for i, r in short_now:
+                violations.append(
+                    f"[{name}] {(g_map.get(r['group_id']) or {}).get('name', r['group_id'])} "
+                    f"ยังขาด {owed[i]} คาบ — {why(r, i)}")
 
 
     # ── Place solo requirements ──
