@@ -6738,6 +6738,243 @@ def bulk_create_teachers(body: list[dict[str, Any]]):
         created.append(row)
     return created
 
+
+# ── ส่งต่อครู ────────────────────────────────────────────────────────────────
+#
+# "จะมีครูย้าย เราสามารถกดเลือกครูสองท่าน ซึ่งต้องมาเลือกรายวิชาที่จะโอนไปให้
+#  ซึ่งก็มีปุ่มที่โอนทั้งหมดเหมือนกัน"
+#
+# ครูคนหนึ่งลาออกกลางปี และงานของเขาไม่ได้อยู่ที่เดียว: แผนการสอนบอกว่าเขาสอน
+# วิชาอะไรให้ห้องไหน ตารางที่จัดไว้แล้วถือชื่อเขาอยู่ในทุกคาบ และคาบเสรีบางชุด
+# เปิดวิชาของเขาให้นักเรียนเลือก ก่อนหน้านี้ต้องไล่แก้ทีละแถวสี่สิบกว่าที่ ซึ่ง
+# แปลว่าจะมีสักที่ที่ลืม
+#
+# ย้ายทางเดียวเสมอ ก → ข ไม่ใช่การสลับ เพราะเคสจริงคือคนหนึ่งไม่อยู่แล้ว
+# และไม่มีการขยับวัน/คาบ/ห้องของคาบไหนเลย — เปลี่ยนแค่ว่าใครยืนอยู่ในห้องนั้น
+
+def _elective_sites(teacher_id: int | None = None):
+    """ทุกที่ที่ตัวเลือกของคาบเสรีถูกเก็บไว้ — ในชุด และในคาบที่ลงไว้แล้ว
+
+    ชุด (ELECTIVE_POOLS) คือสิ่งที่โรงเรียนตั้งไว้ ส่วนคาบที่ลงแล้วถือสำเนาของ
+    ตัวเลือกไว้เองเพื่อให้พิมพ์ตารางได้โดยไม่ต้องย้อนไปหาชุด ถ้าโอนแค่ที่เดียว
+    อีกที่จะยังโชว์ชื่อครูคนเก่าอยู่
+    """
+    for pool in ELECTIVE_POOLS:
+        for opt in pool.get("options") or []:
+            if teacher_id is None or opt.get("teacher_id") == teacher_id:
+                yield pool, opt
+    for slot in SLOTS:
+        for opt in slot.get("elective_options") or []:
+            if teacher_id is None or opt.get("teacher_id") == teacher_id:
+                yield slot, opt
+
+
+def _teacher_record(tid: int) -> dict[str, Any]:
+    t = next((x for x in TEACHERS if x["id"] == tid), None)
+    if not t:
+        raise HTTPException(404, f"ไม่พบครูรหัส {tid}")
+    return t
+
+
+@app.get("/api/teachers/{tid}/holdings")
+def teacher_holdings(tid: int):
+    """ของที่ครูคนนี้ถืออยู่ จัดกลุ่มตามวิชา แล้วกางเป็นรายห้อง"""
+    t = _teacher_record(tid)
+    g_map = {g["id"]: g for g in _flat_groups()}
+    s_map = {s["id"]: s for s in SUBJECTS}
+    placed: dict[tuple, int] = defaultdict(int)
+    for s in SLOTS:
+        if s.get("teacher_id") == tid and s.get("subject_id") is not None:
+            placed[(s["group_id"], s["subject_id"])] += 1
+
+    by_sub: dict[int, dict[str, Any]] = {}
+    for r in REQUIREMENTS:
+        if r.get("teacher_id") != tid:
+            continue
+        subj = s_map.get(r.get("subject_id")) or {}
+        e = by_sub.setdefault(r["subject_id"], {
+            "subject_id": r["subject_id"],
+            "code": subj.get("code") or f"#{r.get('subject_id')}",
+            "name": subj.get("name") or "",
+            "weekly": 0, "placed": 0, "classes": [],
+        })
+        grp = g_map.get(r["group_id"]) or {}
+        got = placed.get((r["group_id"], r["subject_id"]), 0)
+        e["classes"].append({
+            "requirement_id": r["id"],
+            "group_id": r["group_id"],
+            "group_name": grp.get("name") or f"#{r['group_id']}",
+            "weekly_count": r.get("weekly_count") or 0,
+            "placed": got,
+        })
+        e["weekly"] += r.get("weekly_count") or 0
+        e["placed"] += got
+
+    def class_key(c):
+        nums = _re.findall(r"\d+", c["group_name"])
+        return ([int(n) for n in nums[:2]] + [0, 0])[:2] + [c["group_name"]]
+
+    for e in by_sub.values():
+        e["classes"].sort(key=class_key)
+
+    electives: dict[int, dict[str, Any]] = {}
+    for holder, opt in _elective_sites(tid):
+        sid = opt.get("subject_id")
+        subj = s_map.get(sid) or {}
+        e = electives.setdefault(sid, {
+            "subject_id": sid,
+            "code": opt.get("code") or subj.get("code") or f"#{sid}",
+            "name": opt.get("label") or subj.get("name") or "",
+            "pools": 0, "slots": 0, "where": [],
+        })
+        if "options" in holder and "group_ids" in holder:
+            e["pools"] += 1
+            label = holder.get("name") or "ชุดคาบเสรี"
+        else:
+            e["slots"] += 1
+            label = (g_map.get(holder.get("group_id")) or {}).get("name") or "คาบเสรี"
+        if label not in e["where"]:
+            e["where"].append(label)
+
+    # หน้าที่ดูแลกิจกรรม — แสดงให้เห็นว่ายังค้างอยู่ แต่ยังไม่ได้โอนให้
+    acts: dict[str, dict[str, Any]] = {}
+    for s in SLOTS:
+        if not s.get("is_activity_block") or tid not in _slot_teachers(s):
+            continue
+        key = s.get("activity_key") or f"SLOT-{s['id']}"
+        a = acts.setdefault(key, {
+            "activity_key": key,
+            "name": s.get("subject_name") or s.get("activity_scope") or "กิจกรรม",
+            "slots": 0,
+        })
+        a["slots"] += 1
+
+    subjects = sorted(by_sub.values(), key=lambda e: e["code"])
+    return {
+        "teacher": {"id": t["id"], "name": t.get("name")},
+        "subjects": subjects,
+        "electives": sorted(electives.values(), key=lambda e: e["code"]),
+        "activities": sorted(acts.values(), key=lambda a: a["name"]),
+        "totals": {
+            "rows": sum(len(e["classes"]) for e in subjects),
+            "weekly": sum(e["weekly"] for e in subjects),
+            "slots": sum(e["placed"] for e in subjects),
+        },
+    }
+
+
+def _handover_clashes(to_id: int, moving: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """คาบที่ครูผู้รับช่วงจะต้องยืนสองที่พร้อมกัน ถ้าโอนตามที่เลือกไว้
+
+    ถามก่อนลงมือเสมอ เพราะมันคือสิ่งเดียวที่การโอนทำให้แย่ลงได้ และเป็นเรื่องที่
+    โรงเรียนต้องตัดสินใจเอง ไม่ใช่ระบบ
+    """
+    g_map = {g["id"]: g for g in _flat_groups()}
+    s_map = {s["id"]: s for s in SUBJECTS}
+    mine = {id(x) for x in moving}
+    seen: set[tuple] = set()
+    out: list[dict[str, Any]] = []
+
+    def parent_of(gid):
+        return (g_map.get(gid) or {}).get("parent_id")
+
+    for s in moving:
+        bks = _slot_buckets(g_map.get(s.get("group_id")), s.get("period"))
+        for x in SLOTS:
+            if x is s or x.get("day") != s.get("day"):
+                continue
+            # ครูใหม่อยู่ในคาบนั้นอยู่แล้ว หรือกำลังจะถูกโอนมาพร้อมกัน
+            if to_id not in _slot_teachers(x) and id(x) not in mine:
+                continue
+            if x.get("group_id") == s.get("group_id"):
+                continue
+            if _same_activity(s, x):
+                continue
+            # ห้องย่อยพี่น้องที่เรียนวิชาเดียวกัน = คาบเดียว ครูสอนทีเดียว
+            if (x.get("subject_id") == s.get("subject_id")
+                    and parent_of(x.get("group_id")) is not None
+                    and parent_of(x.get("group_id")) == parent_of(s.get("group_id"))):
+                continue
+            if not (bks & _slot_buckets(g_map.get(x.get("group_id")), x.get("period"))):
+                continue
+            key = tuple(sorted([s.get("group_id"), x.get("group_id")])) + (
+                s.get("day"), s.get("period"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "day": s.get("day"), "period": s.get("period"),
+                "group_name": (g_map.get(s.get("group_id")) or {}).get("name"),
+                "subject_code": (s_map.get(s.get("subject_id")) or {}).get("code"),
+                "with_group": (g_map.get(x.get("group_id")) or {}).get("name"),
+                "with_subject": (s_map.get(x.get("subject_id")) or {}).get("code")
+                                or ("คาบเสรี" if x.get("is_elective") else
+                                    "กิจกรรม" if x.get("is_activity_block") else None),
+            })
+    out.sort(key=lambda c: (c["day"], c["period"], c["group_name"] or ""))
+    return out
+
+
+@app.post("/api/teachers/handover")
+def teacher_handover(body: dict[str, Any]):
+    """โอนวิชาที่เลือกจากครูคนหนึ่งไปอีกคน
+
+    dry_run=True คือพรีวิว: นับให้ว่าจะย้ายกี่แถวกี่คาบ และชนกี่คาบ โดยไม่แตะ
+    ข้อมูลเลยสักตัว หน้าจอเรียกอันนี้ทุกครั้งที่ติ๊กเปลี่ยน
+    """
+    from_id = body.get("from_teacher_id")
+    to_id = body.get("to_teacher_id")
+    if from_id is None or to_id is None:
+        raise HTTPException(400, "ต้องเลือกครูทั้งสองคน")
+    if from_id == to_id:
+        raise HTTPException(400, "เลือกครูคนเดียวกันทั้งสองช่อง — ต้องเป็นคนละคน")
+    _teacher_record(int(from_id))
+    to_t = _teacher_record(int(to_id))
+    from_id, to_id = int(from_id), int(to_id)
+
+    want_reqs = {int(i) for i in (body.get("requirement_ids") or [])}
+    want_elec = {int(i) for i in (body.get("elective_subject_ids") or [])}
+    dry = bool(body.get("dry_run"))
+
+    # แถวที่เป็นของครูคนนี้จริงๆ เท่านั้น — รหัสที่ส่งมาปนจากครูคนอื่นถูกข้าม
+    rows = [r for r in REQUIREMENTS
+            if r["id"] in want_reqs and r.get("teacher_id") == from_id]
+    pairs = {(r["group_id"], r.get("subject_id")) for r in rows}
+    moving = [s for s in SLOTS
+              if s.get("teacher_id") == from_id
+              and (s.get("group_id"), s.get("subject_id")) in pairs]
+    opts = [(h, o) for h, o in _elective_sites(from_id)
+            if o.get("subject_id") in want_elec]
+
+    clashes = _handover_clashes(to_id, moving)
+    result = {
+        "ok": True, "applied": False,
+        "rows": len(rows), "slots": len(moving), "electives": len(opts),
+        "clashes": clashes,
+        "activities_left": sum(
+            1 for s in SLOTS
+            if s.get("is_activity_block") and from_id in _slot_teachers(s)),
+        "to_teacher": {"id": to_t["id"], "name": to_t.get("name")},
+    }
+    if dry:
+        return result
+
+    for r in rows:
+        r["teacher_id"] = to_id
+    for s in moving:
+        s["teacher_id"] = to_id
+        s["teacher_name"] = to_t.get("name")
+        # ถ้าครูผู้รับช่วงเป็นคู่สอนร่วมของคาบนี้อยู่แล้ว ก็ไม่ต้องนับสองครั้ง
+        if s.get("co_teacher_id") == to_id:
+            s.pop("co_teacher_id", None)
+            s.pop("co_teacher_name", None)
+    for _holder, o in opts:
+        o["teacher_id"] = to_id
+    _save_state()
+    result["applied"] = True
+    return result
+
+
 # ── Subjects ──────────────────────────────────────────────────────────────────
 @app.get("/api/subjects/")
 def get_subjects():

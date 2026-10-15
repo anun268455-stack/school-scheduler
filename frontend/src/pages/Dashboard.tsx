@@ -38,6 +38,7 @@ import {
 } from "../utils/homeroom";
 import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { TeacherSettingsModal } from "../components/teachers/TeacherSettingsModal";
+import { TeacherHandoverModal } from "../components/teachers/TeacherHandoverModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
 import { SearchableSelect, teacherOptions, roomOptions, groupOptions, subjectOptions } from "../components/common/SearchableSelect";
 import { TableSearch, matches } from "../components/common/TableSearch";
@@ -460,6 +461,8 @@ const TeachersPanel: React.FC = () => {
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   const [settingsFor, setSettingsFor] = useState<number | null>(null);
   const [homeroomFor, setHomeroomFor] = useState<number | null>(null);
+  // ส่งต่อครู — ครูย้ายออก อีกคนรับช่วงต่อ
+  const [handover, setHandover] = useState(false);
   const [assigning, setAssigning] = useState<number | null>(null);
   const assigningTeacher = assigning != null ? teachers.find((t) => t.id === assigning) ?? null : null;
   const settingsTeacher  = settingsFor != null ? teachers.find((t) => t.id === settingsFor) ?? null : null;
@@ -495,7 +498,16 @@ const TeachersPanel: React.FC = () => {
       deptName(t.department_id), roomName(t.fixed_room_id))));
 
   return (
-    <Section title="ครูผู้สอน" action={<ImportButton entity="teachers" />}>
+    <Section title="ครูผู้สอน" action={
+      <div className="flex items-center gap-2">
+        <button onClick={() => setHandover(true)}
+          className="px-2.5 py-1 rounded border border-teal-300 text-teal-700 hover:bg-teal-50 text-xs font-semibold">
+          🔁 ส่งต่อครู
+        </button>
+        <ImportButton entity="teachers" />
+      </div>
+    }>
+      {handover && <TeacherHandoverModal onClose={() => setHandover(false)} />}
       <div className="grid grid-cols-3 gap-2 mb-3">
         <Field label="รหัสประจำตัวครู">
           <input className={inputCls} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="เช่น T001" />

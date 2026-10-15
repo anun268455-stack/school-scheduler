@@ -287,6 +287,87 @@ export const runSolver = (p: {
   last_period_mode?: "reserve" | "never" | "free";
 }) => api.post<SolverResult>("/timetable/solve", p).then((r) => r.data);
 
+// ── ส่งต่อครู ────────────────────────────────────────────────────────────────
+/** ห้องหนึ่งห้องที่ครูคนนี้สอนวิชานั้นอยู่ */
+export interface HoldingClass {
+  requirement_id: number;
+  group_id:       number;
+  group_name:     string;
+  weekly_count:   number;
+  /** คาบของวิชานี้ที่ลงในตารางให้ห้องนี้แล้ว */
+  placed:         number;
+}
+
+export interface HoldingSubject {
+  subject_id: number;
+  code:       string;
+  name:       string;
+  /** คาบ/สัปดาห์ รวมทุกห้อง */
+  weekly:     number;
+  placed:     number;
+  classes:    HoldingClass[];
+}
+
+/** วิชาที่ครูคนนี้เปิดสอนอยู่ในคาบเสรี */
+export interface HoldingElective {
+  subject_id: number;
+  code:       string;
+  name:       string;
+  pools:      number;
+  slots:      number;
+  /** ชื่อชุด/ห้องที่มันไปโผล่ */
+  where:      string[];
+}
+
+/** หน้าที่ดูแลกิจกรรม — แสดงให้เห็น แต่ยังไม่ได้โอนให้ */
+export interface HoldingActivity {
+  activity_key: string;
+  name:         string;
+  slots:        number;
+}
+
+export interface TeacherHoldings {
+  teacher:    { id: number; name: string };
+  subjects:   HoldingSubject[];
+  electives:  HoldingElective[];
+  activities: HoldingActivity[];
+  totals:     { rows: number; weekly: number; slots: number };
+}
+
+/** คาบที่ครูผู้รับช่วงจะต้องยืนสองที่พร้อมกัน */
+export interface HandoverClash {
+  day:           number;
+  period:        number;
+  group_name:    string | null;
+  subject_code:  string | null;
+  with_group:    string | null;
+  with_subject:  string | null;
+}
+
+export interface HandoverResult {
+  ok:          boolean;
+  /** false = พรีวิว ยังไม่ได้แตะข้อมูล */
+  applied:     boolean;
+  rows:        number;
+  slots:       number;
+  electives:   number;
+  clashes:     HandoverClash[];
+  /** หน้าที่ดูแลกิจกรรมที่ยังค้างอยู่กับครูคนเดิม */
+  activities_left: number;
+  to_teacher:  { id: number; name: string };
+}
+
+export const fetchTeacherHoldings = (id: number) =>
+  api.get<TeacherHoldings>(`/teachers/${id}/holdings`).then((r) => r.data);
+
+export const teacherHandover = (p: {
+  from_teacher_id: number;
+  to_teacher_id: number;
+  requirement_ids?: number[];
+  elective_subject_ids?: number[];
+  dry_run?: boolean;
+}) => api.post<HandoverResult>("/teachers/handover", p).then((r) => r.data);
+
 // ── ตรวจคาบสุดท้าย / คาบว่าง ของแต่ละห้อง ───────────────────────────────────
 export interface PeriodCheckRow {
   group_id: number;
