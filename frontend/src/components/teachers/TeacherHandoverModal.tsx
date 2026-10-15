@@ -20,6 +20,14 @@ import { DAYS } from "../../types";
 
 interface Props { onClose: () => void }
 
+/** ติ๊ก/เอาออกหนึ่งรายการ — คืนชุดใหม่เสมอ เพื่อให้ React เห็นว่าเปลี่ยน */
+function flip<T>(set: Set<T>, key: T): Set<T> {
+  const next = new Set(set);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return next;
+}
+
 export const TeacherHandoverModal: React.FC<Props> = ({ onClose }) => {
   const { teachers, departments, loadAll } = useTimetableStore();
   const [fromId, setFromId] = useState("");
@@ -69,14 +77,16 @@ export const TeacherHandoverModal: React.FC<Props> = ({ onClose }) => {
     return () => { alive = false; clearTimeout(t); };
   }, [fromId, toId, rows, elec]);
 
-  const toggleRow = (id: number) =>
-    setRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleRow = (id: number) => setRows((s) => flip(s, id));
   const toggleSubject = (s: api.HoldingSubject) => {
     const ids = s.classes.map((c) => c.requirement_id);
     const all = ids.every((i) => rows.has(i));
     setRows((cur) => {
       const n = new Set(cur);
-      for (const i of ids) all ? n.delete(i) : n.add(i);
+      for (const i of ids) {
+        if (all) n.delete(i);
+        else n.add(i);
+      }
       return n;
     });
   };
@@ -201,11 +211,7 @@ export const TeacherHandoverModal: React.FC<Props> = ({ onClose }) => {
                           )}
                         </span>
                         <button
-                          onClick={() => setOpen((o) => {
-                            const n = new Set(o);
-                            n.has(s.subject_id) ? n.delete(s.subject_id) : n.add(s.subject_id);
-                            return n;
-                          })}
+                          onClick={() => setOpen((o) => flip(o, s.subject_id))}
                           className="shrink-0 text-gray-400 hover:text-gray-700 text-xs px-1">
                           {expanded ? "▴" : "▾"}
                         </button>
@@ -240,11 +246,7 @@ export const TeacherHandoverModal: React.FC<Props> = ({ onClose }) => {
                       <li key={e.subject_id}
                         className="border rounded px-3 py-2 flex items-center gap-2">
                         <input type="checkbox" checked={elec.has(e.subject_id)}
-                          onChange={() => setElec((s) => {
-                            const n = new Set(s);
-                            n.has(e.subject_id) ? n.delete(e.subject_id) : n.add(e.subject_id);
-                            return n;
-                          })} />
+                          onChange={() => setElec((s) => flip(s, e.subject_id))} />
                         <span className="font-bold text-sm text-gray-800">{e.code}</span>
                         <span className="text-xs text-gray-600 truncate">{e.name}</span>
                         <span className="ml-auto text-xs text-gray-500 shrink-0">
