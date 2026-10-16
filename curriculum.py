@@ -247,9 +247,10 @@ def derive_all() -> list[dict]:
     one such group they are numbered "(แบบ 1)", "(แบบ 2)" …, the one with the
     most classes first. A lone class is named after the class ("ม.4/6ก"): it is
     not a design several classes share, so it takes no number and does not use
-    one up. `variants` is how many of those multi-class groups the level+plan
-    has — the same figure on every proposal of that level+plan, 0 where it has
-    none; it is not a count of the lone classes.
+    one up. `variants` describes the numbered family a proposal belongs to: on
+    a multi-class group it is how many such groups the level+plan has, and on a
+    lone class it is 0 — it stands alone, whatever its level+plan produced
+    around it. So `variants > 0` means "one of a family", 0 means "alone".
 
     Only classes that follow no curriculum are looked at. A class already on a
     real curriculum has been settled by someone, and re-deriving it would
@@ -302,6 +303,8 @@ def derive_all() -> list[dict]:
                 "name": name,
                 "rows": c["rows"],
                 "group_ids": c["group_ids"],
-                "variants": len(shared),
+                # A lone class belongs to no numbered family, so it reads 0; the
+                # classes that share a design carry the level+plan's count.
+                "variants": len(shared) if len(c["group_ids"]) > 1 else 0,
             })
     return out
