@@ -25,6 +25,7 @@ Two rules follow from that and the rest of the module depends on them:
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Bound to the live data by mock_api at import time, so this module can be read
@@ -174,15 +175,30 @@ def _label(value: Any) -> str:
     return str(value or "").strip()
 
 
+_LEVEL = re.compile(r"M([0-9]+)")
+
+
+def _level_label(level: str) -> str:
+    """A level as the school writes it: "M4" -> "ม.4".
+
+    The data holds the level as "M4" while every class's own name is "ม.4/1",
+    and the proposal names are the first thing the school reads. Only an M and
+    plain digits are rewritten; anything else ("ห้องเวียน", "T9", "") is left as
+    it was rather than guessed at."""
+    m = _LEVEL.fullmatch(level)
+    return f"ม.{m.group(1)}" if m else level
+
+
 def _plan_rows(group: dict, reqs: list[dict]) -> list[dict]:
     """The curriculum rows for one class, read from its own teaching-plan rows.
 
     Reading the plan is more forgiving than reading what a person typed into
     the curriculum grid, in one way only. A plan row with no periods in it —
     0, nothing, or something that is not a number — teaches nothing and is left
-    out. It must not become a 0-period curriculum row: in a curriculum that
-    reads "this class may NOT take this subject", the opposite of what a plan
-    row says. Everything else is held to normalise_rows, which is also what
+    out. It must not become a 0-period curriculum row: the audit (Task 6) reads
+    a 0-period row as "this subject may not be taught to this class at all", so
+    a stray 0 here would silently ban a subject the plan still lists.
+    Everything else is held to normalise_rows, which is also what
     makes two rows for one subject (a co-taught lesson is written from both
     teachers' sides) one row at the larger count, the lesson being held once.
 
@@ -223,10 +239,17 @@ def derive_all() -> list[dict]:
     Classes are grouped when they have the same level, the same plan and
     EXACTLY the same subjects at exactly the same weekly counts. Same subjects
     with one count different is a different curriculum, as is one extra subject.
-    The level and plan are part of the grouping, so a proposal's name — "<level>
-    <plan>" — is true of every class in it. When one level+plan comes out as
-    several groups they are numbered "(แบบ 1)", "(แบบ 2)" …, the one the most
-    classes follow first, and each says how many there are in `variants`.
+    The level and plan are part of the grouping, so a proposal's name is true of
+    every class in it.
+
+    Names. A group of two or more classes is "<level> <plan>" with the level
+    written the Thai way ("M4" -> "ม.4"), and when one level+plan has more than
+    one such group they are numbered "(แบบ 1)", "(แบบ 2)" …, the one with the
+    most classes first. A lone class is named after the class ("ม.4/6ก"): it is
+    not a design several classes share, so it takes no number and does not use
+    one up. `variants` is how many of those multi-class groups the level+plan
+    has — the same figure on every proposal of that level+plan, 0 where it has
+    none; it is not a count of the lone classes.
 
     Only classes that follow no curriculum are looked at. A class already on a
     real curriculum has been settled by someone, and re-deriving it would
@@ -264,12 +287,21 @@ def derive_all() -> list[dict]:
     out = []
     for (level, plan), clusters in sorted(pairs.items(), key=lambda kv: kv[0]):
         ordered = sorted(clusters.values(), key=lambda c: (-len(c["group_ids"]), c["group_ids"][0]))
-        base = " ".join(part for part in (level, plan) if part) or "ไม่ระบุระดับ"
-        for n, c in enumerate(ordered, start=1):
+        shared = [c for c in ordered if len(c["group_ids"]) > 1]
+        base = " ".join(part for part in (_level_label(level), plan) if part) or "ไม่ระบุระดับ"
+        for c in ordered:
+            if len(c["group_ids"]) == 1:
+                # One class is named for itself. It is not a "แบบ" of anything, so
+                # it takes no number (and is not counted in `variants`).
+                name = str(groups[c["group_ids"][0]].get("name") or "").strip() or base
+            elif len(shared) == 1:
+                name = base
+            else:
+                name = f"{base} (แบบ {shared.index(c) + 1})"
             out.append({
-                "name": base if len(ordered) == 1 else f"{base} (แบบ {n})",
+                "name": name,
                 "rows": c["rows"],
                 "group_ids": c["group_ids"],
-                "variants": len(ordered),
+                "variants": len(shared),
             })
     return out
