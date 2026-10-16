@@ -691,3 +691,77 @@ def apply(group_id: int, add: Any, fix: Any, remove: Any) -> dict:
         result["slots_left"] = sum(1 for s in _t("slots")()
                                    if s.get("group_id") == group_id and s.get("subject_id") in dropped)
     return result
+
+
+# ── ตรวจทั้งโรงเรียน ──────────────────────────────────────────────────────────────────
+# One row per class, counting what diff finds for each. It goes through diff and
+# _plan_by_subject, so it totals a class's plan exactly as deriving and diff do
+# (a co-teaching pair counted once, then rows ADDED UP) and not the way
+# normalise_rows merges a repeated line on the curriculum form (the larger one).
+# Were audit to total differently, every curriculum derived from the data would
+# read as wrong against the very classes it came from.
+
+def audit() -> dict:
+    """Every class that has a curriculum or a teaching plan, set against its curriculum.
+
+    Returns `{"rows", "total", "attached", "off"}`. `rows` is one entry per class
+    that follows a curriculum or has at least one plan row, in the order the
+    classes are listed, each
+
+        {"group_id", "group_name", "curriculum_id", "curriculum_name",
+         "missing", "surplus", "mismatch", "warn", "weekly", "error"}
+
+    `missing`, `surplus` and `mismatch` are how many subjects diff puts in add,
+    remove and fix, and `warn` how many it leaves for a person (see diff).
+    `weekly` is the periods a week the class's plan asks for, totalled as above.
+    A class that follows no curriculum (see plan_for) is listed with its
+    `weekly` and its curriculum fields None and its counters 0: nobody has said
+    what it should take, so nothing is missing from it.
+
+    `total` is the number of rows, `attached` the rows that follow a curriculum,
+    and `off` the attached rows with anything in a counter. A class that is
+    never checked is never off.
+
+    One class that cannot be read does not stop the others. diff raises
+    ValueError for a plan row or a stored curriculum row it cannot read; that
+    class is listed with `error` set to the Thai message, and `warn` 1 if it
+    follows a curriculum (so it is off, and anything that only looks at the
+    counters still sees it as not matching). `weekly` is None when the plan
+    itself could not be read. `error` is None for every other row.
+    """
+    groups = _t("groups_by_id")()
+    plans: dict[Any, list[dict]] = {}
+    for r in _t("requirements")():
+        plans.setdefault(r.get("group_id"), []).append(r)
+
+    rows = []
+    for gid, group in groups.items():
+        cur = plan_for(gid)
+        mine = plans.get(gid, [])
+        if cur is None and not mine:
+            continue
+        row: dict[str, Any] = {
+            "group_id": gid, "group_name": group.get("name"),
+            "curriculum_id": cur["id"] if cur else None,
+            "curriculum_name": cur.get("name") if cur else None,
+            "missing": 0, "surplus": 0, "mismatch": 0, "warn": 0, "weekly": 0, "error": None}
+        try:
+            row["weekly"] = sum(p["count"] for p in _plan_by_subject(group, mine).values())
+        except ValueError as exc:                # the plan itself is damaged
+            row["weekly"], row["error"] = None, str(exc)
+        else:
+            if cur is not None:
+                try:
+                    found = diff(gid)
+                except ValueError as exc:        # the plan read fine, so it is the curriculum
+                    row["error"] = f"หลักสูตร “{cur.get('name')}” อ่านไม่ได้: {exc}"
+                else:
+                    row.update(missing=len(found["add"]), surplus=len(found["remove"]),
+                               mismatch=len(found["fix"]), warn=len(found["warn"]))
+        if row["error"] and cur is not None:
+            row["warn"] = 1
+        rows.append(row)
+
+    attached = [r for r in rows if r["curriculum_id"] is not None]
+    off = [r for r in attached if r["missing"] or r["surplus"] or r["mismatch"] or r["warn"]]
+    return {"rows": rows, "total": len(rows), "attached": len(attached), "off": len(off)}

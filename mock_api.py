@@ -9296,6 +9296,15 @@ def curriculum_apply(gid: int, body: dict[str, Any]):
     return done
 
 
+@app.get("/api/curricula/audit")
+def curriculum_audit():
+    """Every class set against its curriculum, in one table. Writes nothing.
+
+    A class that cannot be read is listed with an `error` instead of failing the
+    whole table (see curriculum.audit), so this has no 400 of its own."""
+    return _CUR.audit()
+
+
 # {cid:int}, not {cid}: a bare {cid} also matches "derive" and "audit", and a
 # route registered above them would answer for them.
 @app.get("/api/curricula/{cid:int}")
