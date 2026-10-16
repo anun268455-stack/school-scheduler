@@ -12,6 +12,7 @@ import os as _os
 import json as _json
 import datetime as _dt
 from collections import Counter, defaultdict
+from contextvars import ContextVar
 import substitution as _SUB
 import curriculum as _CUR
 
@@ -24,11 +25,31 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # same time see each other's work without refreshing the page.
 REVISION = {"n": 0}
 
+# A write that changed nothing says so, and the middleware below then leaves the
+# revision and the saved copy alone: every open browser reads a bump as "someone
+# changed the data" and re-fetches, so a button press that did nothing must be
+# silent. A handler cannot reach the response from where it sits, so it flags the
+# request through this instead. The middleware puts a fresh list here before the
+# handler runs (a mutable object, because a value the handler sets would not be
+# seen from the middleware's side); a handler called on its own finds None and
+# the flag does nothing.
+_NOTHING_CHANGED: ContextVar[list | None] = ContextVar("nothing_changed", default=None)
+
+
+def _nothing_changed() -> None:
+    """Call from a write handler that ended up changing nothing."""
+    flag = _NOTHING_CHANGED.get()
+    if flag is not None:
+        flag.append(True)
+
 
 @app.middleware("http")
 async def _bump_revision(request, call_next):
+    unchanged: list[bool] = []
+    _NOTHING_CHANGED.set(unchanged)
     response = await call_next(request)
-    if request.method in ("POST", "PUT", "PATCH", "DELETE") and response.status_code < 400:
+    if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+            and response.status_code < 400 and not unchanged):
         REVISION["n"] += 1
         # The substitution engine caches who is busy when; any write may have
         # changed that, and a stale cache would offer a teacher who has just
@@ -9139,6 +9160,7 @@ _CUR.bind(
     groups_by_id=lambda: {g["id"]: g for g in _flat_groups()},
     subjects_by_id=lambda: {s["id"]: s for s in SUBJECTS},
     requirements=lambda: REQUIREMENTS,
+    fold_coteaching=_fold_coteaching,
 )
 
 
@@ -9146,6 +9168,17 @@ def _find_curriculum(cid: int) -> dict[str, Any]:
     cur = next((c for c in CURRICULA if c["id"] == cid), None)
     if not cur:
         raise HTTPException(404, "ไม่พบหลักสูตรนี้")
+    return cur
+
+
+def _add_curriculum(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Store a new curriculum and hand it back. The one place its shape is written.
+
+    Stored is `id`, `name` and `rows`, and nothing else: which classes use it is
+    worked out from the classes (see _curriculum_view), never kept here. `rows`
+    must already have been through normalise_rows; this does not check them."""
+    cur = {"id": _next("curriculum"), "name": name, "rows": rows}
+    CURRICULA.append(cur)
     return cur
 
 
@@ -9202,18 +9235,21 @@ def apply_derived_curricula(body: dict[str, Any] | None = None):
     are exactly what the GET shows. All of them are worked out before the first
     one is written, so a plan that cannot be read stops the whole thing instead
     of leaving half the school attached. Attaching is setting `curriculum_id` on
-    the class and nothing else."""
+    the class and nothing else. When there is nothing left to propose the call
+    changes nothing, and says so (_nothing_changed), so it does not bump the
+    revision or save."""
     proposals = _derive_proposals()
     live = {g["id"]: g for g in _flat_groups()}
     made, attached = [], 0
     for p in proposals:
-        cur = {"id": _next("curriculum"), "name": p["name"],
-               "rows": [dict(r) for r in p["rows"]]}
-        CURRICULA.append(cur)
+        cur = _add_curriculum(p["name"], [dict(r) for r in p["rows"]])
         made.append(cur)
         for gid in p["group_ids"]:
             live[gid]["curriculum_id"] = cur["id"]
             attached += 1
+    if not made:
+        # Nothing was proposed, so nothing was written: not a change.
+        _nothing_changed()
     using = _CUR.groups_by_curriculum()
     return {"created": len(made), "attached": attached,
             "curricula": [_curriculum_view(c, using) for c in made]}
@@ -9231,12 +9267,7 @@ def create_curriculum(body: dict[str, Any]):
     # Rows are checked before an id is taken, so a rejected request leaves
     # nothing behind — not even a used-up number.
     rows = _clean_rows(body["rows"]) if "rows" in body else []
-    cur = {
-        "id": _next("curriculum"),
-        "name": str(body.get("name") or "").strip() or "หลักสูตรใหม่",
-        "rows": rows,
-    }
-    CURRICULA.append(cur)
+    cur = _add_curriculum(str(body.get("name") or "").strip() or "หลักสูตรใหม่", rows)
     return _curriculum_view(cur, _CUR.groups_by_curriculum())
 
 
@@ -9283,9 +9314,12 @@ def delete_curriculum(cid: int):
 @app.post("/api/curricula/{cid:int}/copy")
 def copy_curriculum(cid: int):
     src = _find_curriculum(cid)
-    cur = {"id": _next("curriculum"), "name": f"{src['name']} (สำเนา)",
-           "rows": [dict(r) for r in src.get("rows") or []]}
-    CURRICULA.append(cur)
+    # Through normalise_rows like every other path that writes a row, so the two
+    # keys are enforced rather than carried over: a restored or hand-edited
+    # source row holding `duration` or `credits` must not copy straight across.
+    # It also gives the copy its own row dicts, and runs before an id is taken.
+    rows = _clean_rows(src.get("rows") or [])
+    cur = _add_curriculum(f"{src['name']} (สำเนา)", rows)
     return _curriculum_view(cur, _CUR.groups_by_curriculum())
 
 
@@ -9303,8 +9337,7 @@ def curriculum_from_group(gid: int):
         # An empty curriculum would be a class allowed nothing; say so instead.
         raise HTTPException(400, f"ห้อง {group.get('name')} ยังไม่มีวิชาในแผนการสอน "
                                  f"จึงสร้างหลักสูตรจากห้องนี้ไม่ได้")
-    cur = {"id": _next("curriculum"), "name": f"หลักสูตรจาก {group.get('name')}", "rows": rows}
-    CURRICULA.append(cur)
+    cur = _add_curriculum(f"หลักสูตรจาก {group.get('name')}", rows)
     return _curriculum_view(cur, _CUR.groups_by_curriculum())
 
 

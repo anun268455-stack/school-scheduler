@@ -93,6 +93,35 @@ def _count(value: Any) -> int:
     return max(0, n)
 
 
+def _read_rows(rows: list[dict]) -> list[tuple[int, int, int]]:
+    """Every row that names a subject, as (position, subject_id, weekly_count).
+
+    The one place a row is read: what counts as a blank line, what is refused,
+    and what an error says. `position` is the row's own 1-based place in the
+    list that was given, which is the number the error quotes ("แถวที่ N"), so a
+    caller that wants to point at a row can hand the list over unshortened. How
+    two rows for one subject combine is the caller's decision, not made here —
+    see normalise_rows and _plan_rows, which answer it differently on purpose.
+    """
+    if not isinstance(rows, list):
+        raise ValueError("แถวหลักสูตรต้องเป็นรายการ")
+    out = []
+    for pos, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"แถวที่ {pos}: แต่ละแถวต้องเป็นข้อมูลที่ระบุรหัสวิชาและจำนวนคาบ")
+        if not row.get("subject_id"):
+            continue
+        try:
+            sid = _subject_id(row["subject_id"])
+            if not sid:                          # "0": a subject that is not one
+                continue
+            n = _count(row.get("weekly_count"))
+        except ValueError as exc:
+            raise ValueError(f"แถวที่ {pos}: {exc}") from None
+        out.append((pos, sid, n))
+    return out
+
+
 def normalise_rows(rows: list[dict]) -> list[dict]:
     """The rows a curriculum is allowed to hold.
 
@@ -110,21 +139,13 @@ def normalise_rows(rows: list[dict]) -> list[dict]:
     in the grid and is dropped; an item that is not a dict at all is not a line
     in the grid, so it is an error, not a row to drop.
     """
-    if not isinstance(rows, list):
-        raise ValueError("แถวหลักสูตรต้องเป็นรายการ")
     merged: dict[int, int] = {}
-    for pos, row in enumerate(rows, start=1):
-        if not isinstance(row, dict):
-            raise ValueError(f"แถวที่ {pos}: แต่ละแถวต้องเป็นข้อมูลที่ระบุรหัสวิชาและจำนวนคาบ")
-        if not row.get("subject_id"):
-            continue
-        try:
-            sid = _subject_id(row["subject_id"])
-            if not sid:                          # "0": a subject that is not one
-                continue
-            n = _count(row.get("weekly_count"))
-        except ValueError as exc:
-            raise ValueError(f"แถวที่ {pos}: {exc}") from None
+    for _pos, sid, n in _read_rows(rows):
+        # MAX, because this is a person typing the same subject twice into one
+        # curriculum form, where the forgiving reading is "they meant it once".
+        # Plan rows read from the teaching plan are NOT merged this way: two
+        # plan rows are two separate sets of periods and add up (_plan_rows).
+        # Different input, different rule — do not make one match the other.
         prev = merged.get(sid)
         merged[sid] = n if prev is None else max(n, prev)
     return [{"subject_id": sid, "weekly_count": n} for sid, n in merged.items()]
@@ -198,26 +219,60 @@ def _plan_rows(group: dict, reqs: list[dict]) -> list[dict]:
     out. It must not become a 0-period curriculum row: the audit (Task 6) reads
     a 0-period row as "this subject may not be taught to this class at all", so
     a stray 0 here would silently ban a subject the plan still lists.
-    Everything else is held to normalise_rows, which is also what
-    makes two rows for one subject (a co-taught lesson is written from both
-    teachers' sides) one row at the larger count, the lesson being held once.
 
-    A subject id that cannot be read is an error naming the class, not a
-    skipped row: it means the stored plan is damaged, and a curriculum built
-    around the hole would look complete.
+    Rows for ONE subject ADD UP. Two independent plan rows are two separate
+    sets of periods: a subject split between two teachers at 2 periods each is
+    4 periods a week, not 2. The exception is a co-teaching pair, two rows that
+    name each other as the same lesson taught together; _fold_coteaching finds
+    those and they count once, at the larger of the two. This deliberately
+    differs from normalise_rows, which keeps the larger of a repeated subject:
+    that is a person typing a subject twice on one curriculum form, where the
+    forgiving reading is right. Different input, different rule — do not make
+    one match the other.
+
+    A plan row with periods but no subject id (None, 0, "", "0") is a blank line
+    and is skipped without a word, as in normalise_rows. One whose id is there
+    but cannot be read ("abc", 5.7, True) means the stored plan is damaged: that
+    is an error naming the class and the row's own position in the plan, never a
+    skipped row. (A skipped row would build a curriculum that looks complete.)
+
+    A subject id that points at a subject which no longer exists is NOT checked
+    and the row is carried into the curriculum like any other. Not dropped (that
+    would hide a real data fault) and not a 400 (one bad row would block
+    deriving every other class). Task 3's diff reports a curriculum row whose
+    subject is gone as a warning, "วิชานี้ถูกลบออกจากระบบแล้ว", and the
+    curriculum screen shows it as a row to remove, which is where the school
+    can see and fix it.
     """
-    rows = []
+    # A row with no periods is blanked, not removed, so that an error on a later
+    # row still counts it: "แถวที่ N" is the row's place in the class's plan.
+    shown = []
     for r in reqs:
         try:
             n = _count(r.get("weekly_count"))
         except ValueError:
-            continue
-        if n > 0:
-            rows.append({"subject_id": r.get("subject_id"), "weekly_count": n})
+            n = 0
+        shown.append({"subject_id": r.get("subject_id") if n > 0 else None, "weekly_count": n})
     try:
-        clean = normalise_rows(rows)
+        read = _read_rows(shown)
     except ValueError as exc:
         raise ValueError(f"ห้อง {group.get('name')}: {exc}") from None
+
+    lessons = [{"id": pos, "group_id": group.get("id"), "subject_id": sid,
+                "teacher_id": reqs[pos - 1].get("teacher_id"),
+                "co_teacher_id": reqs[pos - 1].get("co_teacher_id"),
+                "weekly_count": n} for pos, sid, n in read]
+    folded, agreed = _t("fold_coteaching")(lessons)
+    totals: dict[int, int] = {}
+    for lesson in lessons:
+        if lesson["id"] in folded:           # the second half of a co-taught lesson
+            continue
+        sid = lesson["subject_id"]
+        totals[sid] = totals.get(sid, 0) + agreed.get(lesson["id"], lesson["weekly_count"])
+    # Last, through normalise_rows, so what leaves here is the same fresh two-key
+    # dicts every other path that writes a curriculum row produces. It merges
+    # nothing: the sums above are already one row per subject.
+    clean = normalise_rows([{"subject_id": sid, "weekly_count": n} for sid, n in totals.items()])
     return sorted(clean, key=lambda row: row["subject_id"])
 
 
@@ -294,7 +349,7 @@ def derive_all() -> list[dict]:
             if len(c["group_ids"]) == 1:
                 # One class is named for itself. It is not a "แบบ" of anything, so
                 # it takes no number (and is not counted in `variants`).
-                name = str(groups[c["group_ids"][0]].get("name") or "").strip() or base
+                name = _label(groups[c["group_ids"][0]].get("name")) or base
             elif len(shared) == 1:
                 name = base
             else:
