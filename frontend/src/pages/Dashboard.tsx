@@ -40,12 +40,13 @@ import { TeacherAssignModal } from "../components/timetable/TeacherAssignModal";
 import { TeacherSettingsModal } from "../components/teachers/TeacherSettingsModal";
 import { TeacherHandoverModal } from "../components/teachers/TeacherHandoverModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
+import { CurriculumPanel } from "../components/curriculum/CurriculumPanel";
 import { SearchableSelect, teacherOptions, roomOptions, groupOptions, subjectOptions } from "../components/common/SearchableSelect";
 import { TableSearch, matches } from "../components/common/TableSearch";
 
 export type DashPage =
   | "groups" | "teachers" | "subjects" | "rooms"
-  | "requirements" | "electives" | "activities" | "periods" | "locks" | "settings"
+  | "requirements" | "curriculum" | "electives" | "activities" | "periods" | "locks" | "settings"
   | "departments" | "analytics" | "help";
 
 export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
@@ -55,6 +56,7 @@ export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
     subjects:     <SubjectsPanel />,
     rooms:        <RoomsPanel />,
     requirements: <RequirementsPanel />,
+    curriculum:   <CurriculumPanel />,
     electives:    <ElectivesPanel />,
     activities:   <LevelActivityPanel />,
     periods:      <PeriodsPanel />,

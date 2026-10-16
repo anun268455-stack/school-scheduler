@@ -569,3 +569,79 @@ export const repairConsistency = (codes?: string[]) =>
   api.post<{ fixed: Record<string, number>; total: number;
              remaining: ConsistencyFinding[] }>(
     "/diagnostics/repair", codes ? { codes } : {}).then((r) => r.data);
+
+// ── หลักสูตร ─────────────────────────────────────────────────────────────────
+// A curriculum says how many periods a week each subject gets; a class that has
+// one attached is held to it. A class with none attached is never checked.
+export interface CurriculumRow {
+  subject_id:   number;
+  weekly_count: number;
+}
+
+export interface Curriculum {
+  id:   number;
+  name: string;
+  rows: CurriculumRow[];
+  /** ห้องที่ผูกกับหลักสูตรนี้ */
+  groups:      number[];
+  group_names: string[];
+}
+
+/** หลักสูตรที่ระบบเสนอให้ — พรีวิวเฉยๆ ยังไม่ได้สร้างอะไร */
+export interface DerivedProposal {
+  name:      string;
+  rows:      CurriculumRow[];
+  group_ids: number[];
+  /**
+   * 0 = ห้องเดียว · 1 = กลุ่มหลายห้องที่มีแบบเดียว ·
+   * มากกว่า 1 = เป็นหนึ่งในหลายแบบของกลุ่มเดียวกัน (ชื่อลงท้าย "(แบบ N)")
+   */
+  variants:  number;
+}
+
+export const fetchCurricula = () =>
+  api.get<Curriculum[]>("/curricula").then((r) => r.data);
+
+export const createCurriculum = (d: { name: string; rows: CurriculumRow[] }) =>
+  api.post<Curriculum>("/curricula", d).then((r) => r.data);
+
+/** Leave `rows` out to keep them; `rows: []` empties them. */
+export const updateCurriculum = (id: number, d: { name?: string; rows?: CurriculumRow[] }) =>
+  api.put<Curriculum>(`/curricula/${id}`, d).then((r) => r.data);
+
+/** Refused with a 400 (Thai message, names up to three classes) while any class is attached. */
+export const deleteCurriculum = (id: number) =>
+  api.delete<{ removed: number }>(`/curricula/${id}`).then((r) => r.data);
+
+export const copyCurriculum = (id: number) =>
+  api.post<Curriculum>(`/curricula/${id}/copy`, {}).then((r) => r.data);
+
+/** A new curriculum built from one class's teaching plan. */
+export const curriculumFromGroup = (groupId: number) =>
+  api.post<Curriculum>(`/curricula/from-group/${groupId}`, {}).then((r) => r.data);
+
+/** Preview only. Covers just the classes that have no curriculum yet, so it is empty once all are attached. */
+export const fetchDerivedCurricula = () =>
+  api.get<{ proposals: DerivedProposal[] }>("/curricula/derive").then((r) => r.data);
+
+/** Creates the proposals above and attaches their classes. The caller re-reads the list. */
+export const applyDerivedCurricula = () =>
+  api.post<unknown>("/curricula/derive", {}).then((r) => r.data);
+
+/** Attaches exactly these classes; any class attached before and not listed is detached. */
+export const setCurriculumGroups = (id: number, groupIds: number[]) =>
+  api.put<unknown>(`/curricula/${id}/groups`, { group_ids: groupIds }).then((r) => r.data);
+
+/**
+ * The server's own message for a refused request, or `fallback`.
+ *
+ * A 400 from this API carries a Thai sentence in `detail` that already says
+ * what was refused and why — deleting a curriculum that classes still use,
+ * adding a lesson the curriculum does not list. Showing that sentence beats
+ * a generic "ไม่สำเร็จ", which would throw away the one thing the reader needs.
+ * (A 422 puts a list there, not text; that falls back.)
+ */
+export const errorDetail = (e: unknown, fallback: string): string => {
+  const d = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  return typeof d === "string" && d.trim() ? d : fallback;
+};
