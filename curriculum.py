@@ -103,15 +103,19 @@ def normalise_rows(rows: list[dict]) -> list[dict]:
     them would turn 2 + 2 into a 4-period subject nobody asked for. A count of 0
     is kept as a row; it is a real answer, not a missing one.
 
-    `rows` must be a list. Anything else raises rather than reading as "no
-    rows", which would let a client bug empty a curriculum that classes use. A
-    row that is not a dict is skipped.
+    `rows` must be a list, and every item in it a dict. Anything else raises
+    rather than reading as "no rows", which would let one malformed call empty
+    a curriculum that classes use. A dict that names no subject is a blank line
+    in the grid and is dropped; an item that is not a dict at all is not a line
+    in the grid, so it is an error, not a row to drop.
     """
     if not isinstance(rows, list):
         raise ValueError("แถวหลักสูตรต้องเป็นรายการ")
     merged: dict[int, int] = {}
     for pos, row in enumerate(rows, start=1):
-        if not isinstance(row, dict) or not row.get("subject_id"):
+        if not isinstance(row, dict):
+            raise ValueError(f"แถวที่ {pos}: แต่ละแถวต้องเป็นข้อมูลที่ระบุรหัสวิชาและจำนวนคาบ")
+        if not row.get("subject_id"):
             continue
         try:
             sid = _subject_id(row["subject_id"])
