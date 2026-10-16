@@ -9151,9 +9151,10 @@ def restore_backup(body: dict[str, Any]):
 # Which subjects each class may take, and how many periods a week. Kept apart
 # from the staffing sheet on purpose: the sheet says what IS assigned, this says
 # what SHOULD be, and the difference between the two is the thing worth seeing.
-# This section is only the reference itself: creating, editing and deleting it,
-# and the three ways of making one without typing it (copy, from a class, and
-# derived from every class's teaching plan at once).
+# This section is the reference itself: creating, editing and deleting it, the
+# three ways of making one without typing it (copy, from a class, and derived
+# from every class's teaching plan at once), putting classes on it, and the
+# diff of one class against it. It never changes a teaching plan.
 
 _CUR.bind(
     curricula=lambda: CURRICULA,
@@ -9161,6 +9162,7 @@ _CUR.bind(
     subjects_by_id=lambda: {s["id"]: s for s in SUBJECTS},
     requirements=lambda: REQUIREMENTS,
     fold_coteaching=_fold_coteaching,
+    served_by_elective=_reqs_served_by_elective,
 )
 
 
@@ -9255,6 +9257,21 @@ def apply_derived_curricula(body: dict[str, Any] | None = None):
             "curricula": [_curriculum_view(c, using) for c in made]}
 
 
+@app.get("/api/curricula/diff/{gid:int}")
+def curriculum_diff(gid: int):
+    """One class's curriculum set against its teaching plan. Writes nothing.
+
+    Under /diff/ rather than /{gid}/diff so it sits in this static block and can
+    never be answered for by a {cid:int} route; the whole-school /audit goes in
+    this block too."""
+    if _find_group(gid) is None:
+        raise HTTPException(404, "ไม่พบห้องเรียนนี้")
+    try:
+        return _CUR.diff(gid)
+    except ValueError as exc:                # a plan row that cannot be read
+        raise HTTPException(400, str(exc)) from exc
+
+
 # {cid:int}, not {cid}: a bare {cid} also matches "derive" and "audit", and a
 # route registered above them would answer for them.
 @app.get("/api/curricula/{cid:int}")
@@ -9339,6 +9356,29 @@ def curriculum_from_group(gid: int):
                                  f"จึงสร้างหลักสูตรจากห้องนี้ไม่ได้")
     cur = _add_curriculum(f"หลักสูตรจาก {group.get('name')}", rows)
     return _curriculum_view(cur, _CUR.groups_by_curriculum())
+
+
+# Putting classes on a curriculum. Only each class's own curriculum_id is
+# written; no teaching-plan row is read, added, changed or removed here.
+
+@app.put("/api/curricula/{cid:int}/groups")
+def set_curriculum_groups(cid: int, body: dict[str, Any]):
+    """Attach exactly the classes in `group_ids`; let go of the rest.
+
+    The list is the whole answer: a class that follows this curriculum and is
+    not in the list is detached. Classes of other curricula are not touched
+    unless named, in which case they move here. Answers with the curriculum
+    as the screen reads it, plus `attached` and `detached` (the class ids that
+    changed). A request that changes nothing says so, so it does not bump the
+    revision or save."""
+    cur = _find_curriculum(cid)
+    try:
+        changed = _CUR.attach(cid, body.get("group_ids"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not changed["attached"] and not changed["detached"]:
+        _nothing_changed()
+    return {**_curriculum_view(cur, _CUR.groups_by_curriculum()), **changed}
 
 
 # ── สอนแทน / แลกคาบ ───────────────────────────────────────────────────────────

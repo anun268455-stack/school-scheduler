@@ -185,6 +185,66 @@ def plan_for(group_id: int) -> dict | None:
     return next((c for c in _t("curricula")() if c["id"] == cid), None)
 
 
+def _group_id(value: Any) -> int:
+    """A class id from a request: an int, or a string of digits. Not a float, not a bool.
+
+    Strict for the same reason _subject_id is: True would quietly become class 1."""
+    if isinstance(value, bool):
+        raise ValueError("รหัสห้องต้องเป็นจำนวนเต็ม")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    raise ValueError("รหัสห้องต้องเป็นจำนวนเต็ม")
+
+
+def attach(cid: int, group_ids: Any) -> dict[str, list[int]]:
+    """Make exactly these classes follow curriculum `cid`.
+
+    The list is the whole answer, not an addition to it: a class that follows
+    this curriculum and is not in the list is let go (its curriculum_id becomes
+    None, so it is no longer checked against anything). Classes of OTHER
+    curricula are not touched unless they are named, in which case they move
+    here — a class follows one curriculum. Only `curriculum_id` is written; the
+    teaching plan is never read or changed.
+
+    Everything is checked before anything is written. A list that cannot be
+    read, an id that is not a class (including one that was deleted), or a
+    curriculum that does not exist raises ValueError and leaves every class as
+    it was; a half-applied list would have let go of classes the person never
+    meant to touch.
+
+    Returns what changed: `attached` (classes that now follow it and did not
+    before, in the order asked) and `detached`. A class already following it is
+    in neither, and a request that changes nothing returns both empty.
+    """
+    if not any(c["id"] == cid for c in _t("curricula")()):
+        raise ValueError("ไม่พบหลักสูตรนี้")
+    if not isinstance(group_ids, list):
+        raise ValueError("รายการห้องต้องเป็นรายการของรหัสห้อง")
+    groups = _t("groups_by_id")()
+    wanted: list[int] = []
+    for raw in group_ids:
+        gid = _group_id(raw)
+        if gid not in groups:
+            raise ValueError(f"ไม่พบห้องรหัส {gid}")
+        if gid not in wanted:                # the same class twice is one class
+            wanted.append(gid)
+    keep = set(wanted)
+    # Found through the live classes, so a deleted class is not "let go" and a
+    # pointer stored as a string by an old form or backup is still found.
+    letting_go = [g for g in groups_by_curriculum().get(cid, []) if g["id"] not in keep]
+    joining = [gid for gid in wanted if _id(groups[gid].get("curriculum_id")) != cid]
+    for g in letting_go:
+        g["curriculum_id"] = None
+    for gid in joining:
+        groups[gid]["curriculum_id"] = cid
+    return {"attached": joining, "detached": [g["id"] for g in letting_go]}
+
+
 # ── สร้างหลักสูตรจากแผนการสอนที่กรอกไว้แล้ว ───────────────────────────────────────
 # The school has already typed in what each class is taught. A curriculum read
 # back out of that is a starting point they can correct, not a second round of
@@ -210,8 +270,17 @@ def _level_label(level: str) -> str:
     return f"ม.{m.group(1)}" if m else level
 
 
-def _plan_rows(group: dict, reqs: list[dict]) -> list[dict]:
-    """The curriculum rows for one class, read from its own teaching-plan rows.
+def _plan_by_subject(group: dict, reqs: list[dict]) -> dict[int, dict]:
+    """One class's teaching plan, subject by subject: `{subject_id: {"count", "rows"}}`.
+
+    `count` is the periods a week the plan gives the subject and `rows` are the
+    plan rows that make it up (the ones that teach something), so a caller can
+    ask both "how many?" and "what kind of row is it?" of the SAME reading.
+    This is the one place a class's plan is read and totalled. _plan_rows,
+    which turns it into curriculum rows for deriving, and diff, which sets it
+    against a curriculum, both go through it: if they totalled differently,
+    every curriculum derived from a class would read as wrong against the very
+    class it was derived from.
 
     Reading the plan is more forgiving than reading what a person typed into
     the curriculum grid, in one way only. A plan row with no periods in it —
@@ -239,10 +308,9 @@ def _plan_rows(group: dict, reqs: list[dict]) -> list[dict]:
     A subject id that points at a subject which no longer exists is NOT checked
     and the row is carried into the curriculum like any other. Not dropped (that
     would hide a real data fault) and not a 400 (one bad row would block
-    deriving every other class). Task 3's diff reports a curriculum row whose
-    subject is gone as a warning, "วิชานี้ถูกลบออกจากระบบแล้ว", and the
-    curriculum screen shows it as a row to remove, which is where the school
-    can see and fix it.
+    deriving every other class). diff reports a curriculum row whose subject is
+    gone as a warning, "วิชานี้ถูกลบออกจากระบบแล้ว", and the curriculum screen
+    shows it as a row to remove, which is where the school can see and fix it.
     """
     # A row with no periods is blanked, not removed, so that an error on a later
     # row still counts it: "แถวที่ N" is the row's place in the class's plan.
@@ -258,21 +326,37 @@ def _plan_rows(group: dict, reqs: list[dict]) -> list[dict]:
     except ValueError as exc:
         raise ValueError(f"ห้อง {group.get('name')}: {exc}") from None
 
+    # `pos` is the row's ORIGINAL place in `reqs` (see _read_rows), which is what
+    # makes reqs[pos - 1] the row it came from. It is also the lesson's id, so
+    # the plan row can be found again from a lesson below.
     lessons = [{"id": pos, "group_id": group.get("id"), "subject_id": sid,
                 "teacher_id": reqs[pos - 1].get("teacher_id"),
                 "co_teacher_id": reqs[pos - 1].get("co_teacher_id"),
                 "weekly_count": n} for pos, sid, n in read]
     folded, agreed = _t("fold_coteaching")(lessons)
-    totals: dict[int, int] = {}
+    plan: dict[int, dict] = {}
     for lesson in lessons:
+        found = plan.setdefault(lesson["subject_id"], {"count": 0, "rows": []})
+        found["rows"].append(reqs[lesson["id"] - 1])
         if lesson["id"] in folded:           # the second half of a co-taught lesson
             continue
-        sid = lesson["subject_id"]
-        totals[sid] = totals.get(sid, 0) + agreed.get(lesson["id"], lesson["weekly_count"])
-    # Last, through normalise_rows, so what leaves here is the same fresh two-key
+        found["count"] += agreed.get(lesson["id"], lesson["weekly_count"])
+    return plan
+
+
+def _plan_rows(group: dict, reqs: list[dict]) -> list[dict]:
+    """The curriculum rows for one class, read from its own teaching-plan rows.
+
+    How the plan is read and totalled (zero-period rows left out, rows for one
+    subject added up, a co-teaching pair counted once) is _plan_by_subject's;
+    this turns its totals into curriculum rows.
+    """
+    plan = _plan_by_subject(group, reqs)
+    # Through normalise_rows, so what leaves here is the same fresh two-key
     # dicts every other path that writes a curriculum row produces. It merges
-    # nothing: the sums above are already one row per subject.
-    clean = normalise_rows([{"subject_id": sid, "weekly_count": n} for sid, n in totals.items()])
+    # nothing: the sums are already one row per subject.
+    clean = normalise_rows([{"subject_id": sid, "weekly_count": found["count"]}
+                            for sid, found in plan.items()])
     return sorted(clean, key=lambda row: row["subject_id"])
 
 
@@ -362,4 +446,107 @@ def derive_all() -> list[dict]:
                 # classes that share a design carry the level+plan's count.
                 "variants": len(shared) if len(c["group_ids"]) > 1 else 0,
             })
+    return out
+
+
+# ── ตารางเทียบ: หลักสูตรว่าอย่างไร กับแผนการสอนมีอะไรจริง ──────────────────────────────
+
+WHY_DELETED = "วิชานี้ถูกลบออกจากระบบแล้ว"
+WHY_SET = "วิชานี้อยู่ในเซ็ตห้องย่อย จึงไม่เสนอให้ลบอัตโนมัติ — ถ้าไม่ต้องการ ให้ไปแก้ที่เซ็ตห้องย่อย"
+WHY_CO = "วิชานี้มีครูสอนร่วม จึงไม่เสนอให้ลบอัตโนมัติ — ถ้าไม่ต้องการ ให้ไปแก้ที่แผนการสอน"
+WHY_ELECTIVE = "วิชานี้สอนอยู่ในคาบเสรีแล้ว จึงไม่นับว่าเกิน"
+
+
+def diff(group_id: int) -> dict:
+    """What one class's curriculum says, set against what its teaching plan holds.
+
+    Returns `{"curriculum", "add", "fix", "remove", "warn", "ok"}`. `curriculum`
+    is `{"id", "name"}`, or None when the class follows none (see plan_for):
+    such a class is never checked, so every list is empty and `ok` is 0 —
+    nothing is "missing" from a class nobody has decided anything for. The four
+    lists are per subject, in subject-id order, each entry
+    `{"subject_id", "code", "name", "want", "have"}` (`warn` also has `why`):
+    `want` is what the curriculum asks for and `have` what the plan totals, 0
+    when there is no row. `ok` counts the subjects that genuinely match.
+
+      add     the curriculum has the subject and the plan has no row for it
+      fix     both have it, at different periods a week (either direction)
+      remove  the plan has it and the curriculum does not
+      warn    the same difference, but not ours to settle — see below
+
+    The plan is totalled by _plan_by_subject, exactly as deriving does: a
+    co-teaching pair counts once, two independent rows for one subject add up.
+    A plan row with no periods teaches nothing and is not a row at all, so it
+    is never "removed" and a subject that has only such rows still needs adding.
+
+    A curriculum row of 0 periods means "this class may not take this subject"
+    (normalise_rows keeps it for that reason). It is read as the subject being
+    absent from the curriculum, with one difference: if the plan does not teach
+    it, that counts as matching rather than as something to add. So a plan that
+    does teach it is `remove`, not "fix to 0 periods", and gets the same
+    protection as any other surplus below.
+
+    Surplus is never offered for removal when removing it is not a plain edit
+    of the plan. A row in a เซ็ตห้องย่อย (parallel_group_key) or with a
+    co-teacher (co_teacher_id) belongs to someone else's arrangement, and a
+    subject already taught inside a คาบเสรี is not extra at all. These go to
+    `warn` with the reason, and a subject that is both says both. The checks
+    apply only to surplus: a subject the curriculum does ask for is compared by
+    count like any other, whatever kind of row holds it.
+
+    A subject that no longer exists is only ever a warning, whichever side still
+    names it (the curriculum row is stale, or the plan row is): it can be
+    neither added nor trusted, and it is the one place the school learns about
+    it. It is never counted as matching, even at equal periods.
+
+    Reads only. The entries are fresh dicts; nothing here is shared with the
+    stored tables. A plan row that cannot be read raises ValueError naming the
+    class and the row, as deriving does — the endpoint turns it into a 400.
+    """
+    out: dict[str, Any] = {"curriculum": None, "add": [], "fix": [], "remove": [], "warn": [], "ok": 0}
+    cur = plan_for(group_id)
+    if cur is None:
+        return out
+    group = _t("groups_by_id")()[group_id]
+    out["curriculum"] = {"id": cur["id"], "name": cur.get("name")}
+
+    wanted = {r["subject_id"]: r["weekly_count"] for r in normalise_rows(cur.get("rows") or [])}
+    held = _plan_by_subject(group, [r for r in _t("requirements")() if r.get("group_id") == group_id])
+    subjects = _t("subjects_by_id")()
+    served: set[int] | None = None           # worked out on first need: most classes never need it
+
+    for sid in sorted(set(wanted) | set(held)):
+        want = wanted.get(sid, 0)
+        plan = held.get(sid)
+        have = plan["count"] if plan else 0
+        subject = subjects.get(sid)
+        entry = {"subject_id": sid,
+                 "code": (subject.get("code") or "") if subject else "",
+                 "name": (subject.get("name") or "") if subject else "",
+                 "want": want, "have": have}
+        if subject is None:
+            out["warn"].append({**entry, "why": WHY_DELETED})
+        elif want == 0:                      # absent from the curriculum, or not allowed in it
+            if plan is None:
+                out["ok"] += 1               # not allowed, and not taught
+                continue
+            if served is None:
+                served = _t("served_by_elective")()
+            why = []
+            if any(r.get("parallel_group_key") for r in plan["rows"]):
+                why.append(WHY_SET)
+            if any(r.get("co_teacher_id") for r in plan["rows"]):
+                why.append(WHY_CO)
+            if any(r.get("id") in served for r in plan["rows"]):
+                why.append(WHY_ELECTIVE)
+            if why:
+                out["warn"].append({**entry, "why": " · ".join(why)})
+            else:
+                out["remove"].append(entry)
+        elif plan is None:
+            out["add"].append(entry)
+        elif have != want:
+            out["fix"].append(entry)
+        else:
+            out["ok"] += 1
     return out
