@@ -568,9 +568,22 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
         >
+          {/* table-fixed is what actually holds the columns to the widths below.
+              Without it the browser treats <col width> as a suggestion and lets
+              any column with a long subject or a two-teacher line push itself
+              wider, so one คาบ ends up double the width of its neighbours and
+              the grid stops reading as a grid. Fixed layout makes every คาบ
+              the same width and the content truncate instead. */}
           <table
-            className="border-collapse"
-            style={{ minWidth: `${56 + gridPeriods.length * CELL_W}px` }}
+            className="border-collapse table-fixed"
+            style={{
+              /* Count the narrow พัก/พักกลางวัน columns at their real width.
+                 Charging every column the full CELL_W overstated the table by
+                 a few hundred pixels and forced a horizontal scrollbar onto
+                 grids that in fact fit on the screen. */
+              minWidth: `${56 + gridPeriods.reduce(
+                (w, p) => w + (p.type === "class" ? CELL_W : 56), 0)}px`,
+            }}
           >
             <colgroup>
               {/* Day label column */}

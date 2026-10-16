@@ -208,9 +208,12 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
       )}
       {!compact && (
         <>
+          {/* ห้องที่สอน — read as often as the subject code when you are
+              walking the building, so it gets its own weight instead of
+              sitting at the same faded size as the class name below it. */}
           <div
-            className="overflow-hidden whitespace-nowrap text-ellipsis opacity-60"
-            style={{ fontSize: "9px" }}
+            className="overflow-hidden whitespace-nowrap text-ellipsis font-semibold opacity-90"
+            style={{ fontSize: "11px" }}
             title={slot.room_name ?? undefined}
           >
             {slot.room_name}
