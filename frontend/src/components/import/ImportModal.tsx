@@ -378,9 +378,13 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onSuccess }) 
       setImported(count);
       setStatus("done");
       onSuccess();
-    } catch {
+    } catch (e) {
       setStatus("error");
-      setErrorMsg("เกิดข้อผิดพลาดระหว่างนำเข้าข้อมูล");
+      // Importing teaching-plan rows can be refused by a class's curriculum;
+      // that sentence says which class and subject. Other imports keep the
+      // general message.
+      const general = "เกิดข้อผิดพลาดระหว่างนำเข้าข้อมูล";
+      setErrorMsg(entity === "requirements" ? api.errorDetail(e, general) : general);
     }
   };
 

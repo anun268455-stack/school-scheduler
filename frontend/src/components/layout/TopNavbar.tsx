@@ -9,6 +9,7 @@ import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
 import { ConsistencyModal } from "../solver/ConsistencyModal";
 import { PeriodCheckModal } from "../solver/PeriodCheckModal";
+import { CurriculumAuditModal } from "../curriculum/CurriculumAuditModal";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
@@ -124,6 +125,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showPrintOpts, setShowPrintOpts] = useState(false);
   const [showCheck,   setShowCheck]   = useState(false);
   const [showPeriods, setShowPeriods] = useState(false);
+  const [showCurric,  setShowCurric]  = useState(false);
 
   // Toolbar popovers close when you click anywhere else, or press Esc.
   const solverRef = useRef<HTMLDivElement>(null);
@@ -356,6 +358,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
               className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
               📐 <span>ตรวจคาบสุดท้าย / คาบว่าง</span>
             </button>
+            {/* แผนการสอนของแต่ละห้องตรงกับหลักสูตรที่ผูกไว้ไหม — ห้องที่ไม่ได้ผูก
+                ไม่ถูกตรวจ */}
+            <button
+              onClick={() => { setShowCurric(true); setShowTools(false); }}
+              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+              📚 <span>ตรวจหลักสูตร</span>
+            </button>
           </div>
         )}
       </div>
@@ -406,6 +415,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       <div className="ml-auto" />
       {showCheck && <ConsistencyModal onClose={() => setShowCheck(false)} />}
       {showPeriods && <PeriodCheckModal onClose={() => setShowPeriods(false)} />}
+      {showCurric && <CurriculumAuditModal onClose={() => setShowCurric(false)} />}
       {/* Print options */}
       {showPrintOpts && (
         <PrintOptionsModal

@@ -249,8 +249,10 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
       const updated = await api.fetchRequirements();
       useTimetableStore.setState({ requirements: updated });
       onClose();
-    } catch {
-      setError("บันทึกไม่สำเร็จ กรุณาลองใหม่");
+    } catch (e) {
+      // A class whose curriculum leaves this subject out is refused with a
+      // sentence that names the curriculum — that is the message to show.
+      setError(api.errorDetail(e, "บันทึกไม่สำเร็จ กรุณาลองใหม่"));
     } finally {
       setBusy(false);
     }
@@ -479,7 +481,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
                 </span>
               : <span className="text-gray-400">{rows.length} ห้องจะเรียนวิชานี้ · บันทึกแล้วค่อยกดสร้างตาราง</span>}
           </p>
-          {error && <span className="text-xs text-red-600">{error}</span>}
+          {error && <span className="text-xs text-red-600 max-w-sm leading-snug">{error}</span>}
           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-lg font-medium">ยกเลิก</button>
           <button onClick={handleSave} disabled={!canSave}
             className="px-5 py-2 text-sm bg-blue-700 text-white rounded-lg font-semibold hover:bg-blue-800 disabled:opacity-40">

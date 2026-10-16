@@ -233,8 +233,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
         parallel_group_key: null,
       }]);
       await refresh();
-    } catch {
-      setError("เพิ่มไม่สำเร็จ");
+    } catch (e) {
+      setError(api.errorDetail(e, "เพิ่มไม่สำเร็จ"));
     } finally { setBusy(false); }
   };
 
@@ -303,8 +303,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
         parallel_group_key: null,
       })));
       await refresh();
-    } catch {
-      setError("เพิ่มไม่สำเร็จ");
+    } catch (e) {
+      setError(api.errorDetail(e, "เพิ่มไม่สำเร็จ"));
     } finally { setBusy(false); }
   };
 
@@ -778,7 +778,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
         <p className="text-[11px] text-gray-400 flex-1">
           ข้อมูลนี้เชื่อมกับหน้า "จัดห้อง/ครู" ของรายวิชา — แก้ที่ไหนก็เห็นเหมือนกัน
         </p>
-        {error && <span className="text-xs text-red-600">{error}</span>}
+        {error && <span className="text-xs text-red-600 max-w-sm leading-snug">{error}</span>}
         <button onClick={onClose} className="px-5 py-2 text-sm bg-indigo-700 text-white rounded-lg font-semibold hover:bg-indigo-800">
           เสร็จสิ้น
         </button>

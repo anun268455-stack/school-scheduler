@@ -1330,6 +1330,15 @@ const RequirementsPanel: React.FC = () => {
   });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
+  /**
+   * Why the server turned a row down, in its own words.
+   *
+   * A class with a curriculum cannot be given a subject outside it, and the
+   * 400 says which curriculum and which subject. `key` is the class and subject
+   * that were refused: change either and the message no longer describes what
+   * is on screen, so it goes.
+   */
+  const [reqErr, setReqErr] = useState<{ at: "add" | number; key: string; text: string } | null>(null);
 
   /**
    * The สอนร่วม partner, or null.
@@ -1342,14 +1351,24 @@ const RequirementsPanel: React.FC = () => {
     co && co !== teacher ? Number(co) : null;
 
   const handleCreate = async () => {
-    const created = await api.createRequirement({
-      group_id:   Number(form.group_id),
-      subject_id: Number(form.subject_id),
-      teacher_id: Number(form.teacher_id),
-      weekly_count: Number(form.weekly_count),
-      parallel_group_key: form.parallel_group_key || null,
-      co_teacher_id: coOf(form.teacher_id, form.co_teacher_id),
-    });
+    setReqErr(null);
+    let created: LessonRequirement;
+    try {
+      created = await api.createRequirement({
+        group_id:   Number(form.group_id),
+        subject_id: Number(form.subject_id),
+        teacher_id: Number(form.teacher_id),
+        weekly_count: Number(form.weekly_count),
+        parallel_group_key: form.parallel_group_key || null,
+        co_teacher_id: coOf(form.teacher_id, form.co_teacher_id),
+      });
+    } catch (e) {
+      setReqErr({
+        at: "add", key: `${form.group_id}:${form.subject_id}`,
+        text: api.errorDetail(e, "เพิ่มข้อกำหนดไม่สำเร็จ — ลองใหม่อีกครั้ง"),
+      });
+      return;
+    }
     useTimetableStore.setState((s) => ({ requirements: [...s.requirements, created] }));
     await mirrorPairing(created);
     setForm({ group_id: "", subject_id: "", teacher_id: "", weekly_count: 1,
@@ -1380,14 +1399,24 @@ const RequirementsPanel: React.FC = () => {
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
-    const updated = await api.updateRequirement(id, {
-      group_id:   Number(editForm.group_id),
-      subject_id: Number(editForm.subject_id),
-      teacher_id: Number(editForm.teacher_id),
-      weekly_count: Number(editForm.weekly_count),
-      parallel_group_key: editForm.parallel_group_key || null,
-      co_teacher_id: coOf(editForm.teacher_id, editForm.co_teacher_id),
-    });
+    setReqErr(null);
+    let updated: LessonRequirement;
+    try {
+      updated = await api.updateRequirement(id, {
+        group_id:   Number(editForm.group_id),
+        subject_id: Number(editForm.subject_id),
+        teacher_id: Number(editForm.teacher_id),
+        weekly_count: Number(editForm.weekly_count),
+        parallel_group_key: editForm.parallel_group_key || null,
+        co_teacher_id: coOf(editForm.teacher_id, editForm.co_teacher_id),
+      });
+    } catch (e) {
+      setReqErr({
+        at: id, key: `${editForm.group_id}:${editForm.subject_id}`,
+        text: api.errorDetail(e, "บันทึกข้อกำหนดไม่สำเร็จ — ลองใหม่อีกครั้ง"),
+      });
+      return;
+    }
     useTimetableStore.setState((s) => ({ requirements: s.requirements.map((r) => r.id === id ? { ...r, ...updated } : r) }));
     await mirrorPairing(updated);
     setEditing(null); setEditForm(null);
@@ -1591,6 +1620,12 @@ const RequirementsPanel: React.FC = () => {
       >
         + เพิ่มข้อกำหนด
       </button>
+      {reqErr && reqErr.at === "add" && reqErr.key === `${form.group_id}:${form.subject_id}` && (
+        <div role="alert"
+          className="mt-2 text-sm text-red-800 bg-red-50 border border-red-300 rounded-lg px-3 py-2 leading-relaxed">
+          <strong>เพิ่มไม่ได้</strong> — {reqErr.text}
+        </div>
+      )}
 
       <div className="mt-4">
         <TableSearch value={q} onChange={setQ} count={matchedReqs.length} total={requirements.length}
@@ -1616,7 +1651,8 @@ const RequirementsPanel: React.FC = () => {
                 /* Typing beats scrolling: a plain <select> of 153 teachers or
                    271 subjects is a list you hunt through, and the เพิ่ม form
                    above this table has had a search box all along. */
-                <tr key={r.id} className="bg-yellow-50">
+                <React.Fragment key={r.id}>
+                <tr className="bg-yellow-50">
                   <td className="px-2 py-1">
                     <SearchableSelect value={editForm.group_id}
                       onChange={(v) => setEditForm({ ...editForm, group_id: v })}
@@ -1644,10 +1680,21 @@ const RequirementsPanel: React.FC = () => {
                   <td className="px-2 py-1">
                     <div className="flex gap-1">
                       <button onClick={() => handleUpdate(r.id)} className={btnSave}>บันทึก</button>
-                      <button onClick={() => { setEditing(null); setEditForm(null); }} className={btnCancel}>ยกเลิก</button>
+                      <button onClick={() => { setEditing(null); setEditForm(null); setReqErr(null); }} className={btnCancel}>ยกเลิก</button>
                     </div>
                   </td>
                 </tr>
+                {reqErr && reqErr.at === r.id && reqErr.key === `${editForm.group_id}:${editForm.subject_id}` && (
+                  <tr className="bg-yellow-50">
+                    <td colSpan={7} className="px-3 pb-2">
+                      <div role="alert"
+                        className="text-sm text-red-800 bg-red-50 border border-red-300 rounded-lg px-3 py-2 leading-relaxed">
+                        <strong>บันทึกไม่ได้</strong> — {reqErr.text}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               ) : (
                 <tr key={r.id} className="hover:bg-gray-50">
                   <td className="px-3 py-2 font-medium text-blue-700">{gName(r.group_id)}</td>
@@ -1686,7 +1733,7 @@ const RequirementsPanel: React.FC = () => {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex gap-1">
-                      <button onClick={() => { setEditing(r.id); setEditForm({ group_id: String(r.group_id), subject_id: String(r.subject_id), teacher_id: String(r.teacher_id), weekly_count: r.weekly_count, parallel_group_key: r.parallel_group_key ?? "", co_teacher_id: r.co_teacher_id ? String(r.co_teacher_id) : "" }); }} className={btnEdit}>แก้ไข</button>
+                      <button onClick={() => { setReqErr(null); setEditing(r.id); setEditForm({ group_id: String(r.group_id), subject_id: String(r.subject_id), teacher_id: String(r.teacher_id), weekly_count: r.weekly_count, parallel_group_key: r.parallel_group_key ?? "", co_teacher_id: r.co_teacher_id ? String(r.co_teacher_id) : "" }); }} className={btnEdit}>แก้ไข</button>
                       <button onClick={async () => { await api.deleteRequirement(r.id); useTimetableStore.setState((s) => ({ requirements: s.requirements.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
                     </div>
                   </td>

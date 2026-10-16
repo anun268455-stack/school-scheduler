@@ -17,6 +17,7 @@ import * as api from "../../api/client";
 import { SearchableSelect, groupOptions, subjectOptions } from "../common/SearchableSelect";
 import type { Option } from "../common/SearchableSelect";
 import { useTimetableStore } from "../../store/timetableStore";
+import { CurriculumDiffModal } from "./CurriculumDiffModal";
 import type { Subject } from "../../types";
 
 // ── Page furniture, matched to the other panels in pages/Dashboard.tsx ────────
@@ -95,6 +96,8 @@ export const CurriculumPanel: React.FC = () => {
   const [confirmDel, setConfirmDel] = useState(false);
   // ✨ preview — null = not asked for
   const [derived, setDerived] = useState<api.DerivedProposal[] | null>(null);
+  // The เทียบ dialog, for one attached class
+  const [diffFor, setDiffFor] = useState<{ id: number; name: string } | null>(null);
 
   const selected = useMemo(
     () => list?.find((c) => c.id === selId) ?? null, [list, selId]);
@@ -565,6 +568,12 @@ export const CurriculumPanel: React.FC = () => {
                       <li key={gid}
                         className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-full border border-emerald-200 bg-emerald-50 text-xs text-emerald-900">
                         <span className="font-medium">{selected.group_names[i] ?? groupName(gid)}</span>
+                        <button
+                          onClick={() => setDiffFor({ id: gid, name: selected.group_names[i] ?? groupName(gid) })}
+                          title="เทียบแผนการสอนของห้องนี้กับหลักสูตร"
+                          className="px-1.5 py-0.5 rounded-full bg-white border border-emerald-300 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-50">
+                          เทียบ
+                        </button>
                         <button onClick={() => detach(gid)} disabled={busy} title="เอาห้องนี้ออกจากหลักสูตร"
                           className="text-emerald-700/60 hover:text-rose-600 leading-none disabled:opacity-40">✕</button>
                       </li>
@@ -586,6 +595,12 @@ export const CurriculumPanel: React.FC = () => {
           )}
         </div>
       </div>
+
+      {diffFor && (
+        <CurriculumDiffModal
+          groupId={diffFor.id} groupName={diffFor.name}
+          onClose={() => setDiffFor(null)} />
+      )}
     </Section>
   );
 };

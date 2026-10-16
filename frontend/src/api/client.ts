@@ -632,16 +632,94 @@ export const applyDerivedCurricula = () =>
 export const setCurriculumGroups = (id: number, groupIds: number[]) =>
   api.put<unknown>(`/curricula/${id}/groups`, { group_ids: groupIds }).then((r) => r.data);
 
+// ── เทียบหลักสูตรกับแผนการสอนของห้อง ────────────────────────────────────────
+/** วิชาหนึ่งที่หลักสูตรกับแผนการสอนของห้องไม่ตรงกัน */
+export interface CurriculumDiffEntry {
+  subject_id: number;
+  code:       string;
+  name:       string;
+  /** คาบ/สัปดาห์ตามหลักสูตร */
+  want:       number;
+  /** คาบ/สัปดาห์ในแผนการสอนตอนนี้ */
+  have:       number;
+}
+
+/** ตรงนี้ระบบไม่ตัดสินให้ — บอกเหตุผลไว้ แล้วให้คนดูเอง */
+export interface CurriculumDiffWarn extends CurriculumDiffEntry {
+  why: string;
+}
+
+export interface CurriculumDiff {
+  /** null = ห้องนี้ยังไม่ผูกหลักสูตร จึงไม่มีอะไรให้เทียบ */
+  curriculum: { id: number; name: string } | null;
+  /** หลักสูตรมี แผนการสอนไม่มี */
+  add:    CurriculumDiffEntry[];
+  /** มีทั้งสองฝั่ง แต่จำนวนคาบต่างกัน */
+  fix:    CurriculumDiffEntry[];
+  /** แผนการสอนมี แต่หลักสูตรไม่มี */
+  remove: CurriculumDiffEntry[];
+  warn:   CurriculumDiffWarn[];
+  /** วิชาที่ตรงกันแล้ว */
+  ok:     number;
+}
+
+export const fetchCurriculumDiff = (groupId: number) =>
+  api.get<CurriculumDiff>(`/curricula/diff/${groupId}`).then((r) => r.data);
+
+export interface CurriculumApplyResult {
+  added:   number;
+  fixed:   number;
+  removed: number;
+  /** คาบในตารางที่ยังค้างอยู่ ทั้งที่แผนการสอนของวิชานั้นถูกเอาออกไปแล้ว */
+  slots_left: number;
+}
+
+/** Applies only the subjects listed, by subject_id, in each direction. */
+export const applyCurriculumDiff = (
+  groupId: number,
+  pick: { add: number[]; fix: number[]; remove: number[] },
+) => api.post<CurriculumApplyResult>(`/curricula/apply/${groupId}`, pick).then((r) => r.data);
+
+// ── ตรวจหลักสูตรทั้งโรงเรียน ────────────────────────────────────────────────
+export interface CurriculumAuditRow {
+  group_id:        number;
+  group_name:      string;
+  /** null = ห้องนี้ยังไม่ผูกหลักสูตร (ไม่ถูกตรวจ — ตั้งใจ ไม่ใช่ข้อผิดพลาด) */
+  curriculum_id:   number | null;
+  curriculum_name: string | null;
+  /** วิชาที่หลักสูตรมีแต่แผนการสอนไม่มี */
+  missing:  number;
+  /** วิชาที่แผนการสอนมีแต่หลักสูตรไม่มี */
+  surplus:  number;
+  /** วิชาที่จำนวนคาบไม่ตรง */
+  mismatch: number;
+  warn:     number;
+  /** คาบรวมต่อสัปดาห์ในแผนการสอนของห้อง */
+  weekly:   number;
+}
+
+export interface CurriculumAudit {
+  rows: CurriculumAuditRow[];
+  total: number;
+  attached: number;
+  off: number;
+}
+
+export const fetchCurriculumAudit = () =>
+  api.get<CurriculumAudit>("/curricula/audit").then((r) => r.data);
+
 /**
- * The server's own message for a refused request, or `fallback`.
+ * The server's own message for a refused request (400), or `fallback`.
  *
- * A 400 from this API carries a Thai sentence in `detail` that already says
- * what was refused and why — deleting a curriculum that classes still use,
- * adding a lesson the curriculum does not list. Showing that sentence beats
- * a generic "ไม่สำเร็จ", which would throw away the one thing the reader needs.
- * (A 422 puts a list there, not text; that falls back.)
+ * A 400 from the curriculum endpoints carries a Thai sentence in `detail` that
+ * already says what was refused and why — deleting a curriculum that classes
+ * still use, adding a lesson the curriculum does not list. Showing that
+ * sentence beats a generic "ไม่สำเร็จ", which would throw away the one thing the
+ * reader needs. Only a 400 is trusted to be written for a person: a 404 or 5xx
+ * detail is a developer's string, and a 422 puts a list there, not text.
  */
 export const errorDetail = (e: unknown, fallback: string): string => {
-  const d = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
-  return typeof d === "string" && d.trim() ? d : fallback;
+  const r = (e as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
+  const d = r?.data?.detail;
+  return r?.status === 400 && typeof d === "string" && d.trim() ? d : fallback;
 };
