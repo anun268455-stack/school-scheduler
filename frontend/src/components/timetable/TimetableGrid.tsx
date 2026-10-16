@@ -29,8 +29,14 @@ import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../
 import { DAYS, type Period, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
-const CELL_H = 88;   // px — all cells share this fixed height
-const CELL_W = 110;  // px — class columns (non-class cols are narrower)
+// These are ratios as much as sizes: the columns are laid out as shares of the
+// table (see the colgroup), so what matters is how they compare to each other.
+// The px totals still set the width below which the grid scrolls instead of
+// crushing itself.
+const CELL_H  = 96;  // px — all cells share this fixed height
+const CELL_W  = 110; // px — a คาบ column
+const BREAK_W = 56;  // px — พัก / พักกลางวัน, which hold only a short label
+const DAY_W   = 56;  // px — the วัน label down the left edge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DroppableCell
@@ -208,6 +214,15 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     }
     return combinedPeriods(periods);
   }, [periods, groups, selectedGroupId]);
+
+  // Column widths are shares of this total rather than fixed px, so that every
+  // คาบ stays exactly as wide as every other one however wide the panel is.
+  const totalGridW = useMemo(
+    () => DAY_W + gridPeriods.reduce(
+      (w, p) => w + (p.type === "class" ? CELL_W : BREAK_W), 0),
+    [gridPeriods],
+  );
+  const pctOf = (w: number) => `${((w / totalGridW) * 100).toFixed(4)}%`;
 
   // Filtered slots for current view
   const viewSlots = useMemo(() => {
@@ -568,33 +583,34 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
         >
-          {/* table-fixed is what actually holds the columns to the widths below.
-              Without it the browser treats <col width> as a suggestion and lets
-              any column with a long subject or a two-teacher line push itself
-              wider, so one คาบ ends up double the width of its neighbours and
-              the grid stops reading as a grid. Fixed layout makes every คาบ
-              the same width and the content truncate instead. */}
+          {/* Every คาบ column has to come out the SAME width, or the grid stops
+              reading as a grid.
+
+              Two things are needed for that, and pixel widths alone give
+              neither. table-fixed is the first: without it the browser treats
+              <col width> as a suggestion and lets any column holding a long
+              subject or a two-teacher line push itself wider.
+
+              The second is percentages. The table stretches to fill the panel,
+              and when a fixed-layout table is wider than its stated columns the
+              browser hands out the leftover space itself — how it splits that
+              remainder is not something to rely on. Stating each column as a
+              share of the whole removes the remainder from the picture: every
+              คาบ is the same share by construction, at any panel width, and the
+              narrow พัก/พักกลางวัน columns keep their smaller share. minWidth
+              in px is what makes it scroll instead of crushing the columns on a
+              screen too narrow to hold them. */}
           <table
-            className="border-collapse table-fixed"
-            style={{
-              /* Count the narrow พัก/พักกลางวัน columns at their real width.
-                 Charging every column the full CELL_W overstated the table by
-                 a few hundred pixels and forced a horizontal scrollbar onto
-                 grids that in fact fit on the screen. */
-              minWidth: `${56 + gridPeriods.reduce(
-                (w, p) => w + (p.type === "class" ? CELL_W : 56), 0)}px`,
-            }}
+            className="border-collapse table-fixed w-full"
+            style={{ minWidth: `${totalGridW}px` }}
           >
             <colgroup>
               {/* Day label column */}
-              <col style={{ width: "56px", minWidth: "56px" }} />
+              <col style={{ width: pctOf(DAY_W) }} />
               {gridPeriods.map((p) => (
                 <col
                   key={p.period_num}
-                  style={{
-                    width: p.type === "class" ? `${CELL_W}px` : "56px",
-                    minWidth: p.type === "class" ? `${CELL_W}px` : "56px",
-                  }}
+                  style={{ width: pctOf(p.type === "class" ? CELL_W : BREAK_W) }}
                 />
               ))}
             </colgroup>
