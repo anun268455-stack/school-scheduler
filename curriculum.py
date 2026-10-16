@@ -42,10 +42,12 @@ def _t(name: str):
 
 
 def _id(value: Any) -> int | None:
-    """An id as a client may send it (a number or a string), or None if blank.
+    """The curriculum a class points at, as stored on the class, or None if blank.
 
-    0 counts as blank: ids start at 1, and a form that clears a dropdown sends 0
-    or "" as often as null."""
+    This reads a pointer that may have arrived through any edit of the class, so
+    it is forgiving: a number or a string, and 0 or "" meaning "none" (a form
+    that clears a dropdown sends those as often as null). Rows are different —
+    see _subject_id, which refuses what it cannot read."""
     try:
         return int(value) or None
     except (TypeError, ValueError, OverflowError):
@@ -53,38 +55,73 @@ def _id(value: Any) -> int | None:
 
 
 # ── แถวของหลักสูตร ────────────────────────────────────────────────────────────
+# Input that cannot be read is an error here, never a quiet 0 or a guessed id.
+# A 0-period row means "this subject may not be taught to this class", so a
+# client that forgot to send a count must not be able to ban a subject by
+# accident; and a wrong subject id is worse than a missing row. These raise
+# ValueError with a Thai message, which the endpoints turn into a 400 — this
+# module stays free of the web framework, as substitution.py does.
+
+def _subject_id(value: Any) -> int:
+    """A subject id: an int, or a string of digits. Not a float, not a bool.
+
+    True is an int in Python and would silently become subject 1; 5.7 would
+    become subject 5. Both are a different subject, not a dropped row."""
+    if isinstance(value, bool):
+        raise ValueError("รหัสวิชาต้องเป็นจำนวนเต็ม")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    raise ValueError("รหัสวิชาต้องเป็นจำนวนเต็ม")
+
 
 def _count(value: Any) -> int:
-    """A weekly count as a whole number of periods, never below zero.
+    """A weekly count: a number or numeric string, as whole periods, never below 0.
 
-    Anything that is not a number is 0 rather than an error: a half-typed cell
-    in the grid should not take the whole save down with it, and 0 periods is
-    what an empty cell means anyway.
-    """
+    The one place a negative count is clamped. 2.9 and "2.9" both mean 2."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("จำนวนคาบต้องเป็นตัวเลข")
     try:
-        return max(0, int(value))
-    except (TypeError, ValueError, OverflowError):
-        return 0
+        n = value if isinstance(value, int) else int(float(value))
+    except (ValueError, OverflowError):          # "abc", "", nan, inf
+        raise ValueError("จำนวนคาบต้องเป็นตัวเลข") from None
+    return max(0, n)
 
 
-def normalise_rows(rows: list[dict] | None) -> list[dict]:
+def normalise_rows(rows: list[dict]) -> list[dict]:
     """The rows a curriculum is allowed to hold.
 
     Only the subject and the count survive — see the module note on why. A row
-    with no subject is dropped, because it names nothing to check. The same
-    subject twice in one curriculum becomes one row that keeps the LARGER
+    with no subject is dropped, because it names nothing to check (and so is
+    not read any further: an empty grid line may well have an empty count). The
+    same subject twice in one curriculum becomes one row that keeps the LARGER
     count: two entries are most likely a re-pasted line, and silently adding
-    them would turn 2 + 2 into a 4-period subject nobody asked for.
+    them would turn 2 + 2 into a 4-period subject nobody asked for. A count of 0
+    is kept as a row; it is a real answer, not a missing one.
+
+    `rows` must be a list. Anything else raises rather than reading as "no
+    rows", which would let a client bug empty a curriculum that classes use. A
+    row that is not a dict is skipped.
     """
+    if not isinstance(rows, list):
+        raise ValueError("แถวหลักสูตรต้องเป็นรายการ")
     merged: dict[int, int] = {}
-    for row in rows or []:
+    for pos, row in enumerate(rows, start=1):
         if not isinstance(row, dict) or not row.get("subject_id"):
             continue
-        sid = _id(row["subject_id"])
-        if sid is None:
-            continue
-        n = _count(row.get("weekly_count"))
-        merged[sid] = max(n, merged.get(sid, 0))
+        try:
+            sid = _subject_id(row["subject_id"])
+            if not sid:                          # "0": a subject that is not one
+                continue
+            n = _count(row.get("weekly_count"))
+        except ValueError as exc:
+            raise ValueError(f"แถวที่ {pos}: {exc}") from None
+        prev = merged.get(sid)
+        merged[sid] = n if prev is None else max(n, prev)
     return [{"subject_id": sid, "weekly_count": n} for sid, n in merged.items()]
 
 

@@ -792,9 +792,11 @@ ELECTIVE_POOLS: list[dict[str, Any]] = []
 
 # หลักสูตร: the reference for which subjects a class may take, and how many
 # periods a week. Rows hold only subject_id and weekly_count; a class points at
-# its curriculum with `curriculum_id`. Always changed in place (never rebound),
-# because curriculum.py reaches this list through a lambda and the restore
-# empties and refills it.
+# its curriculum with `curriculum_id`. Changed in place by convention (append,
+# remove, and the restore's clear() + extend()) so that anything which did
+# `from mock_api import CURRICULA` keeps seeing the live list. curriculum.py
+# would survive a rebind regardless: it reads the table through
+# `lambda: CURRICULA`, which looks the name up each time it is called.
 CURRICULA: list[dict[str, Any]] = []
 
 # ── Real school data (อัตรากำลัง) ─────────────────────────────────────────────
@@ -9158,43 +9160,63 @@ def _curriculum_view(cur: dict[str, Any], attached: dict[int, list[dict]]) -> di
             "group_names": [g.get("name") for g in using]}
 
 
+def _clean_rows(raw: Any) -> list[dict[str, Any]]:
+    """normalise_rows, with its Thai ValueError turned into a 400."""
+    try:
+        return _CUR.normalise_rows(raw)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/curricula")
 def get_curricula():
     attached = _CUR.groups_by_curriculum()
     return [_curriculum_view(c, attached) for c in CURRICULA]
 
 
-@app.get("/api/curricula/{cid}")
+# {cid:int}, not {cid}: a bare {cid} also matches "derive" and "audit", and a
+# route registered above them would answer for them.
+@app.get("/api/curricula/{cid:int}")
 def get_curriculum(cid: int):
     return _curriculum_view(_find_curriculum(cid), _CUR.groups_by_curriculum())
 
 
 @app.post("/api/curricula")
 def create_curriculum(body: dict[str, Any]):
+    # Rows are checked before an id is taken, so a rejected request leaves
+    # nothing behind — not even a used-up number.
+    rows = _clean_rows(body["rows"]) if "rows" in body else []
     cur = {
         "id": _next("curriculum"),
         "name": str(body.get("name") or "").strip() or "หลักสูตรใหม่",
-        "rows": _CUR.normalise_rows(body.get("rows")),
+        "rows": rows,
     }
     CURRICULA.append(cur)
     return _curriculum_view(cur, _CUR.groups_by_curriculum())
 
 
-@app.put("/api/curricula/{cid}")
+@app.put("/api/curricula/{cid:int}")
 def update_curriculum(cid: int, body: dict[str, Any]):
-    """Rename it, replace its rows, or both. Only what is sent is changed."""
+    """Rename it, replace its rows, or both. Only what is sent is changed.
+
+    `rows` left out keeps the stored rows; `rows: []` empties them. Everything
+    is checked before anything is written, so a request that is refused for its
+    rows does not leave the new name behind."""
     cur = _find_curriculum(cid)
+    name = None
     if "name" in body:
         name = str(body["name"] or "").strip()
         if not name:
             raise HTTPException(400, "ชื่อหลักสูตรต้องไม่ว่าง")
+    rows = _clean_rows(body["rows"]) if "rows" in body else None
+    if name is not None:
         cur["name"] = name
-    if "rows" in body:
-        cur["rows"] = _CUR.normalise_rows(body["rows"])
+    if rows is not None:
+        cur["rows"] = rows
     return _curriculum_view(cur, _CUR.groups_by_curriculum())
 
 
-@app.delete("/api/curricula/{cid}")
+@app.delete("/api/curricula/{cid:int}")
 def delete_curriculum(cid: int):
     cur = _find_curriculum(cid)
     using = _CUR.groups_by_curriculum().get(cid, [])
