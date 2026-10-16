@@ -379,22 +379,41 @@ export const CurriculumPanel: React.FC = () => {
                   ยังไม่มีหลักสูตร — กด ✨ ด้านบนให้ระบบเสนอจากข้อมูลเดิม หรือสร้างเองด้านล่าง
                 </li>
               )}
-              {list?.map((c) => (
-                <li key={c.id}>
-                  <button onClick={() => choose(c.id)}
-                    className={clsx("w-full text-left px-3 py-2 transition-colors",
-                      c.id === selId ? "bg-blue-50" : "hover:bg-gray-50")}>
-                    <div className={clsx("text-sm font-medium truncate",
-                      c.id === selId ? "text-blue-800" : "text-gray-800")}>{c.name}</div>
-                    <div className="text-[11px] text-gray-500">
-                      {c.groups.length > 0
-                        ? <span className="text-emerald-700">{c.groups.length} ห้อง</span>
-                        : <span className="text-gray-400">ยังไม่ผูกห้อง</span>}
-                      {" · "}{c.rows.length} วิชา
-                    </div>
-                  </button>
-                </li>
-              ))}
+              {list?.map((c) => {
+                // ชื่อห้องขึ้นเป็นกรอบเล็กๆ ให้เห็นตั้งแต่ในรายการ ไม่ต้องกดเข้าไปดูทีละอัน
+                // ตัดที่ 8 ห้องแล้วบอกจำนวนที่เหลือ เพื่อไม่ให้รายการยาวจนเลื่อนหาอันอื่นไม่เจอ
+                const shown = c.groups.slice(0, 8);
+                const more = c.groups.length - shown.length;
+                return (
+                  <li key={c.id}>
+                    <button onClick={() => choose(c.id)}
+                      className={clsx("w-full text-left px-3 py-2 transition-colors",
+                        c.id === selId ? "bg-blue-50" : "hover:bg-gray-50")}>
+                      <div className={clsx("text-sm font-medium truncate",
+                        c.id === selId ? "text-blue-800" : "text-gray-800")}>{c.name}</div>
+                      <div className="text-[11px] text-gray-500">
+                        {c.groups.length > 0
+                          ? <span className="text-emerald-700">{c.groups.length} ห้อง</span>
+                          : <span className="text-gray-400">ยังไม่ผูกห้อง</span>}
+                        {" · "}{c.rows.length} วิชา
+                      </div>
+                      {shown.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {shown.map((gid, i) => (
+                            <span key={gid}
+                              className="px-1.5 py-px rounded border border-emerald-200 bg-emerald-50 text-[10px] leading-4 text-emerald-900">
+                              {c.group_names[i] ?? groupName(gid)}
+                            </span>
+                          ))}
+                          {more > 0 && (
+                            <span className="px-1.5 py-px text-[10px] leading-4 text-gray-500">+{more}</span>
+                          )}
+                        </div>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </div>
 
@@ -464,6 +483,48 @@ export const CurriculumPanel: React.FC = () => {
                   <button onClick={() => setConfirmDel(true)} disabled={busy}
                     className={clsx(btnDanger, "py-1.5")}>ลบหลักสูตร</button>
                 )}
+              </div>
+
+              {/* ห้องที่ใช้หลักสูตรนี้ — ไว้บนสุด เพราะเป็นสิ่งแรกที่ต้องรู้ว่าหลักสูตรนี้ใช้กับห้องไหน */}
+              <div className="border border-emerald-200 bg-emerald-50/40 rounded-lg px-3 py-2.5">
+                <div className="flex items-center justify-between mb-1.5">
+                  <h3 className="text-sm font-bold text-gray-700">
+                    ห้องที่ใช้หลักสูตรนี้ ({selected.groups.length})
+                  </h3>
+                  <span className="text-[11px] text-gray-400">ผูก/เอาออกแล้วบันทึกทันที</span>
+                </div>
+                {selected.groups.length === 0 ? (
+                  <p className="text-xs text-gray-500 mb-2">
+                    ยังไม่ผูกห้องไหน — หลักสูตรนี้จึงยังไม่ถูกใช้ตรวจห้องใดเลย
+                  </p>
+                ) : (
+                  <ul className="flex flex-wrap gap-1.5 mb-2">
+                    {selected.groups.map((gid, i) => (
+                      <li key={gid}
+                        className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-full border border-emerald-300 bg-white text-xs text-emerald-900">
+                        <span className="font-medium">{selected.group_names[i] ?? groupName(gid)}</span>
+                        <button
+                          onClick={() => setDiffFor({ id: gid, name: selected.group_names[i] ?? groupName(gid) })}
+                          title="เทียบแผนการสอนของห้องนี้กับหลักสูตร"
+                          className="px-1.5 py-0.5 rounded-full bg-white border border-emerald-300 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-50">
+                          เทียบ
+                        </button>
+                        <button onClick={() => detach(gid)} disabled={busy} title="เอาห้องนี้ออกจากหลักสูตร"
+                          className="text-emerald-700/60 hover:text-rose-600 leading-none disabled:opacity-40">✕</button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                  <Field label="ผูกห้องเพิ่ม">
+                    <SearchableSelect value={addGroup} onChange={setAddGroup}
+                      options={attachOptions} placeholder="เลือกห้อง" />
+                  </Field>
+                  <button onClick={attach} disabled={busy || !addGroup} className={btnPrimary}>+ ผูกห้อง</button>
+                </div>
+                <p className="text-[11px] text-gray-500 mt-1.5 leading-relaxed">
+                  ห้องหนึ่งใช้ได้หลักสูตรเดียว — เลือกห้องที่ใช้หลักสูตรอื่นอยู่ จะย้ายมาที่นี่
+                </p>
               </div>
 
               {/* วิชาและคาบ */}
@@ -550,47 +611,6 @@ export const CurriculumPanel: React.FC = () => {
                 </button>
               </div>
 
-              {/* ห้องที่ใช้หลักสูตรนี้ */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <h3 className="text-sm font-bold text-gray-700">
-                    ห้องที่ใช้หลักสูตรนี้ ({selected.groups.length})
-                  </h3>
-                  <span className="text-[11px] text-gray-400">ผูก/เอาออกแล้วบันทึกทันที</span>
-                </div>
-                {selected.groups.length === 0 ? (
-                  <p className="text-xs text-gray-500 mb-2">
-                    ยังไม่ผูกห้องไหน — หลักสูตรนี้จึงยังไม่ถูกใช้ตรวจห้องใดเลย
-                  </p>
-                ) : (
-                  <ul className="flex flex-wrap gap-1.5 mb-2">
-                    {selected.groups.map((gid, i) => (
-                      <li key={gid}
-                        className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-full border border-emerald-200 bg-emerald-50 text-xs text-emerald-900">
-                        <span className="font-medium">{selected.group_names[i] ?? groupName(gid)}</span>
-                        <button
-                          onClick={() => setDiffFor({ id: gid, name: selected.group_names[i] ?? groupName(gid) })}
-                          title="เทียบแผนการสอนของห้องนี้กับหลักสูตร"
-                          className="px-1.5 py-0.5 rounded-full bg-white border border-emerald-300 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-50">
-                          เทียบ
-                        </button>
-                        <button onClick={() => detach(gid)} disabled={busy} title="เอาห้องนี้ออกจากหลักสูตร"
-                          className="text-emerald-700/60 hover:text-rose-600 leading-none disabled:opacity-40">✕</button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
-                  <Field label="ผูกห้องเพิ่ม">
-                    <SearchableSelect value={addGroup} onChange={setAddGroup}
-                      options={attachOptions} placeholder="เลือกห้อง" />
-                  </Field>
-                  <button onClick={attach} disabled={busy || !addGroup} className={btnPrimary}>+ ผูกห้อง</button>
-                </div>
-                <p className="text-[11px] text-gray-500 mt-1.5 leading-relaxed">
-                  ห้องหนึ่งใช้ได้หลักสูตรเดียว — เลือกห้องที่ใช้หลักสูตรอื่นอยู่ จะย้ายมาที่นี่
-                </p>
-              </div>
             </div>
           )}
         </div>
