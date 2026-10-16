@@ -13,6 +13,7 @@ import json as _json
 import datetime as _dt
 from collections import Counter, defaultdict
 import substitution as _SUB
+import curriculum as _CUR
 
 app = FastAPI(title="School Scheduler Mock API v3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -788,6 +789,13 @@ def _teacher_view(slots: list[dict[str, Any]], teacher_id: int) -> list[dict[str
 # options — so a pool is the unit the school actually schedules, and placing it
 # writes one elective slot per class at the same day/period.
 ELECTIVE_POOLS: list[dict[str, Any]] = []
+
+# หลักสูตร: the reference for which subjects a class may take, and how many
+# periods a week. Rows hold only subject_id and weekly_count; a class points at
+# its curriculum with `curriculum_id`. Always changed in place (never rebound),
+# because curriculum.py reaches this list through a lambda and the restore
+# empties and refills it.
+CURRICULA: list[dict[str, Any]] = []
 
 # ── Real school data (อัตรากำลัง) ─────────────────────────────────────────────
 # school_data.json holds the school's actual departments, classes, teachers,
@@ -8616,7 +8624,7 @@ SCHOOL_CONFIG: dict[str, Any] = {
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
 _SAVE_KEYS = ("departments", "buildings", "rooms", "teachers", "subjects",
               "requirements", "periods", "slots", "elective_pools", "school_config",
-              "absences", "substitutions", "repayments")
+              "absences", "substitutions", "repayments", "curricula")
 
 
 def _snapshot() -> dict[str, Any]:
@@ -8646,6 +8654,12 @@ def _snapshot() -> dict[str, Any]:
         "absences": ABSENCES,
         "substitutions": SUBSTITUTIONS,
         "repayments": REPAYMENTS,
+        # หลักสูตร — losing these on a redeploy would leave every class
+        # "unchecked" without saying so. Copied rather than handed over live
+        # (unlike the lists above): a snapshot that IS the table is emptied by
+        # anything that clears the table before restoring from it.
+        "curricula": [{**c, "rows": [dict(r) for r in c.get("rows") or []]}
+                      for c in CURRICULA],
         "counters": _counters,
     }
 
@@ -8664,7 +8678,7 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
                         ("periods", PERIODS), ("slots", SLOTS),
                         ("elective_pools", ELECTIVE_POOLS),
                         ("absences", ABSENCES), ("substitutions", SUBSTITUTIONS),
-                        ("repayments", REPAYMENTS)):
+                        ("repayments", REPAYMENTS), ("curricula", CURRICULA)):
         rows = data.get(key)
         if rows is not None:
             rows = [dict(r) for r in rows]
@@ -8713,7 +8727,7 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
                       ("period", PERIODS), ("slot", SLOTS),
                       ("elective_pool", ELECTIVE_POOLS),
                       ("absence", ABSENCES), ("substitution", SUBSTITUTIONS),
-                      ("repayment", REPAYMENTS)):
+                      ("repayment", REPAYMENTS), ("curriculum", CURRICULA)):
         _counters[key] = max(_counters.get(key, 0), _max_id(rows))
     _SUB.invalidate()
     _counters["group"] = max(_counters.get("group", 0), _max_id(_flat_groups()))
@@ -9108,6 +9122,92 @@ def restore_backup(body: dict[str, Any]):
                       "slots", "elective_pools")},
         "saved_at": body.get("saved_at"),
     }
+
+
+# ── หลักสูตร ──────────────────────────────────────────────────────────────────
+# Which subjects each class may take, and how many periods a week. Kept apart
+# from the staffing sheet on purpose: the sheet says what IS assigned, this says
+# what SHOULD be, and the difference between the two is the thing worth seeing.
+# This section is only the reference itself: creating, editing and deleting it.
+
+_CUR.bind(
+    curricula=lambda: CURRICULA,
+    groups_by_id=lambda: {g["id"]: g for g in _flat_groups()},
+    subjects_by_id=lambda: {s["id"]: s for s in SUBJECTS},
+    requirements=lambda: REQUIREMENTS,
+)
+
+
+def _find_curriculum(cid: int) -> dict[str, Any]:
+    cur = next((c for c in CURRICULA if c["id"] == cid), None)
+    if not cur:
+        raise HTTPException(404, "ไม่พบหลักสูตรนี้")
+    return cur
+
+
+def _curriculum_view(cur: dict[str, Any], attached: dict[int, list[dict]]) -> dict[str, Any]:
+    """A curriculum as the screen reads it: what is stored, plus who uses it.
+
+    `groups` and `group_names` are worked out here from the classes that exist
+    and are never written back into CURRICULA — a stored list of class ids is
+    one more thing that goes stale the moment a class is deleted."""
+    using = attached.get(cur["id"], [])
+    return {**cur,
+            "rows": [dict(r) for r in cur.get("rows") or []],
+            "groups": [g["id"] for g in using],
+            "group_names": [g.get("name") for g in using]}
+
+
+@app.get("/api/curricula")
+def get_curricula():
+    attached = _CUR.groups_by_curriculum()
+    return [_curriculum_view(c, attached) for c in CURRICULA]
+
+
+@app.get("/api/curricula/{cid}")
+def get_curriculum(cid: int):
+    return _curriculum_view(_find_curriculum(cid), _CUR.groups_by_curriculum())
+
+
+@app.post("/api/curricula")
+def create_curriculum(body: dict[str, Any]):
+    cur = {
+        "id": _next("curriculum"),
+        "name": str(body.get("name") or "").strip() or "หลักสูตรใหม่",
+        "rows": _CUR.normalise_rows(body.get("rows")),
+    }
+    CURRICULA.append(cur)
+    return _curriculum_view(cur, _CUR.groups_by_curriculum())
+
+
+@app.put("/api/curricula/{cid}")
+def update_curriculum(cid: int, body: dict[str, Any]):
+    """Rename it, replace its rows, or both. Only what is sent is changed."""
+    cur = _find_curriculum(cid)
+    if "name" in body:
+        name = str(body["name"] or "").strip()
+        if not name:
+            raise HTTPException(400, "ชื่อหลักสูตรต้องไม่ว่าง")
+        cur["name"] = name
+    if "rows" in body:
+        cur["rows"] = _CUR.normalise_rows(body["rows"])
+    return _curriculum_view(cur, _CUR.groups_by_curriculum())
+
+
+@app.delete("/api/curricula/{cid}")
+def delete_curriculum(cid: int):
+    cur = _find_curriculum(cid)
+    using = _CUR.groups_by_curriculum().get(cid, [])
+    if using:
+        # A class left pointing at a curriculum that is gone would quietly stop
+        # being checked, so the delete is refused and says who is in the way.
+        names = ", ".join(str(g.get("name")) for g in using[:3])
+        more = f" และอีก {len(using) - 3} ห้อง" if len(using) > 3 else ""
+        raise HTTPException(
+            400, f"ลบหลักสูตร “{cur['name']}” ไม่ได้ เพราะยังมีห้องใช้อยู่: {names}{more} "
+                 f"— ปลดหลักสูตรออกจากห้องเหล่านี้ก่อน")
+    CURRICULA.remove(cur)
+    return {"removed": 1}
 
 
 # ── สอนแทน / แลกคาบ ───────────────────────────────────────────────────────────
