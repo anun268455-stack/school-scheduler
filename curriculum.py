@@ -455,6 +455,26 @@ WHY_DELETED = "วิชานี้ถูกลบออกจากระบ�
 WHY_SET = "วิชานี้อยู่ในเซ็ตห้องย่อย จึงไม่เสนอให้ลบอัตโนมัติ — ถ้าไม่ต้องการ ให้ไปแก้ที่เซ็ตห้องย่อย"
 WHY_CO = "วิชานี้มีครูสอนร่วม จึงไม่เสนอให้ลบอัตโนมัติ — ถ้าไม่ต้องการ ให้ไปแก้ที่แผนการสอน"
 WHY_ELECTIVE = "วิชานี้สอนอยู่ในคาบเสรีแล้ว จึงไม่นับว่าเกิน"
+_WHY_REMOVE = {"set": WHY_SET, "co": WHY_CO, "elective": WHY_ELECTIVE}
+
+
+def _kinds(rows: list[dict], served: set[int]) -> list[str]:
+    """Whose arrangement a subject's plan rows belong to, if not just the class's.
+
+    "set": a เซ็ตห้องย่อย (parallel_group_key). "co": a co-teacher is named
+    (co_teacher_id). "elective": the class already sits in a คาบเสรี that offers
+    the subject (`served` is the plan-row ids that do). Any of these means the
+    row is not a plain edit of the class's own plan, so diff will not offer to
+    remove it and apply will not change its count. One answer for both: if they
+    each asked, they would drift."""
+    kinds = []
+    if any(r.get("parallel_group_key") for r in rows):
+        kinds.append("set")
+    if any(r.get("co_teacher_id") for r in rows):
+        kinds.append("co")
+    if any(r.get("id") in served for r in rows):
+        kinds.append("elective")
+    return kinds
 
 
 def diff(group_id: int) -> dict:
@@ -532,13 +552,7 @@ def diff(group_id: int) -> dict:
                 continue
             if served is None:
                 served = _t("served_by_elective")()
-            why = []
-            if any(r.get("parallel_group_key") for r in plan["rows"]):
-                why.append(WHY_SET)
-            if any(r.get("co_teacher_id") for r in plan["rows"]):
-                why.append(WHY_CO)
-            if any(r.get("id") in served for r in plan["rows"]):
-                why.append(WHY_ELECTIVE)
+            why = [_WHY_REMOVE[k] for k in _kinds(plan["rows"], served)]
             if why:
                 out["warn"].append({**entry, "why": " · ".join(why)})
             else:
@@ -550,3 +564,130 @@ def diff(group_id: int) -> dict:
         else:
             out["ok"] += 1
     return out
+
+
+# ── ปรับห้องให้ตรงตามที่ติ๊ก ──────────────────────────────────────────────────────────
+# diff says what differs; apply does the part of it a person has ticked, and only
+# the part that is a plain edit of the class's own plan. It never writes to the
+# timetable (SLOTS): lessons already placed stay where they are, and the school
+# rearranges them itself. All it says about them is how many are left without a
+# plan row behind them.
+
+WHY_FIX_SET = "วิชานี้อยู่ในเซ็ตห้องย่อย จึงไม่แก้คาบให้อัตโนมัติ — ถ้าต้องการ ให้ไปแก้ที่เซ็ตห้องย่อย"
+WHY_FIX_CO = "วิชานี้มีครูสอนร่วม จึงไม่แก้คาบให้อัตโนมัติ — ถ้าต้องการ ให้ไปแก้ที่แผนการสอน"
+WHY_FIX_ELECTIVE = "วิชานี้สอนอยู่ในคาบเสรี จึงไม่แก้คาบให้อัตโนมัติ — ถ้าต้องการ ให้ไปแก้ที่คาบเสรี"
+WHY_FIX_MANY = ("วิชานี้มีหลายแถวในแผนการสอน ระบบบอกไม่ได้ว่าควรแก้แถวไหน จึงไม่แก้ให้ "
+                "— ให้ไปแก้ที่แผนการสอนเอง")
+_WHY_FIX = {"set": WHY_FIX_SET, "co": WHY_FIX_CO, "elective": WHY_FIX_ELECTIVE}
+
+
+def _subject_ids(value: Any, label: str) -> set[int]:
+    """The subject ids one list of a request names. Missing or null is none.
+
+    Unreadable is an error, not a skipped id: a request that cannot be read is
+    one nobody should half-apply. (An id that reads fine but is not in the
+    bucket it was sent in is a different matter, and is ignored; see apply.)"""
+    if value is None:
+        return set()
+    if not isinstance(value, list):
+        raise ValueError(f"รายการ{label}ต้องเป็นรายการของรหัสวิชา")
+    try:
+        return {_subject_id(v) for v in value}
+    except ValueError as exc:
+        raise ValueError(f"รายการ{label}: {exc}") from None
+
+
+def apply(group_id: int, add: Any, fix: Any, remove: Any) -> dict:
+    """Bring one class's teaching plan in line with its curriculum, as far as asked.
+
+    The three lists hold subject ids. Only a subject that the CURRENT diff puts
+    in that bucket is acted on; anything else is ignored without a word, so a
+    screen that is out of date cannot delete or rewrite something it was not
+    showing. Nothing is inferred from an empty list either: `remove` is exactly
+    the subjects named, never "everything the curriculum does not list", so
+    attaching an empty curriculum to a class that teaches things removes
+    nothing until someone ticks them. A class that follows no curriculum has
+    nothing to apply, and all of this is a no-op for it.
+
+      add     a plan row is written with the curriculum's periods and no
+              teacher (teacher_id 0, "ยังไม่ได้เลือกครู"), for the school to fill in
+      fix     the subject's one plan row is set to the curriculum's periods
+      remove  the subject's plan rows are deleted
+
+    `fix` only acts where it is certain which row to change. A subject's `have`
+    is a TOTAL, so two rows at 2 + 2 do not say whether to cut one of them or
+    both; with more than one row nothing is changed. Nor is anything changed
+    when a row belongs to a เซ็ตห้องย่อย, names a co-teacher, or is served by a
+    คาบเสรี: changing its count behind that arrangement's back is as damaging as
+    deleting it, which is the reason diff will not offer those for removal
+    either (see _kinds). Each such subject comes back in `warn`, with a Thai
+    reason, in the shape diff's own warnings have.
+
+    A curriculum row of 0 periods means "not allowed", which diff already reads
+    as a surplus to remove and never as a count to fix, so apply cannot be asked
+    to "fix" a subject down to 0 or to add one at 0.
+
+    `removed` and `fixed` and `added` count subjects. Only the plan rows diff
+    counted are touched (a row with no periods teaches nothing and is left
+    alone), which are also the rows its protections were checked against.
+    `slots_left` is how many placed lessons of the removed subjects are still on
+    the timetable with no plan row behind them. The timetable itself is never
+    written. Fixing a count down can likewise leave more lessons placed than
+    the plan now asks for; that is not counted here.
+
+    Everything is read and checked before the first write: a request that
+    cannot be read, or a plan that cannot, raises ValueError and changes
+    nothing. The endpoint turns that into a 400.
+    """
+    asked_add = _subject_ids(add, "เพิ่ม")
+    asked_fix = _subject_ids(fix, "แก้คาบ")
+    asked_remove = _subject_ids(remove, "เอาออก")
+
+    seen = diff(group_id)
+    result: dict[str, Any] = {"added": 0, "fixed": 0, "removed": 0, "slots_left": 0, "warn": []}
+    if seen["curriculum"] is None:
+        return result
+    group = _t("groups_by_id")()[group_id]
+    held = _plan_by_subject(group, [r for r in _t("requirements")() if r.get("group_id") == group_id])
+    served: set[int] | None = None
+
+    new_rows: list[tuple[int, int]] = []             # (subject_id, periods)
+    to_fix: list[tuple[dict, int]] = []              # (the plan row, periods)
+    to_drop: list[dict] = []
+    dropped: set[int] = set()
+    for entry in seen["add"]:
+        if entry["subject_id"] in asked_add:
+            new_rows.append((entry["subject_id"], entry["want"]))
+    for entry in seen["fix"]:
+        if entry["subject_id"] not in asked_fix:
+            continue
+        rows = held[entry["subject_id"]]["rows"]
+        if served is None:
+            served = _t("served_by_elective")()
+        why = [_WHY_FIX[k] for k in _kinds(rows, served)]
+        if not why and len(rows) > 1:                # protected rows are already not ours to change
+            why.append(WHY_FIX_MANY)
+        if why:
+            result["warn"].append({**entry, "why": " · ".join(why)})
+        else:
+            to_fix.append((rows[0], entry["want"]))
+    for entry in seen["remove"]:
+        if entry["subject_id"] in asked_remove:
+            to_drop.extend(held[entry["subject_id"]]["rows"])
+            dropped.add(entry["subject_id"])
+
+    reqs = _t("requirements")()
+    for sid, periods in new_rows:
+        reqs.append({"id": _t("next_requirement_id")(), "group_id": group_id, "subject_id": sid,
+                     "teacher_id": 0, "weekly_count": periods, "parallel_group_key": None})
+    for row, periods in to_fix:
+        row["weekly_count"] = periods
+    if to_drop:
+        gone = {id(r) for r in to_drop}
+        reqs[:] = [r for r in reqs if id(r) not in gone]   # in place: the table is shared
+
+    result.update(added=len(new_rows), fixed=len(to_fix), removed=len(dropped))
+    if dropped:
+        result["slots_left"] = sum(1 for s in _t("slots")()
+                                   if s.get("group_id") == group_id and s.get("subject_id") in dropped)
+    return result

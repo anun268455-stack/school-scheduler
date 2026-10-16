@@ -9163,6 +9163,8 @@ _CUR.bind(
     requirements=lambda: REQUIREMENTS,
     fold_coteaching=_fold_coteaching,
     served_by_elective=_reqs_served_by_elective,
+    slots=lambda: SLOTS,
+    next_requirement_id=lambda: _next("requirement"),
 )
 
 
@@ -9270,6 +9272,28 @@ def curriculum_diff(gid: int):
         return _CUR.diff(gid)
     except ValueError as exc:                # a plan row that cannot be read
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/curricula/apply/{gid:int}")
+def curriculum_apply(gid: int, body: dict[str, Any]):
+    """Do what was ticked on one class's diff: `{"add": [...], "fix": [...], "remove": [...]}`.
+
+    Lists of subject ids; only a subject the diff currently puts in that bucket
+    is acted on. Answers `{"added", "fixed", "removed", "slots_left", "warn"}`:
+    `warn` lists the "fix"es that were refused and why, `slots_left` the placed
+    lessons of removed subjects that no plan row backs any more. The timetable
+    is never written. Under /apply/ for the same reason as /diff/: static, and
+    above the {cid:int} routes. A request that ends up changing nothing says
+    so, so it does not bump the revision or save."""
+    if _find_group(gid) is None:
+        raise HTTPException(404, "ไม่พบห้องเรียนนี้")
+    try:
+        done = _CUR.apply(gid, body.get("add"), body.get("fix"), body.get("remove"))
+    except ValueError as exc:                # a list or plan row that cannot be read
+        raise HTTPException(400, str(exc)) from exc
+    if not (done["added"] or done["fixed"] or done["removed"]):
+        _nothing_changed()
+    return done
 
 
 # {cid:int}, not {cid}: a bare {cid} also matches "derive" and "audit", and a
