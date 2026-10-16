@@ -9130,7 +9130,9 @@ def restore_backup(body: dict[str, Any]):
 # Which subjects each class may take, and how many periods a week. Kept apart
 # from the staffing sheet on purpose: the sheet says what IS assigned, this says
 # what SHOULD be, and the difference between the two is the thing worth seeing.
-# This section is only the reference itself: creating, editing and deleting it.
+# This section is only the reference itself: creating, editing and deleting it,
+# and the three ways of making one without typing it (copy, from a class, and
+# derived from every class's teaching plan at once).
 
 _CUR.bind(
     curricula=lambda: CURRICULA,
@@ -9172,6 +9174,49 @@ def _clean_rows(raw: Any) -> list[dict[str, Any]]:
 def get_curricula():
     attached = _CUR.groups_by_curriculum()
     return [_curriculum_view(c, attached) for c in CURRICULA]
+
+
+# Static paths first. /api/curricula/derive is registered above every {cid:int}
+# route as well as being safe from them, so a parameter route added later
+# cannot end up answering for it by position alone.
+
+def _derive_proposals() -> list[dict[str, Any]]:
+    """derive_all, with a damaged teaching plan turned into a 400 naming the class."""
+    try:
+        return _CUR.derive_all()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/curricula/derive")
+def derive_curricula():
+    """The curricula the classes' existing teaching plans imply. Writes nothing."""
+    return {"proposals": _derive_proposals()}
+
+
+@app.post("/api/curricula/derive")
+def apply_derived_curricula(body: dict[str, Any] | None = None):
+    """Create every proposed curriculum and attach its classes to it.
+
+    `body` is accepted and not read: there is nothing to choose, the proposals
+    are exactly what the GET shows. All of them are worked out before the first
+    one is written, so a plan that cannot be read stops the whole thing instead
+    of leaving half the school attached. Attaching is setting `curriculum_id` on
+    the class and nothing else."""
+    proposals = _derive_proposals()
+    live = {g["id"]: g for g in _flat_groups()}
+    made, attached = [], 0
+    for p in proposals:
+        cur = {"id": _next("curriculum"), "name": p["name"],
+               "rows": [dict(r) for r in p["rows"]]}
+        CURRICULA.append(cur)
+        made.append(cur)
+        for gid in p["group_ids"]:
+            live[gid]["curriculum_id"] = cur["id"]
+            attached += 1
+    using = _CUR.groups_by_curriculum()
+    return {"created": len(made), "attached": attached,
+            "curricula": [_curriculum_view(c, using) for c in made]}
 
 
 # {cid:int}, not {cid}: a bare {cid} also matches "derive" and "audit", and a
@@ -9230,6 +9275,37 @@ def delete_curriculum(cid: int):
                  f"— ปลดหลักสูตรออกจากห้องเหล่านี้ก่อน")
     CURRICULA.remove(cur)
     return {"removed": 1}
+
+
+# Making one without typing it. Neither attaches a class: the new curriculum
+# starts with no classes, and putting one on is a separate, deliberate step.
+
+@app.post("/api/curricula/{cid:int}/copy")
+def copy_curriculum(cid: int):
+    src = _find_curriculum(cid)
+    cur = {"id": _next("curriculum"), "name": f"{src['name']} (สำเนา)",
+           "rows": [dict(r) for r in src.get("rows") or []]}
+    CURRICULA.append(cur)
+    return _curriculum_view(cur, _CUR.groups_by_curriculum())
+
+
+@app.post("/api/curricula/from-group/{gid:int}")
+def curriculum_from_group(gid: int):
+    """A curriculum holding what this class is taught now."""
+    group = _find_group(gid)
+    if not group:
+        raise HTTPException(404, "ไม่พบห้องเรียนนี้")
+    try:
+        rows = _CUR.rows_from_group(gid)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not rows:
+        # An empty curriculum would be a class allowed nothing; say so instead.
+        raise HTTPException(400, f"ห้อง {group.get('name')} ยังไม่มีวิชาในแผนการสอน "
+                                 f"จึงสร้างหลักสูตรจากห้องนี้ไม่ได้")
+    cur = {"id": _next("curriculum"), "name": f"หลักสูตรจาก {group.get('name')}", "rows": rows}
+    CURRICULA.append(cur)
+    return _curriculum_view(cur, _CUR.groups_by_curriculum())
 
 
 # ── สอนแทน / แลกคาบ ───────────────────────────────────────────────────────────

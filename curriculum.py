@@ -161,3 +161,115 @@ def plan_for(group_id: int) -> dict | None:
     if cid is None:
         return None
     return next((c for c in _t("curricula")() if c["id"] == cid), None)
+
+
+# ── สร้างหลักสูตรจากแผนการสอนที่กรอกไว้แล้ว ───────────────────────────────────────
+# The school has already typed in what each class is taught. A curriculum read
+# back out of that is a starting point they can correct, not a second round of
+# typing; and where many classes were typed the same, it is one curriculum
+# instead of thirty copies of it.
+
+def _label(value: Any) -> str:
+    """A level or plan as text for comparing and naming: blank and None are the same."""
+    return str(value or "").strip()
+
+
+def _plan_rows(group: dict, reqs: list[dict]) -> list[dict]:
+    """The curriculum rows for one class, read from its own teaching-plan rows.
+
+    Reading the plan is more forgiving than reading what a person typed into
+    the curriculum grid, in one way only. A plan row with no periods in it —
+    0, nothing, or something that is not a number — teaches nothing and is left
+    out. It must not become a 0-period curriculum row: in a curriculum that
+    reads "this class may NOT take this subject", the opposite of what a plan
+    row says. Everything else is held to normalise_rows, which is also what
+    makes two rows for one subject (a co-taught lesson is written from both
+    teachers' sides) one row at the larger count, the lesson being held once.
+
+    A subject id that cannot be read is an error naming the class, not a
+    skipped row: it means the stored plan is damaged, and a curriculum built
+    around the hole would look complete.
+    """
+    rows = []
+    for r in reqs:
+        try:
+            n = _count(r.get("weekly_count"))
+        except ValueError:
+            continue
+        if n > 0:
+            rows.append({"subject_id": r.get("subject_id"), "weekly_count": n})
+    try:
+        clean = normalise_rows(rows)
+    except ValueError as exc:
+        raise ValueError(f"ห้อง {group.get('name')}: {exc}") from None
+    return sorted(clean, key=lambda row: row["subject_id"])
+
+
+def rows_from_group(group_id: int) -> list[dict]:
+    """What this class is taught now, as curriculum rows. [] if it has no plan.
+
+    Only the subject and the weekly count are taken. The teacher, the co-teacher
+    and the parallel-group key belong to who teaches it, not to what the class
+    should take, and the subject answers duration and credits itself."""
+    group = _t("groups_by_id")().get(group_id)
+    if group is None:
+        return []
+    return _plan_rows(group, [r for r in _t("requirements")() if r.get("group_id") == group_id])
+
+
+def derive_all() -> list[dict]:
+    """Every curriculum the existing teaching plans imply, one proposal each.
+
+    Classes are grouped when they have the same level, the same plan and
+    EXACTLY the same subjects at exactly the same weekly counts. Same subjects
+    with one count different is a different curriculum, as is one extra subject.
+    The level and plan are part of the grouping, so a proposal's name — "<level>
+    <plan>" — is true of every class in it. When one level+plan comes out as
+    several groups they are numbered "(แบบ 1)", "(แบบ 2)" …, the one the most
+    classes follow first, and each says how many there are in `variants`.
+
+    Only classes that follow no curriculum are looked at. A class already on a
+    real curriculum has been settled by someone, and re-deriving it would
+    quietly move it; pressing the button twice would make every curriculum
+    twice. So the preview is exactly what pressing it will do, and after
+    pressing it there is nothing left to propose. (A class whose curriculum_id
+    points at a curriculum that is gone follows none — see plan_for — so it is
+    looked at again.)
+
+    A class with no plan, or only plan rows without periods, is in no proposal:
+    a curriculum with no subjects would say nothing, and an empty one is how a
+    class ends up allowed nothing. Rows are fresh copies; nothing here is
+    shared with the stored tables.
+    """
+    groups = _t("groups_by_id")()
+    plans: dict[int, list[dict]] = {}
+    for r in _t("requirements")():
+        gid = r.get("group_id")
+        if gid in groups:                    # a row for a class that is gone is nobody's plan
+            plans.setdefault(gid, []).append(r)
+
+    pairs: dict[tuple[str, str], dict[frozenset, dict]] = {}
+    for gid in sorted(plans):
+        if plan_for(gid) is not None:
+            continue
+        group = groups[gid]
+        rows = _plan_rows(group, plans[gid])
+        if not rows:
+            continue
+        shape = frozenset((r["subject_id"], r["weekly_count"]) for r in rows)
+        pair = (_label(group.get("level")), _label(group.get("plan")))
+        found = pairs.setdefault(pair, {}).setdefault(shape, {"rows": rows, "group_ids": []})
+        found["group_ids"].append(gid)
+
+    out = []
+    for (level, plan), clusters in sorted(pairs.items(), key=lambda kv: kv[0]):
+        ordered = sorted(clusters.values(), key=lambda c: (-len(c["group_ids"]), c["group_ids"][0]))
+        base = " ".join(part for part in (level, plan) if part) or "ไม่ระบุระดับ"
+        for n, c in enumerate(ordered, start=1):
+            out.append({
+                "name": base if len(ordered) == 1 else f"{base} (แบบ {n})",
+                "rows": c["rows"],
+                "group_ids": c["group_ids"],
+                "variants": len(ordered),
+            })
+    return out
