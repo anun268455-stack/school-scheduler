@@ -18,6 +18,10 @@ frontend/.env.production
 .DS_Store
 Thumbs.db
 
+# Claude Code worktrees and their scratch — a full duplicate of this tree,
+# never part of the app. Committing it would check the repo into itself.
+.claude/
+
 # local typecheck harness (not part of the app)
 frontend/tsconfig.check.json
 frontend/typecheck-stubs.d.ts
