@@ -765,3 +765,62 @@ def audit() -> dict:
     attached = [r for r in rows if r["curriculum_id"] is not None]
     off = [r for r in attached if r["missing"] or r["surplus"] or r["mismatch"] or r["warn"]]
     return {"rows": rows, "total": len(rows), "attached": len(attached), "off": len(off)}
+
+
+# ── บังคับตอนเขียนแผนการสอน ────────────────────────────────────────────────────────────
+# The teaching plan is checked against the curriculum at the moment a row is
+# written, so the school finds out when it types the row and not when it audits.
+
+def check_row(group_id: int, subject_id: int, weekly_count: Any) -> str | None:
+    """Whether this class may have a plan row for this subject at this many periods.
+
+    None means allowed. Anything else is the Thai sentence that says why not,
+    for the endpoint to hand straight back. Exactly two things are refused: a
+    subject the class's curriculum does not hold, and more periods a week than
+    the curriculum gives it. Fewer is allowed, and so is exactly as many. A
+    curriculum row of 0 periods is the first kind: "not allowed" (see diff), so
+    the subject is refused at any count, 0 included.
+
+    A class that follows no curriculum is never refused anything (see plan_for):
+    that is the way out, and it is also why there is no walk up to a parent
+    class. A class that does not exist is no one's to protect and is allowed.
+
+    `weekly_count` is read the way the teaching plan is read everywhere else
+    (_plan_by_subject): a count that is missing or cannot be read teaches
+    nothing, so it cannot be over the curriculum's. This is the check on ONE
+    row. A subject split over two rows (2 + 2 against a curriculum of 3) is not
+    seen here; adding the rows up is the audit's job, and it reports that as a
+    mismatch.
+
+    A stored curriculum row that cannot be read raises ValueError naming the
+    curriculum, rather than letting everything through: a class whose
+    curriculum is damaged should be told so, not quietly stop being checked.
+    The endpoints turn that into the refusal.
+    """
+    cur = plan_for(group_id)
+    if cur is None:
+        return None
+    name = cur.get("name")
+    try:
+        wanted = {r["subject_id"]: r["weekly_count"] for r in normalise_rows(cur.get("rows") or [])}
+    except ValueError as exc:
+        raise ValueError(f"หลักสูตร “{name}” อ่านไม่ได้: {exc}") from None
+    try:
+        asked = _count(weekly_count)
+    except ValueError:                       # missing or unreadable: teaches nothing
+        asked = 0
+
+    group = _t("groups_by_id")().get(group_id) or {}
+    subject = _t("subjects_by_id")().get(subject_id)
+    label = " ".join(p for p in (subject.get("code"), subject.get("name")) if p) if subject else f"รหัส {subject_id}"
+    who = f"ห้อง {group.get('name')} ใช้หลักสูตร “{name}”"
+    allowed = wanted.get(subject_id)
+    if allowed is None:
+        return f"{who} ซึ่งไม่มีวิชา {label} — เพิ่มวิชานี้ลงในหลักสูตรก่อน หรือปลดหลักสูตรออกจากห้อง"
+    if allowed == 0:
+        return (f"{who} ซึ่งกำหนดวิชา {label} ไว้ 0 คาบ (ห้องนี้ไม่เรียนวิชานี้) "
+                f"— แก้จำนวนคาบในหลักสูตรก่อน หรือปลดหลักสูตรออกจากห้อง")
+    if asked > allowed:
+        return (f"{who} ซึ่งให้วิชา {label} {allowed} คาบต่อสัปดาห์ แต่แถวนี้ขอ {asked} คาบ "
+                f"— ลดคาบลง หรือแก้จำนวนคาบในหลักสูตรก่อน")
+    return None

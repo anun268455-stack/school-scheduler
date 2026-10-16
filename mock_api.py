@@ -7122,6 +7122,18 @@ def _requirement_rows() -> list[dict[str, Any]]:
     return out
 
 
+def _curriculum_refusal(group_id: Any, subject_id: Any, weekly_count: Any) -> str | None:
+    """Why this plan row may not be written to this class's curriculum, or None.
+
+    check_row, with a curriculum that cannot be read counted as a refusal too
+    (its message names the curriculum). One function for the three places a row
+    is written, so each only has to decide what to do with a message."""
+    try:
+        return _CUR.check_row(group_id, subject_id, weekly_count)
+    except ValueError as exc:
+        return str(exc)
+
+
 @app.get("/api/timetable/requirements")
 def get_requirements(group_id: int | None = None):
     rows = _requirement_rows()
@@ -7139,6 +7151,11 @@ def create_req(body: dict[str, Any]):
         raise HTTPException(400, "ไม่พบห้องเรียนที่อ้างถึง")
     if body.get("subject_id") not in {s["id"] for s in SUBJECTS}:
         raise HTTPException(400, "ไม่พบรายวิชาที่อ้างถึง")
+    # A class on a หลักสูตร takes only what it says (see check_row). Before
+    # anything is written, so a refusal does not use up a row number either.
+    refusal = _curriculum_refusal(body.get("group_id"), body.get("subject_id"), body.get("weekly_count"))
+    if refusal:
+        raise HTTPException(400, refusal)
     for k in _DERIVED_REQ_KEYS:
         body.pop(k, None)
     body["id"] = _next("requirement")
@@ -7193,6 +7210,18 @@ def update_req(i: int, body: dict[str, Any]):
         body.pop(k, None)
     for r in REQUIREMENTS:
         if r["id"] == i:
+            # The curriculum is asked about the row as it WILL be, against the
+            # class it will be in (a move is judged by the destination's
+            # curriculum). Only when the class, subject or periods change: a row
+            # that was already outside a curriculum attached later must still
+            # take a new teacher or a pinned period, and a screen that sends the
+            # whole row back changes none of the three.
+            merged = {**r, **body}
+            if any(merged.get(k) != r.get(k) for k in ("group_id", "subject_id", "weekly_count")):
+                refusal = _curriculum_refusal(merged.get("group_id"), merged.get("subject_id"),
+                                              merged.get("weekly_count"))
+                if refusal:
+                    raise HTTPException(400, refusal)
             r.update(body)
             return r
     raise HTTPException(404, "Requirement not found")
@@ -7227,6 +7256,13 @@ def bulk_create_reqs(body: list[dict[str, Any]]):
             missing.append("ครู")
         if missing:
             rejected.append({"row": i, "reason": f"ไม่พบ{'/'.join(missing)}ที่อ้างถึง"})
+            continue
+        # Row by row like the checks above, so one row outside a หลักสูตร never
+        # fails the file. Before the "same assignment" merge below, which can
+        # change the periods of a row that is already there.
+        refusal = _curriculum_refusal(row["group_id"], row["subject_id"], row.get("weekly_count"))
+        if refusal:
+            rejected.append({"row": i, "reason": refusal})
             continue
         # สอนร่วม: a second teacher nobody knows would be booked into the cell
         # and never show up, so an unknown one is dropped rather than kept.
