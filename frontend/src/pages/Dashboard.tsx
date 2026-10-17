@@ -15,6 +15,7 @@ import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubj
 import { slotsForTeacher, teachingTogether } from "../utils/teacherSlots";
 import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
 import { flattenGroups } from "../utils/groupHierarchy";
+import { inOrder, moveBy } from "../utils/yardPicks";
 import { byTeacherCode } from "../utils/teacherOrder";
 import { SavePointPanel } from "../components/backup/SavePointPanel";
 import { ServerHistoryPanel } from "../components/backup/ServerHistoryPanel";
@@ -45,7 +46,7 @@ import { SearchableSelect, teacherOptions, roomOptions, groupOptions, subjectOpt
 import { TableSearch, matches } from "../components/common/TableSearch";
 
 export type DashPage =
-  | "groups" | "teachers" | "subjects" | "rooms"
+  | "groups" | "teachers" | "subjects" | "rooms" | "yards"
   | "requirements" | "curriculum" | "electives" | "activities" | "periods" | "locks" | "settings"
   | "departments" | "analytics" | "help";
 
@@ -55,6 +56,7 @@ export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
     teachers:     <TeachersPanel />,
     subjects:     <SubjectsPanel />,
     rooms:        <RoomsPanel />,
+    yards:        <YardOrderPanel />,
     requirements: <RequirementsPanel />,
     curriculum:   <CurriculumPanel />,
     electives:    <ElectivesPanel />,
@@ -1310,6 +1312,154 @@ const RoomsPanel: React.FC = () => {
         <RoomSettingsModal
           room={settingsFor}
           onClose={() => { setSettingsFor(null); setCreating(false); }} />
+      )}
+    </Section>
+  );
+};
+
+// ─── ลำดับลาน ────────────────────────────────────────────────────────────────
+/**
+ * One order of the ลาน for the whole school.
+ *
+ * The solver fills the first ลาน and only moves on to the next when that one
+ * is taken for the hour. How many คาบ each ลาน already holds is counted from the
+ * hours the classes picked in โหมดเลือกคาบเรียนลาน — nothing is typed in here.
+ * Every move saves at once; a refusal is shown in the server's own words.
+ */
+const YardOrderPanel: React.FC = () => {
+  const loadYardPicks = useTimetableStore((s) => s.loadYardPicks);
+  const [data, setData]   = useState<api.YardOrder | null>(null);
+  const [err, setErr]     = useState<string | null>(null);
+  const [busy, setBusy]   = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    api.fetchYardOrder()
+      .then((d) => {
+        if (!alive) return;
+        setData(d);
+        setErr(null);
+      })
+      .catch((e) => {
+        if (alive) setErr(api.errorDetail(e, "โหลดลำดับลานไม่สำเร็จ — ลองใหม่อีกครั้ง"));
+      });
+    return () => { alive = false; };
+  }, [attempt]);
+
+  // `order` is the school's saved order; `yards` is not promised to follow it.
+  const yards = data ? inOrder(data.order, data.yards) : [];
+
+  const move = async (index: number, delta: -1 | 1) => {
+    if (!data || busy) return;
+    const ids  = yards.map((y) => y.id);
+    const next = moveBy(ids, index, delta);
+    if (next === ids) return;
+    const before = data;
+    setBusy(true);
+    setErr(null);
+    setSaved(false);
+    setData({ ...before, order: next });          // the move shows at once
+    try {
+      const after = await api.saveYardOrder(next);
+      setData(after);
+      setSaved(true);
+      // The picker in the timetable lists the ลาน in this order.
+      void loadYardPicks();
+    } catch (e) {
+      setErr(api.errorDetail(e, "บันทึกลำดับไม่สำเร็จ — ลองใหม่อีกครั้ง"));
+      // Show what the server really holds — it may have moved on since.
+      try {
+        setData(await api.fetchYardOrder());
+      } catch {
+        setData(before);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section
+      title="ลำดับลาน"
+      action={
+        <span className={clsx("text-xs", saved ? "text-emerald-700" : "text-gray-400")}>
+          {busy ? "กำลังบันทึก…" : saved ? "✓ บันทึกลำดับแล้ว" : ""}
+        </span>
+      }
+    >
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
+        💡 ตัวจัดตารางจะเติมลานบนสุดก่อน และไปลานถัดไปก็ต่อเมื่อลานนั้นถูกใช้แล้วในคาบนั้น — ใช้ลำดับเดียวกันทั้งโรงเรียน
+      </div>
+
+      {err && (
+        <div role="alert" className="mb-3 flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+          <span className="flex-1">{err}</span>
+          {!data && (
+            <button onClick={() => setAttempt((n) => n + 1)} className={btnEdit}>ลองใหม่</button>
+          )}
+        </div>
+      )}
+
+      {!data && !err && (
+        <div className="text-center text-gray-400 text-sm py-10">กำลังโหลด…</div>
+      )}
+
+      {data && yards.length === 0 && (
+        <div className="border border-gray-200 rounded-lg px-3 py-8 text-center text-gray-400 text-xs">
+          ยังไม่มีลานในระบบ (ห้องสอนที่ตั้งเป็นประเภท “กลางแจ้ง” จะเป็นลาน)
+        </div>
+      )}
+
+      {data && yards.length > 0 && (
+        <>
+          <ol className="border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100">
+            {yards.map((y, i) => (
+              <li key={y.id} className="flex items-center gap-3 px-3 py-2.5 hover:bg-gray-50">
+                <span className="shrink-0 w-6 h-6 rounded-full bg-teal-600 text-white text-xs font-bold flex items-center justify-center">
+                  {i + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-gray-800 truncate">{y.name}</div>
+                  {y.capacity > 0 && (
+                    <div className="text-[11px] text-gray-500">จุ {y.capacity} คน</div>
+                  )}
+                </div>
+                <span
+                  className={clsx(
+                    "shrink-0 text-xs px-2 py-1 rounded border whitespace-nowrap",
+                    y.picks > 0
+                      ? "bg-teal-50 border-teal-200 text-teal-800 font-semibold"
+                      : "bg-gray-50 border-gray-200 text-gray-400",
+                  )}
+                  title="จำนวนคาบที่ห้องต่างๆ เลือกไว้ว่าเรียนที่ลานนี้"
+                >
+                  📌 {y.picks} คาบ
+                </span>
+                <div className="shrink-0 flex gap-1">
+                  <button
+                    onClick={() => move(i, -1)}
+                    disabled={busy || i === 0}
+                    aria-label={`เลื่อน ${y.name} ขึ้น`}
+                    title="เลื่อนขึ้น"
+                    className={clsx(btnEdit, "disabled:opacity-30 disabled:cursor-not-allowed")}
+                  >▲</button>
+                  <button
+                    onClick={() => move(i, 1)}
+                    disabled={busy || i === yards.length - 1}
+                    aria-label={`เลื่อน ${y.name} ลง`}
+                    title="เลื่อนลง"
+                    className={clsx(btnEdit, "disabled:opacity-30 disabled:cursor-not-allowed")}
+                  >▼</button>
+                </div>
+              </li>
+            ))}
+          </ol>
+          <p className="text-[11px] text-gray-500 mt-2">
+            จำนวนคาบนับให้เองจากช่องที่เลือกไว้ในตารางของแต่ละห้อง (⋯ เครื่องมือ → โหมดเลือกคาบเรียนลาน) — ไม่ต้องกรอกที่นี่
+          </p>
+        </>
       )}
     </Section>
   );

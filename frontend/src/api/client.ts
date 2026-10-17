@@ -708,7 +708,7 @@ export interface CurriculumAudit {
 export const fetchCurriculumAudit = () =>
   api.get<CurriculumAudit>("/curricula/audit").then((r) => r.data);
 
-// ── คาบเรียนลาน ──────────────────────────────────────────────────
+// ── คาบเรียนลาน และลำดับลาน ──────────────────────────────────────────────────
 // The school decides by hand, in advance, that a class's particular hour happens
 // outdoors on a named ลาน — which frees an indoor room for a lesson that would
 // otherwise have nowhere to go. Marking a cell saves at once; the timetable only
@@ -739,6 +739,17 @@ export interface YardPicks {
   yards: Yard[];
 }
 
+export interface YardOrderRow extends Yard {
+  /** How many คาบ are pinned to this ลาน right now. */
+  picks: number;
+}
+
+export interface YardOrder {
+  order: number[];
+  /** Not promised to be in `order`'s order — sort by `order`. */
+  yards: YardOrderRow[];
+}
+
 export const fetchYardPicks = () =>
   api.get<YardPicks>("/yard-picks").then((r) => r.data);
 
@@ -752,6 +763,13 @@ export const setYardPick = (p: {
 }) =>
   api.put<YardPickRow | { removed: true }>("/yard-picks", p)
     .then((r) => ("removed" in r.data ? null : r.data));
+
+export const fetchYardOrder = () =>
+  api.get<YardOrder>("/yard-order").then((r) => r.data);
+
+/** One order for the whole school: the solver fills the first ลาน before the next. */
+export const saveYardOrder = (order: number[]) =>
+  api.put<YardOrder>("/yard-order", { order }).then((r) => r.data);
 
 /**
  * The server's own message for a refused request (400), or `fallback`.

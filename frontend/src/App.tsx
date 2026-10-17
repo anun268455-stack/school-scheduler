@@ -22,7 +22,7 @@ function wantsSubstitute(): boolean {
 }
 
 type Page = "timetable" | DashPage;
-const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","requirements","curriculum","electives","activities","periods","locks","settings","departments","analytics","help"];
+const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","yards","requirements","curriculum","electives","activities","periods","locks","settings","departments","analytics","help"];
 
 export default function App() {
   // Decided before anything else: the two pages share data but no chrome, and

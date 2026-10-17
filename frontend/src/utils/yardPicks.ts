@@ -58,3 +58,34 @@ export function applyPickResult<R extends PickRowLike>(
     r.group_id === asked.group_id && r.day === asked.day && r.period === asked.period));
   return saved ? [...rest, saved] : rest;
 }
+
+/**
+ * Yards in the order the school saved. A yard the order does not mention goes
+ * last, as the server sent it, and an id with no yard behind it is dropped —
+ * a list that quietly loses a ลาน would save an order that is missing one.
+ */
+export function inOrder<Y extends { id: number }>(order: number[], yards: Y[]): Y[] {
+  const left = new Map<number, Y>(yards.map((y) => [y.id, y]));
+  const out: Y[] = [];
+  for (const id of order) {
+    const y = left.get(id);
+    if (y) {
+      out.push(y);
+      left.delete(id);
+    }
+  }
+  return [...out, ...left.values()];
+}
+
+/**
+ * Move one item a place up (-1) or down (+1). Hands back the SAME array when
+ * the move is not possible, so the caller can tell nothing happened.
+ */
+export function moveBy(ids: number[], index: number, delta: -1 | 1): number[] {
+  const to = index + delta;
+  if (index < 0 || index >= ids.length || to < 0 || to >= ids.length) return ids;
+  const next = ids.slice();
+  next[index] = ids[to];
+  next[to] = ids[index];
+  return next;
+}

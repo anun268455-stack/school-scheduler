@@ -94,6 +94,7 @@ const CRUD_ITEMS = [
   { id: "teachers",     icon: "👨‍🏫", label: "ครู",            divider: false },
   { id: "subjects",     icon: "📚", label: "วิชา",           divider: false },
   { id: "rooms",        icon: "🚪", label: "ห้องสอน",        divider: false },
+  { id: "yards",        icon: "🌳", label: "ลำดับลาน",       divider: false },
   { id: "requirements", icon: "📋", label: "การสอน/วิชา",    divider: false },
   { id: "curriculum",    icon: "📚", label: "หลักสูตร",       divider: false },
   { id: "electives",    icon: "🎓", label: "วิชาเสรี",       divider: false },
