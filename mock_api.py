@@ -1628,6 +1628,14 @@ LAST_PERIOD_MODE = "reserve"      # reserve | never | free
 
 _LAST_PERIOD_MODES = ("reserve", "never", "free")
 
+# What CP-SAT is charged for sending a class home at the last period of the day.
+# It is a price rather than a ban, and where it sits between the other prices is
+# the rule itself: above every walking penalty put together (60 + 8 + 5 for the
+# worst room), so any amount of walking is preferred to a late finish; well
+# under the 1000 an unplaced lesson costs, so a class whose week does not fit in
+# the earlier hours still gets taught.
+TAIL_COST = 200
+
 
 def _school_last_period_mode(body: dict[str, Any] | None = None) -> str:
     """How the school wants the last period of the day used.
@@ -5569,6 +5577,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     t_map = {t["id"]: t for t in TEACHERS}
     s_map = {s["id"]: s for s in SUBJECTS}
     r_map = {r["id"]: r for r in ROOMS}
+    tail_mode = _school_last_period_mode(body)
     dep_out = {d["id"] for d in DEPARTMENTS if "พลศึกษา" in d.get("name", "")}
 
     class_periods = sorted({p["period_num"] for p in PERIODS if p["type"] == "class"})
@@ -5789,6 +5798,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         wants_outdoor = subj.get("department_id") in dep_out
         subj_room = set(_subject_rooms(subj))   # ห้องประจำวิชา (ได้หลายห้อง)
         own_rooms = dept_rooms.get(subj.get("department_id") or -1, set())
+        lvl_last = _last_period_for(occ_level(occ))
 
         occ_start_list = []
         for (d, p) in starts:
@@ -5801,7 +5811,31 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                 continue
             if any(group_prebusy(occ["group_id"], cd, cp_) for cd, cp_ in cells):
                 continue
+            # คาบสุดท้ายของวันไว้ใช้เมื่อจำเป็น
+            #
+            # "ยังมีคาบว่างแต่ยังมีคาบ 9 ออกมาให้เห็น ช่วยจัดให้คาบเต็มก่อน"
+            #
+            # The heuristic placer has reserved the tail for years; CP-SAT
+            # never learnt the rule, so whichever solver ran decided whether
+            # the school got it. It does not place lessons as late as it can
+            # out of malice — every cell simply costs the same, so คาบ 9 is as
+            # good as คาบ 2 and the hour a class goes home is decided by
+            # nothing at all.
+            #
+            # Priced, not forbidden, and that pricing is the whole rule.
+            # TAIL_COST sits far above the walking penalties, so the solver
+            # will accept any amount of walking before it sends a class home
+            # late; and far below the 1000 an unplaced lesson costs, so a
+            # class whose week genuinely does not fit in the earlier hours
+            # still gets its lesson. Use it when necessary, never by accident.
+            # "never" is the school saying the tail does not exist at all, so
+            # the start is not offered.
+            tail_here = lvl_last is not None and any(cp_ == lvl_last for _cd, cp_ in cells)
+            if tail_here and tail_mode == "never":
+                continue
             sv = model.NewBoolVar(f"s_{idx}_{d}_{p}")
+            if tail_here and tail_mode != "free":
+                penalty_terms.append((TAIL_COST, sv))
             start_vars[(idx, d, p)] = sv
             occ_start_list.append(sv)
             for cd, b in tslots:
