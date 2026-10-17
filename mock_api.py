@@ -497,7 +497,13 @@ def _merge_sibling_rooms() -> int:
         held = [s["room_id"] for s in same_hour if s.get("room_id")]
         if not held:
             continue
-        rid = Counter(held).most_common(1)[0][0]
+        # คาบเรียนลาน: a subgroup sitting on the ลาน the school picked for its
+        # hour brings the rest of its roomful there. Merged the other way the
+        # pick would be undone by a pass that only knows about counting heads.
+        picked = [s["room_id"] for s in same_hour
+                  if s.get("room_id")
+                  and _yard_pick_for(s["group_id"], s["day"], s["period"]) == s["room_id"]]
+        rid = Counter(picked or held).most_common(1)[0][0]
         r = rooms.get(rid) or {}
         for s in same_hour:
             if s.get("room_id") != rid:
@@ -553,8 +559,13 @@ def _tie_adjacent_doubles() -> int:
             a["double_group_key"] = b["double_group_key"] = key
             a["is_double_start"], a["is_double_cont"] = True, False
             b["is_double_start"], b["is_double_cont"] = False, True
-            # One lesson, one room — the class does not pack up halfway.
-            if a.get("room_id") and b.get("room_id") != a["room_id"]:
+            # One lesson, one room — the class does not pack up halfway. Unless
+            # the school picked a ลาน for either hour (คาบเรียนลาน): that is
+            # its own answer for that hour, and not this tidy-up's to undo or
+            # to copy onto the other half, where the ลาน may not be free.
+            if (a.get("room_id") and b.get("room_id") != a["room_id"]
+                    and _yard_pick_for(gid, _day, a["period"]) is None
+                    and _yard_pick_for(gid, _day, b["period"]) is None):
                 room = r_map.get(a["room_id"]) or {}
                 b["room_id"] = a["room_id"]
                 b["room_name"] = room.get("name")
@@ -819,6 +830,16 @@ ELECTIVE_POOLS: list[dict[str, Any]] = []
 # would survive a rebind regardless: it reads the table through
 # `lambda: CURRICULA`, which looks the name up each time it is called.
 CURRICULA: list[dict[str, Any]] = []
+
+# คาบเรียนลาน: the school decides, by hand and in advance, that one class's one
+# hour happens outdoors on a named ลาน — which frees an indoor room for a lesson
+# that would otherwise have nowhere to go. Rows are
+# {"id", "group_id", "day", "period", "room_id"}, at most one per
+# (group_id, day, period), and room_id is always an outdoor room. A pick holds
+# whatever lesson sits in that cell, and holds the hour on the ลาน even when no
+# lesson sits there yet. Changed in place only (append, remove, and the
+# restore's clear() + extend()), like CURRICULA.
+YARD_PICKS: list[dict[str, Any]] = []
 
 # ── Real school data (อัตรากำลัง) ─────────────────────────────────────────────
 # school_data.json holds the school's actual departments, classes, teachers,
@@ -1660,6 +1681,18 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
         from ortools.sat.python import cp_model  # noqa: F401
     except Exception:
         return _solve_greedy(body)
+    # คาบเรียนลาน: only the heuristic placer knows how to hold a ลาน for a pick.
+    # CP-SAT chooses its own rooms and has no notion of one being named for a
+    # class's hour, so with picks on the books it would quietly ignore them —
+    # the one thing a pick must never do. Say so, and use the placer that
+    # keeps them.
+    picked = len(_yard_pick_index()[0])
+    if picked:
+        res = _solve_greedy(body)
+        res.setdefault("notes", []).append(
+            f"มีคาบเรียนลาน {picked} คาบ จึงจัดด้วยตัวจัดแบบ heuristic แทน CP-SAT "
+            f"— CP-SAT ยังไม่รู้จักคาบเรียนลาน จะข้ามไปโดยไม่บอกไม่ได้")
+        return res
     try:
         return _solve_cpsat(body)
     except MemoryError as e:
@@ -1889,6 +1922,30 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         """True if this group OR any student-sharing relative is busy at the cell."""
         return any((g, day, period) in group_busy for g in group_conflict_ids(gid))
 
+    # ── คาบเรียนลาน ────────────────────────────────────────────────────────────
+    # The school decided, by hand and before this run, that these classes spend
+    # these hours on these ลาน. pick_at: (class, day, period) -> the ลาน.
+    # yard_owner: (ลาน, day, 5-minute bucket) -> the class whose pick holds it,
+    # the earlier pick winning where two overlap. A class and the classes that
+    # share its students (its subgroups, its parent) can never be in the room
+    # together, so for this purpose they are the same class.
+    pick_at, yard_owner = _yard_pick_index()
+
+    def yard_reserved_away(gid: int | None, rid: int, day: int, bks) -> bool:
+        """Is this ลาน, at this hour, held for some OTHER class's pick?"""
+        mine = group_conflict_ids(gid) if gid is not None else frozenset()
+        for b in bks:
+            owner = yard_owner.get((rid, day, b))
+            if owner is not None and owner not in mine:
+                return True
+        return False
+
+    # The cells whose pick this class actually owns: a lesson put there will be
+    # given the ลาน, which is what makes the cell worth choosing (see rank in
+    # place_single). A pick that lost to an earlier one is not worth choosing.
+    pick_owned = {key for key, rid in pick_at.items()
+                  if not yard_reserved_away(key[0], rid, key[1], cell_buckets(key[0], key[2]))}
+
     created    = 0
     violations = []
     # Lessons that did not fit on the first run, kept so the room-shuffling
@@ -1988,6 +2045,26 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         if also_period is not None:
             bks = frozenset(bks) | _slot_buckets(grp, also_period)
 
+        # คาบเรียนลาน — the school has named the ลาน for this class at this
+        # hour, so the question this function exists to ask is already
+        # answered. It goes through pinned_room_id like the room a school
+        # writes for a lesson, and beats it: a pick is about one hour, the
+        # other is about the lesson in every hour.
+        #
+        # A คาบคู่ shares one room across both its periods, so a pick on either
+        # period takes the whole pair. Two different ลาน picked for the two
+        # periods cannot be one room: this says no, and the room-repair pass
+        # at the end then seats each hour on the ลาน picked for it (it asks
+        # about one period at a time), so neither pick is dropped.
+        if pick_at and group_id is not None:
+            named = {pick_at[(group_id, day, p)]
+                     for p in (period, also_period)
+                     if p is not None and (group_id, day, p) in pick_at}
+            if len(named) > 1:
+                return None, None, None
+            if named:
+                pinned_room_id = next(iter(named))
+
         def room_taken(rid: int) -> bool:
             # `pretend_free` asks a different question: not "which room is free"
             # but "which rooms would this lesson accept at all" — the list the
@@ -1996,6 +2073,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # already tried, and they count as taken so it never goes in
             # circles. Everything below is unchanged by either.
             if rid in avoid:
+                return True
+            # A ลาน held for another class's pick is not free at that hour even
+            # while nobody is in it: holding it is what a pick on an empty cell
+            # is for. Not waived by pretend_free — this lesson would not be
+            # accepted there however the others were moved.
+            if yard_owner and yard_reserved_away(group_id, rid, day, bks):
                 return True
             if pretend_free:
                 return False
@@ -2052,6 +2135,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 return False
             # ลาน: open ground is a last resort for an ordinary subject and
             # only when the school has said this one may go outside.
+            # (allow_outdoor decides what the solver may do on its own. A
+            # คาบเรียนลาน never comes through here: it is returned by the
+            # pinned_room_id branch below, before eligible() is ever asked.)
             if r["type"] == "outdoor" and not may_outdoor:
                 return False
             return True
@@ -2060,6 +2146,11 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # school has already answered the question this function exists to
         # ask. If it is busy at this hour the cell is left for another time,
         # the same way ต้องเรียนที่ห้องประจำวิชา behaves.
+        #
+        # That includes a ลาน picked for this cell, whatever the lesson, the
+        # class or the subject say about allow_outdoor: an explicit instruction
+        # from the school beats the flags that only decide what the solver may
+        # do by itself. _may_use_outdoor is not asked, and not changed.
         if pinned_room_id:
             r = r_map.get(pinned_room_id)
             if r and not room_taken(pinned_room_id):
@@ -2417,6 +2508,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     and parent_of.get(x["group_id"]) == kin
                     for x in SLOTS):
                 return False
+        # (No check for คาบเรียนลาน here, on purpose: a ลาน held by a pick is
+        # "taken" for every other class at that hour — room_taken says so even
+        # under pretend_free — so no repair ever asks for it, and a lesson
+        # sitting on its picked ลาน is never the one in the way.)
         # The school wrote this room down for this lesson itself.
         return not any(r.get("room_id") == s.get("room_id")
                        and r["group_id"] == s["group_id"]
@@ -2826,6 +2921,24 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         return [(d, p) for d in range(5) for p in _class_periods_for_level(lvl)
                 if _next_class_period_for(lvl, p) is not None]
 
+    # Which lessons cannot do without a room of their own. Defined here, ahead
+    # of every placer that asks, so it is never reached before it exists.
+    facility_depts = {r["specialized_dept_id"] for r in ROOMS
+                      if r.get("specialized_dept_id")}
+
+    def needs_facility(r: dict) -> bool:
+        """Is there a room this lesson cannot do without?"""
+        subj = s_map.get(r["subject_id"], {}) or {}
+        return bool(
+            _subject_room_rule(subj) == "subject"
+            or _subject_rooms(subj)
+            # ห้องที่โรงเรียนเขียนไว้เองสำหรับห้องเรียนนี้ (ตารางห้องประจำวิชา).
+            # One room and no alternative is as tight as a lab, and placing it
+            # late is why those lessons came back as "ไม่มีห้องว่าง": by then
+            # an ordinary lesson that could sit anywhere was already in it.
+            or r.get("room_id")
+            or subj.get("department_id") in facility_depts)
+
     def place_single(req, gid, tid, needed):
         """Place up to `needed` single periods; returns how many placed.
 
@@ -2907,9 +3020,20 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # first; a morning subject gets the morning first. Both are only an
             # ordering — nothing is excluded by them.
             last_num = _last_period_for(lvl)
+            # An hour the school picked a ลาน for is an hour with a room in it
+            # — the whole reason for picking it — so an ordinary lesson is put
+            # there before anywhere else. A lesson that needs a facility of its
+            # own (a lab, a studio) goes last: a pick would take it out of the
+            # room it cannot do without, and that is for the school to decide
+            # rather than for this ranking to stumble into.
+            needs_fac = needs_facility(req)
+
             def rank(cell):
                 day, period = cell
                 morning = wants_morning and morning_end is not None and period <= morning_end
+                lean = 0
+                if (gid, day, period) in pick_owned:
+                    lean = 2 if needs_fac else -1
                 # เวรคาบสุดท้าย is NOT steered from here any more. Sending every
                 # teacher who still owes a last period straight to it filled
                 # the last period ahead of the one before it, which is exactly
@@ -2918,6 +3042,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 # pass after placement gives each teacher their duty, and by
                 # then the last period has the free cells to do it with.
                 return (
+                    lean,
                     0 if morning or not wants_morning else 1,
                     # Keep the END of the day free so classes can go home, but
                     # only the end. Ordering strictly by period number instead
@@ -3323,7 +3448,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                     pair = (req.get("subject_id"), req.get("teacher_id"))
                     shared = pair in shares
                     if shared:
-                        if pair in room_of:
+                        if pair in room_of and (req["group_id"], day_, per_) in pick_at:
+                            # The school picked a ลาน for this subgroup's hour.
+                            # It stays where it was put; _merge_sibling_rooms
+                            # brings the rest of the roomful to it at the end.
+                            pass
+                        elif pair in room_of:
                             # Same room as the sibling it sits with. Released
                             # properly, so the room make_slot had picked for
                             # this one does not stay held by nobody.
@@ -3521,21 +3651,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     #   1. lessons that need a facility (ห้องพิเศษ) — fill those rooms first
     #   2. classes that have a room of their own — seat them in it
     #   3. everything else, which can go anywhere
-    facility_depts = {r["specialized_dept_id"] for r in ROOMS
-                      if r.get("specialized_dept_id")}
-
     def place_order(r: dict) -> tuple:
         subj = s_map.get(r["subject_id"], {}) or {}
         grp  = g_map.get(r["group_id"], {}) or {}
-        needs_facility = (
-            _subject_room_rule(subj) == "subject"
-            or _subject_rooms(subj)
-            # ห้องที่โรงเรียนเขียนไว้เองสำหรับห้องเรียนนี้ (ตารางห้องประจำวิชา).
-            # One room and no alternative is as tight as a lab, and placing it
-            # late is why those lessons came back as "ไม่มีห้องว่าง": by then
-            # an ordinary lesson that could sit anywhere was already in it.
-            or r.get("room_id")
-            or subj.get("department_id") in facility_depts)
         # A teacher who is off on Fridays has four days to fit a week into,
         # and วันที่ไม่สอน is now a hard rule — so their lessons are placed
         # while there is still room, rather than being handed whatever is
@@ -3551,7 +3669,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                   and r.get("pinned_period") is not None) else 1,
             0 if subj.get("duration") == 2 else 1,   # คาบคู่ still first
             -tight,                                  # the most constrained next
-            0 if needs_facility else 1,
+            0 if needs_facility(r) else 1,
             0 if grp.get("homeroom_room_id") else 1,
         )
 
@@ -3731,7 +3849,11 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 # does that, so neither touches one.
                 and not x.get("double_group_key")
                 and x.get("co_teacher_id") is None
-                and not x.get("activity_teacher_ids"))
+                and not x.get("activity_teacher_ids")
+                # An hour the school picked a ลาน for stays that hour: lifting
+                # its lesson out would leave the ลาน empty and send the lesson
+                # to an indoor room, which is the opposite of what was asked.
+                and (x["group_id"], x["day"], x["period"]) not in pick_owned)
 
     def movable_of(tid: int) -> list[dict]:
         return [x for x in SLOTS if x.get("teacher_id") == tid and swappable(x)]
@@ -3964,7 +4086,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 and not x.get("activity_teacher_ids")
                 and bool(x.get("teacher_id"))
                 and t_map.get(x["teacher_id"]) is not None
-                and (x["group_id"], x.get("subject_id")) not in pinned_pairs)
+                and (x["group_id"], x.get("subject_id")) not in pinned_pairs
+                # …nor out of an hour the school picked a ลาน for (see swappable).
+                and (x["group_id"], x["day"], x["period"]) not in pick_owned)
 
     def proper_rooms(x: dict) -> set[int]:
         """ห้องที่วิชานี้ควรอยู่ — ห้องประจำวิชา หรือห้องของกลุ่มสาระนั้น"""
@@ -4414,12 +4538,22 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             free.sort(key=lambda c: (
                 # ชั่วโมงที่ครูว่างอยู่แล้วก่อน — คาบนั้นเหลือแค่เรื่องห้อง
                 0 if teacher_free(tid, c[0], gid, c[1]) else 1,
+                # …and among those, an hour the school kept a ลาน for: the room
+                # this lesson is missing is already waiting there.
+                0 if (gid, c[0], c[1]) in pick_owned else 1,
                 # และยังเก็บคาบสุดท้ายของวันไว้เหมือนเดิม
                 1 if c[1] == last else 0,
             ))
             d, p = free[0]
             slot = make_slot(req, d, p, (None, None, None))
             slot["is_overflow"] = True
+            # คาบเรียนลาน: a cell with a pick holds its lesson on the ลาน, a
+            # red-framed one too. Only the frame stays — it still says whatever
+            # else (the teacher being busy) is left to settle.
+            if (gid, d, p) in pick_owned:
+                rid, rname, rtype = find_room(tid, d, p, sid, gid)
+                if rid:
+                    hold_room(slot, rid)
             SLOTS.append(slot)
             group_busy.add((gid, d, p))
             note_subject(gid, sid, d)
@@ -6267,6 +6401,7 @@ def _purge_group(gid: int) -> dict[str, int]:
             out.append(g)
         return out
     GROUPS = prune(GROUPS)
+    _drop_yard_picks(group_ids=doomed)
 
     for pool in ELECTIVE_POOLS:
         keep = [x for x in pool.get("group_ids", []) if x not in doomed]
@@ -6289,6 +6424,8 @@ def _purge_group(gid: int) -> dict[str, int]:
 def _purge_room(rid: int) -> dict[str, int]:
     """Free the room from the timetable. The lessons themselves survive —
     losing a room is not a reason to lose the period it was taught in."""
+    # A pick that pointed at this ลาน has nothing left to point at.
+    _drop_yard_picks(room_id=rid)
     freed = 0
     for s in SLOTS:
         if s.get("room_id") == rid:
@@ -6360,6 +6497,8 @@ def update_room(i: int, body: dict[str, Any]):
     for r in ROOMS:
         if r["id"] == i:
             r.update(body)
+            if r.get("type") != "outdoor":
+                _drop_yard_picks(room_id=i)       # no longer a ลาน
             _refresh_names_for(room_id=i)
             return r
     return {}
@@ -7384,6 +7523,10 @@ def create_slot(body: dict[str, Any]):
         })
 
     SLOTS.extend(made)
+    # คาบเรียนลาน: a lesson put down by hand on a picked cell takes that ลาน —
+    # this is how a lesson with no room is given the hour the school kept for it.
+    for x in made:
+        _settle_yard(x)
     if not body.get("force"):
         # Judge the cells with the new lesson in place — both of them, so a
         # double is never half-created.
@@ -8496,15 +8639,26 @@ def move_slots(body: dict[str, Any]):
         return {"ok": False, "conflicts": conflicts, "slots": []}
 
     by_id = {s["id"]: s for s in SLOTS}
-    out = []
+    # Every move is applied before any lesson is settled onto a ลาน: in a swap,
+    # the lesson leaving a picked cell has to have let go of the ลาน before the
+    # one arriving is asked whether it is free, whichever of the two comes
+    # first in the list.
+    landed: list[tuple[dict[str, Any], tuple[int, int], bool]] = []
     for mv in moves:
         slot = by_id.get(mv.get("slot_id"))
         if not slot:
             continue
+        came_from = (slot["day"], slot["period"])
         for k in ("day", "period", "room_id"):
             if k in mv:
                 slot[k] = mv[k]
         _sync_doubles(slot)
+        landed.append((slot, came_from, "room_id" in mv))
+    out = []
+    for slot, came_from, room_given in landed:
+        # คาบเรียนลาน: a lesson that comes to rest on a picked cell takes that
+        # ลาน, and one that has left a picked cell gives it up.
+        _settle_yard(slot, came_from, room_given)
         out.append(_enrich_slot(_settle_overflow(slot)))
     return {"ok": True, "conflicts": [], "slots": out}
 
@@ -8532,12 +8686,22 @@ def patch_slot(slot_id: int, body: dict[str, Any]):
         if s["id"] == slot_id:
             old_day, old_period = s["day"], s["period"]
             pgk = s.get("parallel_group_key")
+            travelled = []
             if ("day" in body or "period" in body) and pgk:
                 for sib in SLOTS:
                     if (sib.get("parallel_group_key") == pgk and sib["id"] != slot_id
                             and sib["day"] == old_day and sib["period"] == old_period):
                         sib.update({k: v for k, v in body.items() if k in ("day", "period")})
+                        travelled.append(sib)
             s.update(body)
+            # คาบเรียนลาน: a lesson that comes to rest on a picked cell takes
+            # that ลาน, and one that has left a picked cell gives it up. Only
+            # when the edit is about WHERE the lesson is — locking it or
+            # renaming its teacher must not move it onto a ลาน picked later.
+            if any(k in body for k in ("day", "period", "room_id")):
+                for sib in travelled:
+                    _settle_yard(sib, (old_day, old_period))
+                _settle_yard(s, (old_day, old_period), "room_id" in body)
             return _enrich_slot(_settle_overflow(s))
     return {}
 
@@ -8683,7 +8847,7 @@ SCHOOL_CONFIG: dict[str, Any] = {
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
 _SAVE_KEYS = ("departments", "buildings", "rooms", "teachers", "subjects",
               "requirements", "periods", "slots", "elective_pools", "school_config",
-              "absences", "substitutions", "repayments", "curricula")
+              "absences", "substitutions", "repayments", "curricula", "yard_picks")
 
 
 def _snapshot() -> dict[str, Any]:
@@ -8719,6 +8883,11 @@ def _snapshot() -> dict[str, Any]:
         # anything that clears the table before restoring from it.
         "curricula": [{**c, "rows": [dict(r) for r in c.get("rows") or []]}
                       for c in CURRICULA],
+        # คาบเรียนลาน — a pick is the school's own decision, made by hand before
+        # the timetable is built; losing it on a redeploy would send those
+        # classes back indoors without a word. Copied for the same reason as
+        # the curricula above. The order of the ลาน rides inside school_config.
+        "yard_picks": [dict(r) for r in YARD_PICKS],
         "counters": _counters,
     }
 
@@ -8737,7 +8906,8 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
                         ("periods", PERIODS), ("slots", SLOTS),
                         ("elective_pools", ELECTIVE_POOLS),
                         ("absences", ABSENCES), ("substitutions", SUBSTITUTIONS),
-                        ("repayments", REPAYMENTS), ("curricula", CURRICULA)):
+                        ("repayments", REPAYMENTS), ("curricula", CURRICULA),
+                        ("yard_picks", YARD_PICKS)):
         rows = data.get(key)
         if rows is not None:
             rows = [dict(r) for r in rows]
@@ -8786,7 +8956,8 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
                       ("period", PERIODS), ("slot", SLOTS),
                       ("elective_pool", ELECTIVE_POOLS),
                       ("absence", ABSENCES), ("substitution", SUBSTITUTIONS),
-                      ("repayment", REPAYMENTS), ("curriculum", CURRICULA)):
+                      ("repayment", REPAYMENTS), ("curriculum", CURRICULA),
+                      ("yard_pick", YARD_PICKS)):
         _counters[key] = max(_counters.get(key, 0), _max_id(rows))
     _SUB.invalidate()
     _counters["group"] = max(_counters.get("group", 0), _max_id(_flat_groups()))
@@ -9448,6 +9619,255 @@ def set_curriculum_groups(cid: int, body: dict[str, Any]):
     if not changed["attached"] and not changed["detached"]:
         _nothing_changed()
     return {**_curriculum_view(cur, _CUR.groups_by_curriculum()), **changed}
+
+
+# ── คาบเรียนลาน ────────────────────────────────────────────────────────────────
+# The school is short of indoor rooms, and has a way of stretching them that
+# only a person can decide: คาบเรียนลาน, this class's this hour is taught on that
+# ลาน (a room whose type is "outdoor"). The indoor room the class would have sat
+# in is free for a lesson that would otherwise have nowhere to go.
+#
+# A pick is an instruction, not a permission. allow_outdoor (on the lesson, the
+# class or the subject) decides what the solver may do by itself; it has
+# nothing to say about what a person has told it to do, so a pick bypasses
+# _may_use_outdoor altogether — which is itself left exactly as it was.
+#
+# A pick is set BEFORE the timetable is built, and the solver honours it every
+# time: whatever lesson lands in that cell takes the ลาน, and the ลาน is held
+# for that class at that hour whether a lesson has landed there yet or not.
+# That second half is the point. A pick on an empty cell is how the school says
+# "this hour has a room", so a lesson with none can be put there.
+#
+# A ลาน is still a room: two classes cannot hold it in the same hour. Two picks
+# on one ลาน and hour are not an error to refuse (the school may be mid-edit);
+# the EARLIER pick keeps it and the later one's lesson is left without a room,
+# which the unplaced report already shows like any other lesson with no room.
+
+def _as_int(v: Any) -> int | None:
+    """An integer from what a request carried, or None. A bool is not a number
+    here: `True` would otherwise read as room 1."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, str) and v.strip().lstrip("-").isdigit():
+        return int(v.strip())
+    return None
+
+
+def _outdoor_rooms() -> list[dict[str, Any]]:
+    return [r for r in ROOMS if r.get("type") == "outdoor"]
+
+
+def _yards_in_order() -> list[dict[str, Any]]:
+    """Every ลาน, the way the solver reaches for them: roomiest first, then by id."""
+    return sorted(_outdoor_rooms(), key=lambda r: (-int(r.get("capacity") or 0), r["id"]))
+
+
+def _yard_pick_for(group_id: int | None, day: int | None, period: int | None) -> int | None:
+    """The ลาน the school has picked for this class at this hour, or None.
+
+    A pick whose room is gone, or is no longer outdoors, counts as no pick."""
+    for row in YARD_PICKS:
+        if (row.get("group_id") == group_id and row.get("day") == day
+                and row.get("period") == period):
+            room = next((r for r in ROOMS if r["id"] == row.get("room_id")), None)
+            return room["id"] if room and room.get("type") == "outdoor" else None
+    return None
+
+
+def _yard_pick_index() -> tuple[dict[tuple, int], dict[tuple, int]]:
+    """The picks that can be honoured, and who holds each ลาน at each hour.
+
+    Returns (pick_at, owner). pick_at maps (class, day, period) to the ลาน.
+    owner maps (ลาน, day, 5-minute bucket) to the class whose pick holds it —
+    keyed by the clock, like every other room booking, because ม.ต้น and
+    ม.ปลาย sit the same period number at different times. Where two picks
+    overlap, the one made first (the lower id) is the owner, so the result
+    does not depend on which lesson the solver happens to place first."""
+    g_map = {g["id"]: g for g in _flat_groups()}
+    r_map = {r["id"]: r for r in ROOMS}
+    pick_at: dict[tuple, int] = {}
+    owner: dict[tuple, int] = {}
+    for row in sorted(YARD_PICKS, key=lambda r: r.get("id", 0)):
+        gid, day, period, rid = (row.get(k) for k in ("group_id", "day", "period", "room_id"))
+        grp, room = g_map.get(gid), r_map.get(rid)
+        if grp is None or room is None or room.get("type") != "outdoor":
+            continue
+        if period not in _class_periods_for_level(_level_key(grp)):
+            continue            # the period was taken off the timetable since
+        if (gid, day, period) in pick_at:
+            continue            # one row per cell; if a restore left two, the first stands
+        pick_at[(gid, day, period)] = rid
+        for b in _slot_buckets(grp, period):
+            owner.setdefault((rid, day, b), gid)
+    return pick_at, owner
+
+
+def _yard_lost(owner: dict[tuple, int], shares, gid: int, rid: int, day: int,
+               buckets: frozenset[int]) -> bool:
+    """Is this ลาน, at this hour, held by another class's earlier pick?
+
+    A class and its subgroups hold the same students, so they can never both
+    be in the room and do not count as another class."""
+    for b in buckets:
+        o = owner.get((rid, day, b))
+        if o is not None and not shares(o, gid):
+            return True
+    return False
+
+
+def _yard_held_by_other(s: dict[str, Any], rid: int) -> bool:
+    """Is some other lesson already in this room at any minute of this one?"""
+    g_map = {g["id"]: g for g in _flat_groups()}
+    mine = _slot_buckets(g_map.get(s.get("group_id")), s.get("period"))
+    for x in SLOTS:
+        if x is s or x.get("room_id") != rid or x.get("day") != s.get("day"):
+            continue
+        if mine & _slot_buckets(g_map.get(x.get("group_id")), x.get("period")):
+            return True
+    return False
+
+
+def _yard_blocked(s: dict[str, Any], rid: int) -> bool:
+    """Can this lesson not have this ลาน at its hour — somebody is in it, or an
+    earlier pick of another class holds it?"""
+    _, owner = _yard_pick_index()
+    return (_yard_held_by_other(s, rid)
+            or _yard_lost(owner, _shares_students_fn(), s.get("group_id"), rid, s["day"],
+                          _slot_buckets(_find_group(s.get("group_id")), s["period"])))
+
+
+def _settle_yard(s: dict[str, Any], was: tuple[int, int] | None = None,
+                 room_given: bool = False) -> dict[str, Any]:
+    """After a lesson has been put down by hand, give it or take from it the ลาน.
+
+    A lesson that comes to rest on a picked cell takes that ลาน; one that has
+    just left a picked cell gives it up (it is left without a room, for the
+    school to choose one — the solver's room search is not available here).
+    `was` is the (day, period) the lesson came from, None for a new lesson;
+    `room_given` says the edit named a room itself, which is honoured when the
+    lesson has left a pick but never over a pick on the cell it lands in.
+
+    If the ลาน is already in use at that hour (another lesson sits in it, or an
+    earlier pick of another class holds it) the lesson is left without a room
+    rather than double-booked, and nobody else's room is taken away."""
+    if s.get("is_elective") or s.get("is_activity_block"):
+        return s
+    gid = s.get("group_id")
+    want = _yard_pick_for(gid, s.get("day"), s.get("period"))
+    changed = False
+    if want is not None:
+        if s.get("room_id") != want:
+            s["room_id"] = None if _yard_blocked(s, want) else want
+            changed = True
+        # One lesson, one room: the other half of a คาบคู่ goes where this half
+        # went — unless it has a pick of its own, which then speaks for it.
+        key = s.get("double_group_key")
+        if key and s.get("room_id") == want:
+            for t in SLOTS:
+                if (t is not s and t.get("double_group_key") == key and t.get("group_id") == gid
+                        and t.get("room_id") != want
+                        and _yard_pick_for(gid, t.get("day"), t.get("period")) is None
+                        and not _yard_blocked(t, want)):
+                    t["room_id"] = want
+                    _enrich_slot(t)
+    elif was is not None and not room_given:
+        old = _yard_pick_for(gid, was[0], was[1])
+        if old is not None and s.get("room_id") == old:
+            s["room_id"] = None
+            changed = True
+    if changed:
+        _enrich_slot(s)
+    return s
+
+
+def _drop_yard_picks(*, room_id: int | None = None, group_ids=()) -> int:
+    """Forget the picks that point at a room or a class that has been deleted.
+    Returns how many picks went."""
+    doomed = set(group_ids)
+    keep = [r for r in YARD_PICKS
+            if not ((room_id is not None and r.get("room_id") == room_id)
+                    or r.get("group_id") in doomed)]
+    gone = len(YARD_PICKS) - len(keep)
+    YARD_PICKS[:] = keep
+    return gone
+
+
+def _check_pick_cell(gid: int, day: int, period: int) -> dict[str, Any]:
+    """The class, if (class, day, period) is a place a lesson can be taught."""
+    grp = _find_group(gid)
+    if grp is None:
+        raise HTTPException(400, "ไม่พบห้องเรียนที่เลือก (อาจถูกลบไปแล้ว)")
+    if not (0 <= day <= 4):
+        raise HTTPException(400, f"วันที่ {day} ไม่ถูกต้อง")
+    lvl = _level_key(grp)
+    if period not in _class_periods_for_level(lvl):
+        row = _periods_for_level(lvl).get(period)
+        label = row["label"] if row else f"คาบ {period}"
+        who = "ม.1-3" if lvl == "lower" else "ม.4-6"
+        raise HTTPException(400, f"{label} ไม่ใช่คาบเรียนของ {who} จึงกำหนดคาบเรียนลานไม่ได้")
+    return grp
+
+
+def _yard_view() -> list[dict[str, Any]]:
+    return [{"id": r["id"], "name": r.get("name"), "capacity": r.get("capacity")}
+            for r in _yards_in_order()]
+
+
+@app.get("/api/yard-picks")
+def get_yard_picks():
+    return {"rows": [dict(r) for r in YARD_PICKS], "yards": _yard_view()}
+
+
+@app.put("/api/yard-picks")
+def put_yard_pick(body: dict[str, Any]):
+    """Set the ลาน for one class's one hour, or take it away with room_id null."""
+    if not isinstance(body, dict):
+        raise HTTPException(400, "ข้อมูลที่ส่งมาไม่ถูกต้อง")
+    gid, day, period = (_as_int(body.get(k)) for k in ("group_id", "day", "period"))
+    if gid is None or day is None or period is None:
+        raise HTTPException(400, "ต้องระบุห้องเรียน วัน และคาบ")
+
+    def same_cell(r: dict[str, Any]) -> bool:
+        return r.get("group_id") == gid and r.get("day") == day and r.get("period") == period
+
+    mine = next((r for r in YARD_PICKS if same_cell(r)), None)
+
+    # Taking a pick away is asked for by saying room_id is null — not by leaving
+    # it out, which is far more likely to be a caller's mistake than a decision.
+    if "room_id" not in body:
+        raise HTTPException(400, "ต้องระบุลาน (หรือส่ง room_id เป็น null เพื่อถอนคาบเรียนลาน)")
+    if body["room_id"] is None:
+        if mine is None:
+            # Nothing to take away. Input that could never have been a pick is
+            # still refused; a stale row (its period since removed) never gets
+            # here, because it matched above and can always be removed.
+            _check_pick_cell(gid, day, period)
+            _nothing_changed()
+        YARD_PICKS[:] = [r for r in YARD_PICKS if not same_cell(r)]
+        return {"removed": True}
+
+    rid = _as_int(body.get("room_id"))
+    room = next((r for r in ROOMS if r["id"] == rid), None) if rid is not None else None
+    if room is None:
+        raise HTTPException(400, "ไม่พบลานที่เลือก (อาจถูกลบไปแล้ว)")
+    if room.get("type") != "outdoor":
+        raise HTTPException(400, f"ห้อง {room.get('name')} ไม่ใช่ลาน — "
+                                 "คาบเรียนลานเลือกได้เฉพาะห้องประเภทกลางแจ้ง")
+    _check_pick_cell(gid, day, period)
+
+    if mine is None:
+        mine = {"id": _next("yard_pick"), "group_id": gid, "day": day,
+                "period": period, "room_id": room["id"]}
+        YARD_PICKS.append(mine)
+    elif mine.get("room_id") == room["id"]:
+        _nothing_changed()
+    else:
+        mine["room_id"] = room["id"]
+    return dict(mine)
 
 
 # ── สอนแทน / แลกคาบ ───────────────────────────────────────────────────────────
