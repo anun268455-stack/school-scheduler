@@ -708,6 +708,51 @@ export interface CurriculumAudit {
 export const fetchCurriculumAudit = () =>
   api.get<CurriculumAudit>("/curricula/audit").then((r) => r.data);
 
+// ── คาบเรียนลาน ──────────────────────────────────────────────────
+// The school decides by hand, in advance, that a class's particular hour happens
+// outdoors on a named ลาน — which frees an indoor room for a lesson that would
+// otherwise have nowhere to go. Marking a cell saves at once; the timetable only
+// follows the marks the next time สร้างตาราง is pressed.
+
+/** ลานหนึ่งแห่ง */
+export interface Yard {
+  id:       number;
+  name:     string;
+  capacity: number;
+}
+
+/** ชั่วโมงหนึ่งของห้องหนึ่งที่โรงเรียนเลือกไว้ว่าเรียนที่ลานนี้ */
+export interface YardPickRow {
+  id:       number;
+  group_id: number;
+  /** 0-based day index — the one the grid uses. */
+  day:      number;
+  /** period_num */
+  period:   number;
+  /** The ลาน. */
+  room_id:  number;
+}
+
+export interface YardPicks {
+  rows:  YardPickRow[];
+  /** Already sorted by the school's saved order. */
+  yards: Yard[];
+}
+
+export const fetchYardPicks = () =>
+  api.get<YardPicks>("/yard-picks").then((r) => r.data);
+
+/**
+ * Pick a ลาน for one hour of one class; `room_id: null` takes the pick away.
+ * Resolves to the saved row, or to null when the pick was removed.
+ * Refused with a 400 and a Thai message when the hour cannot go to that ลาน.
+ */
+export const setYardPick = (p: {
+  group_id: number; day: number; period: number; room_id: number | null;
+}) =>
+  api.put<YardPickRow | { removed: true }>("/yard-picks", p)
+    .then((r) => ("removed" in r.data ? null : r.data));
+
 /**
  * The server's own message for a refused request (400), or `fallback`.
  *

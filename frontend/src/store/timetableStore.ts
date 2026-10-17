@@ -9,6 +9,7 @@ import { buildImpactMap } from "../utils/conflictAnalyzer";
 import { buildSharesStudents } from "../utils/groupHierarchy";
 import * as api from "../api/client";
 import { putSavePoint, storageAvailable } from "../utils/savePoints";
+import { applyPickResult } from "../utils/yardPicks";
 
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
@@ -65,7 +66,16 @@ async function quietRefresh(
     return;
   }
   set({ departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
+  // Other people's ลาน marks arrive with the rest of their edits.
+  void get().loadYardPicks();
 }
+
+/**
+ * Which ลาน load is the latest. A load that began before a save, or before a
+ * newer load, is answering a question that has already moved on: letting it land
+ * would put a mark back that was just removed.
+ */
+let yardLoadSeq = 0;
 
 // One reversible change to a slot, used by the undo stack.
 interface SlotPatch {
@@ -102,6 +112,17 @@ interface TimetableStore {
 
   // ── Pre-lock mode ─────────────────────────────────────────────────────────
   preLockMode: boolean;         // when true, clicking a slot toggles is_locked
+
+  // ── โหมดเลือกคาบเรียนลาน ────────────────────────────────────────────────────
+  // When on, clicking a cell of a class's timetable picks the ลาน for that hour.
+  // Shares the click with pre-lock mode, so turning one on turns the other off.
+  yardPickMode:   boolean;
+  /** Every mark in the school: which class, which hour, which ลาน. */
+  yardPicks:      api.YardPickRow[];
+  /** The ลาน, in the order the school saved. */
+  yardList:       api.Yard[];
+  /** Why the marks could not be loaded, in Thai — null when they could. */
+  yardPicksError: string | null;
 
   // ── DnD impact analysis ───────────────────────────────────────────────────
   draggingSlot:  TimetableSlot | null;
@@ -145,9 +166,16 @@ interface TimetableStore {
   setSelectedTeacherId: (id: number | null) => void;
   setSelectedRoomId:    (id: number | null) => void;
   setPreLockMode:       (on: boolean) => void;
+  setYardPickMode:      (on: boolean) => void;
 
   loadAll:   () => Promise<void>;
   loadSlots: () => Promise<void>;
+  /** Never throws: a server that cannot answer leaves yardPicksError set. */
+  loadYardPicks: () => Promise<void>;
+  /** Saves at once. `room_id: null` removes the mark. Throws on a refusal, for the caller to show. */
+  saveYardPick: (p: {
+    group_id: number; day: number; period: number; room_id: number | null;
+  }) => Promise<void>;
 
   // DnD lifecycle
   startDrag: (slot: TimetableSlot) => void;
@@ -206,6 +234,10 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   isSolving:         false,
   solverError:       null,
   preLockMode:       false,
+  yardPickMode:      false,
+  yardPicks:         [],
+  yardList:          [],
+  yardPicksError:    null,
   draggingSlot:      null,
   impactMap:         new Map(),
   undoStack:         [],
@@ -238,7 +270,13 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   setSelectedGroupId:   (id) => set({ selectedGroupId: id,   selectedTeacherId: null, selectedRoomId: null }),
   setSelectedTeacherId: (id) => set({ selectedTeacherId: id, selectedGroupId: null,   selectedRoomId: null }),
   setSelectedRoomId:    (id) => set({ selectedRoomId: id,    selectedGroupId: null,   selectedTeacherId: null }),
-  setPreLockMode:       (on) => set({ preLockMode: on }),
+  // Both modes take over the click on a cell, so only one can be on at a time.
+  setPreLockMode:       (on) => set(on ? { preLockMode: true, yardPickMode: false } : { preLockMode: false }),
+  setYardPickMode:      (on) => {
+    set(on ? { yardPickMode: true, preLockMode: false } : { yardPickMode: false });
+    // Fresh marks and ลาน on the way in: another person may have changed them.
+    if (on) void get().loadYardPicks();
+  },
 
   loadAll: async () => {
     set({ isLoading: true });
@@ -257,6 +295,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
           api.fetchSchoolConfig().catch(() => null),
         ]);
       set({ departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
+      void get().loadYardPicks();
       // The school name, logo and signatories live on the server too, so a
       // refresh — or the other person's browser — shows the same header.
       if (config) set((st) => ({ schoolConfig: { ...st.schoolConfig, ...config } }));
@@ -268,6 +307,26 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   loadSlots: async () => {
     const slots = await api.fetchSlots();
     set({ slots });
+  },
+
+  loadYardPicks: async () => {
+    const mine = ++yardLoadSeq;
+    try {
+      const r = await api.fetchYardPicks();
+      if (mine !== yardLoadSeq) return;
+      set({ yardPicks: r.rows, yardList: r.yards, yardPicksError: null });
+    } catch (e) {
+      if (mine !== yardLoadSeq) return;
+      // Not worth interrupting anyone for: the marks already on screen stay,
+      // and the picker says so if there is nothing to choose from.
+      set({ yardPicksError: api.errorDetail(e, "โหลดรายการลานไม่สำเร็จ") });
+    }
+  },
+
+  saveYardPick: async (p) => {
+    const saved = await api.setYardPick(p);
+    yardLoadSeq++;   // any load still in flight began before this save
+    set((st) => ({ yardPicks: applyPickResult(st.yardPicks, p, saved) }));
   },
 
   // ── Live collaboration ────────────────────────────────────────────────────
@@ -575,6 +634,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         last_period_mode: opts?.lastPeriodMode,
       });
       await get().loadSlots();
+      void get().loadYardPicks();
       return result;
     } catch (err: unknown) {
       const raw = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;

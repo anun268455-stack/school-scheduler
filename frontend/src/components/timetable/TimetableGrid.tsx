@@ -17,6 +17,7 @@ import { SwapRouteModal } from "./SwapRouteModal";
 import { RoomSwapModal } from "./RoomSwapModal";
 import { ElectiveOptionModal } from "./ElectiveOptionModal";
 import { AddLessonModal } from "./AddLessonModal";
+import { YardPickModal, type YardCol } from "./YardPickModal";
 import { ClassProblemsModal, type ShortRow } from "./ClassProblemsModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
@@ -26,6 +27,7 @@ import { slotsForTeacher } from "../../utils/teacherSlots";
 import { problemOf, type SlotProblem } from "../../utils/slotProblems";
 import { TableSearch, matches } from "../common/TableSearch";
 import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../utils/levels";
+import { picksOfGroup, yardsInCell } from "../../utils/yardPicks";
 import { DAYS, type Period, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
@@ -56,11 +58,16 @@ interface DroppableCellProps {
   onPreLockClick: (slot: TimetableSlot) => void;
   isDragging: boolean;
   onAddLesson?: (day: number, period: number) => void;
+  /** โหมดเลือกคาบเรียนลานเปิดอยู่ และกำลังดูตารางของห้องเรียน */
+  yardMode: boolean;
+  /** The ลาน picked for this cell, as text — null when none is. */
+  yardLabel: string | null;
+  onYardClick: (day: number, period: number) => void;
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
   periodDef, day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective,
-  preLockMode, onPreLockClick, isDragging, onAddLesson,
+  preLockMode, onPreLockClick, isDragging, onAddLesson, yardMode, yardLabel, onYardClick,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: `cell-${day}-${period}`,
@@ -83,6 +90,60 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
         </span>
       </div>
     );
+  }
+
+  const pickYard = () => onYardClick(day, period);
+
+  let body: React.ReactNode = null;
+  if (slots.length > 0) {
+    if (yardMode) {
+      // Picking, not editing: no dragging and no hover buttons, so a click that
+      // lands on a lesson can only choose its ลาน, never delete or lock it.
+      body = (
+        <div className="w-full h-full cursor-pointer" onClick={pickYard}>
+          <SlotCell slots={slots} />
+        </div>
+      );
+    } else if (preLockMode) {
+      body = (
+        <div className="w-full h-full cursor-pointer" onClick={() => onPreLockClick(slots[0])}>
+          <SlotCell slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
+        </div>
+      );
+    } else {
+      body = (
+        <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
+      );
+    }
+  } else if (yardMode) {
+    /* Empty cell, picking — reserve this hour on a ลาน, or change the reservation. */
+    body = (
+      <button
+        type="button"
+        onClick={pickYard}
+        className="group/yard w-full h-full flex items-center justify-center hover:bg-teal-50/70 transition-colors"
+        title={yardLabel ? `เลือกลานไว้: ${yardLabel} — คลิกเพื่อเปลี่ยนหรือเอาออก` : "คลิกเพื่อเลือกลานของชั่วโมงนี้"}
+      >
+        {yardLabel
+          ? <YardReserved label={yardLabel} />
+          : <span className="text-base text-teal-500 opacity-0 group-hover/yard:opacity-100 transition-opacity">📌</span>}
+      </button>
+    );
+  } else if (onAddLesson && !isDragging && !preLockMode) {
+    /* Empty cell — click to add a lesson here */
+    body = (
+      <button
+        onClick={() => onAddLesson(day, period)}
+        className="group/add w-full h-full flex items-center justify-center text-gray-300 hover:text-emerald-600 hover:bg-emerald-50/60 transition-colors"
+        title={yardLabel ? `จองลานไว้: ${yardLabel} — คลิกเพื่อเพิ่มคาบเรียน` : "คลิกเพื่อเพิ่มคาบเรียน"}
+      >
+        {yardLabel
+          ? <YardReserved label={yardLabel} />
+          : <span className="text-base opacity-0 group-hover/add:opacity-100 transition-opacity">＋</span>}
+      </button>
+    );
+  } else if (yardLabel) {
+    body = <YardReserved label={yardLabel} />;
   }
 
   return (
@@ -112,29 +173,38 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
         </div>
       )}
 
-      {slots.length > 0 ? (
-        preLockMode ? (
-          <div className="w-full h-full cursor-pointer" onClick={() => onPreLockClick(slots[0])}>
-            <SlotCell slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
-          </div>
-        ) : (
-          <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
-        )
-      ) : (
-        /* Empty cell — click to add a lesson here */
-        onAddLesson && !isDragging && !preLockMode ? (
-          <button
-            onClick={() => onAddLesson(day, period)}
-            className="group/add w-full h-full flex items-center justify-center text-gray-300 hover:text-emerald-600 hover:bg-emerald-50/60 transition-colors"
-            title="คลิกเพื่อเพิ่มคาบเรียน"
-          >
-            <span className="text-base opacity-0 group-hover/add:opacity-100 transition-opacity">＋</span>
-          </button>
-        ) : null
-      )}
+      {/* A ลาน picked for this hour shows under the lesson, or fills the cell
+          when the hour is empty — an empty hour is the main use. */}
+      {yardLabel && slots.length > 0 ? (
+        <div className="flex flex-col h-full">
+          <div className="flex-1 min-h-0">{body}</div>
+          <YardTag label={yardLabel} />
+        </div>
+      ) : body}
     </div>
   );
 };
+
+/** The strip under a lesson that says which ลาน its hour was picked for. */
+const YardTag: React.FC<{ label: string }> = ({ label }) => (
+  <div
+    className="shrink-0 flex items-center gap-0.5 px-1 bg-teal-600 text-white text-[9px] font-bold leading-none"
+    style={{ height: "14px" }}
+    title={`เลือกให้เรียนที่ ${label} — ตารางจะจัดตามนี้เมื่อกดสร้างตารางอีกครั้ง`}
+  >
+    <span className="shrink-0">📌</span>
+    <span className="truncate">{label}</span>
+  </div>
+);
+
+/** An hour with no lesson yet that is already spoken for on a ลาน. */
+const YardReserved: React.FC<{ label: string }> = ({ label }) => (
+  <div className="w-full h-full flex flex-col items-center justify-center gap-0.5 px-1 bg-teal-50 text-teal-800">
+    <span className="text-base leading-none">📌</span>
+    <span className="w-full text-center text-[11px] font-bold leading-tight truncate" title={label}>{label}</span>
+    <span className="text-[8px] leading-none opacity-70">จองลานไว้</span>
+  </div>
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DraggableWrapper
@@ -182,6 +252,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     slots, rooms, teachers, periods, groups, subjects, requirements, selectedGroupId, selectedTeacherId, selectedRoomId,
     impactMap, draggingSlot, startDrag, endDrag,
     moveSlot, swapRoom, toggleLock, deleteSlot, applySwapRoute, preLockMode, undo, undoStack,
+    yardPickMode, yardPicks, yardList,
   } = useTimetableStore();
 
   const [validAlert,   setValidAlert]   = useState<string | null>(null);
@@ -192,6 +263,8 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   const [addCell, setAddCell] = useState<{ day: number; period: number } | null>(null);
   const [electiveSlotId, setElectiveSlotId] = useState<number | null>(null);
   const [showProblems, setShowProblems] = useState(false);
+  // The cell whose ลาน is being picked: its day and the column(s) it covers.
+  const [yardCell, setYardCell] = useState<{ day: number; cols: YardCol[] } | null>(null);
   const electiveSlot = electiveSlotId != null ? slots.find((s) => s.id === electiveSlotId) ?? null : null;
 
   const sensors = useSensors(
@@ -370,6 +443,31 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   // where anyone noticing the gap is actually standing.
   const handleAddLesson = useCallback((d: number, p: number) => setAddCell({ day: d, period: p }), []);
 
+  // ── ลานที่เลือกไว้ล่วงหน้า ────────────────────────────────────────────────
+  // A mark belongs to one class's hour, so the mode only means something on a
+  // class's own timetable. A teacher's or a room's cell can hold several
+  // classes at once and there is no one class to mark.
+  const yardMode  = yardPickMode && selectedGroupId != null;
+  const groupYards = useMemo(() => picksOfGroup(yardPicks, selectedGroupId), [yardPicks, selectedGroupId]);
+  const yardNameOf = useCallback(
+    (id: number) => yardList.find((y) => y.id === id)?.name ?? "ลานที่ไม่พบแล้ว",
+    [yardList],
+  );
+  const handleYardClick = useCallback((d: number, p: number) => {
+    // A คาบคู่ drawn as one cell stands for two hours; both are marked together.
+    const at = gridPeriods.findIndex((x) => x.period_num === p);
+    if (at < 0) return;
+    const covered = spans.get(`${d}-${p}`) === 2 && at + 1 < gridPeriods.length
+      ? [gridPeriods[at], gridPeriods[at + 1]]
+      : [gridPeriods[at]];
+    setYardCell({
+      day: d,
+      cols: covered.map((x) => ({
+        period: x.period_num, label: x.label, start: x.start_time, end: x.end_time,
+      })),
+    });
+  }, [gridPeriods, spans]);
+
   const handleApplyRoute = useCallback((route: SwapRoute) => {
     applySwapRoute(route);
     setRoutePlan(null);
@@ -505,6 +603,17 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       />
     )}
 
+    {/* ลาน picker (โหมดเลือกคาบเรียนลาน — click any cell of a class) */}
+    {yardCell && selectedGroupId != null && (
+      <YardPickModal
+        groupId={selectedGroupId}
+        groupName={viewTitle}
+        day={yardCell.day}
+        cols={yardCell.cols}
+        onClose={() => setYardCell(null)}
+      />
+    )}
+
     {/* Elective Option Modal */}
     {electiveSlot && (
       <ElectiveOptionModal
@@ -559,6 +668,26 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       {preLockMode && (
         <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-900/40 border-b border-amber-700 text-amber-200 text-xs shrink-0">
           🔒 <strong>โหมดล็อก:</strong> คลิกที่คาบเพื่อล็อก/ปลดล็อก
+        </div>
+      )}
+
+      {/* โหมดเลือกคาบเรียนลาน banner.
+          Says plainly that the timetable stays as it is: the marks are only
+          decisions until สร้างตาราง is pressed again, and nobody should wait
+          for the grid to rearrange itself. */}
+      {yardPickMode && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-4 py-1.5 bg-teal-50 border-b border-teal-300 text-teal-900 text-xs shrink-0">
+          <span>📌 <strong>โหมดเลือกคาบเรียนลาน:</strong></span>
+          {yardMode ? (
+            <>
+              <span>คลิกช่องไหนก็ได้ (ช่องว่างก็จองลานได้) เพื่อเลือกลานของชั่วโมงนั้น — บันทึกทันที</span>
+              <span className="font-semibold">
+                แต่ตารางยังไม่ขยับ ต้องกด ⚡ สร้างตาราง อีกครั้งจึงจะจัดตามที่เลือก
+              </span>
+            </>
+          ) : (
+            <span>ใช้ได้กับตารางของห้องเรียนเท่านั้น — เปลี่ยนไปมุมมอง 👥 ห้อง แล้วเลือกห้องที่ต้องการ</span>
+          )}
         </div>
       )}
 
@@ -658,7 +787,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                     {dayName}
                   </td>
 
-                  {gridPeriods.map((pm) => {
+                  {gridPeriods.map((pm, pi) => {
                     const key       = `${dayIdx}-${pm.period_num}`;
                     // The second half of a merged คาบคู่ has no cell of its
                     // own — the first half covers both columns.
@@ -666,6 +795,11 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                     const span      = spans.get(key) ?? 1;
                     const impact    = isDragActive ? (impactMap.get(key) ?? null) : null;
                     const cellSlots = slotGrid.get(key) ?? [];
+                    // The hours this cell stands for: two when a คาบคู่ is merged.
+                    const covers    = span === 2 && pi + 1 < gridPeriods.length
+                      ? [pm.period_num, gridPeriods[pi + 1].period_num]
+                      : [pm.period_num];
+                    const yardIds   = yardsInCell(groupYards, dayIdx, covers);
 
                     return (
                       <td
@@ -690,6 +824,9 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                             onPreLockClick={handlePreLockClick}
                             isDragging={isDragActive}
                             onAddLesson={handleAddLesson}
+                            yardMode={yardMode}
+                            yardLabel={yardIds.length ? yardIds.map(yardNameOf).join(" · ") : null}
+                            onYardClick={handleYardClick}
                           />
                         </div>
                       </td>
@@ -736,6 +873,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         <LegendDot color="bg-emerald-300" label="↔ คู่ขนาน" />
         <LegendDot color="bg-sky-400"     label="👥 สอนร่วม" />
         <LegendDot color="bg-slate-500"   label="🔒 ล็อก" />
+        <LegendDot color="bg-teal-600"    label="📌 เลือกให้เรียนที่ลาน (ชื่อลานอยู่ในช่อง)" />
         <LegendDot color="bg-rose-500"    label="⚠ ยังไม่เรียบร้อย (ไม่มีห้อง/ครูชน)" />
         <span className="flex items-center gap-1">
           <span className="inline-block bg-blue-500 text-white text-[8px] px-1 rounded font-bold">2×</span> คาบคู่
