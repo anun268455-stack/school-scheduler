@@ -838,7 +838,8 @@ CURRICULA: list[dict[str, Any]] = []
 # (group_id, day, period), and room_id is always an outdoor room. A pick holds
 # whatever lesson sits in that cell, and holds the hour on the ลาน even when no
 # lesson sits there yet. Changed in place only (append, remove, and the
-# restore's clear() + extend()), like CURRICULA.
+# restore's clear() + extend()), like CURRICULA. The order the school prefers
+# its ลาน in lives in SCHOOL_CONFIG["yard_order"], not here.
 YARD_PICKS: list[dict[str, Any]] = []
 
 # ── Real school data (อัตรากำลัง) ─────────────────────────────────────────────
@@ -1946,6 +1947,10 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     pick_owned = {key for key, rid in pick_at.items()
                   if not yard_reserved_away(key[0], rid, key[1], cell_buckets(key[0], key[2]))}
 
+    # ลำดับลาน: where each ลาน stands in the order the school saved. Empty when
+    # none is saved, which leaves every choice below exactly as it was.
+    yard_pos = _yard_position(_yard_order())
+
     created    = 0
     violations = []
     # Lessons that did not fit on the first run, kept so the room-shuffling
@@ -2364,7 +2369,13 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if may_outdoor:
                 yard = [r for r in ROOMS if r["type"] == "outdoor" and eligible(r)]
                 if yard:
-                    r = min(yard, key=lambda r: (-int(r.get("capacity") or 0), r["id"]))
+                    # The first ลาน in the school's order that is free this
+                    # hour, moving to the next only because the one before is
+                    # taken (eligible() has already dropped the taken ones).
+                    # With no order saved every position is the same, and this
+                    # is the roomiest first, then by id, exactly as before.
+                    r = min(yard, key=lambda r: (yard_pos.get(r["id"], len(yard_pos)),
+                                                 -int(r.get("capacity") or 0), r["id"]))
                     return r["id"], r["name"], r["type"]
 
         # 4. Teacher's own fixed room, as a late fallback: step 2a already
@@ -2405,7 +2416,14 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # class went outside with the first floor empty. A flight of
             # stairs is a cost; sitting in the open because of it is not the
             # trade the school asked for.
-            return (1 if kind >= 9 else 0, 1 if upstairs(r) else 0, squat,
+            #
+            # Among the ลาน themselves (kind 9 — an ordinary subject sent
+            # outside), the school's ลำดับลาน comes first: this is the other
+            # place the solver falls back to a ลาน on its own. Zero for every
+            # room when no order is saved, so nothing moves.
+            return (1 if kind >= 9 else 0,
+                    yard_pos.get(r["id"], len(yard_pos)) if kind >= 9 else 0,
+                    1 if upstairs(r) else 0, squat,
                     too_small, kind, r["id"])
 
         for r in sorted((r for r in ROOMS if eligible(r)), key=rank):
@@ -9621,11 +9639,15 @@ def set_curriculum_groups(cid: int, body: dict[str, Any]):
     return {**_curriculum_view(cur, _CUR.groups_by_curriculum()), **changed}
 
 
-# ── คาบเรียนลาน ────────────────────────────────────────────────────────────────
-# The school is short of indoor rooms, and has a way of stretching them that
-# only a person can decide: คาบเรียนลาน, this class's this hour is taught on that
-# ลาน (a room whose type is "outdoor"). The indoor room the class would have sat
-# in is free for a lesson that would otherwise have nowhere to go.
+# ── คาบเรียนลาน และลำดับลาน ────────────────────────────────────────────────────
+# The school is short of indoor rooms, and has two ways of stretching them that
+# only a person can decide, both about the ลาน (a room whose type is "outdoor"):
+#
+#   คาบเรียนลาน  this class's this hour is taught on that ลาน. The indoor room the
+#                class would have sat in is free for a lesson that would
+#                otherwise have nowhere to go.
+#   ลำดับลาน    which ลาน the solver reaches for first when it sends a class
+#                outside on its own.
 #
 # A pick is an instruction, not a permission. allow_outdoor (on the lesson, the
 # class or the subject) decides what the solver may do by itself; it has
@@ -9661,9 +9683,33 @@ def _outdoor_rooms() -> list[dict[str, Any]]:
     return [r for r in ROOMS if r.get("type") == "outdoor"]
 
 
+def _yard_order() -> list[int]:
+    """The saved ลำดับลาน, most-preferred first; [] when none is saved.
+
+    Ids that no longer name an outdoor room (the room was deleted, or retyped)
+    are left out rather than trusted, so the order can never point the solver
+    at a room that is not a ลาน."""
+    saved = SCHOOL_CONFIG.get("yard_order") if isinstance(SCHOOL_CONFIG, dict) else None
+    if not isinstance(saved, list):
+        return []
+    yards = {r["id"] for r in _outdoor_rooms()}
+    out: list[int] = []
+    for x in saved:
+        if isinstance(x, int) and not isinstance(x, bool) and x in yards and x not in out:
+            out.append(x)
+    return out
+
+
+def _yard_position(order: list[int]) -> dict[int, int]:
+    return {rid: i for i, rid in enumerate(order)}
+
+
 def _yards_in_order() -> list[dict[str, Any]]:
-    """Every ลาน, the way the solver reaches for them: roomiest first, then by id."""
-    return sorted(_outdoor_rooms(), key=lambda r: (-int(r.get("capacity") or 0), r["id"]))
+    """Every ลาน: the ones in the saved order first, then the rest the way the
+    solver ranks them when there is no order (roomiest first, then by id)."""
+    pos = _yard_position(_yard_order())
+    return sorted(_outdoor_rooms(), key=lambda r: (
+        pos.get(r["id"], len(pos)), -int(r.get("capacity") or 0), r["id"]))
 
 
 def _yard_pick_for(group_id: int | None, day: int | None, period: int | None) -> int | None:
@@ -9785,14 +9831,17 @@ def _settle_yard(s: dict[str, Any], was: tuple[int, int] | None = None,
 
 
 def _drop_yard_picks(*, room_id: int | None = None, group_ids=()) -> int:
-    """Forget the picks that point at a room or a class that has been deleted.
-    Returns how many picks went."""
+    """Forget the picks that point at a room or a class that has been deleted,
+    and take the room out of the ลำดับลาน. Returns how many picks went."""
     doomed = set(group_ids)
     keep = [r for r in YARD_PICKS
             if not ((room_id is not None and r.get("room_id") == room_id)
                     or r.get("group_id") in doomed)]
     gone = len(YARD_PICKS) - len(keep)
     YARD_PICKS[:] = keep
+    saved = SCHOOL_CONFIG.get("yard_order") if isinstance(SCHOOL_CONFIG, dict) else None
+    if room_id is not None and isinstance(saved, list):
+        SCHOOL_CONFIG["yard_order"] = [x for x in saved if x != room_id]
     return gone
 
 
@@ -9812,9 +9861,15 @@ def _check_pick_cell(gid: int, day: int, period: int) -> dict[str, Any]:
     return grp
 
 
-def _yard_view() -> list[dict[str, Any]]:
-    return [{"id": r["id"], "name": r.get("name"), "capacity": r.get("capacity")}
-            for r in _yards_in_order()]
+def _yard_view(with_picks: bool = False) -> list[dict[str, Any]]:
+    count: Counter = Counter(r.get("room_id") for r in YARD_PICKS)
+    out = []
+    for r in _yards_in_order():
+        row = {"id": r["id"], "name": r.get("name"), "capacity": r.get("capacity")}
+        if with_picks:
+            row["picks"] = count.get(r["id"], 0)
+        out.append(row)
+    return out
 
 
 @app.get("/api/yard-picks")
@@ -9868,6 +9923,39 @@ def put_yard_pick(body: dict[str, Any]):
     else:
         mine["room_id"] = room["id"]
     return dict(mine)
+
+
+def _yard_order_view() -> dict[str, Any]:
+    return {"order": _yard_order(), "yards": _yard_view(with_picks=True)}
+
+
+@app.get("/api/yard-order")
+def get_yard_order():
+    return _yard_order_view()
+
+
+@app.put("/api/yard-order")
+def put_yard_order(body: dict[str, Any]):
+    """Save the ลำดับลาน. All of it is checked before any of it is kept."""
+    raw = body.get("order") if isinstance(body, dict) else None
+    if not isinstance(raw, list):
+        raise HTTPException(400, "ต้องส่งลำดับลานเป็นรายการรหัสห้อง")
+    r_map = {r["id"]: r for r in ROOMS}
+    order: list[int] = []
+    for x in raw:
+        rid = _as_int(x)
+        room = r_map.get(rid) if rid is not None else None
+        if room is None:
+            raise HTTPException(400, f"ไม่พบห้องรหัส {x} ในระบบ")
+        if room.get("type") != "outdoor":
+            raise HTTPException(400, f"ห้อง {room.get('name')} ไม่ใช่ลาน — "
+                                     "ลำดับลานเรียงได้เฉพาะห้องประเภทกลางแจ้ง")
+        if rid not in order:
+            order.append(rid)        # a ลาน listed twice is listed once, where it first stood
+    if order == list(SCHOOL_CONFIG.get("yard_order") or []):
+        _nothing_changed()
+    SCHOOL_CONFIG["yard_order"] = order
+    return _yard_order_view()
 
 
 # ── สอนแทน / แลกคาบ ───────────────────────────────────────────────────────────
