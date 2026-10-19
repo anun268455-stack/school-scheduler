@@ -15,6 +15,8 @@ import { AddElectiveSubjectModal } from "../components/timetable/AddElectiveSubj
 import { slotsForTeacher, teachingTogether } from "../utils/teacherSlots";
 import { levelKeyOf, levelLabel, classPeriodsForLevel, roomReservedFor } from "../utils/levels";
 import { flattenGroups } from "../utils/groupHierarchy";
+import type { StayChoice } from "../utils/stayHome";
+import { stayChoiceOf, stayPatch, stayAfterSave } from "../utils/stayHome";
 import { inOrder, moveBy } from "../utils/yardPicks";
 import { byTeacherCode } from "../utils/teacherOrder";
 import { SavePointPanel } from "../components/backup/SavePointPanel";
@@ -165,29 +167,51 @@ async function applyHomeroom(changes: { groupId: number; teacherIds: number[] }[
   }));
 }
 
+const STAY_CHOICES: { v: StayChoice; label: string; note: string | null }[] = [
+  { v: "",    label: "ยังไม่ได้ระบุ",
+    note: "ถ้ามีห้องที่กันไว้ให้ห้องเรียนนี้ ก็จะอยู่ห้องนั้น ถ้าไม่มีก็เดินไปห้องพิเศษได้ตามปกติ" },
+  { v: "yes", label: "เรียนห้องประจำเท่านั้น", note: null },
+  { v: "no",  label: "ไม่บังคับ",
+    note: "เดินไปห้องพิเศษได้ตามปกติ แม้จะมีห้องที่กันไว้ให้ห้องเรียนนี้" },
+];
+
 /**
- * เรียนที่ห้องประจำเท่านั้น (ห้องเพชร) — the tick-box, what it does, and the
- * caution when it cannot do it: a class with no ห้องประจำชั้น has no room to
- * be held to, so a tick there would look like a rule and be nothing.
+ * เรียนที่ห้องประจำเท่านั้น (ห้องเพชร) — the one control for `stay_in_homeroom`.
+ *
+ * Three answers, all visible, because "not said" is not "no": a class nobody
+ * has ticked may still be held in its room by having its name on that room.
+ * And the caution for a class with no ห้องประจำชั้น, which has no room to be
+ * held to — a tick there would look like a rule and be nothing.
  */
-function HomeroomOnlyBox({ checked, hasRoom, onChange }: {
-  checked: boolean; hasRoom: boolean; onChange: (v: boolean) => void;
+function StayHomeBox({ name, value, hasRoom, onChange }: {
+  /** Radio group name — one per box on the page, or the boxes share an answer. */
+  name: string; value: StayChoice; hasRoom: boolean; onChange: (v: StayChoice) => void;
 }) {
+  const note = STAY_CHOICES.find((c) => c.v === value)?.note;
   return (
     <div className="text-xs">
-      <label className="flex items-start gap-2 cursor-pointer">
-        <input type="checkbox" className="mt-0.5 w-4 h-4 accent-indigo-600"
-          checked={checked} onChange={(e) => onChange(e.target.checked)} />
-        <span>
-          <span className="block font-medium text-gray-800">เรียนที่ห้องประจำเท่านั้น (ห้องเพชร)</span>
-          <span className="block text-gray-500">
-            ทุกคาบของห้องนี้จะถูกจัดลงห้องประจำ ยกเว้นวิชาที่มีห้องเรียนพิเศษของตัวเอง เช่น ห้องคอม ห้องนาฏศิลป์
-          </span>
-        </span>
-      </label>
-      {checked && !hasRoom && (
-        <p role="alert" className="mt-1 ml-6 text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-          ⚠ ห้องนี้ยังไม่ได้เลือกห้องประจำชั้น จึงไม่มีห้องให้อยู่ — ติ๊กไว้ก็ยังไม่มีผล ให้เลือก "ห้องประจำชั้น" ก่อน
+      <div className="font-medium text-gray-800">เรียนที่ห้องประจำเท่านั้น (ห้องเพชร)</div>
+      <div className="text-gray-500">
+        ทุกคาบของห้องนี้จะถูกจัดลงห้องประจำ ยกเว้นวิชาที่มีห้องเรียนพิเศษของตัวเอง เช่น ห้องคอม ห้องนาฏศิลป์
+      </div>
+      <div role="radiogroup" aria-label="เรียนที่ห้องประจำเท่านั้น (ห้องเพชร)" className="mt-1.5 flex flex-wrap gap-1.5">
+        {STAY_CHOICES.map((c) => (
+          <label key={c.v || "unset"}
+            className={clsx("flex items-center gap-1.5 px-2 py-1 rounded border cursor-pointer focus-within:ring-1 focus-within:ring-indigo-500",
+              value === c.v
+                ? c.v === "yes" ? "bg-indigo-100 border-indigo-400 text-indigo-800 font-medium"
+                  : "bg-gray-200 border-gray-400 text-gray-800 font-medium"
+                : "bg-white border-gray-200 text-gray-500 hover:border-indigo-300")}>
+            <input type="radio" name={name} className="accent-indigo-600"
+              checked={value === c.v} onChange={() => onChange(c.v)} />
+            {c.label}
+          </label>
+        ))}
+      </div>
+      {note && <div className="mt-1 text-gray-500">{note}</div>}
+      {value === "yes" && !hasRoom && (
+        <p role="alert" className="mt-1 text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+          ⚠ ห้องนี้ยังไม่ได้เลือกห้องประจำชั้น จึงไม่มีห้องให้อยู่ — ตั้งไว้ก็ยังไม่มีผล ให้เลือก "ห้องประจำชั้น" ก่อน
         </p>
       )}
     </div>
@@ -206,18 +230,6 @@ const GroupsPanel: React.FC = () => {
     }
   }, [auditFor, auditPools.length]);
 
-  /** ปกติ → อยู่ห้องประจำเสมอ → เดินเรียนตามปกติ → ปกติ */
-  const toggleStayHome = async (g: StudentGroup) => {
-    const next = g.stay_in_homeroom == null ? true : g.stay_in_homeroom ? false : null;
-    const updated = await api.updateGroup(g.id, { stay_in_homeroom: next });
-    useTimetableStore.setState((st) => ({
-      groups: st.groups.map((x) =>
-        x.id === g.id
-          ? { ...x, ...updated, children: x.children ?? [] }
-          : { ...x, children: (x.children ?? []).map((c) => c.id === g.id ? { ...c, ...updated } : c) }),
-    }));
-  };
-
   /** ปกติ → ไม่ออกลาน → ออกลานได้ → ปกติ */
   const toggleGroupYard = async (g: StudentGroup) => {
     const next = g.allow_outdoor == null ? false : g.allow_outdoor === false ? true : null;
@@ -230,7 +242,7 @@ const GroupsPanel: React.FC = () => {
     }));
   };
   const [importingHomeroom, setImportingHomeroom] = useState(false);
-  const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "", homeroom_only: false });
+  const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "", stay_in_homeroom: "" as StayChoice });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
   // A 400 here is the server saying why in Thai; keep it where the person is
@@ -247,17 +259,19 @@ const GroupsPanel: React.FC = () => {
         parent_id: form.parent_id ? Number(form.parent_id) : null,
         homeroom_room_id: form.homeroom_room_id ? Number(form.homeroom_room_id) : null,
         homeroom_teacher_id: form.homeroom_teacher_id ? Number(form.homeroom_teacher_id) : null,
-        homeroom_only: form.homeroom_only,
+        // Left unsaid, nothing is sent: the server keeps its own default.
+        ...stayPatch(form.stay_in_homeroom, null),
       });
       useTimetableStore.setState((s) => ({ groups: [...s.groups, { ...created, children: created.children ?? [] }] }));
-      setForm({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "", homeroom_only: false });
+      setForm({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "", stay_in_homeroom: "" as StayChoice });
     } catch (e) {
       setCreateErr(api.errorDetail(e, "เพิ่มห้องเรียนไม่สำเร็จ — ลองใหม่อีกครั้ง"));
     }
   };
 
-  const handleUpdate = async (id: number) => {
+  const handleUpdate = async (g: StudentGroup) => {
     if (!editForm) return;
+    const id = g.id;
     setEditErr(null);
     try {
       const updated = await api.updateGroup(id, {
@@ -266,14 +280,16 @@ const GroupsPanel: React.FC = () => {
         parent_id: editForm.parent_id ? Number(editForm.parent_id) : null,
         homeroom_room_id: editForm.homeroom_room_id ? Number(editForm.homeroom_room_id) : null,
         homeroom_teacher_id: editForm.homeroom_teacher_id ? Number(editForm.homeroom_teacher_id) : null,
-        homeroom_only: editForm.homeroom_only,
+        // Only when it was changed here: an untouched "ยังไม่ได้ระบุ" must not
+        // become a false, which would switch off a class held by its room.
+        ...stayPatch(editForm.stay_in_homeroom, g.stay_in_homeroom),
       });
       // The whole tree, not just its top: a sub-class is a row here too, and
-      // its new badge has to appear without a reload. The flag is written out
-      // because a server may leave it off when it is false, and a spread would
-      // then keep the old true.
+      // its new badge has to appear without a reload.
       useTimetableStore.setState((s) => ({
-        groups: patchGroupTree(s.groups, id, { ...updated, homeroom_only: updated.homeroom_only === true }),
+        groups: patchGroupTree(s.groups, id, {
+          ...updated, stay_in_homeroom: stayAfterSave(updated, editForm.stay_in_homeroom),
+        }),
       }));
       setEditing(null); setEditForm(null);
     } catch (e) {
@@ -285,7 +301,7 @@ const GroupsPanel: React.FC = () => {
   const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : "–";
   const [q, setQ] = useState("");
   const shownGroups = flat.filter((g) => matches(q, g.name, g.level, roomName(g.homeroom_room_id),
-    teachers.find((t) => t.id === g.homeroom_teacher_id)?.name, g.homeroom_only ? "ห้องเพชร" : null));
+    teachers.find((t) => t.id === g.homeroom_teacher_id)?.name, g.stay_in_homeroom === true ? "ห้องเพชร" : g.stay_in_homeroom === false ? "เดินเรียน" : null));
 
   return (
     <Section title="ห้องเรียน" action={<ImportButton entity="groups" />}>
@@ -314,8 +330,8 @@ const GroupsPanel: React.FC = () => {
             options={teacherOptions(teachers)} emptyLabel="– ไม่ระบุ –" />
         </Field>
         <div className="col-span-3">
-          <HomeroomOnlyBox checked={form.homeroom_only} hasRoom={!!form.homeroom_room_id}
-            onChange={(v) => setForm({ ...form, homeroom_only: v })} />
+          <StayHomeBox name="stay-new" value={form.stay_in_homeroom} hasRoom={!!form.homeroom_room_id}
+            onChange={(v) => setForm({ ...form, stay_in_homeroom: v })} />
         </div>
       </div>
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
@@ -382,7 +398,7 @@ const GroupsPanel: React.FC = () => {
                     </td>
                     <td className="px-2 py-1">
                       <div className="flex gap-1">
-                        <button onClick={() => handleUpdate(g.id)} className={btnSave}>บันทึก</button>
+                        <button onClick={() => handleUpdate(g)} className={btnSave}>บันทึก</button>
                         <button onClick={() => { setEditing(null); setEditForm(null); setEditErr(null); }} className={btnCancel}>ยกเลิก</button>
                       </div>
                     </td>
@@ -391,16 +407,24 @@ const GroupsPanel: React.FC = () => {
                   <>
                     <td className="px-3 py-2 font-medium text-gray-800">
                       {g.name}
-                      {/* ห้องเพชร at a glance. Amber when it has no room to be
-                          held to — the tick is there but does nothing. */}
-                      {g.homeroom_only && (
+                      {/* ห้องเพชร at a glance — the setting itself is changed in
+                          แก้ไข, so it lives in one place. Amber when there is no
+                          room to be held to: it is set, and does nothing.
+                          "ยังไม่ได้ระบุ" shows nothing, as it always has. */}
+                      {g.stay_in_homeroom === true && (
                         <span
                           title={g.homeroom_room_id
                             ? "เรียนที่ห้องประจำเท่านั้น — ทุกคาบจัดลงห้องประจำ ยกเว้นวิชาที่มีห้องเรียนพิเศษของตัวเอง"
-                            : "ติ๊กเรียนที่ห้องประจำเท่านั้นไว้ แต่ห้องนี้ยังไม่ได้เลือกห้องประจำชั้น จึงยังไม่มีผล"}
+                            : "ตั้งให้เรียนที่ห้องประจำเท่านั้นไว้ แต่ห้องนี้ยังไม่ได้เลือกห้องประจำชั้น จึงยังไม่มีผล"}
                           className={clsx("ml-1.5 px-1.5 py-0.5 rounded text-[11px] font-medium align-middle",
                             g.homeroom_room_id ? "bg-indigo-100 text-indigo-700" : "bg-amber-100 text-amber-800")}>
                           {g.homeroom_room_id ? "💎 ห้องเพชร" : "⚠ ห้องเพชร · ไม่มีห้องประจำชั้น"}
+                        </span>
+                      )}
+                      {g.stay_in_homeroom === false && (
+                        <span title="ไม่บังคับ — เดินไปห้องพิเศษได้ตามปกติ แม้จะมีห้องที่กันไว้ให้ห้องเรียนนี้"
+                          className="ml-1.5 px-1.5 py-0.5 rounded text-[11px] font-medium align-middle bg-gray-200 text-gray-700">
+                          🚶 เดินเรียน
                         </span>
                       )}
                     </td>
@@ -445,21 +469,6 @@ const GroupsPanel: React.FC = () => {
                               : "bg-white border-gray-200 text-gray-300 hover:border-green-400")}>
                           {g.allow_outdoor === false ? "🚫 ไม่ออกลาน" : "🌳"}
                         </button>
-                        {/* เรียนในห้องประจำชั้นเสมอ — ห้องเพชรและห้อง
-                            โครงการที่มีห้องของตัวเอง ไม่ต้องเดินไปตึกอื่น */}
-                        <button onClick={() => toggleStayHome(g)}
-                          title={g.stay_in_homeroom === true
-                            ? "อยู่ห้องประจำชั้นเสมอ (ยกเว้นวิชาที่ตั้งว่าต้องเรียนห้องประจำวิชา) — กดเพื่อเปลี่ยน"
-                            : g.stay_in_homeroom === false
-                            ? "เดินไปห้องพิเศษได้ตามปกติ — กดเพื่อเปลี่ยน"
-                            : "ปกติ (ถ้ามีห้องกันไว้ให้ชั้นนี้ ก็จะอยู่ห้องนั้น) — กดเพื่อบังคับให้อยู่ห้องประจำชั้น"}
-                          className={clsx("px-2 py-1 rounded border text-xs",
-                            g.stay_in_homeroom === true ? "bg-indigo-100 border-indigo-400 text-indigo-800"
-                              : g.stay_in_homeroom === false ? "bg-gray-200 border-gray-400 text-gray-700"
-                              : "bg-white border-gray-200 text-gray-300 hover:border-indigo-400")}>
-                          {g.stay_in_homeroom === true ? "🏠 อยู่ห้องประจำ"
-                            : g.stay_in_homeroom === false ? "🚶 เดินเรียน" : "🏠"}
-                        </button>
                         {/* ตรวจรายวิชา — the plan read a class at a time,
                             which is the only way วิชาซ้ำ and a week that
                             does not fit the week are visible at all. */}
@@ -467,7 +476,7 @@ const GroupsPanel: React.FC = () => {
                           title="ตรวจรายวิชาของห้องนี้ — วิชาซ้ำ ครูที่ยังไม่มี คาบรวมเกินสัปดาห์">
                           📋 ตรวจวิชา
                         </button>
-                        <button onClick={() => { setEditErr(null); setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "", homeroom_teacher_id: g.homeroom_teacher_id ? String(g.homeroom_teacher_id) : "", homeroom_only: g.homeroom_only === true }); }} className={btnEdit}>แก้ไข</button>
+                        <button onClick={() => { setEditErr(null); setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "", homeroom_teacher_id: g.homeroom_teacher_id ? String(g.homeroom_teacher_id) : "", stay_in_homeroom: stayChoiceOf(g.stay_in_homeroom) }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteGroup(g.id); useTimetableStore.setState((s) => ({ groups: s.groups.filter((x) => x.id !== g.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
@@ -477,8 +486,8 @@ const GroupsPanel: React.FC = () => {
               {editing === g.id && editForm && (
                 <tr className="bg-gray-50">
                   <td colSpan={7} className="px-3 py-2 space-y-2">
-                    <HomeroomOnlyBox checked={editForm.homeroom_only} hasRoom={!!editForm.homeroom_room_id}
-                      onChange={(v) => setEditForm({ ...editForm, homeroom_only: v })} />
+                    <StayHomeBox name={`stay-${g.id}`} value={editForm.stay_in_homeroom} hasRoom={!!editForm.homeroom_room_id}
+                      onChange={(v) => setEditForm({ ...editForm, stay_in_homeroom: v })} />
                     {editErr && (
                       <div role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
                         {editErr}
