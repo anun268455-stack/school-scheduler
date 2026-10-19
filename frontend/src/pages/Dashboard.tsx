@@ -165,6 +165,35 @@ async function applyHomeroom(changes: { groupId: number; teacherIds: number[] }[
   }));
 }
 
+/**
+ * เรียนที่ห้องประจำเท่านั้น (ห้องเพชร) — the tick-box, what it does, and the
+ * caution when it cannot do it: a class with no ห้องประจำชั้น has no room to
+ * be held to, so a tick there would look like a rule and be nothing.
+ */
+function HomeroomOnlyBox({ checked, hasRoom, onChange }: {
+  checked: boolean; hasRoom: boolean; onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="text-xs">
+      <label className="flex items-start gap-2 cursor-pointer">
+        <input type="checkbox" className="mt-0.5 w-4 h-4 accent-indigo-600"
+          checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        <span>
+          <span className="block font-medium text-gray-800">เรียนที่ห้องประจำเท่านั้น (ห้องเพชร)</span>
+          <span className="block text-gray-500">
+            ทุกคาบของห้องนี้จะถูกจัดลงห้องประจำ ยกเว้นวิชาที่มีห้องเรียนพิเศษของตัวเอง เช่น ห้องคอม ห้องนาฏศิลป์
+          </span>
+        </span>
+      </label>
+      {checked && !hasRoom && (
+        <p role="alert" className="mt-1 ml-6 text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+          ⚠ ห้องนี้ยังไม่ได้เลือกห้องประจำชั้น จึงไม่มีห้องให้อยู่ — ติ๊กไว้ก็ยังไม่มีผล ให้เลือก "ห้องประจำชั้น" ก่อน
+        </p>
+      )}
+    </div>
+  );
+}
+
 const GroupsPanel: React.FC = () => {
   const { groups, rooms, teachers, requirements, subjects, slots, periods } = useTimetableStore();
   const [homeroomFor, setHomeroomFor] = useState<number | null>(null);
@@ -201,40 +230,62 @@ const GroupsPanel: React.FC = () => {
     }));
   };
   const [importingHomeroom, setImportingHomeroom] = useState(false);
-  const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "" });
+  const [form, setForm] = useState({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "", homeroom_only: false });
   const [editing, setEditing]   = useState<number | null>(null);
   const [editForm, setEditForm] = useState<typeof form | null>(null);
+  // A 400 here is the server saying why in Thai; keep it where the person is
+  // looking (under the add button / under the row being edited).
+  const [createErr, setCreateErr] = useState<string | null>(null);
+  const [editErr, setEditErr]     = useState<string | null>(null);
 
   const handleCreate = async () => {
-    const created = await api.createGroup({
-      name: form.name, level: form.level || null,
-      size: form.size,
-      parent_id: form.parent_id ? Number(form.parent_id) : null,
-      homeroom_room_id: form.homeroom_room_id ? Number(form.homeroom_room_id) : null,
-      homeroom_teacher_id: form.homeroom_teacher_id ? Number(form.homeroom_teacher_id) : null,
-    });
-    useTimetableStore.setState((s) => ({ groups: [...s.groups, { ...created, children: created.children ?? [] }] }));
-    setForm({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "" });
+    setCreateErr(null);
+    try {
+      const created = await api.createGroup({
+        name: form.name, level: form.level || null,
+        size: form.size,
+        parent_id: form.parent_id ? Number(form.parent_id) : null,
+        homeroom_room_id: form.homeroom_room_id ? Number(form.homeroom_room_id) : null,
+        homeroom_teacher_id: form.homeroom_teacher_id ? Number(form.homeroom_teacher_id) : null,
+        homeroom_only: form.homeroom_only,
+      });
+      useTimetableStore.setState((s) => ({ groups: [...s.groups, { ...created, children: created.children ?? [] }] }));
+      setForm({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "", homeroom_only: false });
+    } catch (e) {
+      setCreateErr(api.errorDetail(e, "เพิ่มห้องเรียนไม่สำเร็จ — ลองใหม่อีกครั้ง"));
+    }
   };
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
-    const updated = await api.updateGroup(id, {
-      name: editForm.name, level: editForm.level || null,
-      size: editForm.size,
-      parent_id: editForm.parent_id ? Number(editForm.parent_id) : null,
-      homeroom_room_id: editForm.homeroom_room_id ? Number(editForm.homeroom_room_id) : null,
-      homeroom_teacher_id: editForm.homeroom_teacher_id ? Number(editForm.homeroom_teacher_id) : null,
-    });
-    useTimetableStore.setState((s) => ({ groups: s.groups.map((g) => g.id === id ? { ...g, ...updated } : g) }));
-    setEditing(null); setEditForm(null);
+    setEditErr(null);
+    try {
+      const updated = await api.updateGroup(id, {
+        name: editForm.name, level: editForm.level || null,
+        size: editForm.size,
+        parent_id: editForm.parent_id ? Number(editForm.parent_id) : null,
+        homeroom_room_id: editForm.homeroom_room_id ? Number(editForm.homeroom_room_id) : null,
+        homeroom_teacher_id: editForm.homeroom_teacher_id ? Number(editForm.homeroom_teacher_id) : null,
+        homeroom_only: editForm.homeroom_only,
+      });
+      // The whole tree, not just its top: a sub-class is a row here too, and
+      // its new badge has to appear without a reload. The flag is written out
+      // because a server may leave it off when it is false, and a spread would
+      // then keep the old true.
+      useTimetableStore.setState((s) => ({
+        groups: patchGroupTree(s.groups, id, { ...updated, homeroom_only: updated.homeroom_only === true }),
+      }));
+      setEditing(null); setEditForm(null);
+    } catch (e) {
+      setEditErr(api.errorDetail(e, "บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง"));
+    }
   };
 
   const flat = groups.flatMap((g) => [g, ...(g.children ?? [])]);
   const roomName = (id: number | null | undefined) => id ? (rooms.find((r) => r.id === id)?.name ?? "–") : "–";
   const [q, setQ] = useState("");
   const shownGroups = flat.filter((g) => matches(q, g.name, g.level, roomName(g.homeroom_room_id),
-    teachers.find((t) => t.id === g.homeroom_teacher_id)?.name));
+    teachers.find((t) => t.id === g.homeroom_teacher_id)?.name, g.homeroom_only ? "ห้องเพชร" : null));
 
   return (
     <Section title="ห้องเรียน" action={<ImportButton entity="groups" />}>
@@ -262,6 +313,10 @@ const GroupsPanel: React.FC = () => {
           <SearchableSelect value={form.homeroom_teacher_id} onChange={(v) => setForm({ ...form, homeroom_teacher_id: v })}
             options={teacherOptions(teachers)} emptyLabel="– ไม่ระบุ –" />
         </Field>
+        <div className="col-span-3">
+          <HomeroomOnlyBox checked={form.homeroom_only} hasRoom={!!form.homeroom_room_id}
+            onChange={(v) => setForm({ ...form, homeroom_only: v })} />
+        </div>
       </div>
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
         💡 <strong>ครูประจำชั้นใส่ได้ห้องละ {HOMEROOM_MAX} คน</strong> — สร้างห้องแล้วกดปุ่ม 👩‍🏫 ในตารางด้านล่างเพื่อเพิ่มคนถัดไป
@@ -277,6 +332,11 @@ const GroupsPanel: React.FC = () => {
           👩‍🏫 นำเข้าครูประจำชั้นทั้งหมด
         </button>
       </div>
+      {createErr && (
+        <div role="alert" className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+          {createErr}
+        </div>
+      )}
 
       <div className="mt-4">
         <TableSearch value={q} onChange={setQ} count={shownGroups.length} total={flat.length}
@@ -296,7 +356,8 @@ const GroupsPanel: React.FC = () => {
               <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400 text-xs">ยังไม่มีข้อมูล</td></tr>
             )}
             {shownGroups.map((g) => (
-              <tr key={g.id} className={clsx("hover:bg-gray-50", g.level === "ห้องเวียน" && "bg-purple-50/40")}>
+              <React.Fragment key={g.id}>
+              <tr className={clsx("hover:bg-gray-50", g.level === "ห้องเวียน" && "bg-purple-50/40")}>
                 {editing === g.id && editForm ? (
                   <>
                     <td className="px-2 py-1"><input className={inlineCls} value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></td>
@@ -322,13 +383,27 @@ const GroupsPanel: React.FC = () => {
                     <td className="px-2 py-1">
                       <div className="flex gap-1">
                         <button onClick={() => handleUpdate(g.id)} className={btnSave}>บันทึก</button>
-                        <button onClick={() => { setEditing(null); setEditForm(null); }} className={btnCancel}>ยกเลิก</button>
+                        <button onClick={() => { setEditing(null); setEditForm(null); setEditErr(null); }} className={btnCancel}>ยกเลิก</button>
                       </div>
                     </td>
                   </>
                 ) : (
                   <>
-                    <td className="px-3 py-2 font-medium text-gray-800">{g.name}</td>
+                    <td className="px-3 py-2 font-medium text-gray-800">
+                      {g.name}
+                      {/* ห้องเพชร at a glance. Amber when it has no room to be
+                          held to — the tick is there but does nothing. */}
+                      {g.homeroom_only && (
+                        <span
+                          title={g.homeroom_room_id
+                            ? "เรียนที่ห้องประจำเท่านั้น — ทุกคาบจัดลงห้องประจำ ยกเว้นวิชาที่มีห้องเรียนพิเศษของตัวเอง"
+                            : "ติ๊กเรียนที่ห้องประจำเท่านั้นไว้ แต่ห้องนี้ยังไม่ได้เลือกห้องประจำชั้น จึงยังไม่มีผล"}
+                          className={clsx("ml-1.5 px-1.5 py-0.5 rounded text-[11px] font-medium align-middle",
+                            g.homeroom_room_id ? "bg-indigo-100 text-indigo-700" : "bg-amber-100 text-amber-800")}>
+                          {g.homeroom_room_id ? "💎 ห้องเพชร" : "⚠ ห้องเพชร · ไม่มีห้องประจำชั้น"}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2">
                       {g.level === "ห้องเวียน"
                         ? <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-medium">ห้องเวียน</span>
@@ -392,13 +467,27 @@ const GroupsPanel: React.FC = () => {
                           title="ตรวจรายวิชาของห้องนี้ — วิชาซ้ำ ครูที่ยังไม่มี คาบรวมเกินสัปดาห์">
                           📋 ตรวจวิชา
                         </button>
-                        <button onClick={() => { setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "", homeroom_teacher_id: g.homeroom_teacher_id ? String(g.homeroom_teacher_id) : "" }); }} className={btnEdit}>แก้ไข</button>
+                        <button onClick={() => { setEditErr(null); setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "", homeroom_teacher_id: g.homeroom_teacher_id ? String(g.homeroom_teacher_id) : "", homeroom_only: g.homeroom_only === true }); }} className={btnEdit}>แก้ไข</button>
                         <button onClick={async () => { await api.deleteGroup(g.id); useTimetableStore.setState((s) => ({ groups: s.groups.filter((x) => x.id !== g.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
                   </>
                 )}
               </tr>
+              {editing === g.id && editForm && (
+                <tr className="bg-gray-50">
+                  <td colSpan={7} className="px-3 py-2 space-y-2">
+                    <HomeroomOnlyBox checked={editForm.homeroom_only} hasRoom={!!editForm.homeroom_room_id}
+                      onChange={(v) => setEditForm({ ...editForm, homeroom_only: v })} />
+                    {editErr && (
+                      <div role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+                        {editErr}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
