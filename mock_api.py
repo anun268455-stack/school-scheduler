@@ -6299,8 +6299,32 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         "max_consecutive": consec_hard,
         "consecutive": _consecutive_report(),
         "walking": _walking_report(),
-        "last_period": last_period_stats,
+        # Counted from the result rather than borrowed from the other solver.
+        # This line used to read `last_period_stats`, a name that only exists
+        # inside _solve_greedy — so the very last statement of a CP-SAT run
+        # raised NameError and threw the whole timetable away. It never
+        # surfaced because this school is too large for CP-SAT to attempt at
+        # all (the size guard refuses ~155,000 variables and hands over to the
+        # heuristic), so the crash sat behind a door nobody opened. A small
+        # school would have walked straight into it.
+        "last_period": _last_period_report(),
     }
+
+
+def _last_period_report() -> dict[str, Any]:
+    """How much of the day's last period the timetable ended up using."""
+    g_map = {g["id"]: g for g in _flat_groups()}
+    used: dict[int, int] = defaultdict(int)
+    for s in SLOTS:
+        grp = g_map.get(s["group_id"])
+        if grp is None:
+            continue
+        last = _last_period_for(_level_key(grp))
+        if last is not None and s["period"] == last:
+            used[s["group_id"]] += 1
+    return {"slots": sum(used.values()),
+            "classes_using": len(used),
+            "classes_clear": sum(1 for gid in g_map if gid not in used)}
 
 
 def _flat_groups() -> list[dict]:
