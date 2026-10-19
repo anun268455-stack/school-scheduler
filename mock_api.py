@@ -231,6 +231,65 @@ def _group_stays_home(group: dict[str, Any], room: dict[str, Any],
     return _room_kept_for_group(room, family)
 
 
+def _group_family(group_id: int | None, group: dict[str, Any] | None) -> set[int]:
+    """The class, its parent and its sub-classes — one roomful of students.
+
+    ม.5/1ก is ม.5/1 for the purpose of a room reserved for ม.5/1.
+    """
+    family = {group_id} if group_id is not None else set()
+    group = group or {}
+    if group.get("parent_id"):
+        family.add(group["parent_id"])
+    for ch in (group.get("children") or []):
+        family.add(ch["id"] if isinstance(ch, dict) else ch)
+    return family
+
+
+def _stays_home_for(group: dict[str, Any] | None, subj: dict[str, Any] | None,
+                    home: dict[str, Any] | None, outdoor: bool = False) -> bool:
+    """Is THIS lesson one the class's "เรียนในห้องประจำชั้น" applies to?
+
+    The class says it stays in its own room (_group_stays_home), but a few
+    lessons were never the room's to decide:
+
+      · a subject with a ห้องประจำวิชา — the facility is why the room exists;
+      · a subject marked ต้องเรียนที่ห้องประจำวิชา — the school said so outright;
+      · พลศึกษา and anything else that belongs outdoors.
+
+    CP-SAT and the end-of-run report both ask this, so that the weight the
+    optimiser charges and the exception the school is shown are about the
+    same lessons. (The heuristic placer reaches the same answer by position:
+    it asks _group_stays_home only after the first two have been placed, and
+    keeps outdoor lessons out of it with its own wants_outdoor test.)
+    """
+    if not group or not home or outdoor:
+        return False
+    if _subject_rooms(subj) or _subject_room_rule(subj or {}) == "subject":
+        return False
+    return _group_stays_home(group, home, _group_family(group.get("id"), group))
+
+
+def _choose_anchor(group: dict[str, Any], candidates: list[dict[str, Any]],
+                   taken: set[int], homeroom_ids: set[int]) -> dict[str, Any] | None:
+    """The one ordinary room a class without a ห้องประจำชั้น comes back to.
+
+    A room nobody calls home first; but when the school is short of rooms
+    there may be none — every open room is somebody's — and another class's
+    room beats no room. Among those, one no other class has already been
+    given, then one the class fits in, then the roomiest, then the lowest id:
+    the order is arbitrary only at the very end, and it is the same order
+    every time.
+    """
+    free = [r for r in candidates if r["id"] not in homeroom_ids] or candidates
+    if not free:
+        return None
+    return min(free, key=lambda r: (
+        r["id"] in taken,
+        0 if r.get("capacity", 40) >= group.get("size", 40) else 1,
+        -int(r.get("capacity") or 0),
+        r["id"]))
+
+
 def _room_free_for(room: dict[str, Any], teacher_id: int | None) -> bool:
     kept = _room_reserved_for(room)
     return not kept or (teacher_id is not None and teacher_id in kept)
@@ -1636,6 +1695,88 @@ _LAST_PERIOD_MODES = ("reserve", "never", "free")
 # the earlier hours still gets taught.
 TAIL_COST = 200
 
+# What CP-SAT is charged for seating a class that stays in its own room
+# (เรียนในห้องประจำชั้น — ห้องเพชร) anywhere else. The greedy placer takes the
+# homeroom the moment it is free; CP-SAT has no "moment", only prices, so the
+# rule is where this number sits among the others:
+#
+#   · above TAIL_COST (200): the school would rather a ห้องเพชร class go home
+#     late in its own room than finish early in someone else's. Were it below,
+#     the optimiser would happily move them out of their room to buy an earlier
+#     bell, which is exactly the trade the school said it does not want.
+#   · above every walking penalty put together (60 + 8 + 5, as for TAIL_COST),
+#     so no department lab or teacher's room ever pulls them out of it. A
+#     ห้องประจำวิชา is the one exception, and it is not priced against this at
+#     all: those lessons are left out of the rule (see _stays_home_for).
+#   · far below 1000, the price of a lesson not taught. A homeroom that is
+#     genuinely taken at every hour that suits the class must still yield a
+#     lesson in another room, not an empty cell: 400 + 200 + 73 = 673 is still
+#     a lesson worth placing. A hard rule here would lose lessons on a day the
+#     room is full, which helps nobody; the run reports those lessons by class
+#     instead (_stay_home_notes), so the school can see the exceptions.
+STAY_HOME_COST = 400
+
+_DAYS_TH = ("จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์")
+
+
+def _stay_home_notes(slots: list[dict[str, Any]], homes: dict[int, int | None],
+                     named: Any = None) -> list[str]:
+    """Say which lessons of the classes that stay home did NOT stay home.
+
+    Both solvers treat the rule as a very strong preference rather than a
+    filter, so a lesson can end up elsewhere on the day the homeroom is
+    genuinely taken. Said out loud and by class, because the alternative is
+    the office finding a ห้องเพชร class in the wrong room and wondering why.
+
+    `slots` are the lessons this run placed. `homes` is the room each class
+    is meant to stay in — its ห้องประจำชั้น, or the one the run settled on
+    for a class that has none. `named` says a lesson's room was written by
+    the school itself (a requirement's room, a ลาน picked for the hour): that
+    is an instruction, not a yielded preference, and is not an exception.
+    """
+    g_map = {g["id"]: g for g in _flat_groups()}
+    s_map = {s["id"]: s for s in SUBJECTS}
+    r_map = {r["id"]: r for r in ROOMS}
+    outdoor_depts = {d["id"] for d in DEPARTMENTS if "พลศึกษา" in d.get("name", "")}
+    covered: dict[int, int] = defaultdict(int)
+    away: dict[int, list[dict]] = defaultdict(list)
+    for s in slots:
+        gid = s.get("group_id")
+        grp = g_map.get(gid)
+        home = r_map.get(homes.get(gid))
+        subj = s_map.get(s.get("subject_id"))
+        if (grp is None or subj is None
+                or s.get("is_elective") or s.get("is_activity_block")
+                or s.get("is_overflow")):
+            continue
+        if not _stays_home_for(grp, subj, home, subj.get("department_id") in outdoor_depts):
+            continue
+        if named is not None and named(s):
+            continue
+        covered[gid] += 1
+        if s.get("room_id") != home["id"]:
+            away[gid].append(s)
+    out: list[str] = []
+    for gid in sorted(covered, key=lambda i: str(g_map[i].get("name"))):
+        grp, home = g_map[gid], r_map[homes[gid]]
+        if not grp.get("homeroom_room_id"):
+            out.append(
+                f"{grp.get('name')}: ติ๊กให้เรียนในห้องประจำชั้น แต่ยังไม่ได้บันทึกห้องประจำชั้นไว้ "
+                f"จึงใช้ห้อง {home.get('name')} เป็นห้องประจำแทนตลอดสัปดาห์ "
+                f"— บันทึกห้องจริงที่หน้าห้องเรียนได้")
+        if not away[gid]:
+            continue
+        where = sorted(away[gid], key=lambda s: (s["day"], s["period"]))
+        shown = "; ".join(
+            f"วัน{_DAYS_TH[s['day']] if 0 <= s['day'] < len(_DAYS_TH) else s['day']} "
+            f"คาบ {s['period']} → {s.get('room_name') or 'ไม่มีห้อง'}"
+            for s in where[:4])
+        out.append(
+            f"{grp.get('name')}: ตั้งให้เรียนในห้องประจำชั้น ({home.get('name')}) "
+            f"แต่ {len(where)} จาก {covered[gid]} คาบต้องเรียนห้องอื่น เพราะห้องประจำชั้นไม่ว่างหรือใช้ไม่ได้ในชั่วโมงนั้น "
+            f"({shown}{' …' if len(where) > 4 else ''})")
+    return out
+
 
 def _school_last_period_mode(body: dict[str, Any] | None = None) -> str:
     """How the school wants the last period of the day used.
@@ -1744,6 +1885,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # regardless of is_locked, so the solver never double-books their teacher/room.
     if clear:
         SLOTS = [s for s in SLOTS if s["id"] in locked_ids or s.get("is_locked") or s.get("is_elective")]
+    # What stood before this run placed anything, so the end-of-run report
+    # about ห้องประจำชั้น speaks only for lessons THIS run seated.
+    slots_before = {s["id"] for s in SLOTS}
 
     # Build occupation sets
     t_map = {t["id"]: t for t in TEACHERS}
@@ -2098,11 +2242,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             return any((rid, day, b) in room_busy for b in bks)
 
         # ม.5/1ก is ม.5/1 for the purpose of a room reserved for ม.5/1.
-        family = {group_id} if group_id is not None else set()
-        if grp.get("parent_id"):
-            family.add(grp["parent_id"])
-        for ch in (grp.get("children") or []):
-            family.add(ch["id"] if isinstance(ch, dict) else ch)
+        family = _group_family(group_id, grp)
 
         # อาคารที่วิชานี้เรียนได้ — a hard filter, checked everywhere a room
         # is returned, including the shortcuts that skip `eligible` below.
@@ -2154,6 +2294,21 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if r["type"] == "outdoor" and not may_outdoor:
                 return False
             return True
+
+        def pick_anchor() -> dict | None:
+            """Settle on the ordinary room this class comes back to all week.
+
+            Recorded in anchor_room, so every later lesson of the class finds
+            it as its `home`. Only an ordinary classroom no department owns,
+            and only one this lesson could actually be seated in right now.
+            """
+            indoor = [r for r in ROOMS
+                      if r["type"] in ("physical", "floating")
+                      and not r.get("specialized_dept_id") and eligible(r)]
+            pick = _choose_anchor(grp, indoor, set(anchor_room.values()), homeroom_ids)
+            if pick:
+                anchor_room[group_id] = pick["id"]
+            return pick
 
         # ห้องที่โรงเรียนกำหนดไว้เองสำหรับคาบนี้. Nothing outranks it — the
         # school has already answered the question this function exists to
@@ -2209,6 +2364,50 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 return r["id"], r["name"], r["type"]
             return None, None, None
 
+        # 1a. ห้องประจำของชั้นนี้จริง ๆ — a room the school has kept for this
+        #     class, and which is also where they sit.
+        #
+        #     ม.6/3 ห้องเพชร has 255 to itself, and was still being walked to
+        #     another building for a science period because the department
+        #     owns a lab there. A room given to one class is that class's room:
+        #     they are not moved out of it for an ordinary lesson. A subject
+        #     that must have its facility (ห้องประจำวิชา, or ต้องเรียนที่ห้อง
+        #     ประจำวิชา) has already been handled above and is unaffected.
+        #
+        #     Ahead of EVERYTHING that belongs to the teacher, the ห้องพิเศษ of
+        #     1b included. It used to sit below it, so a ห้องเพชร class whose
+        #     teacher runs the band room was walked there. The teacher's
+        #     ordinary fixed room (2a) — and with it teacher_room_over_homeroom
+        #     and the teacher's own room_wins — were already further down, and
+        #     still are: none of the three can pull this class out of its room.
+        #
+        #     Still a ranking, not a filter: if the room is taken at this hour,
+        #     or the teacher cannot manage the stairs to it, the lesson goes on
+        #     down the list and lands somewhere else for that one period. The
+        #     run says so, class by class — see _stay_home_notes.
+        #
+        #     A class the school has ticked but never given a room is settled
+        #     in one NOW, on its first lesson. Left to step 3b, that first
+        #     lesson would already have gone to the teacher's room, and "one
+        #     room, always the same one" would be broken before it began.
+        if (group_id is not None and not wants_outdoor and not home
+                and grp.get("stay_in_homeroom") is True):
+            pick = pick_anchor()
+            if pick:
+                home = pick["id"]
+                # Now it is this class's room: other classes' lessons that fall
+                # back to "any free room" rank it last (see `squat`), and no
+                # later class is handed it as theirs.
+                homeroom_ids.add(home)
+        if (home and not wants_outdoor and not room_taken(home)
+                and group_id is not None):
+            r = r_map.get(home)
+            if (r and building_ok(r)
+                    and _group_stays_home(grp, r, family) and _room_free_for(r, teacher_id)
+                    and not upstairs(r)
+                    and (r["type"] != "outdoor" or may_outdoor)):
+                return home, r["name"], r["type"]
+
         # 1b. ห้องพิเศษที่เป็นของครูคนนี้ — the band room, the lab they run.
         #
         #     The school's rule is that students stay put and the teacher
@@ -2225,24 +2424,6 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             if special:
                 r = min(special, key=lambda r: (r["id"] != fr, r["id"]))
                 return r["id"], r["name"], r["type"]
-
-        # 1c. ห้องประจำของชั้นนี้จริง ๆ — a room the school has kept for this
-        #     class, and which is also where they sit.
-        #
-        #     ม.6/3 ห้องเพชร has 255 to itself, and was still being walked to
-        #     another building for a science period because the department
-        #     owns a lab there. A room given to one class is that class's room:
-        #     they are not moved out of it for an ordinary lesson. A subject
-        #     that must have its facility (ห้องประจำวิชา, or ต้องเรียนที่ห้อง
-        #     ประจำวิชา) has already been handled above and is unaffected.
-        if (home and not wants_outdoor and not room_taken(home)
-                and group_id is not None):
-            r = r_map.get(home)
-            if (r and building_ok(r)
-                    and _group_stays_home(grp, r, family) and _room_free_for(r, teacher_id)
-                    and not upstairs(r)
-                    and (r["type"] != "outdoor" or may_outdoor)):
-                return home, r["name"], r["type"]
 
         # 2'. ห้องประจำชั้นของนักเรียน, ahead of the department's facility
         #     and of the teacher's own room.
@@ -2350,24 +2531,11 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         #     keeps the classes from fighting over the same few rooms.
         if (group_id is not None and not grp.get("homeroom_room_id")
                 and group_id not in anchor_room and not wants_outdoor):
-            taken_anchors = set(anchor_room.values())
-            indoor = [r for r in ROOMS
-                      if r["type"] in ("physical", "floating")
-                      and not r.get("specialized_dept_id") and eligible(r)]
-            # A room nobody calls home first. But when the school is short of
-            # rooms there may be none — every open room is somebody's — and
-            # refusing to look further sent the class outside while five
-            # classrooms stood empty. Another class's room beats no room.
-            free = [r for r in indoor if r["id"] not in homeroom_ids] or indoor
-            # Nothing indoors left and the school allows it: a ลาน is a place
-            # to sit, which beats the class having nowhere recorded at all.
-            if free:
-                pick = min(free, key=lambda r: (
-                    r["id"] in taken_anchors,
-                    0 if r.get("capacity", 40) >= grp.get("size", 40) else 1,
-                    -int(r.get("capacity") or 0),
-                    r["id"]))
-                anchor_room[group_id] = pick["id"]
+            # A room nobody calls home first (see _choose_anchor). Another
+            # class's room beats no room: refusing to look further sent the
+            # class outside while five classrooms stood empty.
+            pick = pick_anchor()
+            if pick:
                 return pick["id"], pick["name"], pick["type"]
             # Nothing indoors free this hour. A ลาน will hold the lesson, but
             # it is NOT recorded as the class's anchor: anchoring them outside
@@ -4651,6 +4819,17 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             f"โดยใช้ครูที่สอนวิชานั้นอยู่แล้ว"
         )
 
+    # ห้องที่อยู่ประจำชั้น: the lessons that could not stay in their room.
+    # A note, not a violation — the lesson is taught, just not where the class
+    # wanted it, and that is the school's to know rather than to fix by hand.
+    notes.extend(_stay_home_notes(
+        [s for s in SLOTS if s["id"] not in slots_before],
+        {gid: g.get("homeroom_room_id") or anchor_room.get(gid)
+         for gid, g in g_map.items()},
+        lambda s: (req_room.get((s["group_id"], s.get("subject_id"), s.get("teacher_id")))
+                   == s.get("room_id") and s.get("room_id") is not None)
+                  or (s["group_id"], s["day"], s["period"]) in pick_at))
+
     status = "FEASIBLE" if not violations else "INFEASIBLE"
     LAST_RUN["unplaced_requirement_ids"] = unplaced_ids
     LAST_RUN["skipped_requirement_ids"] = sorted(skipped_reqs)
@@ -5704,6 +5883,28 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
             out.append(r)
         return out
 
+    # ห้องที่อยู่ประจำชั้นแต่ไม่มีห้องประจำชั้นที่บันทึกไว้ — the heuristic placer
+    # settles such a class in one ordinary room on its first lesson and keeps
+    # it there all week. CP-SAT has no "first lesson", so the same room is
+    # chosen up front, by the same rule (_choose_anchor), once per class, in
+    # id order so two classes are not handed the same one.
+    stay_anchor: dict[int, int] = {}
+    _homerooms = {g["homeroom_room_id"] for g in flat_groups if g.get("homeroom_room_id")}
+    for _gid in sorted({o["group_id"] for o in occurrences}):
+        _g = g_map.get(_gid) or {}
+        if _g.get("stay_in_homeroom") is not True or _g.get("homeroom_room_id"):
+            continue
+        _fam = _group_family(_gid, _g)
+        _pick = _choose_anchor(
+            _g,
+            [r for r in ROOMS
+             if r["type"] in ("physical", "floating")
+             and not r.get("specialized_dept_id") and _room_usable(r)
+             and not _room_reserved_for(r) and _room_allows_group(r, _gid, _fam)],
+            set(stay_anchor.values()), _homerooms)
+        if _pick:
+            stay_anchor[_gid] = _pick["id"]
+
     def shortlist_rooms(occ: dict, limit: int) -> list[dict]:
         """The few rooms worth considering for this lesson.
 
@@ -5737,6 +5938,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
             if want_dept and r.get("specialized_dept_id") == want_dept:
                 take(r["id"])
         take(home)
+        take(stay_anchor.get(occ["group_id"]))   # a ticked class with no room recorded
         take(fixed)
 
         generic = [r for r in rooms if r["id"] not in picked]
@@ -5799,6 +6001,18 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         subj_room = set(_subject_rooms(subj))   # ห้องประจำวิชา (ได้หลายห้อง)
         own_rooms = dept_rooms.get(subj.get("department_id") or -1, set())
         lvl_last = _last_period_for(occ_level(occ))
+        # The room this class stays in, if the rule covers THIS lesson. None
+        # for a subject with its own room, for พลศึกษา, and for a class that
+        # does not stay home — so every one of those is priced exactly as it
+        # was before this rule existed.
+        _hid = homeroom or stay_anchor.get(occ["group_id"])
+        stay_room = (_hid if _stays_home_for(g_map.get(occ["group_id"]), subj,
+                                             r_map.get(_hid), wants_outdoor) else None)
+        # Only when the room is one of the choices at all: if it was left out
+        # of the shortlist every option would carry the same price, which
+        # steers nothing and only inflates the objective.
+        if stay_room is not None and stay_room not in {r["id"] for r in rooms}:
+            stay_room = None
 
         occ_start_list = []
         for (d, p) in starts:
@@ -5874,6 +6088,12 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                         penalty_terms.append((3, rv))      # teacher leaves fixed room
                     if r["type"] == "special":
                         penalty_terms.append((1, rv))      # mild: avoid burning special rooms
+                # เรียนในห้องประจำชั้น: a class that stays in its own room pays
+                # STAY_HOME_COST for every other one — more than finishing
+                # early (TAIL_COST), far less than not being taught (1000).
+                # Where it sits among those is the rule; see the constant.
+                if stay_room is not None and r["id"] != stay_room:
+                    penalty_terms.append((STAY_HOME_COST, rv))
                 # Prefer a room the class actually fits in, without ruling the
                 # tight ones out — see compatible_rooms.
                 if r.get("capacity", 40) < group_size:
@@ -6013,6 +6233,7 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
     # still a good one, so they must not turn the run INFEASIBLE.
     notes: list[str] = []
     unplaced_ids: set[int] = set()
+    seated: list[dict] = []      # the lessons this run placed, for the report below
 
     if ok:
         for idx, occ in enumerate(occurrences):
@@ -6051,12 +6272,20 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
                     "subject_name": subj.get("name"), "subject_code": subj.get("code"),
                 }
                 SLOTS.append(slot)
+                seated.append(slot)
                 created += 1
+        # ห้องที่อยู่ประจำชั้น: the lessons that could not stay in their room.
+        notes.extend(_stay_home_notes(
+            seated,
+            {gid: g.get("homeroom_room_id") or stay_anchor.get(gid)
+             for gid, g in g_map.items()}))
     else:
         violations.append("ไม่พบคำตอบที่เป็นไปได้ — ลองลดจำนวนคาบ เพิ่มครู/ห้อง หรือปลดล็อกบางคาบ")
 
     LAST_RUN["unplaced_requirement_ids"] = sorted(unplaced_ids)
     LAST_RUN["skipped_requirement_ids"] = sorted(skipped_reqs)
+    # ห้องที่ CP-SAT แจกให้ชั้นที่ติ๊กแต่ไม่มีห้องประจำ — ไว้ให้เห็นและตรวจ
+    LAST_RUN["stay_home_anchors"] = dict(stay_anchor)
     return {
         "status": "OPTIMAL" if status == cp_model.OPTIMAL else ("FEASIBLE" if ok else "INFEASIBLE"),
         "slots_created": created,
