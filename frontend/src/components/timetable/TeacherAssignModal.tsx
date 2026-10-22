@@ -43,6 +43,21 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
   const [busy, setBusy]     = useState(false);
   const [error, setError]   = useState<string | null>(null);
 
+  /**
+   * คำเตือนหายเองหลังอ่านทัน
+   *
+   * ข้อความพวกนี้มาจากหลักสูตร และยาวพอจะบอกได้ว่าต้องไปทำอะไรต่อ
+   * ("เพิ่มวิชานี้ลงในหลักสูตรก่อน") จึงไม่ควรวาบแล้วหาย แต่ก็ไม่ควรค้าง
+   * ให้ต้องปัดทิ้งเอง เวลาจึงยืดตามความยาวข้อความ ประโยคสั้นหายเร็ว
+   * ประโยคยาวอยู่นานขึ้น อย่างมาก 12 วินาที
+   */
+  useEffect(() => {
+    if (!error) return;
+    const ms = Math.min(12000, 4000 + error.length * 60);
+    const id = window.setTimeout(() => setError(null), ms);
+    return () => window.clearTimeout(id);
+  }, [error]);
+
   const reqIndex = useMemo(() => indexRequirements(requirements), [requirements]);
 
   /**
@@ -791,7 +806,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
         <p className="text-[11px] text-gray-400 flex-1">
           ข้อมูลนี้เชื่อมกับหน้า "จัดห้อง/ครู" ของรายวิชา — แก้ที่ไหนก็เห็นเหมือนกัน
         </p>
-        {error && <span className="text-xs text-red-600 max-w-sm leading-snug">{error}</span>}
+        {/* ข้อความเดียวกันนี้ขึ้นเป็นกรอบแดงตรงรายชื่อห้องที่กดแล้ว
+            ซ้ำอีกตัวตรงนี้มีแต่จะอ่านเป็นสองเรื่อง */}
         <button onClick={onClose} className="px-5 py-2 text-sm bg-indigo-700 text-white rounded-lg font-semibold hover:bg-indigo-800">
           เสร็จสิ้น
         </button>
