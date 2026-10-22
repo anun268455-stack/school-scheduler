@@ -9,7 +9,7 @@
  * Picking saves at once. The timetable itself does not move until the school
  * presses สร้างตาราง again — this only records the decision.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { ModalShell } from "../common/ModalShell";
@@ -41,9 +41,54 @@ export const YardPickModal: React.FC<YardPickModalProps> = ({
   const yardPicksError = useTimetableStore((s) => s.yardPicksError);
   const saveYardPick   = useTimetableStore((s) => s.saveYardPick);
   const loadYardPicks  = useTimetableStore((s) => s.loadYardPicks);
+  const slots          = useTimetableStore((s) => s.slots);
+  const groups         = useTimetableStore((s) => s.groups);
+
+  const groupNameOf = useMemo(() => {
+    const byId = new Map<number, string>();
+    const walk = (list: typeof groups) => {
+      for (const g of list) {
+        byId.set(g.id, g.name);
+        if (g.children?.length) walk(g.children);
+      }
+    };
+    walk(groups);
+    return (id: number) => byId.get(id) ?? `ห้อง #${id}`;
+  }, [groups]);
 
   const [busy, setBusy] = useState(false);
   const [err,  setErr]  = useState<string | null>(null);
+
+  /**
+   * ลานไหนในชั่วโมงนี้มีคนจับจองอยู่แล้ว
+   *
+   * ลานหนึ่งรับได้ห้องเดียวต่อชั่วโมง เหมือนห้องเรียนทุกห้อง หน้านี้เคยเสนอ
+   * ลานทุกลานเท่ากันหมดโดยไม่บอกว่าอันไหนไม่ว่าง เลือกไปแล้วระบบก็บันทึกให้
+   * ดูเหมือนเรียบร้อย แล้วไปแพ้ตอนกดสร้างตาราง เพราะอีกห้องจองไว้ก่อน
+   * วัดกับข้อมูลจริงแล้ว: ชี้ทุกคาบไปลานเดียวกัน ได้จริง 6 จาก 27 ช่อง
+   * พอกระจายลานไม่ให้ชนกัน ได้ 25 จาก 26 — ตัวจัดไม่ได้ผิด หน้านี้ไม่ได้บอก
+   *
+   * แยกสองระดับ เพราะความแน่นอนไม่เท่ากัน:
+   *  · อีกห้อง "เลือกลานนั้นไว้" ในชั่วโมงเดียวกัน = ชนแน่นอน ปิดไปเลย
+   *  · ลานนั้น "มีคาบอยู่" ตอนนี้ = เตือนไว้ คาบอาจย้ายตอนจัดใหม่
+   */
+  const taken = useMemo(() => {
+    const periods = new Set(cols.map((c) => c.period));
+    const hard = new Map<number, string>();   // ลาน -> ชื่อห้องที่จองไว้
+    const soft = new Map<number, string>();   // ลาน -> ชื่อห้องที่ใช้อยู่ตอนนี้
+    for (const p of yardPicks) {
+      if (p.group_id === groupId || p.day !== day || !periods.has(p.period)) continue;
+      hard.set(p.room_id, groupNameOf(p.group_id));
+    }
+    const yardIds = new Set(yardList.map((y) => y.id));
+    for (const s of slots) {
+      if (s.group_id === groupId || s.day !== day || !periods.has(s.period)) continue;
+      if (s.room_id && yardIds.has(s.room_id) && !hard.has(s.room_id)) {
+        soft.set(s.room_id, s.group_name ?? groupNameOf(s.group_id));
+      }
+    }
+    return { hard, soft };
+  }, [yardPicks, slots, yardList, groupId, day, cols, groupNameOf]);
 
   const mine = picksOfGroup(yardPicks, groupId);
   /** What each hour of this cell has now: a ลาน id, or null. */
@@ -114,27 +159,42 @@ export const YardPickModal: React.FC<YardPickModalProps> = ({
         ) : (
           <ul className="space-y-1.5">
             {yardList.map((y) => {
-              const on = allSame && current === y.id;
+              const on   = allSame && current === y.id;
+              const held = taken.hard.get(y.id);
+              const busyNow = taken.soft.get(y.id);
               return (
                 <li key={y.id}>
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || (!!held && !on)}
                     onClick={() => choose(y.id)}
+                    title={held ? `${y.name} ถูก ${held} เลือกไว้ในชั่วโมงนี้แล้ว`
+                          : busyNow ? `ตอนนี้ ${busyNow} เรียนอยู่ที่ ${y.name} ชั่วโมงนี้`
+                          : undefined}
                     className={clsx(
-                      "w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-sm text-left transition-colors disabled:opacity-50",
+                      "w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-sm text-left transition-colors disabled:opacity-60 disabled:cursor-not-allowed",
                       on
                         ? "bg-teal-600 border-teal-600 text-white font-semibold"
+                        : held
+                        ? "bg-gray-100 border-gray-200 text-gray-400"
+                        : busyNow
+                        ? "bg-white border-amber-200 text-gray-800 hover:bg-amber-50 hover:border-amber-400"
                         : "bg-white border-gray-200 text-gray-800 hover:bg-teal-50 hover:border-teal-300",
                     )}
                   >
-                    <span>{on ? "✓" : "📌"}</span>
+                    <span>{on ? "✓" : held ? "🚫" : busyNow ? "⚠" : "📌"}</span>
                     <span className="flex-1 truncate">{y.name}</span>
-                    {y.capacity > 0 && (
-                      <span className={clsx("text-[11px]", on ? "text-teal-100" : "text-gray-400")}>
+                    {/* ลานหนึ่งรับได้ห้องเดียวต่อชั่วโมง เลือกทับกันแล้วจะมี
+                        ห้องหนึ่งแพ้เงียบๆ ตอนกดสร้างตาราง จึงบอกตั้งแต่ตอนเลือก */}
+                    {held ? (
+                      <span className="text-[11px] text-gray-500 shrink-0">{held} เลือกไว้แล้ว</span>
+                    ) : busyNow ? (
+                      <span className="text-[11px] text-amber-700 shrink-0">{busyNow} เรียนอยู่</span>
+                    ) : y.capacity > 0 ? (
+                      <span className={clsx("text-[11px] shrink-0", on ? "text-teal-100" : "text-gray-400")}>
                         จุ {y.capacity} คน
                       </span>
-                    )}
+                    ) : null}
                   </button>
                 </li>
               );
