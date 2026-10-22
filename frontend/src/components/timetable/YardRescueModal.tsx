@@ -19,9 +19,12 @@
  *
  * A คาบคู่ is one lesson in one room across two hours, so a lesson that is half
  * of one is marked on both hours — this lesson's own for ลงลานเอง, the donor's
- * for the other kind — the way the picker marks both hours of a merged cell.
- * That is two saves, and the second can fail after the first went through; the
- * screen then says one hour was marked and the other was not.
+ * for the other kind. Which hours those are is decided by what the lessons say
+ * (the pair key the server writes), not by how the grid draws them: a pair with
+ * a break between its halves is two cells on the page and still one lesson, and
+ * both halves are marked. That is two saves, and the second can fail after the
+ * first went through; the screen then says one hour was marked and the other was
+ * not.
  */
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
@@ -31,10 +34,10 @@ import { useTimetableStore } from "../../store/timetableStore";
 import { DAYS, periodLabel, type Period, type StudentGroup } from "../../types";
 import { flattenGroups } from "../../utils/groupHierarchy";
 import { levelKeyOf, periodsForLevel } from "../../utils/levels";
-import { lessonHours } from "../../utils/yardPicks";
+import { lessonAt, lessonHours } from "../../utils/yardPicks";
 import {
   directKey, directPick, donorKey, donorPick, marksForHours, partialLine,
-  rescueView, savedLine, whenText, writeMarks,
+  rescueView, runsOfHours, savedLine, whenText, writeMarks,
   type RescueSave,
 } from "../../utils/yardRescue";
 
@@ -98,19 +101,29 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
   }, [groups]);
 
   /**
-   * The hours of one class's lesson at this day and hour — two when it is half
-   * of a merged คาบคู่, found the way the grid draws it, in that class's own
-   * periods (a ม.1 and a ม.5 class do not share a day).
+   * The hours of one class's lesson at this day and hour — both of a คาบคู่
+   * whichever half is asked, wherever the break falls. The lesson is the one in
+   * `inRoom` (null: the one with no room, which is the stuck one); a donor's is
+   * told apart by the room it would give up.
    */
-  const hoursOf = (gid: number, d: number, p: number): number[] => {
-    const nums = periodsForLevel(periods, levelKeyOf(groupById.get(gid))).map((x: Period) => x.period_num);
-    return lessonHours(slots, gid, d, nums, p);
+  const hoursOf = (gid: number, d: number, p: number, inRoom: number | null): number[] =>
+    lessonHours(slots, lessonAt(slots, gid, d, p, inRoom), p);
+
+  /**
+   * The time those hours take. A pair that sits together is one stretch; a pair
+   * with a break between its halves is two, never a span through the break. In
+   * that class's own columns (a ม.1 and a ม.5 class do not share a day).
+   */
+  const timeOf = (gid: number, hs: number[]): string => {
+    const cols = periodsForLevel(periods, levelKeyOf(groupById.get(gid))).map((x: Period) => x.period_num);
+    return runsOfHours(hs, cols).map((run) => {
+      const a = rowOf(run[0]), b = rowOf(run[run.length - 1]);
+      return a && b ? `${a.start_time}–${b.end_time}` : "";
+    }).filter(Boolean).join(" + ");
   };
 
-  const hours = hoursOf(groupId, day, period);
-  const first = rowOf(hours[0]);
-  const last  = rowOf(hours[hours.length - 1]);
-  const times = first && last ? `${first.start_time}–${last.end_time}` : "";
+  const hours = hoursOf(groupId, day, period, null);
+  const times = timeOf(groupId, hours);
   const when  = whenText(dayName, hours.map(labelOf));
 
   const view   = data ? rescueView<api.YardRescueDirect, api.YardRescueDonor>(data) : null;
@@ -132,13 +145,14 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
    * (or, with another ลาน, both).
    */
   const apply = async (
-    key: string, pick: RescueSave, who: { group: string; yard: string; frees?: string },
+    key: string, pick: RescueSave, inRoom: number | null,
+    who: { group: string; yard: string; frees?: string },
   ) => {
     if (busy) return;
     setBusyKey(key);
     setErr(null);
     try {
-      const own   = hoursOf(pick.group_id, pick.day, pick.period);
+      const own   = hoursOf(pick.group_id, pick.day, pick.period, inRoom);
       const marks = marksForHours(pick, own, yardPicks);
       const out   = await writeMarks(marks, saveYardPick);
       const at    = (ms: RescueSave[]) => whenText(dayName, ms.map((m) => labelOf(m.period)));
@@ -246,7 +260,7 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
                           type="button"
                           disabled={busy}
                           onClick={() => apply(
-                            key, directPick(cell, d), { group: groupName, yard: d.room_name },
+                            key, directPick(cell, d), null, { group: groupName, yard: d.room_name },
                           )}
                           title={`ให้ ${subject} ของ ${groupName} ไปเรียนที่ ${d.room_name}`}
                           className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-left text-gray-800 hover:bg-teal-50 hover:border-teal-300 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
@@ -288,7 +302,7 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
                     const key = donorKey(o);
                     // The donor's own lesson may be a คาบคู่ that starts or ends
                     // at another hour than this lesson does.
-                    const theirs = whenText(dayName, hoursOf(o.group_id, day, period).map(labelOf));
+                    const theirs = whenText(dayName, hoursOf(o.group_id, day, period, o.frees_room_id).map(labelOf));
                     return (
                       <li key={key} className="rounded-lg border border-amber-300 bg-white px-3 py-2">
                         <div className="text-sm font-semibold text-gray-900">
@@ -304,7 +318,7 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
                           type="button"
                           disabled={busy}
                           onClick={() => apply(
-                            key, donorPick(cell, o),
+                            key, donorPick(cell, o), o.frees_room_id,
                             { group: o.group_name, yard: o.yard_name, frees: o.frees_room_name },
                           )}
                           title={`ทำเครื่องหมายที่ ${o.group_name} ไม่ใช่ ${groupName}`}

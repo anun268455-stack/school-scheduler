@@ -157,21 +157,53 @@ export function periodsOfCell(
   return [period];
 }
 
+// ── ครึ่งไหนเป็นคาบเดียวกัน ─────────────────────────────────────────────────
+// The helpers above answer a drawing question: do these two hours draw as ONE
+// cell? That needs the columns to touch. They do not answer the lesson question
+// — are these two hours ONE LESSON, in one room? — and the two come apart when
+// a break falls between the halves: one lesson, two cells. A ลาน is chosen for a
+// lesson, so a screen that marks hours out asks the lesson question, the way the
+// server does (`_lesson_slots`: the class's slots that carry the same pair key).
+
+/** What finding a lesson, and its other half, needs to know about a slot. */
+export interface LessonLike extends DoubleLike {
+  group_id: number;
+  day:      number;
+  period:   number;
+  room_id?: number | null;
+}
+
 /**
- * The hours of the lesson that sits at one class's one hour — two when it is
- * half of a merged คาบคู่ — worked out from that class's own lessons, as the
- * grid would draw them. For a screen that has the lesson but not the grid.
+ * The lesson at one class's one hour, told apart by the room it sits in —
+ * `null` is the lesson with no room, the one that is stuck. The hour alone does
+ * not say which: an hour can hold more than one lesson of a class (an elective
+ * window), and a rescue is for one of them. Nothing found: undefined.
  */
-export function lessonHours<S extends DoubleLike & { group_id: number; day: number; period: number }>(
-  slots: S[], groupId: number, day: number, periodNums: number[], period: number,
+export function lessonAt<S extends LessonLike>(
+  slots: S[], groupId: number, day: number, period: number, inRoom: number | null,
+): S | undefined {
+  return slots.find((s) => s.group_id === groupId && s.day === day && s.period === period
+    && (s.room_id || null) === inRoom);
+}
+
+/**
+ * Every hour of a lesson, in period order: its own, and the other half of a
+ * คาบคู่ — whether or not the two touch on the page. Found as the server finds
+ * them, by the pair key among the class's own slots, and only on the lesson's
+ * day (a ลาน is picked for one day's hour). `period` is the hour that was asked
+ * about and is always among them, even when the lesson itself cannot be found.
+ */
+export function lessonHours<S extends LessonLike>(
+  slots: S[], lesson: S | undefined, period: number,
 ): number[] {
-  const grid = new Map<string, S[]>();
-  for (const s of slots) {
-    if (s.group_id !== groupId || s.day !== day) continue;
-    const k = cellKey(s.day, s.period);
-    const cell = grid.get(k);
-    if (cell) cell.push(s);
-    else grid.set(k, [s]);
+  const hours = new Set<number>([period]);
+  const key = lesson?.double_group_key;
+  if (lesson && key) {
+    for (const s of slots) {
+      if (s.double_group_key === key && s.group_id === lesson.group_id && s.day === lesson.day) {
+        hours.add(s.period);
+      }
+    }
   }
-  return periodsOfCell(mergedDoubles(grid, [day], periodNums), day, periodNums, period);
+  return [...hours].sort((a, b) => a - b);
 }

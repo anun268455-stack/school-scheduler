@@ -15,9 +15,11 @@
  * the ลาน it goes to (`yard_id`) and must never be what gets saved.
  *
  * A คาบคู่ is one lesson in one room across two hours, so a choice marks both
- * of them — the lesson's own, and for a donor the donor's. The two marks are two
- * saves, and the second can be refused after the first went through; that is
- * reported as what it is (one hour marked, one not), never as a clean save.
+ * of them — the lesson's own, and for a donor the donor's — including when a
+ * break falls between the halves and they are two cells on the page. The two
+ * marks are two saves, and the second can be refused after the first went
+ * through; that is reported as what it is (one hour marked, one not), never as a
+ * clean save.
  *
  * Types here are structural, not imported, like yardPicks.ts: the server's rows
  * satisfy them and this file stays free of the rest of the app.
@@ -109,6 +111,24 @@ export async function writeMarks(
     saved.push(marks[i]);
   }
   return { ok: true, saved };
+}
+
+/**
+ * The hours of one lesson as runs that follow each other in the day's columns:
+ * `[[3, 4]]` for a pair that sits together, `[[4], [7]]` for a pair a break
+ * falls between. For telling the time a lesson takes — one stretch from the
+ * first start to the last end is true of the first and would be false of the
+ * second, which does not run through the break.
+ */
+export function runsOfHours(hours: number[], columns: number[]): number[][] {
+  const runs: number[][] = [];
+  for (const h of [...hours].sort((a, b) => a - b)) {
+    const last = runs[runs.length - 1];
+    const at = columns.indexOf(h);
+    if (last && at > 0 && columns[at - 1] === last[last.length - 1]) last.push(h);
+    else runs.push([h]);
+  }
+  return runs;
 }
 
 /** "วันอังคาร คาบ 3 + คาบ 4" — a day and the hour(s) of one lesson. */
