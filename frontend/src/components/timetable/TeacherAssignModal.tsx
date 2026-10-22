@@ -117,12 +117,16 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
       is answered beside the question it belongs to. */
   const subjDuration = subjects.find((s) => s.id === Number(subjectId))?.duration ?? 1;
   const setSubjectDuration = async (subjectId: number, duration: 1 | 2) => {
-    setBusy(true);
+    setBusy(true); setError(null);
     try {
       const updated = await api.updateSubject(subjectId, { duration });
       useTimetableStore.setState((st) => ({
         subjects: st.subjects.map((x) => (x.id === subjectId ? { ...x, ...updated } : x)),
       }));
+    } catch (e) {
+      // ไม่มี catch มาก่อน ถ้าเซิร์ฟเวอร์ปฏิเสธ ปุ่มจะเด้งกลับเงียบๆ
+      // เหมือนกดไม่ติด แทนที่จะบอกว่าทำไม
+      setError(api.errorDetail(e, "เปลี่ยนคาบเดี่ยว/คาบคู่ไม่สำเร็จ"));
     } finally { setBusy(false); }
   };
 
@@ -734,6 +738,15 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
           </div>
 
           <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
+            {/* เหตุผลที่เพิ่มไม่ได้ ต้องอยู่ตรงที่กด ไม่ใช่ตัวเล็กๆ ท้ายกล่อง
+                หลักสูตรปฏิเสธแถวเป็นรายแถวและตอบ 200 เสมอ กดแล้วจึงเงียบ
+                จนอ่านได้ว่าปุ่มเสีย ทั้งที่เซิร์ฟเวอร์บอกเหตุผลมาครบ */}
+            {error && (
+              <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 mb-1">
+                <p className="text-xs font-semibold text-red-800 mb-0.5">เพิ่มไม่ได้</p>
+                <p className="text-[11px] text-red-700 leading-snug">{error}</p>
+              </div>
+            )}
             {!subjectId && <p className="text-xs text-gray-400 text-center py-8">เลือกวิชาก่อน แล้วจึงเลือกห้อง</p>}
             {subjectId && classesInLevel.map((g) => {
               const offer = offerFor(g.id, Number(subjectId));

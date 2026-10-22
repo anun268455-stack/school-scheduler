@@ -81,8 +81,59 @@ export const createRequirement = (d: Partial<LessonRequirement>) =>
   api.post<LessonRequirement>("/timetable/requirements", d).then((r) => r.data);
 export const updateRequirement = (id: number, d: Partial<LessonRequirement>) =>
   api.put<LessonRequirement>(`/timetable/requirements/${id}`, d).then((r) => r.data);
-export const bulkCreateRequirements = (rows: Partial<LessonRequirement>[]) =>
-  api.post<LessonRequirement[]>("/timetable/requirements/bulk", rows).then((r) => r.data);
+/** สิ่งที่ /requirements/bulk ตอบกลับมาจริง */
+export type BulkReqResult = {
+  created: LessonRequirement[];
+  rejected: { row: number; reason: string }[];
+  updated: LessonRequirement[];
+  unchanged: number;
+  merged: number;
+  teachers_filled: number;
+};
+
+/** แถวที่ถูกปฏิเสธ — โยนออกมาเพื่อให้ตัวเรียกเห็น ไม่ใช่กลืนหายไปเฉยๆ */
+export class BulkRejected extends Error {
+  constructor(public result: BulkReqResult) {
+    super(result.rejected.map((x) => x.reason).join(" · "));
+    this.name = "BulkRejected";
+  }
+}
+
+/**
+ * ปลายทางนี้ปฏิเสธเป็น "รายแถว" โดยตั้งใจ — นำเข้าทั้งไฟล์แล้วแถวเสียแถวเดียว
+ * ต้องไม่ล้มทั้งไฟล์ แต่มันจึงตอบ 200 เสมอ แม้จะไม่ได้สร้างอะไรเลย
+ *
+ * และตอบคนละรูปสองแบบ: เป็น "ลิสต์" เมื่อทุกแถวผ่าน เป็น "ก้อน" เมื่อมีแถวถูก
+ * ปฏิเสธ/ถูกรวม ตัวเรียกทุกที่เขียนไว้ว่าได้ลิสต์ จึงไม่มีใครอ่านเหตุผลเลย
+ * ผลคือกดปุ่มเพิ่มวิชาแล้วไม่มีอะไรเกิดขึ้นและไม่มีข้อความใดๆ ขึ้นมาบอก
+ * ซึ่งอ่านเหมือนปุ่มเสีย ทั้งที่เซิร์ฟเวอร์ตอบเหตุผลไว้ครบแล้ว
+ */
+const bulkReqRaw = (rows: Partial<LessonRequirement>[]) =>
+  api.post<LessonRequirement[] | Partial<BulkReqResult>>(
+    "/timetable/requirements/bulk", rows,
+  ).then((r): BulkReqResult => {
+    const d = r.data;
+    if (Array.isArray(d)) {
+      return { created: d, rejected: [], updated: [], unchanged: 0,
+               merged: 0, teachers_filled: 0 };
+    }
+    return { created: d.created ?? [], rejected: d.rejected ?? [],
+             updated: d.updated ?? [], unchanged: d.unchanged ?? 0,
+             merged: d.merged ?? 0, teachers_filled: d.teachers_filled ?? 0 };
+  });
+
+/** ใช้ตอนนำเข้าไฟล์ ซึ่งมีหน้าจอรายงานแถวที่ถูกปฏิเสธอยู่แล้ว */
+export const bulkCreateRequirementsReport = bulkReqRaw;
+
+/**
+ * ใช้ตอนกดเพิ่มทีละวิชา/ทีละห้อง ซึ่งคนกดคาดว่าจะได้ผลหรือได้คำอธิบาย
+ * แถวที่ถูกปฏิเสธจึงโยนเป็น error ให้ตัวเรียกแสดงเหตุผลตามปกติ
+ */
+export const bulkCreateRequirements = async (rows: Partial<LessonRequirement>[]) => {
+  const res = await bulkReqRaw(rows);
+  if (res.rejected.length) throw new BulkRejected(res);
+  return res.created;
+};
 export const deleteRequirement = (id: number) => api.delete(`/timetable/requirements/${id}`);
 
 // ── Timetable Slots ──────────────────────────────────────────────────────────
@@ -782,6 +833,11 @@ export const saveYardOrder = (order: number[]) =>
  * detail is a developer's string, and a 422 puts a list there, not text.
  */
 export const errorDetail = (e: unknown, fallback: string): string => {
+  // แถวที่ถูกปฏิเสธจาก bulk — เหตุผลอยู่ในตัว error เอง ไม่ได้อยู่ใน response
+  if (e instanceof BulkRejected) {
+    const reasons = Array.from(new Set(e.result.rejected.map((x) => x.reason)));
+    return reasons.join(" · ") || fallback;
+  }
   const r = (e as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
   const d = r?.data?.detail;
   return r?.status === 400 && typeof d === "string" && d.trim() ? d : fallback;
