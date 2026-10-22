@@ -207,3 +207,24 @@ export function lessonHours<S extends LessonLike>(
   }
   return [...hours].sort((a, b) => a - b);
 }
+
+/**
+ * Every hour a mark on one cell goes with: the cell's own hours, and the other
+ * half of the lesson in it when that is a คาบคู่ the page draws apart (a break
+ * between the halves). The picker marks a cell; a ลาน is chosen for a lesson;
+ * this is how the two are made to agree.
+ *
+ * Only for an hour that holds exactly one lesson of the class. An hour with two
+ * (an elective window) does not say which of them the mark is for, so it goes
+ * on that hour alone; an empty hour is its own.
+ */
+export function hoursOfCell<S extends LessonLike>(
+  slots: S[], groupId: number, day: number, cellHours: number[],
+): number[] {
+  const hours = new Set<number>(cellHours);
+  for (const p of cellHours) {
+    const here = slots.filter((s) => s.group_id === groupId && s.day === day && s.period === p);
+    if (here.length === 1) for (const h of lessonHours(slots, here[0], p)) hours.add(h);
+  }
+  return [...hours].sort((a, b) => a - b);
+}

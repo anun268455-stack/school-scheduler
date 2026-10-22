@@ -8,14 +8,25 @@
  *
  * Picking saves at once. The timetable itself does not move until the school
  * presses สร้างตาราง again — this only records the decision.
+ *
+ * A ลาน is chosen for a lesson, so a cell that holds half of a คาบคู่ marks both
+ * halves — also when a break falls between them and the grid draws them as two
+ * cells (the cell clicked is then only one of the two hours marked). The other
+ * screen that marks hours, หาลานให้คาบ, does the same, so a lesson behaves the
+ * same whichever the school opened. Two hours are two saves; if the second is
+ * refused after the first went through, that is said, not reported as a save.
  */
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { ModalShell } from "../common/ModalShell";
 import { useTimetableStore } from "../../store/timetableStore";
-import { DAYS } from "../../types";
-import { cellKey, picksOfGroup } from "../../utils/yardPicks";
+import { DAYS, periodLabel, type Period, type StudentGroup } from "../../types";
+import { levelKeyOf, periodsForLevel } from "../../utils/levels";
+import { cellKey, hoursOfCell, picksOfGroup } from "../../utils/yardPicks";
+import {
+  partialLine, partialRemoveLine, runsOfHours, whenText, writeMarks,
+} from "../../utils/yardRescue";
 
 /** One column of the grid the cell covers — two for a คาบคู่ drawn as one cell. */
 export interface YardCol {
@@ -43,18 +54,48 @@ export const YardPickModal: React.FC<YardPickModalProps> = ({
   const loadYardPicks  = useTimetableStore((s) => s.loadYardPicks);
   const slots          = useTimetableStore((s) => s.slots);
   const groups         = useTimetableStore((s) => s.groups);
+  const periods        = useTimetableStore((s) => s.periods);
 
-  const groupNameOf = useMemo(() => {
-    const byId = new Map<number, string>();
+  const { groupNameOf, groupById } = useMemo(() => {
+    const byId = new Map<number, StudentGroup>();
     const walk = (list: typeof groups) => {
       for (const g of list) {
-        byId.set(g.id, g.name);
+        byId.set(g.id, g);
         if (g.children?.length) walk(g.children);
       }
     };
     walk(groups);
-    return (id: number) => byId.get(id) ?? `ห้อง #${id}`;
+    return {
+      groupById:   byId,
+      groupNameOf: (id: number) => byId.get(id)?.name ?? `ห้อง #${id}`,
+    };
   }, [groups]);
+
+  /**
+   * Every hour this choice marks: the cell's own, and the other half of the
+   * lesson in it when that is a คาบคู่ drawn as two cells. In period order, in
+   * this class's own columns (a ม.1 and a ม.5 class do not share a day).
+   */
+  const levelRows = useMemo(
+    () => periodsForLevel(periods, levelKeyOf(groupById.get(groupId))),
+    [periods, groupById, groupId],
+  );
+  const allCols: YardCol[] = useMemo(() => {
+    const own = new Map<number, YardCol>(cols.map((c) => [c.period, c] as [number, YardCol]));
+    return hoursOfCell(slots, groupId, day, cols.map((c) => c.period)).map((n) => {
+      const drawn = own.get(n);
+      if (drawn) return drawn;
+      const row = levelRows.find((x: Period) => x.period_num === n);
+      return {
+        period: n,
+        label:  row?.label ?? periodLabel(n, periods),
+        start:  row?.start_time ?? "",
+        end:    row?.end_time ?? "",
+      };
+    });
+  }, [slots, groupId, day, cols, levelRows, periods]);
+  /** The hours of the lesson that the cell clicked is not. */
+  const otherHalf = allCols.filter((c) => !cols.some((k) => k.period === c.period));
 
   const [busy, setBusy] = useState(false);
   const [err,  setErr]  = useState<string | null>(null);
@@ -73,26 +114,26 @@ export const YardPickModal: React.FC<YardPickModalProps> = ({
    *  · ลานนั้น "มีคาบอยู่" ตอนนี้ = เตือนไว้ คาบอาจย้ายตอนจัดใหม่
    */
   const taken = useMemo(() => {
-    const periods = new Set(cols.map((c) => c.period));
+    const marked = new Set(allCols.map((c) => c.period));
     const hard = new Map<number, string>();   // ลาน -> ชื่อห้องที่จองไว้
     const soft = new Map<number, string>();   // ลาน -> ชื่อห้องที่ใช้อยู่ตอนนี้
     for (const p of yardPicks) {
-      if (p.group_id === groupId || p.day !== day || !periods.has(p.period)) continue;
+      if (p.group_id === groupId || p.day !== day || !marked.has(p.period)) continue;
       hard.set(p.room_id, groupNameOf(p.group_id));
     }
     const yardIds = new Set(yardList.map((y) => y.id));
     for (const s of slots) {
-      if (s.group_id === groupId || s.day !== day || !periods.has(s.period)) continue;
+      if (s.group_id === groupId || s.day !== day || !marked.has(s.period)) continue;
       if (s.room_id && yardIds.has(s.room_id) && !hard.has(s.room_id)) {
         soft.set(s.room_id, s.group_name ?? groupNameOf(s.group_id));
       }
     }
     return { hard, soft };
-  }, [yardPicks, slots, yardList, groupId, day, cols, groupNameOf]);
+  }, [yardPicks, slots, yardList, groupId, day, allCols, groupNameOf]);
 
   const mine = picksOfGroup(yardPicks, groupId);
   /** What each hour of this cell has now: a ลาน id, or null. */
-  const now = cols.map((c) => mine.get(cellKey(day, c.period)) ?? null);
+  const now = allCols.map((c) => mine.get(cellKey(day, c.period)) ?? null);
   const anyPick = now.some((id) => id != null);
   const allSame = now.every((id) => id === now[0]);
   /** The ลาน every hour of the cell already has, if they all agree. */
@@ -102,32 +143,52 @@ export const YardPickModal: React.FC<YardPickModalProps> = ({
     yardList.find((y) => y.id === id)?.name ?? "ลานที่ไม่พบแล้ว";
   const nameOrNone = (id: number | null) => (id == null ? "ยังไม่เลือก" : nameOf(id));
 
-  const hours = cols.map((c) => c.label).join(" + ");
-  const times = `${cols[0].start}–${cols[cols.length - 1].end}`;
+  const hours = allCols.map((c) => c.label).join(" + ");
+  // One stretch for hours that follow each other; two when a break falls between
+  // the halves, never a span through the break.
+  const times = (() => {
+    const columns = levelRows.length ? levelRows.map((x: Period) => x.period_num) : allCols.map((c) => c.period);
+    const at = new Map<number, YardCol>(allCols.map((c) => [c.period, c] as [number, YardCol]));
+    return runsOfHours(allCols.map((c) => c.period), columns)
+      .map((run) => `${at.get(run[0])?.start}–${at.get(run[run.length - 1])?.end}`)
+      .join(" + ");
+  })();
+  const dayName = String(DAYS[day] ?? day + 1);
+  const labelOf = (n: number) => allCols.find((c) => c.period === n)?.label ?? `คาบ ${n}`;
 
   /**
-   * Set (or, with null, remove) the ลาน for every hour the cell covers.
+   * Set (or, with null, remove) the ลาน for every hour of the lesson.
    *
-   * A คาบคู่ is one cell across two columns but two marks on the server, so
-   * both are written. Hours that already say the same thing are left alone,
+   * A คาบคู่ is two marks on the server whether it is drawn as one cell or two,
+   * so both are written. Hours that already say the same thing are left alone,
    * which also keeps "remove" from asking the server to delete what is not there.
+   *
+   * If the first hour is saved and the second refused, the school is told one
+   * hour was marked and the other was not — a save that is half done must not
+   * look like one that worked. What the server really holds is read again, so
+   * the list below shows it, and choosing again writes only what is missing.
    */
   const choose = async (roomId: number | null) => {
     setBusy(true);
     setErr(null);
-    try {
-      for (let i = 0; i < cols.length; i++) {
-        if (now[i] === roomId) continue;
-        await saveYardPick({ group_id: groupId, day, period: cols[i].period, room_id: roomId });
-      }
+    const marks = allCols
+      .filter((_, i) => now[i] !== roomId)
+      .map((c) => ({ group_id: groupId, day, period: c.period, room_id: roomId }));
+    const out = await writeMarks(marks, saveYardPick);
+    if (out.ok) {
       onClose();
-    } catch (e) {
-      setErr(api.errorDetail(e, "บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง"));
-      // The first hour of a คาบคู่ may have been saved before the second was
-      // refused; show what the server really holds.
-      void loadYardPicks();
-      setBusy(false);
+      return;
     }
+    const reason = api.errorDetail(out.error, "บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
+    if (out.saved.length === 0) {
+      setErr(reason);
+    } else {
+      const at = (ms: typeof marks) => whenText(dayName, ms.map((m) => labelOf(m.period)));
+      const line = { group: groupName, saved: at(out.saved), unsaved: at(out.unsaved), reason };
+      setErr(roomId == null ? partialRemoveLine(line) : partialLine({ ...line, yard: nameOf(roomId) }));
+    }
+    void loadYardPicks();
+    setBusy(false);
   };
 
   return (
@@ -138,6 +199,11 @@ export const YardPickModal: React.FC<YardPickModalProps> = ({
           {groupName} · วัน{DAYS[day] ?? day + 1} · {hours}
           <span className="text-teal-700/70"> ({times})</span>
         </p>
+        {otherHalf.length > 0 && (
+          <p className="text-[11px] text-teal-800/80 mt-0.5">
+            เป็นคาบคู่เดียวกับ {otherHalf.map((c) => c.label).join(", ")} จึงเลือกลานให้ทั้งสองชั่วโมงพร้อมกัน
+          </p>
+        )}
       </div>
 
       <div className="px-5 py-3 overflow-y-auto">
@@ -147,7 +213,7 @@ export const YardPickModal: React.FC<YardPickModalProps> = ({
               ? <>ตอนนี้เลือก <strong className="text-teal-800">{nameOf(current)}</strong> ไว้ — เลือกลานอื่นเพื่อเปลี่ยน หรือเอาออก</>
               : <>แต่ละชั่วโมงเลือกไม่เหมือนกัน — เลือกลานเพื่อให้ทั้งช่องเป็นลานเดียวกัน
                   <span className="block text-gray-400">
-                    {cols.map((c, i) => `${c.label}: ${nameOrNone(now[i])}`).join(" · ")}
+                    {allCols.map((c, i) => `${c.label}: ${nameOrNone(now[i])}`).join(" · ")}
                   </span></>}
           </p>
         )}

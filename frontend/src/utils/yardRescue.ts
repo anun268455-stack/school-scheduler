@@ -21,6 +21,9 @@
  * through; that is reported as what it is (one hour marked, one not), never as a
  * clean save.
  *
+ * The picker in the grid (YardPickModal) marks a lesson's hours the same way, so
+ * it shares writeMarks, runsOfHours, whenText and the "บันทึกได้ไม่ครบ" lines.
+ *
  * Types here are structural, not imported, like yardPicks.ts: the server's rows
  * satisfy them and this file stays free of the rest of the app.
  */
@@ -90,18 +93,18 @@ export function marksForHours(
  *              did not, the one that failed first. Empty `saved` means nothing
  *              changed, which is an ordinary refusal; otherwise it is half done.
  */
-export type MarkOutcome =
-  | { ok: true;  saved: RescueSave[] }
-  | { ok: false; saved: RescueSave[]; unsaved: RescueSave[]; error: unknown };
+export type MarkOutcome<M = RescueSave> =
+  | { ok: true;  saved: M[] }
+  | { ok: false; saved: M[]; unsaved: M[]; error: unknown };
 
 /**
  * Save the marks one after another and stop at the first refusal. Never throws:
  * what a caller needs to know is how many went through before it stopped.
  */
-export async function writeMarks(
-  marks: RescueSave[], save: (m: RescueSave) => Promise<unknown>,
-): Promise<MarkOutcome> {
-  const saved: RescueSave[] = [];
+export async function writeMarks<M = RescueSave>(
+  marks: M[], save: (m: M) => Promise<unknown>,
+): Promise<MarkOutcome<M>> {
+  const saved: M[] = [];
   for (let i = 0; i < marks.length; i++) {
     try {
       await save(marks[i]);
@@ -154,6 +157,21 @@ export function partialLine(o: {
     + `กดเลือกอีกครั้งเพื่อบันทึกส่วนที่เหลือ หรือเลือกลานอื่นให้ทั้งสองคาบ`;
 }
 
+/**
+ * The same, for taking a ลาน away (เอาออก) from a คาบคู่ and having only one of
+ * its two hours let go. No ลาน is named: removing does not pick one.
+ */
+export function partialRemoveLine(o: {
+  group:   string;
+  saved:   string;
+  unsaved: string;
+  reason:  string;
+}): string {
+  return `⚠ เอาออกได้ไม่ครบ: ${o.group} ${o.saved} เอาลานออกแล้ว `
+    + `แต่ ${o.unsaved} เอาออกไม่ได้ (${o.reason}) — คาบคู่จึงเอาออกได้แค่ครึ่งเดียว `
+    + `กด “เอาออก” อีกครั้งเพื่อทำส่วนที่เหลือ`;
+}
+
 /** A key for "this choice is being saved", unique within one answer. */
 export const directKey = (d: { room_id: number }): string => `direct:${d.room_id}`;
 
@@ -183,9 +201,53 @@ export const NOTE_GONE =
 export const NOTE_NOTHING =
   "ชั่วโมงนี้ไม่มีลานว่าง และไม่มีห้องอื่นที่ย้ายออกลานแล้วจะได้ห้องให้คาบนี้";
 
+/** The lesson's teacher is in another class's lesson that very hour. */
+export interface RescueClash {
+  teacher:      string;
+  with_group:   string;
+  with_subject: string;
+}
+
+/**
+ * What to say when a ลาน will give the lesson its room and the cell will stay
+ * red anyway: the room is not the only thing wrong. Plain, and naming the other
+ * class and subject, so the school knows where the other half of the fix is.
+ * The options stay on offer — they are right, they just do not finish the job;
+ * with none on offer it says only what else is wrong.
+ */
+export function clashLine(c: RescueClash, withOptions = true): { head: string; body: string } {
+  const who   = (c.teacher ?? "").trim() || "ครูของคาบนี้";
+  const group = (c.with_group ?? "").trim();
+  const what  = (c.with_subject ?? "").trim();
+  const other = what && group ? `${what} ให้ ${group}` : what || group || "อีกห้องหนึ่ง";
+  const clash = `${who} ต้องสอน ${other} ในชั่วโมงเดียวกันนี้ด้วย `
+    + `— ต้องแก้เรื่องครูสอนชนกันอีกทาง คาบนี้จึงจะหายแดง`;
+  return withOptions
+    ? {
+      head: "⚠ เลือกลานแล้ว คาบนี้ก็ยังแดงอยู่",
+      body: `ลานแก้ได้เฉพาะเรื่องห้อง แต่ ${clash} ตัวเลือกด้านล่างยังใช้ได้ คาบนี้จะได้ห้องตามที่เลือก`,
+    }
+    : {
+      head: "⚠ คาบนี้แดงเพราะครูสอนชนกันด้วย",
+      body: `นอกจากเรื่องห้อง ${clash}`,
+    };
+}
+
+/**
+ * Does the server's note already say this clash — the teacher and the other
+ * class, by name? The note is its own words (it may fold the clash into the
+ * reason there is nothing to offer), so before saying the clash a second time
+ * the screen looks.
+ */
+export function noteSaysClash(note: string, c: RescueClash): boolean {
+  const teacher = (c.teacher ?? "").trim();
+  const group   = (c.with_group ?? "").trim();
+  return !!teacher && !!group && note.includes(teacher) && note.includes(group);
+}
+
 /** The parts of the server's answer the screen decides on. */
 export interface RescueLike<D, O> {
-  lesson?: { found?: boolean } | null;
+  lesson?: { found?: boolean; teacher_clash?: RescueClash | null } | null;
   direct?:  D[] | null;
   donors?:  O[] | null;
   note?:    string | null;
@@ -201,20 +263,30 @@ export interface RescueLike<D, O> {
  * screen never ends up blank.
  */
 export type RescueView<D, O> =
-  | { kind: "gone" | "nothing"; note: string }
-  | { kind: "options"; note: string; direct: D[]; donors: O[] };
+  | { kind: "gone"; note: string; clash: null }
+  | { kind: "nothing"; note: string; clash: RescueClash | null; noteSaysClash: boolean }
+  | { kind: "options"; note: string; direct: D[]; donors: O[]; clash: RescueClash | null };
 
 export function rescueView<D extends { rank: number }, O>(
   r: RescueLike<D, O>,
 ): RescueView<D, O> {
   const note = (r.note ?? "").trim();
-  if (r.lesson?.found !== true) return { kind: "gone", note: note || NOTE_GONE };
+  if (r.lesson?.found !== true) return { kind: "gone", note: note || NOTE_GONE, clash: null };
+  const clash  = r.lesson.teacher_clash ?? null;
   const direct = directInOrder(r.direct);
   const donors = r.donors ?? [];
+  const repeats = !!clash && noteSaysClash(note, clash);
   if (!direct.length && !donors.length) {
-    return { kind: "nothing", note: note || NOTE_NOTHING };
+    // Nothing to offer: the note is the reason, and the server folds the clash
+    // into it. Then it is the one thing printed; `clash` is what the screen
+    // still has to say itself, which is nothing when the note already did.
+    return { kind: "nothing", note: note || NOTE_NOTHING, clash: repeats ? null : clash, noteSaysClash: repeats };
   }
-  return { kind: "options", note, direct, donors };
+  // Beside options the server's note is the clash sentence. The screen says the
+  // clash itself (clashLine) from the named fields, in its own place, so the note
+  // is left out when it only repeats it — never both. A note about anything else
+  // is kept.
+  return { kind: "options", note: repeats ? "" : note, direct, donors, clash };
 }
 
 /** Said after every save: the mark is a decision, the timetable has not moved. */

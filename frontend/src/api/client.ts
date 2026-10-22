@@ -827,6 +827,13 @@ export const saveYardOrder = (order: number[]) =>
 // room. Nothing is written by asking — a choice is applied with setYardPick,
 // the same save as everywhere else.
 
+/** The same teacher, teaching another class in that very hour. */
+export interface YardRescueClash {
+  teacher:      string;
+  with_group:   string;
+  with_subject: string;
+}
+
 /** The lesson in the cell that was asked about. */
 export interface YardRescueLesson {
   subject:   string | null;
@@ -834,6 +841,12 @@ export interface YardRescueLesson {
   room_name: string | null;
   /** false: no lesson in that cell, or it already has a room — see `note`. */
   found:     boolean;
+  /**
+   * Set when a ลาน would give the lesson a room and it would still be red,
+   * because its teacher is in another class's lesson that hour. null (or
+   * absent) is the ordinary case.
+   */
+  teacher_clash?: YardRescueClash | null;
 }
 
 /** A ลาน that is free at that hour. Choosing it puts THIS lesson on it. */
@@ -866,7 +879,11 @@ export interface YardRescue {
   /** Best first. */
   direct: YardRescueDirect[];
   donors: YardRescueDonor[];
-  /** Thai sentence when there is nothing to offer; empty when there are options. */
+  /**
+   * Thai sentence when there is nothing to offer. With a teacher clash it also
+   * carries that, even beside options — the screen says the clash itself, from
+   * `lesson.teacher_clash`, and does not print this sentence beside it.
+   */
   note:   string;
 }
 

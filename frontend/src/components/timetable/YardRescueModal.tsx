@@ -36,7 +36,7 @@ import { flattenGroups } from "../../utils/groupHierarchy";
 import { levelKeyOf, periodsForLevel } from "../../utils/levels";
 import { lessonAt, lessonHours } from "../../utils/yardPicks";
 import {
-  directKey, directPick, donorKey, donorPick, marksForHours, partialLine,
+  clashLine, directKey, directPick, donorKey, donorPick, marksForHours, partialLine,
   rescueView, runsOfHours, savedLine, whenText, writeMarks,
   type RescueSave,
 } from "../../utils/yardRescue";
@@ -221,9 +221,32 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
           </div>
         )}
 
+        {/* A ลาน fixes the room and nothing else. When the lesson's teacher is in
+            another class that very hour the cell stays red after สร้างตาราง, and
+            the school must hear that before following the advice below, not after.
+            Said from the named fields; the server's note beside options is that
+            same sentence, so it is not printed next to this (see rescueView). */}
+        {view && view.kind !== "gone" && view.clash && (() => {
+          const said = clashLine(view.clash, view.kind === "options");
+          return (
+            <div role="note" className="rounded-lg border border-amber-400 bg-amber-50 px-3 py-2 text-xs text-amber-950 leading-relaxed">
+              <div className="font-bold">{said.head}</div>
+              <div className="mt-0.5">{said.body}</div>
+            </div>
+          );
+        })()}
+
         {view && view.kind !== "options" && (
-          <p className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-3 leading-relaxed">
-            {view.note}
+          <p className={clsx(
+            "text-sm rounded-lg px-3 py-3 leading-relaxed border",
+            // The server's note can carry the clash as well as the reason there
+            // is nothing to offer; then it is the clash's one telling, so it
+            // gets the warning's colour.
+            view.kind === "nothing" && view.noteSaysClash
+              ? "text-amber-950 bg-amber-50 border-amber-400"
+              : "text-gray-700 bg-gray-50 border-gray-200",
+          )}>
+            {view.kind === "nothing" && view.noteSaysClash && "⚠ "}{view.note}
           </p>
         )}
 
