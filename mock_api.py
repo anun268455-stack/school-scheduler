@@ -5,7 +5,7 @@ Run: python mock_api.py
 from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Any
+from typing import Any, Callable
 import random
 import re as _re
 import os as _os
@@ -420,6 +420,83 @@ def _room_usable(room: dict[str, Any]) -> bool:
     if room.get("usable") is False:
         return False
     return (room.get("capacity", 1) or 0) > 0 or room.get("usable") is True
+
+
+# ── Does this room suit this lesson? ─────────────────────────────────────────
+# The rule the solver applies to every room it considers, with "is anybody in
+# it right now" left out. It lives here, not inside _solve_greedy's find_room,
+# so that find_room and the yard-rescue advice (GET /api/yard-rescue) ask the
+# same question and cannot drift apart.
+
+def _lesson_want_dept(subj: dict[str, Any] | None, teacher: dict[str, Any] | None) -> int | None:
+    """The กลุ่มสาระ whose specialised rooms this lesson is matched against.
+
+    The SUBJECT's department — a maths teacher covering a computer period
+    still needs the lab — and the teacher's own only when the subject has none.
+    """
+    return (subj or {}).get("department_id") or (teacher or {}).get("department_id")
+
+
+def _room_in_buildings(room: dict[str, Any] | None, want_buildings: set[int]) -> bool:
+    """อาคารที่วิชานี้เรียนได้ — empty means anywhere; no room is in no building."""
+    if not want_buildings or not room:
+        return not want_buildings
+    return room.get("building_id") in want_buildings
+
+
+def _room_suits(room: dict[str, Any], *, teacher_id: int | None, group_id: int | None,
+                family: "set[int] | None", want_dept: int | None,
+                want_buildings: set[int], may_outdoor: bool) -> bool:
+    """May this lesson be seated in this room, were nobody in it?
+
+    Building, ห้องห้ามใช้, a room kept for other classes, a room kept for other
+    teachers, a room belonging to another กลุ่มสาระ, and ลาน for a subject that
+    may not go outside. Capacity is not here on purpose: the solver only ranks
+    by it ("a tight room still beats no room"), it never refuses a room for it.
+    """
+    if not _room_in_buildings(room, want_buildings):
+        return False
+    # ห้องห้ามใช้ — a staff room, an office, anything the school has
+    # said is not a classroom. (capacity 0 meant this before the
+    # setting existed, and still does.)
+    if not _room_usable(room):
+        return False
+    if not _room_allows_group(room, group_id, family):
+        return False
+    # A room held for named teachers is held for THEM, not for their
+    # กลุ่มสาระ: this school has one room three teachers of three
+    # different subjects share, and asking for both shut all three out.
+    reserved = bool(_room_reserved_for(room))
+    owns_it = (room.get("specialized_dept_id")
+               and room["specialized_dept_id"] == want_dept)
+    if reserved and not _room_free_for(room, teacher_id):
+        # …unless it is this department's own facility. 353 ฟิสิกส์ has
+        # one teacher's name on it, which shut every other science
+        # teacher out: their lessons went to an ordinary room while the
+        # lab stood empty half the week. A name on a lab means first
+        # refusal, not sole use, so the owner is still preferred in
+        # find_room's ranking — but an empty lab beats a physics lesson in a
+        # general classroom.
+        if not owns_it:
+            return False
+    if not reserved and room.get("specialized_dept_id") and not owns_it:
+        return False
+    # ลาน: open ground is a last resort for an ordinary subject and
+    # only when the school has said this one may go outside.
+    # (allow_outdoor decides what the solver may do on its own. A
+    # คาบเรียนลาน never comes through here: find_room returns it from its
+    # pinned_room_id branch, before eligible() is ever asked.)
+    if room["type"] == "outdoor" and not may_outdoor:
+        return False
+    return True
+
+
+def _is_subjects_own_room(room: dict[str, Any], subj_rooms: list[int],
+                          want_dept: int | None) -> bool:
+    """A facility of this subject: one it names, or one its กลุ่มสาระ owns.
+
+    The only rooms a "ต้องเรียนที่ห้องประจำวิชา" lesson will take."""
+    return room["id"] in subj_rooms or room.get("specialized_dept_id") == want_dept
 
 
 def _elective_option_teachers(slot: dict[str, Any]) -> set[int]:
@@ -2144,7 +2221,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         subj = s_map.get(subject_id, {}) if subject_id is not None else {}
         # Match specialised rooms against the SUBJECT's department — a maths
         # teacher covering a computer period still needs the lab.
-        want_dept = subj.get("department_id") or t.get("department_id")
+        want_dept = _lesson_want_dept(subj, t)
         # พละ belongs outdoors by its department; any other subject goes out
         # only if the school has ticked เรียนที่ลานได้, and then only once the
         # indoor rooms are full — see `eligible` and `rank` below.
@@ -2252,48 +2329,17 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         want_buildings = _subject_buildings(subj)
 
         def building_ok(r: dict | None) -> bool:
-            if not want_buildings or not r:
-                return not want_buildings
-            return r.get("building_id") in want_buildings
+            return _room_in_buildings(r, want_buildings)
 
         def eligible(r: dict) -> bool:
-            if room_taken(r["id"]):
-                return False
-            if not building_ok(r):
-                return False
-            # ห้องห้ามใช้ — a staff room, an office, anything the school has
-            # said is not a classroom. (capacity 0 meant this before the
-            # setting existed, and still does.)
-            if not _room_usable(r):
-                return False
-            if not _room_allows_group(r, group_id, family):
-                return False
-            # A room held for named teachers is held for THEM, not for their
-            # กลุ่มสาระ: this school has one room three teachers of three
-            # different subjects share, and asking for both shut all three out.
-            reserved = bool(_room_reserved_for(r))
-            owns_it = (r.get("specialized_dept_id")
-                       and r["specialized_dept_id"] == want_dept)
-            if reserved and not _room_free_for(r, teacher_id):
-                # …unless it is this department's own facility. 353 ฟิสิกส์ has
-                # one teacher's name on it, which shut every other science
-                # teacher out: their lessons went to an ordinary room while the
-                # lab stood empty half the week. A name on a lab means first
-                # refusal, not sole use, so the owner is still preferred in the
-                # ranking below — but an empty lab beats a physics lesson in a
-                # general classroom.
-                if not owns_it:
-                    return False
-            if not reserved and r.get("specialized_dept_id") and not owns_it:
-                return False
-            # ลาน: open ground is a last resort for an ordinary subject and
-            # only when the school has said this one may go outside.
-            # (allow_outdoor decides what the solver may do on its own. A
-            # คาบเรียนลาน never comes through here: it is returned by the
-            # pinned_room_id branch below, before eligible() is ever asked.)
-            if r["type"] == "outdoor" and not may_outdoor:
-                return False
-            return True
+            # Free at this hour, and a room this lesson may sit in at all —
+            # the second half is _room_suits, shared with the yard-rescue
+            # advice so the two cannot disagree about what "suits" means.
+            return (not room_taken(r["id"])
+                    and _room_suits(r, teacher_id=teacher_id, group_id=group_id,
+                                    family=family, want_dept=want_dept,
+                                    want_buildings=want_buildings,
+                                    may_outdoor=may_outdoor))
 
         def pick_anchor() -> dict | None:
             """Settle on the ordinary room this class comes back to all week.
@@ -2357,8 +2403,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         # lesson the school planned, so the cell is left for another time.
         if rule == "subject" and (subj_rooms or want_dept):
             own = [r for r in ROOMS
-                   if (r["id"] in subj_rooms or r.get("specialized_dept_id") == want_dept)
-                   and eligible(r)]
+                   if _is_subjects_own_room(r, subj_rooms, want_dept) and eligible(r)]
             if own:
                 r = min(own, key=lambda r: r["id"])
                 return r["id"], r["name"], r["type"]
@@ -10243,6 +10288,270 @@ def put_yard_order(body: dict[str, Any]):
         _nothing_changed()
     SCHOOL_CONFIG["yard_order"] = order
     return _yard_order_view()
+
+
+# ── ควรเลือกลานไหนให้คาบที่ไม่มีห้อง ─────────────────────────────────────────
+# A lesson with no room can be helped by คาบเรียนลาน in two ways, and only one of
+# them is certain. The certain one: a ลาน nobody is using at that hour — pick it
+# for this very cell. The other goes through a second class: if a class that sits
+# in an indoor room that same hour went to a ลาน, its room would fall free, and
+# if that room is one this lesson may legally sit in, the lesson has somewhere to
+# go. Measured on the school's own data, picks aimed blind at one ลาน made things
+# worse (one ลาน holds one class an hour), while picks spread over free ลาน
+# rescued almost every lesson — so the school is told WHICH picks help.
+#
+# Read-only: nothing here changes a table. A suggestion is applied by the school
+# through PUT /api/yard-picks, and takes effect when the timetable is next made.
+
+_YARD_RESCUE_MAX_DONORS = 8
+
+
+def _lesson_slots(s: dict[str, Any]) -> list[dict[str, Any]]:
+    """The slots that make up one lesson: itself, and the other half of a คาบคู่.
+
+    A pair shares one room across both periods, so a ลาน (or a room) that is
+    free for one half and busy for the other is no use to it."""
+    key = s.get("double_group_key")
+    if not key:
+        return [s]
+    return [s] + [t for t in SLOTS if t is not s and t.get("double_group_key") == key
+                  and t.get("group_id") == s.get("group_id")]
+
+
+def _room_test_for_lesson(slot: dict[str, Any]) -> Callable[[dict[str, Any]], bool]:
+    """A test: would the solver seat this lesson in this room, were it empty?
+
+    Asked the way find_room asks it, from the same rules — _room_suits for the
+    ordinary run of checks — plus the three things find_room decides before
+    or around them: a room the school wrote down for this lesson (nothing else
+    will do), a ห้องประจำวิชา of the subject (taken first, ahead of the checks),
+    and "ต้องเรียนที่ห้องประจำวิชา" (only the subject's own facilities).
+    The room is always one a class sits in indoors, so ลาน never decide it."""
+    tid, sid, gid = slot.get("teacher_id"), slot.get("subject_id"), slot["group_id"]
+    teacher = next((t for t in TEACHERS if t["id"] == tid), {})
+    subj = next((x for x in SUBJECTS if x["id"] == sid), {}) if sid is not None else {}
+    grp = _find_group(gid) or {}
+    want_dept = _lesson_want_dept(subj, teacher)
+    family = _group_family(gid, grp)
+    buildings = _subject_buildings(subj)
+    subj_rooms = _subject_rooms(subj)
+    must_be_facility = _subject_room_rule(subj) == "subject" and bool(subj_rooms or want_dept)
+    may_out = _may_use_outdoor(subj, None, grp or None)
+    # The requirement this lesson came from, the one for this teacher first.
+    reqs = [r for r in REQUIREMENTS if r.get("group_id") == gid and r.get("subject_id") == sid]
+    mine = next((r for r in reqs if r.get("teacher_id") == tid), None) or next(iter(reqs), None)
+    pinned = (mine or {}).get("room_id")
+
+    def accepts(room: dict[str, Any]) -> bool:
+        if pinned:
+            return room["id"] == pinned
+        if room["id"] in subj_rooms:
+            return _room_in_buildings(room, buildings)
+        if must_be_facility and not _is_subjects_own_room(room, subj_rooms, want_dept):
+            return False
+        return _room_suits(room, teacher_id=tid, group_id=gid, family=family,
+                           want_dept=want_dept, want_buildings=buildings, may_outdoor=may_out)
+
+    return accepts
+
+
+def _yard_rescue(group_id: int, day: int, period: int) -> dict[str, Any]:
+    """Which yard picks would give this class's lesson, at this hour, a room.
+
+    `direct` are ลาน free for the lesson's own cell, in the school's ลำดับลาน;
+    `rank` is each one's 1-based position in that whole order (so it can be
+    higher than its place in this list when ลาน above it are taken).
+    `donors` are other classes that could go out to a ลาน this hour and free
+    an indoor room this lesson may take. `note` says why there is nothing to
+    offer, and is "" when there is something."""
+    s_map = {x["id"]: x for x in SUBJECTS}
+    t_map = {t["id"]: t for t in TEACHERS}
+    r_map = {r["id"]: r for r in ROOMS}
+
+    def answer(lesson: dict[str, Any] | None, direct=(), donors=(), note: str = ""):
+        return {"lesson": lesson or {"subject": "", "teacher": "", "room_name": None,
+                                     "found": False},
+                "direct": list(direct), "donors": list(donors), "note": note}
+
+    def describe(s: dict[str, Any], found: bool) -> dict[str, Any]:
+        if s.get("is_elective"):
+            subject = "คาบเสรี"
+        else:
+            subject = ((s_map.get(s.get("subject_id")) or {}).get("name")
+                       or s.get("activity_name") or "")
+        room = r_map.get(s.get("room_id")) if s.get("room_id") else None
+        return {"subject": subject,
+                "teacher": (t_map.get(s.get("teacher_id")) or {}).get("name") or "",
+                "room_name": room["name"] if room else None, "found": found}
+
+    grp = _find_group(group_id)
+    if grp is None:
+        return answer(None, note="ไม่พบห้องเรียนนี้ในระบบ (อาจถูกลบไปแล้ว)")
+    here = [s for s in SLOTS if s.get("group_id") == group_id
+            and s.get("day") == day and s.get("period") == period]
+    if not here:
+        return answer(None, note="ช่องนี้ไม่มีคาบเรียน จึงไม่มีอะไรต้องช่วย")
+    stuck = next((s for s in here if not s.get("room_id")), None)
+    if stuck is None:
+        shown = describe(here[0], False)
+        return answer(shown, note=f"คาบนี้มีห้องแล้ว ({shown['room_name']}) ไม่ต้องหาลานช่วย")
+    lesson = describe(stuck, True)
+    if stuck.get("is_elective") or stuck.get("is_activity_block"):
+        return answer(lesson, note="คาบเสรีและคาบกิจกรรมไม่ได้จัดห้องแบบคาบทั่วไป "
+                                   "การเลือกลานจึงช่วยไม่ได้")
+
+    # The school's ลาน, most-preferred first; a ลาน marked ห้ามใช้ is not on offer.
+    order = _yards_in_order()
+    position = {y["id"]: i + 1 for i, y in enumerate(order)}
+    yards = [y for y in order if _room_usable(y)]
+    if not yards:
+        return answer(lesson, note="โรงเรียนยังไม่มีลานที่ใช้ได้ จึงไม่มีลานให้เลือก")
+
+    mine = _lesson_slots(stuck)
+    own_pick = _yard_pick_for(group_id, day, period)
+
+    def free_for(lesson_slots: list[dict[str, Any]], rid: int) -> bool:
+        return not any(_yard_blocked(t, rid) for t in lesson_slots)
+
+    free_yards = [y for y in yards if free_for(mine, y["id"])]
+    # A ลาน this cell already has picked is not news: it takes effect when the
+    # timetable is next made, and picking it again would change nothing.
+    direct = [{"room_id": y["id"], "room_name": y["name"], "rank": position[y["id"]]}
+              for y in free_yards if y["id"] != own_pick]
+
+    donors: list[dict[str, Any]] = []
+    # A cell with a pick holds its lesson on that ลาน whatever room is freed,
+    # so a room freed for it would not be taken.
+    if own_pick is None:
+        donors = _yard_rescue_donors(stuck, mine, yards, day, period)
+
+    note = ""
+    if not direct and not donors:
+        if own_pick is not None and any(y["id"] == own_pick for y in free_yards):
+            note = (f"ช่องนี้เลือก {r_map[own_pick]['name']} ไว้แล้ว "
+                    f"และลานนั้นว่างอยู่ — จัดตารางใหม่เพื่อให้คาบนี้ได้ลานนั้น")
+        else:
+            note = ("ทุกลานมีคนใช้อยู่ในชั่วโมงนี้แล้ว "
+                    "จึงยังหาลานให้คาบนี้ไม่ได้")
+    return answer(lesson, direct, donors, note)
+
+
+def _yard_rescue_donors(stuck: dict[str, Any], mine: list[dict[str, Any]],
+                        yards: list[dict[str, Any]], day: int, period: int
+                        ) -> list[dict[str, Any]]:
+    """Other classes that could go out to a ลาน this hour and free a room the
+    stuck lesson may take, the most plausible first, each with a ลาน of its own."""
+    g_map = {g["id"]: g for g in _flat_groups()}
+    s_map = {x["id"]: x for x in SUBJECTS}
+    r_map = {r["id"]: r for r in ROOMS}
+    shares = _shares_students_fn()
+    accepts = _room_test_for_lesson(stuck)
+    gid = stuck["group_id"]
+    my_group = g_map.get(gid) or {}
+    t_map = {t["id"]: t for t in TEACHERS}
+    teacher = t_map.get(stuck.get("teacher_id")) or {}
+    subj = s_map.get(stuck.get("subject_id")) or {}
+    subj_rooms = _subject_rooms(subj)
+    ground_only = _teacher_prefs(teacher).get("ground_floor")
+
+    def buckets(s: dict[str, Any]) -> frozenset[int]:
+        return _slot_buckets(g_map.get(s["group_id"]), s["period"])
+
+    # Who is in each room at each minute, so "free once the donor has left" is
+    # a lookup, not a scan of the week for every candidate.
+    inside: dict[tuple, set[int]] = defaultdict(set)
+    for s in SLOTS:
+        if s.get("room_id"):
+            for b in buckets(s):
+                inside[(s["room_id"], s["day"], b)].add(id(s))
+
+    def pending(t: dict[str, Any]) -> bool:
+        picked = _yard_pick_for(t["group_id"], t["day"], t["period"])
+        return picked is not None and not _yard_blocked(t, picked)
+
+    candidates = []
+    for x in SLOTS:
+        if x is stuck or x.get("day") != day or x.get("period") != period:
+            continue
+        # Only an ordinary lesson sitting in a room can be sent out: a lesson
+        # the school locked is not moved by a pick, and an elective window or
+        # an activity block is not seated by the room search at all.
+        if x.get("is_locked") or x.get("is_elective") or x.get("is_activity_block"):
+            continue
+        if shares(x["group_id"], gid):
+            continue
+        # A lesson with no room, or in a room that has since been deleted, frees
+        # nothing; one already on a ลาน has no indoor room to give up.
+        room = r_map.get(x.get("room_id"))
+        if room is None or room.get("type") == "outdoor" or not accepts(room):
+            continue
+        pair = _lesson_slots(x)
+        # A class whose hour already has a pick that holds is on its way out:
+        # its room is freed when the timetable is next made, and asking it to
+        # go again would change nothing. (A pick that cannot hold — the ลาน is
+        # taken — does not count: that class may be sent somewhere else.)
+        if any(pending(t) for t in pair):
+            continue
+        # The room must be empty for the stuck lesson at every minute it needs
+        # it once the donor's whole lesson is gone — not merely emptied here.
+        leaving = {id(t) for t in pair}
+        if any(inside[(room["id"], c["day"], b)] - leaving
+               for c in mine for b in buckets(c)):
+            continue
+        candidates.append((x, room, pair))
+
+    def plausibility(c) -> tuple:
+        x, room, _pair = c
+        grp_x = g_map.get(x["group_id"]) or {}
+        sub_x = s_map.get(x.get("subject_id")) or {}
+        # Has the school said this class or subject may go outdoors? A pick
+        # beats the flags, but a class told "never" is the last to ask.
+        said = next((v for v in (grp_x.get("allow_outdoor"), sub_x.get("allow_outdoor"))
+                     if isinstance(v, bool)), None)
+        # A lesson that belongs in its room (a lab, a ห้องประจำวิชา) is a poor
+        # one to move.
+        tied = (room.get("type") == "special" or bool(room.get("specialized_dept_id"))
+                or room["id"] in _subject_rooms(sub_x)
+                or _subject_room_rule(sub_x) == "subject")
+        # How well the freed room suits the stuck lesson: its own class's room
+        # or its subject's ห้องประจำวิชา is best; a room too small, or upstairs
+        # for a teacher who cannot manage stairs, is worse. (Rankings only —
+        # the solver refuses none of them.)
+        fits = room["id"] == my_group.get("homeroom_room_id") or room["id"] in subj_rooms
+        small = (room.get("capacity", 40) or 0) < (my_group.get("size") or 40)
+        try:
+            stairs = bool(ground_only) and int(room.get("floor") or 1) > 1
+        except (TypeError, ValueError):
+            stairs = False
+        return ((0 if said is True else 2 if said is False else 1), int(tied),
+                0 if fits else 1, int(small), int(stairs), x["group_id"], x["id"])
+
+    donors: list[dict[str, Any]] = []
+    taken: set[int] = set()
+    for x, room, pair in sorted(candidates, key=plausibility):
+        if len(donors) >= _YARD_RESCUE_MAX_DONORS:
+            break
+        # The school's most-preferred ลาน this class can have that no donor
+        # above it has been given: two classes cannot share one ลาน an hour.
+        yard = next((y for y in yards if y["id"] not in taken
+                     and not any(_yard_blocked(t, y["id"]) for t in pair)), None)
+        if yard is None:
+            continue
+        taken.add(yard["id"])
+        donors.append({
+            "group_id": x["group_id"],
+            "group_name": (g_map.get(x["group_id"]) or {}).get("name") or "",
+            "subject": (s_map.get(x.get("subject_id")) or {}).get("name") or "",
+            "frees_room_id": room["id"], "frees_room_name": room["name"],
+            "yard_id": yard["id"], "yard_name": yard["name"],
+        })
+    return donors
+
+
+@app.get("/api/yard-rescue")
+def get_yard_rescue(group_id: int, day: int, period: int):
+    """For one lesson with no room: the ลาน that would give it one."""
+    return _yard_rescue(group_id, day, period)
 
 
 # ── สอนแทน / แลกคาบ ───────────────────────────────────────────────────────────
