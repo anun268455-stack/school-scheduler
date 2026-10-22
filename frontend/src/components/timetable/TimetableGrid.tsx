@@ -28,7 +28,7 @@ import { slotsForTeacher } from "../../utils/teacherSlots";
 import { problemOf, type SlotProblem } from "../../utils/slotProblems";
 import { TableSearch, matches } from "../common/TableSearch";
 import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../utils/levels";
-import { picksOfGroup, yardsInCell } from "../../utils/yardPicks";
+import { mergedDoubles, periodsOfCell, picksOfGroup, yardsInCell } from "../../utils/yardPicks";
 import { DAYS, type Period, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
@@ -40,6 +40,9 @@ const CELL_H  = 96;  // px — all cells share this fixed height
 const CELL_W  = 110; // px — a คาบ column
 const BREAK_W = 56;  // px — พัก / พักกลางวัน, which hold only a short label
 const DAY_W   = 56;  // px — the วัน label down the left edge
+
+/** Day indexes 0…4, for the rules that walk the whole week. */
+const DAY_INDEXES = DAYS.map((_, d) => d);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DroppableCell
@@ -374,25 +377,16 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
    * Only when the two columns are actually next to each other. A pair split
    * by a break (คาบ 3 then คาบ 5 across lunch) is two cells, because merging
    * would draw the lesson straight through the break.
+   *
+   * The rules live in utils/yardPicks.ts: the screens that mark an hour out to
+   * a ลาน must agree with what is drawn here about which hours go together.
    */
-  const { spans, swallowed } = useMemo(() => {
-    const spans = new Map<string, number>();
-    const swallowed = new Set<string>();
-    for (let d = 0; d < DAYS.length; d++) {
-      for (let i = 0; i < gridPeriods.length - 1; i++) {
-        const here = slotGrid.get(`${d}-${gridPeriods[i].period_num}`) ?? [];
-        const next = slotGrid.get(`${d}-${gridPeriods[i + 1].period_num}`) ?? [];
-        // One lesson in each cell, and the same คาบคู่ in both.
-        if (here.length !== 1 || next.length !== 1) continue;
-        const a = here[0], b = next[0];
-        if (!a.double_group_key || a.double_group_key !== b.double_group_key) continue;
-        if (a.id === b.id) continue;
-        spans.set(`${d}-${gridPeriods[i].period_num}`, 2);
-        swallowed.add(`${d}-${gridPeriods[i + 1].period_num}`);
-      }
-    }
-    return { spans, swallowed };
-  }, [slotGrid, gridPeriods]);
+  const periodNums = useMemo(() => gridPeriods.map((p) => p.period_num), [gridPeriods]);
+  const merged = useMemo(
+    () => mergedDoubles(slotGrid, DAY_INDEXES, periodNums),
+    [slotGrid, periodNums],
+  );
+  const { spans, swallowed } = merged;
 
   const onDragStart = useCallback((e: DragStartEvent) => {
     const item = e.active.data.current as DragItem;
@@ -462,18 +456,17 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   );
   const handleYardClick = useCallback((d: number, p: number) => {
     // A คาบคู่ drawn as one cell stands for two hours; both are marked together.
-    const at = gridPeriods.findIndex((x) => x.period_num === p);
-    if (at < 0) return;
-    const covered = spans.get(`${d}-${p}`) === 2 && at + 1 < gridPeriods.length
-      ? [gridPeriods[at], gridPeriods[at + 1]]
-      : [gridPeriods[at]];
+    if (!periodNums.includes(p)) return;
+    const covered = periodsOfCell(merged, d, periodNums, p)
+      .map((n) => gridPeriods.find((x) => x.period_num === n))
+      .filter((x): x is Period => x != null);
     setYardCell({
       day: d,
       cols: covered.map((x) => ({
         period: x.period_num, label: x.label, start: x.start_time, end: x.end_time,
       })),
     });
-  }, [gridPeriods, spans]);
+  }, [gridPeriods, periodNums, merged]);
 
   const handleApplyRoute = useCallback((route: SwapRoute) => {
     applySwapRoute(route);
@@ -794,7 +787,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                     {dayName}
                   </td>
 
-                  {gridPeriods.map((pm, pi) => {
+                  {gridPeriods.map((pm) => {
                     const key       = `${dayIdx}-${pm.period_num}`;
                     // The second half of a merged คาบคู่ has no cell of its
                     // own — the first half covers both columns.
@@ -803,9 +796,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                     const impact    = isDragActive ? (impactMap.get(key) ?? null) : null;
                     const cellSlots = slotGrid.get(key) ?? [];
                     // The hours this cell stands for: two when a คาบคู่ is merged.
-                    const covers    = span === 2 && pi + 1 < gridPeriods.length
-                      ? [pm.period_num, gridPeriods[pi + 1].period_num]
-                      : [pm.period_num];
+                    const covers    = periodsOfCell(merged, dayIdx, periodNums, pm.period_num);
                     const yardIds   = yardsInCell(groupYards, dayIdx, covers);
 
                     return (

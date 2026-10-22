@@ -16,15 +16,25 @@
  *
  * Both save with the ordinary คาบเรียนลาน save. Nothing moves in the timetable
  * until สร้างตาราง is pressed again; this only records the decision.
+ *
+ * A คาบคู่ is one lesson in one room across two hours, so a lesson that is half
+ * of one is marked on both hours — this lesson's own for ลงลานเอง, the donor's
+ * for the other kind — the way the picker marks both hours of a merged cell.
+ * That is two saves, and the second can fail after the first went through; the
+ * screen then says one hour was marked and the other was not.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import * as api from "../../api/client";
 import { ModalShell } from "../common/ModalShell";
 import { useTimetableStore } from "../../store/timetableStore";
-import { DAYS, periodLabel, periodTime } from "../../types";
+import { DAYS, periodLabel, type Period, type StudentGroup } from "../../types";
+import { flattenGroups } from "../../utils/groupHierarchy";
+import { levelKeyOf, periodsForLevel } from "../../utils/levels";
+import { lessonHours } from "../../utils/yardPicks";
 import {
-  directKey, directPick, donorKey, donorPick, rescueView, savedLine,
+  directKey, directPick, donorKey, donorPick, marksForHours, partialLine,
+  rescueView, savedLine, whenText, writeMarks,
   type RescueSave,
 } from "../../utils/yardRescue";
 
@@ -45,6 +55,9 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
   groupId, groupName, day, period, onClose,
 }) => {
   const periods       = useTimetableStore((s) => s.periods);
+  const slots         = useTimetableStore((s) => s.slots);
+  const groups        = useTimetableStore((s) => s.groups);
+  const yardPicks     = useTimetableStore((s) => s.yardPicks);
   const saveYardPick  = useTimetableStore((s) => s.saveYardPick);
   const loadYardPicks = useTimetableStore((s) => s.loadYardPicks);
 
@@ -72,9 +85,33 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
     return () => { alive = false; };
   }, [groupId, day, period, attempt]);
 
-  const hour  = periodLabel(period, periods);
-  const times = periodTime(period, periods);
-  const when  = `วัน${DAYS[day] ?? day + 1} ${hour}`;
+  const dayName = String(DAYS[day] ?? day + 1);
+  const labelOf = (n: number) => periodLabel(n, periods);
+  const rowOf = (n: number): Period | undefined =>
+    periods.find((x: Period) => x.period_num === n && x.type === "class")
+    ?? periods.find((x: Period) => x.period_num === n);
+
+  const groupById = useMemo(() => {
+    const m = new Map<number, StudentGroup>();
+    for (const g of flattenGroups(groups)) m.set(g.id, g);
+    return m;
+  }, [groups]);
+
+  /**
+   * The hours of one class's lesson at this day and hour — two when it is half
+   * of a merged คาบคู่, found the way the grid draws it, in that class's own
+   * periods (a ม.1 and a ม.5 class do not share a day).
+   */
+  const hoursOf = (gid: number, d: number, p: number): number[] => {
+    const nums = periodsForLevel(periods, levelKeyOf(groupById.get(gid))).map((x: Period) => x.period_num);
+    return lessonHours(slots, gid, d, nums, p);
+  };
+
+  const hours = hoursOf(groupId, day, period);
+  const first = rowOf(hours[0]);
+  const last  = rowOf(hours[hours.length - 1]);
+  const times = first && last ? `${first.start_time}–${last.end_time}` : "";
+  const when  = whenText(dayName, hours.map(labelOf));
 
   const view   = data ? rescueView<api.YardRescueDirect, api.YardRescueDonor>(data) : null;
   const lesson = data?.lesson ?? null;
@@ -84,22 +121,45 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
   const busy = busyKey != null;
 
   /**
-   * Save one choice. A refusal is shown in the server's own words, and the
-   * options are asked for again — a refusal usually means the hour changed under
+   * Save one choice — on every hour of the lesson it marks.
+   *
+   * A refusal is shown in the server's own words. If nothing was saved the
+   * options are asked for again: a refusal usually means the hour changed under
    * us (someone else took that ลาน), and the list should not keep offering it.
+   * If the first hour of a คาบคู่ was saved and the second refused, that is said
+   * outright — half a pair marked is a state the school has to know about — and
+   * the options are left as they are, so choosing again writes the missing hour
+   * (or, with another ลาน, both).
    */
-  const apply = async (key: string, pick: RescueSave, said: string) => {
+  const apply = async (
+    key: string, pick: RescueSave, who: { group: string; yard: string; frees?: string },
+  ) => {
     if (busy) return;
     setBusyKey(key);
     setErr(null);
     try {
-      await saveYardPick(pick);
-      setDone(said);
-      // The grid's marks, and any other class's, are read from the server.
-      void loadYardPicks();
+      const own   = hoursOf(pick.group_id, pick.day, pick.period);
+      const marks = marksForHours(pick, own, yardPicks);
+      const out   = await writeMarks(marks, saveYardPick);
+      const at    = (ms: RescueSave[]) => whenText(dayName, ms.map((m) => labelOf(m.period)));
+      if (out.ok) {
+        setDone(savedLine({ group: who.group, when: whenText(dayName, own.map(labelOf)), yard: who.yard, frees: who.frees }));
+        // The grid's marks, and any other class's, are read from the server.
+        void loadYardPicks();
+      } else if (out.saved.length === 0) {
+        setErr(api.errorDetail(out.error, "บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง"));
+        setAttempt((n) => n + 1);
+      } else {
+        setErr(partialLine({
+          group: who.group, yard: who.yard,
+          saved: at(out.saved), unsaved: at(out.unsaved),
+          reason: api.errorDetail(out.error, "บันทึกไม่สำเร็จ"),
+        }));
+        // Show what the server really holds, as the picker does.
+        void loadYardPicks();
+      }
     } catch (e) {
       setErr(api.errorDetail(e, "บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง"));
-      setAttempt((n) => n + 1);
     } finally {
       setBusyKey(null);
     }
@@ -169,7 +229,8 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
             <section>
               <h4 className="text-xs font-bold text-teal-800">ลงลานเอง</h4>
               <p className="text-[11px] text-gray-600 mt-0.5 mb-1.5">
-                {subject} ของ {groupName} จะไปเรียนที่ลานที่เลือก — ลานที่ว่างในชั่วโมงนี้ เรียงจากดีที่สุดก่อน
+                {subject} ของ {groupName} จะไปเรียนที่ลานที่เลือก — เฉพาะลานที่ว่างในชั่วโมงนี้
+                เรียงจากดีที่สุดก่อน ตามลำดับลานที่โรงเรียนตั้งไว้
               </p>
               {view.direct.length === 0 ? (
                 <p className="text-[11px] text-gray-400 border border-dashed border-gray-200 rounded-lg px-3 py-2">
@@ -185,22 +246,22 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
                           type="button"
                           disabled={busy}
                           onClick={() => apply(
-                            key,
-                            directPick(cell, d),
-                            savedLine({ group: groupName, when, yard: d.room_name }),
+                            key, directPick(cell, d), { group: groupName, yard: d.room_name },
                           )}
                           title={`ให้ ${subject} ของ ${groupName} ไปเรียนที่ ${d.room_name}`}
                           className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-left text-gray-800 hover:bg-teal-50 hover:border-teal-300 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                         >
-                          <span
-                            className="shrink-0 w-5 h-5 rounded-full bg-teal-600 text-white text-[11px] font-bold flex items-center justify-center"
-                            title={`อันดับ ${d.rank}`}
-                          >
-                            {d.rank}
+                          <span className="shrink-0">📌</span>
+                          {/* The rank is the ลาน's place in the school's own
+                              ลำดับลาน, so it can skip (2, 5, 7): the ones between
+                              are not free this hour. Said in words, because a bare
+                              "5" at the top of the list reads like a mistake. */}
+                          <span className="flex-1 min-w-0">
+                            <span className="block truncate">{d.room_name}</span>
+                            <span className="block text-[11px] text-gray-400">ลำดับลานที่ {d.rank}</span>
                           </span>
-                          <span className="flex-1 truncate">{d.room_name}</span>
                           <span className="shrink-0 text-[11px] text-teal-700">
-                            {busyKey === key ? "กำลังบันทึก…" : "📌 ให้คาบนี้ไปที่นี่"}
+                            {busyKey === key ? "กำลังบันทึก…" : "ให้คาบนี้ไปที่นี่"}
                           </span>
                         </button>
                       </li>
@@ -225,13 +286,16 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
                 <ul className="space-y-2">
                   {view.donors.map((o) => {
                     const key = donorKey(o);
+                    // The donor's own lesson may be a คาบคู่ that starts or ends
+                    // at another hour than this lesson does.
+                    const theirs = whenText(dayName, hoursOf(o.group_id, day, period).map(labelOf));
                     return (
                       <li key={key} className="rounded-lg border border-amber-300 bg-white px-3 py-2">
                         <div className="text-sm font-semibold text-gray-900">
                           {o.group_name} ไปเรียนที่ {o.yard_name}
                         </div>
                         <div className="text-[11px] text-gray-600 mt-0.5">
-                          {o.subject ? `วิชา ${o.subject} ` : "คาบ"}ของ {o.group_name} ({when}) จะย้ายออกไปเรียนที่ลาน
+                          {o.subject ? `วิชา ${o.subject} ` : "คาบ"}ของ {o.group_name} ({theirs}) จะย้ายออกไปเรียนที่ลาน
                         </div>
                         <div className="text-[11px] text-emerald-700 mt-0.5">
                           ห้อง {o.frees_room_name} ที่ {o.group_name} ใช้อยู่ จะว่างให้คาบที่ไม่มีห้องนี้ใช้
@@ -240,11 +304,8 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
                           type="button"
                           disabled={busy}
                           onClick={() => apply(
-                            key,
-                            donorPick(cell, o),
-                            savedLine({
-                              group: o.group_name, when, yard: o.yard_name, frees: o.frees_room_name,
-                            }),
+                            key, donorPick(cell, o),
+                            { group: o.group_name, yard: o.yard_name, frees: o.frees_room_name },
                           )}
                           title={`ทำเครื่องหมายที่ ${o.group_name} ไม่ใช่ ${groupName}`}
                           className="mt-2 w-full px-3 py-1.5 rounded-lg border border-amber-500 bg-amber-100 text-xs font-semibold text-amber-950 hover:bg-amber-200 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"

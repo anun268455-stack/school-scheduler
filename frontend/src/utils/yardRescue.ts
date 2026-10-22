@@ -14,6 +14,11 @@
  * carries the indoor room it gives up (`frees_room_id`), which looks just like
  * the ลาน it goes to (`yard_id`) and must never be what gets saved.
  *
+ * A คาบคู่ is one lesson in one room across two hours, so a choice marks both
+ * of them — the lesson's own, and for a donor the donor's. The two marks are two
+ * saves, and the second can be refused after the first went through; that is
+ * reported as what it is (one hour marked, one not), never as a clean save.
+ *
  * Types here are structural, not imported, like yardPicks.ts: the server's rows
  * satisfy them and this file stays free of the rest of the app.
  */
@@ -55,6 +60,78 @@ export function donorPick(
     period:   cell.period,
     room_id:  donor.yard_id,
   };
+}
+
+/**
+ * Every hour a choice marks: `pick` is for one hour, and `hours` are all the
+ * hours of that lesson (two for a คาบคู่, with `pick.period` among them — it is
+ * added if the caller left it out, so the hour that was asked for is never lost).
+ * An hour that already carries exactly this mark is left out: saving it again
+ * would only be refused as "nothing changed". In period order.
+ */
+export function marksForHours(
+  pick: RescueSave, hours: number[], existing: RescueSave[],
+): RescueSave[] {
+  const all = hours.includes(pick.period) ? hours : [...hours, pick.period];
+  return [...new Set(all)]
+    .sort((a, b) => a - b)
+    .filter((p) => !existing.some((r) => (
+      r.group_id === pick.group_id && r.day === pick.day
+      && r.period === p && r.room_id === pick.room_id)))
+    .map((p) => ({ ...pick, period: p }));
+}
+
+/**
+ * How far a run of saves got.
+ *  · ok      — every mark saved
+ *  · !ok     — `saved` went through before `error` stopped it; `unsaved` is what
+ *              did not, the one that failed first. Empty `saved` means nothing
+ *              changed, which is an ordinary refusal; otherwise it is half done.
+ */
+export type MarkOutcome =
+  | { ok: true;  saved: RescueSave[] }
+  | { ok: false; saved: RescueSave[]; unsaved: RescueSave[]; error: unknown };
+
+/**
+ * Save the marks one after another and stop at the first refusal. Never throws:
+ * what a caller needs to know is how many went through before it stopped.
+ */
+export async function writeMarks(
+  marks: RescueSave[], save: (m: RescueSave) => Promise<unknown>,
+): Promise<MarkOutcome> {
+  const saved: RescueSave[] = [];
+  for (let i = 0; i < marks.length; i++) {
+    try {
+      await save(marks[i]);
+    } catch (error) {
+      return { ok: false, saved, unsaved: marks.slice(i), error };
+    }
+    saved.push(marks[i]);
+  }
+  return { ok: true, saved };
+}
+
+/** "วันอังคาร คาบ 3 + คาบ 4" — a day and the hour(s) of one lesson. */
+export const whenText = (dayName: string, hourLabels: string[]): string =>
+  `วัน${dayName} ${hourLabels.join(" + ")}`;
+
+/**
+ * Said when a คาบคู่ got only one of its two marks. The school must be able to
+ * tell this from a save that worked: the pair is now marked on one hour only.
+ */
+export function partialLine(o: {
+  group:   string;
+  /** whenText of the hour(s) that were saved */
+  saved:   string;
+  /** whenText of the hour(s) that were not */
+  unsaved: string;
+  yard:    string;
+  /** why the server refused */
+  reason:  string;
+}): string {
+  return `⚠ บันทึกได้ไม่ครบ: ${o.group} ${o.saved} ถูกเลือกไปเรียนที่ ${o.yard} แล้ว `
+    + `แต่ ${o.unsaved} บันทึกไม่ได้ (${o.reason}) — คาบคู่จึงมีเครื่องหมายแค่ครึ่งเดียว `
+    + `กดเลือกอีกครั้งเพื่อบันทึกส่วนที่เหลือ หรือเลือกลานอื่นให้ทั้งสองคาบ`;
 }
 
 /** A key for "this choice is being saved", unique within one answer. */

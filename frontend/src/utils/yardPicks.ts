@@ -89,3 +89,89 @@ export function moveBy(ids: number[], index: number, delta: -1 | 1): number[] {
   next[to] = ids[index];
   return next;
 }
+
+// ── คาบคู่ ─────────────────────────────────────────────────────────────────
+// A คาบคู่ is one lesson in one room across two hours, so the two hours of one
+// are always marked together. The grid draws them as one cell; these are the
+// rules it uses to decide that, kept here so that every screen that marks an
+// hour (the picker, the rescue screen) agrees with what the grid shows.
+
+/** What pairing needs to know about a lesson. */
+export interface DoubleLike {
+  id: number;
+  double_group_key?: string | null;
+}
+
+/** Which cells are a คาบคู่ drawn as one: the first hour spans two, the second is swallowed. */
+export interface MergedDoubles {
+  /** "day-period" of the first hour -> 2. */
+  spans:     Map<string, number>;
+  /** "day-period" of the second hour, which has no cell of its own. */
+  swallowed: Set<string>;
+}
+
+/**
+ * Which cells of a grid are one คาบคู่.
+ *
+ * `grid` maps "day-period" to the lessons in that cell; `periodNums` are the
+ * grid's columns in order. Only when the two columns are actually next to each
+ * other — a pair split by a break is two cells, because merging would draw the
+ * lesson straight through the break — and only when each cell holds exactly
+ * that one lesson and both carry the same pair key.
+ */
+export function mergedDoubles<S extends DoubleLike>(
+  grid: Map<string, S[]>, days: number[], periodNums: number[],
+): MergedDoubles {
+  const spans = new Map<string, number>();
+  const swallowed = new Set<string>();
+  for (const d of days) {
+    for (let i = 0; i < periodNums.length - 1; i++) {
+      const here = grid.get(cellKey(d, periodNums[i])) ?? [];
+      const next = grid.get(cellKey(d, periodNums[i + 1])) ?? [];
+      if (here.length !== 1 || next.length !== 1) continue;
+      const a = here[0], b = next[0];
+      if (!a.double_group_key || a.double_group_key !== b.double_group_key) continue;
+      if (a.id === b.id) continue;
+      spans.set(cellKey(d, periodNums[i]), 2);
+      swallowed.add(cellKey(d, periodNums[i + 1]));
+    }
+  }
+  return { spans, swallowed };
+}
+
+/**
+ * The hours a cell stands for: both of a merged คาบคู่ whichever of the two is
+ * asked about, otherwise just its own. Always includes `period`.
+ */
+export function periodsOfCell(
+  merged: MergedDoubles, day: number, periodNums: number[], period: number,
+): number[] {
+  const at = periodNums.indexOf(period);
+  if (at < 0) return [period];
+  if (merged.spans.get(cellKey(day, period)) === 2 && at + 1 < periodNums.length) {
+    return [period, periodNums[at + 1]];
+  }
+  if (merged.swallowed.has(cellKey(day, period)) && at > 0) {
+    return [periodNums[at - 1], period];
+  }
+  return [period];
+}
+
+/**
+ * The hours of the lesson that sits at one class's one hour — two when it is
+ * half of a merged คาบคู่ — worked out from that class's own lessons, as the
+ * grid would draw them. For a screen that has the lesson but not the grid.
+ */
+export function lessonHours<S extends DoubleLike & { group_id: number; day: number; period: number }>(
+  slots: S[], groupId: number, day: number, periodNums: number[], period: number,
+): number[] {
+  const grid = new Map<string, S[]>();
+  for (const s of slots) {
+    if (s.group_id !== groupId || s.day !== day) continue;
+    const k = cellKey(s.day, s.period);
+    const cell = grid.get(k);
+    if (cell) cell.push(s);
+    else grid.set(k, [s]);
+  }
+  return periodsOfCell(mergedDoubles(grid, [day], periodNums), day, periodNums, period);
+}
