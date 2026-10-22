@@ -880,9 +880,9 @@ export interface YardRescue {
   direct: YardRescueDirect[];
   donors: YardRescueDonor[];
   /**
-   * Thai sentence when there is nothing to offer. With a teacher clash it also
-   * carries that, even beside options — the screen says the clash itself, from
-   * `lesson.teacher_clash`, and does not print this sentence beside it.
+   * The other reasons, in Thai: every ลาน taken that hour, no usable ลาน, a pick
+   * already waiting for สร้างตาราง. Empty when there is nothing to add. A teacher
+   * clash is never in here — it is only in `lesson.teacher_clash`.
    */
   note:   string;
 }

@@ -224,8 +224,9 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
         {/* A ลาน fixes the room and nothing else. When the lesson's teacher is in
             another class that very hour the cell stays red after สร้างตาราง, and
             the school must hear that before following the advice below, not after.
-            Said from the named fields; the server's note beside options is that
-            same sentence, so it is not printed next to this (see rescueView). */}
+            The clash is reported in one place, `teacher_clash`, and said here from
+            it; `note` carries the other reasons and is printed as it comes, so the
+            two can stand side by side and are then saying different things. */}
         {view && view.kind !== "gone" && view.clash && (() => {
           const said = clashLine(view.clash, view.kind === "options");
           return (
@@ -237,16 +238,8 @@ export const YardRescueModal: React.FC<YardRescueModalProps> = ({
         })()}
 
         {view && view.kind !== "options" && (
-          <p className={clsx(
-            "text-sm rounded-lg px-3 py-3 leading-relaxed border",
-            // The server's note can carry the clash as well as the reason there
-            // is nothing to offer; then it is the clash's one telling, so it
-            // gets the warning's colour.
-            view.kind === "nothing" && view.noteSaysClash
-              ? "text-amber-950 bg-amber-50 border-amber-400"
-              : "text-gray-700 bg-gray-50 border-gray-200",
-          )}>
-            {view.kind === "nothing" && view.noteSaysClash && "⚠ "}{view.note}
+          <p className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-3 leading-relaxed">
+            {view.note}
           </p>
         )}
 

@@ -233,18 +233,6 @@ export function clashLine(c: RescueClash, withOptions = true): { head: string; b
     };
 }
 
-/**
- * Does the server's note already say this clash — the teacher and the other
- * class, by name? The note is its own words (it may fold the clash into the
- * reason there is nothing to offer), so before saying the clash a second time
- * the screen looks.
- */
-export function noteSaysClash(note: string, c: RescueClash): boolean {
-  const teacher = (c.teacher ?? "").trim();
-  const group   = (c.with_group ?? "").trim();
-  return !!teacher && !!group && note.includes(teacher) && note.includes(group);
-}
-
 /** The parts of the server's answer the screen decides on. */
 export interface RescueLike<D, O> {
   lesson?: { found?: boolean; teacher_clash?: RescueClash | null } | null;
@@ -261,10 +249,14 @@ export interface RescueLike<D, O> {
  *
  * A note is always there for the first two (the server's own, or ours), so the
  * screen never ends up blank.
+ *
+ * A teacher clash is reported in one place, `lesson.teacher_clash`, and is not
+ * in the note: `clash` is handed on whenever it is set, and `note` is handed on
+ * as it came. They are two different facts and the screen shows both.
  */
 export type RescueView<D, O> =
   | { kind: "gone"; note: string; clash: null }
-  | { kind: "nothing"; note: string; clash: RescueClash | null; noteSaysClash: boolean }
+  | { kind: "nothing"; note: string; clash: RescueClash | null }
   | { kind: "options"; note: string; direct: D[]; donors: O[]; clash: RescueClash | null };
 
 export function rescueView<D extends { rank: number }, O>(
@@ -275,18 +267,10 @@ export function rescueView<D extends { rank: number }, O>(
   const clash  = r.lesson.teacher_clash ?? null;
   const direct = directInOrder(r.direct);
   const donors = r.donors ?? [];
-  const repeats = !!clash && noteSaysClash(note, clash);
   if (!direct.length && !donors.length) {
-    // Nothing to offer: the note is the reason, and the server folds the clash
-    // into it. Then it is the one thing printed; `clash` is what the screen
-    // still has to say itself, which is nothing when the note already did.
-    return { kind: "nothing", note: note || NOTE_NOTHING, clash: repeats ? null : clash, noteSaysClash: repeats };
+    return { kind: "nothing", note: note || NOTE_NOTHING, clash };
   }
-  // Beside options the server's note is the clash sentence. The screen says the
-  // clash itself (clashLine) from the named fields, in its own place, so the note
-  // is left out when it only repeats it — never both. A note about anything else
-  // is kept.
-  return { kind: "options", note: repeats ? "" : note, direct, donors, clash };
+  return { kind: "options", note, direct, donors, clash };
 }
 
 /** Said after every save: the mark is a decision, the timetable has not moved. */
