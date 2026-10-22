@@ -822,6 +822,57 @@ export const fetchYardOrder = () =>
 export const saveYardOrder = (order: number[]) =>
   api.put<YardOrder>("/yard-order", { order }).then((r) => r.data);
 
+// ── หาลานให้คาบที่ไม่มีห้อง ──────────────────────────────────────────────────
+// For one red "no room" cell: which ลาน marks would actually give that lesson a
+// room. Nothing is written by asking — a choice is applied with setYardPick,
+// the same save as everywhere else.
+
+/** The lesson in the cell that was asked about. */
+export interface YardRescueLesson {
+  subject:   string | null;
+  teacher:   string | null;
+  room_name: string | null;
+  /** false: no lesson in that cell, or it already has a room — see `note`. */
+  found:     boolean;
+}
+
+/** A ลาน that is free at that hour. Choosing it puts THIS lesson on it. */
+export interface YardRescueDirect {
+  /** The ลาน. */
+  room_id:   number;
+  room_name: string;
+  /** 1 is best. */
+  rank:      number;
+}
+
+/**
+ * Another class at the same hour that could go out to a ลาน, giving up an
+ * indoor room this lesson can use. Choosing it marks THAT class's hour.
+ */
+export interface YardRescueDonor {
+  group_id:        number;
+  group_name:      string;
+  subject:         string | null;
+  /** The indoor room the donor gives up — NOT a ลาน. */
+  frees_room_id:   number;
+  frees_room_name: string;
+  /** The ลาน the donor class would go to — this is what gets saved. */
+  yard_id:         number;
+  yard_name:       string;
+}
+
+export interface YardRescue {
+  lesson: YardRescueLesson;
+  /** Best first. */
+  direct: YardRescueDirect[];
+  donors: YardRescueDonor[];
+  /** Thai sentence when there is nothing to offer; empty when there are options. */
+  note:   string;
+}
+
+export const fetchYardRescue = (p: { group_id: number; day: number; period: number }) =>
+  api.get<YardRescue>("/yard-rescue", { params: p }).then((r) => r.data);
+
 /**
  * The server's own message for a refused request (400), or `fallback`.
  *

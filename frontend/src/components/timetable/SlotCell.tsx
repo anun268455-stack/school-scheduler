@@ -13,6 +13,8 @@ interface SlotCellProps {
   onDelete?:   (id: number) => void;
   onSwapRoom?: (slot: TimetableSlot) => void;
   onOpenElective?: (slot: TimetableSlot) => void;
+  /** หาลานให้คาบที่ไม่มีห้อง — ปุ่มขึ้นเฉพาะคาบกรอบแดงที่ไม่มีห้อง */
+  onRescue?:   (slot: TimetableSlot) => void;
   compact?:    boolean;
 }
 
@@ -31,7 +33,7 @@ function slotColors(s: TimetableSlot, bad?: boolean): string {
 }
 
 export const SlotCell: React.FC<SlotCellProps> = ({
-  slots, isDragging, isOver, onLock, onDelete, onSwapRoom, onOpenElective, compact,
+  slots, isDragging, isOver, onLock, onDelete, onSwapRoom, onOpenElective, onRescue, compact,
 }) => {
   // ทุกคาบในตาราง เพราะ "ครูติดสอนห้องอื่นในชั่วโมงนี้" ดูจากคาบของตัวเองไม่ได้
   const all = useTimetableStore((st) => st.slots);
@@ -72,7 +74,7 @@ export const SlotCell: React.FC<SlotCellProps> = ({
       ) : (
         <Layer slot={slots[0]} problem={probs.get(slots[0].id) ?? null}
           onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom}
-          onOpenElective={onOpenElective} compact={compact} />
+          onOpenElective={onOpenElective} onRescue={onRescue} compact={compact} />
       )}
     </div>
   );
@@ -86,9 +88,10 @@ interface LayerProps {
   onDelete?: (id: number) => void;
   onSwapRoom?: (slot: TimetableSlot) => void;
   onOpenElective?: (slot: TimetableSlot) => void;
+  onRescue?: (slot: TimetableSlot) => void;
 }
 
-const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete, onSwapRoom, onOpenElective }) => {
+const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete, onSwapRoom, onOpenElective, onRescue }) => {
   // สอนร่วม and a คาบกิจกรรม duty roster both put more than one teacher in the
   // room. The line truncates, so the count goes in a badge that cannot.
   const names = slotTeacherNames(slot);
@@ -238,6 +241,17 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
           title="เลือกวงเสรี"
         >
           🎓
+        </button>
+      )}
+      {/* A lesson with no room can be rescued by sending an hour out to a ลาน —
+          its own, or another class's. The screen behind this says which. */}
+      {onRescue && problem?.kinds.includes("no_room") && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onRescue(slot); }}
+          className="bg-white/90 text-[8px] px-0.5 py-0.5 rounded shadow hover:bg-teal-50 leading-none"
+          title="หาลานให้คาบนี้ — ดูว่าลานไหนช่วยให้ได้ห้อง"
+        >
+          🌳
         </button>
       )}
       {onSwapRoom && (

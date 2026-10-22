@@ -10,10 +10,12 @@
 import { useMemo } from "react";
 import clsx from "clsx";
 import { ModalShell } from "../common/ModalShell";
-import { DAYS } from "../../types";
+import { useTimetableStore } from "../../store/timetableStore";
+import { DAYS, periodLabel } from "../../types";
 import type { LessonRequirement, StudentGroup, Subject, TimetableSlot } from "../../types";
 import type { SlotProblem } from "../../utils/slotProblems";
 import { slotLabel } from "../../utils/teacherSlots";
+import { cellKey } from "../../utils/yardPicks";
 
 export interface ShortRow {
   requirement: LessonRequirement;
@@ -29,6 +31,8 @@ interface Props {
   onClose:   () => void;
   /** พาไปที่คาบนั้นในตาราง */
   onGoto?:   (s: TimetableSlot) => void;
+  /** เปิดหน้าหาลานให้คาบที่ไม่มีห้อง — ปุ่มขึ้นเฉพาะคาบที่ไม่มีห้อง */
+  onRescue?: (s: TimetableSlot) => void;
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -38,8 +42,24 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 export const ClassProblemsModal: React.FC<Props> = ({
-  title, problems, short, subjects, groups, onClose, onGoto,
+  title, problems, short, subjects, groups, onClose, onGoto, onRescue,
 }) => {
+  const periods   = useTimetableStore((s) => s.periods);
+  const yardPicks = useTimetableStore((s) => s.yardPicks);
+  const yardList  = useTimetableStore((s) => s.yardList);
+
+  // ลานที่เลือกไว้แล้วของแต่ละคาบ — คาบกรอบแดงยังแดงอยู่จนกว่าจะกดสร้างตาราง
+  // ถ้าไม่บอกตรงนี้ คนที่เพิ่งเลือกไปจะเห็นแถวเดิมเหมือนไม่มีอะไรเกิดขึ้น
+  const pickedYard = useMemo(() => {
+    const names = new Map<number, string>();
+    for (const y of yardList) names.set(y.id, y.name);
+    const m = new Map<string, string>();
+    for (const r of yardPicks) {
+      m.set(`${r.group_id}:${cellKey(r.day, r.period)}`, names.get(r.room_id) ?? "ลานที่ไม่พบแล้ว");
+    }
+    return m;
+  }, [yardPicks, yardList]);
+
   const sName = useMemo(() => new Map(subjects.map((s) => [s.id, s])), [subjects]);
   const gName = useMemo(() => {
     const m = new Map<number, string>();
@@ -101,34 +121,54 @@ export const ClassProblemsModal: React.FC<Props> = ({
               คาบที่ลงไว้แล้วแต่ยังไม่เรียบร้อย
             </h3>
             <ul className="space-y-1.5">
-              {problems.map((p) => (
-                <li key={p.slot.id}
-                  className="border border-rose-200 bg-rose-50/60 rounded px-3 py-2 text-xs">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-bold text-rose-900">
-                      {DAYS[p.slot.day] ?? `วัน ${p.slot.day}`} · คาบ {p.slot.period}
-                    </span>
-                    <span className="font-semibold text-gray-800">{slotLabel(p.slot)}</span>
-                    <span className="text-gray-500">
-                      {sName.get(p.slot.subject_id ?? -1)?.name ?? ""}
-                    </span>
-                    {p.slot.group_name && (
-                      <span className="text-gray-400">· {p.slot.group_name}</span>
+              {problems.map((p) => {
+                const yard = pickedYard.get(`${p.slot.group_id}:${cellKey(p.slot.day, p.slot.period)}`);
+                const canRescue = !!onRescue && p.kinds.includes("no_room");
+                return (
+                  <li key={p.slot.id}
+                    className="border border-rose-200 bg-rose-50/60 rounded px-3 py-2 text-xs">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-rose-900">
+                        {DAYS[p.slot.day] ?? `วัน ${p.slot.day}`} · {periodLabel(p.slot.period, periods)}
+                      </span>
+                      <span className="font-semibold text-gray-800">{slotLabel(p.slot)}</span>
+                      <span className="text-gray-500">
+                        {sName.get(p.slot.subject_id ?? -1)?.name ?? ""}
+                      </span>
+                      {p.slot.group_name && (
+                        <span className="text-gray-400">· {p.slot.group_name}</span>
+                      )}
+                      {p.slot.teacher_name && (
+                        <span className="text-gray-500">· {p.slot.teacher_name}</span>
+                      )}
+                      {(onGoto || canRescue) && (
+                        <span className="ml-auto flex items-center gap-1.5">
+                          {canRescue && (
+                            <button onClick={() => onRescue?.(p.slot)}
+                              title="ดูว่าลานไหนช่วยให้คาบนี้ได้ห้อง"
+                              className="px-2 py-0.5 rounded border border-teal-400 bg-teal-50 text-teal-800 hover:bg-teal-100 font-semibold">
+                              🌳 หาลานให้
+                            </button>
+                          )}
+                          {onGoto && (
+                            <button onClick={() => { onGoto(p.slot); onClose(); }}
+                              className="px-2 py-0.5 rounded border border-rose-300 text-rose-700 hover:bg-white font-semibold">
+                              ไปที่คาบนี้
+                            </button>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-rose-800 mt-0.5">⚠ {p.text}</div>
+                    <div className="text-gray-500">→ {p.fix}</div>
+                    {yard && (
+                      <div className="text-teal-800 font-semibold mt-0.5">
+                        📌 เลือกให้เรียนที่ {yard} ไว้แล้ว — ตารางยังไม่ขยับ ต้องกด ⚡ สร้างตาราง
+                      </div>
                     )}
-                    {p.slot.teacher_name && (
-                      <span className="text-gray-500">· {p.slot.teacher_name}</span>
-                    )}
-                    {onGoto && (
-                      <button onClick={() => { onGoto(p.slot); onClose(); }}
-                        className="ml-auto px-2 py-0.5 rounded border border-rose-300 text-rose-700 hover:bg-white font-semibold">
-                        ไปที่คาบนี้
-                      </button>
-                    )}
-                  </div>
-                  <div className="text-rose-800 mt-0.5">⚠ {p.text}</div>
-                  <div className="text-gray-500">→ {p.fix}</div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}

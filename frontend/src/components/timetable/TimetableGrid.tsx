@@ -18,6 +18,7 @@ import { RoomSwapModal } from "./RoomSwapModal";
 import { ElectiveOptionModal } from "./ElectiveOptionModal";
 import { AddLessonModal } from "./AddLessonModal";
 import { YardPickModal, type YardCol } from "./YardPickModal";
+import { YardRescueModal } from "./YardRescueModal";
 import { ClassProblemsModal, type ShortRow } from "./ClassProblemsModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
@@ -54,6 +55,7 @@ interface DroppableCellProps {
   onDelete: (id: number) => void;
   onSwapRoom: (slot: TimetableSlot) => void;
   onOpenElective: (slot: TimetableSlot) => void;
+  onRescue: (slot: TimetableSlot) => void;
   preLockMode: boolean;
   onPreLockClick: (slot: TimetableSlot) => void;
   isDragging: boolean;
@@ -66,7 +68,7 @@ interface DroppableCellProps {
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
-  periodDef, day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective,
+  periodDef, day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective, onRescue,
   preLockMode, onPreLockClick, isDragging, onAddLesson, yardMode, yardLabel, onYardClick,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
@@ -112,7 +114,7 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
       );
     } else {
       body = (
-        <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
+        <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} onRescue={onRescue} />
       );
     }
   } else if (yardMode) {
@@ -215,7 +217,8 @@ const DraggableWrapper: React.FC<{
   onDelete: (id: number) => void;
   onSwapRoom: (slot: TimetableSlot) => void;
   onOpenElective: (slot: TimetableSlot) => void;
-}> = ({ slots, onLock, onDelete, onSwapRoom, onOpenElective }) => {
+  onRescue: (slot: TimetableSlot) => void;
+}> = ({ slots, onLock, onDelete, onSwapRoom, onOpenElective, onRescue }) => {
   const primary  = slots[0];
   const isLocked = slots.some((s) => s.is_locked);
 
@@ -237,7 +240,7 @@ const DraggableWrapper: React.FC<{
       {...attributes}
       className={clsx("w-full h-full", isLocked ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing")}
     >
-      <SlotCell slots={slots} isDragging={isDragging} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} />
+      <SlotCell slots={slots} isDragging={isDragging} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} onRescue={onRescue} />
     </div>
   );
 };
@@ -263,6 +266,10 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   const [addCell, setAddCell] = useState<{ day: number; period: number } | null>(null);
   const [electiveSlotId, setElectiveSlotId] = useState<number | null>(null);
   const [showProblems, setShowProblems] = useState(false);
+  // The red lesson whose ลาน is being looked for. A slot, not a cell: the class
+  // that matters is the lesson's own, which on a parent's or a teacher's sheet
+  // is not the one selected.
+  const [rescueSlot, setRescueSlot] = useState<TimetableSlot | null>(null);
   // The cell whose ลาน is being picked: its day and the column(s) it covers.
   const [yardCell, setYardCell] = useState<{ day: number; cols: YardCol[] } | null>(null);
   const electiveSlot = electiveSlotId != null ? slots.find((s) => s.id === electiveSlotId) ?? null : null;
@@ -820,6 +827,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                             onDelete={deleteSlot}
                             onSwapRoom={handleSwapRoomClick}
                             onOpenElective={handleOpenElective}
+                            onRescue={setRescueSlot}
                             preLockMode={preLockMode}
                             onPreLockClick={handlePreLockClick}
                             isDragging={isDragActive}
@@ -890,7 +898,22 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         short={shortRows}
         subjects={subjects}
         groups={groups}
-        onClose={() => setShowProblems(false)}
+        // Esc reaches every open dialog; with the rescue screen on top it should
+        // only close that one, not the list underneath as well.
+        onClose={() => { if (!rescueSlot) setShowProblems(false); }}
+        onRescue={setRescueSlot}
+      />
+    )}
+    {/* หาลานให้คาบที่ไม่มีห้อง — from the lesson's hover button or the problems
+        list. After the list in the page, and z-[210] over its z-[200]: it opens
+        on top and the list stays open behind it. */}
+    {rescueSlot && (
+      <YardRescueModal
+        groupId={rescueSlot.group_id}
+        groupName={rescueSlot.group_name ?? `ห้อง #${rescueSlot.group_id}`}
+        day={rescueSlot.day}
+        period={rescueSlot.period}
+        onClose={() => setRescueSlot(null)}
       />
     )}
     </>
