@@ -1835,6 +1835,9 @@ def _stay_home_notes(slots: list[dict[str, Any]], homes: dict[int, int | None],
     outdoor_depts = {d["id"] for d in DEPARTMENTS if "พลศึกษา" in d.get("name", "")}
     covered: dict[int, int] = defaultdict(int)
     away: dict[int, list[dict]] = defaultdict(list)
+    # ห้องเพชร pulled out of its room by a ห้องประจำวิชา, counted per
+    # (subject, room) so the line can name what to go and change.
+    by_subject: dict[int, dict[tuple, int]] = defaultdict(lambda: defaultdict(int))
     for s in slots:
         gid = s.get("group_id")
         grp = g_map.get(gid)
@@ -1845,6 +1848,27 @@ def _stay_home_notes(slots: list[dict[str, Any]], homes: dict[int, int | None],
                 or s.get("is_overflow")):
             continue
         if not _stays_home_for(grp, subj, home, subj.get("department_id") in outdoor_depts):
+            # Exempt, not yielded — but say so anyway when it is a ห้องประจำวิชา
+            # that took the class out of its room.
+            #
+            # The school ticked ม.1/1 ห้องเพชร, pressed สร้างตาราง, and still
+            # found it in 322 ToBeNumberOne with nothing anywhere saying why.
+            # The rule was working exactly as written: a subject with a room of
+            # its own is not the class's to decide. But "ห้องประจำวิชา" is a
+            # setting on the SUBJECT, made once, possibly years ago, and
+            # nothing on the timetable screen shows it. So the office sees a
+            # rule it set being ignored, and has no way to find the setting
+            # that is overriding it.
+            #
+            # Not an exception and not a fault — the school may well want it —
+            # so it is reported separately, with the subject and the room
+            # named, because that is what you need to go and change.
+            if (grp.get("stay_in_homeroom") is True and home
+                    and s.get("room_id") and s.get("room_id") != home["id"]
+                    and _subject_rooms(subj)
+                    and subj.get("department_id") not in outdoor_depts
+                    and not (named is not None and named(s))):
+                by_subject[gid][(s.get("subject_id"), s.get("room_id"))] += 1
             continue
         if named is not None and named(s):
             continue
@@ -1852,6 +1876,21 @@ def _stay_home_notes(slots: list[dict[str, Any]], homes: dict[int, int | None],
         if s.get("room_id") != home["id"]:
             away[gid].append(s)
     out: list[str] = []
+    for gid in sorted(by_subject, key=lambda i: str(g_map[i].get("name"))):
+        grp = g_map[gid]
+        home = r_map.get(homes.get(gid))
+        items = sorted(by_subject[gid].items(), key=lambda kv: -kv[1])
+        shown = "; ".join(
+            f"{(s_map.get(sid) or {}).get('code') or (s_map.get(sid) or {}).get('name') or sid}"
+            f" → {(r_map.get(rid) or {}).get('name') or rid} ({n} คาบ)"
+            for (sid, rid), n in items[:4])
+        out.append(
+            f"{grp.get('name')}: ตั้งเป็นห้องเพชรไว้ แต่ "
+            f"{sum(n for _k, n in items)} คาบยังออกไปเรียนห้องอื่น "
+            f"เพราะวิชานั้นตั้งห้องประจำวิชาไว้ ซึ่งมาก่อนห้องประจำชั้นเสมอ "
+            f"({shown}{' …' if len(items) > 4 else ''}) "
+            f"— ถ้าไม่ได้ตั้งใจ ให้เอาห้องประจำวิชาออกจากวิชานั้นที่หน้ารายวิชา "
+            f"แล้วกดแก้เฉพาะห้องนี้อีกครั้ง")
     for gid in sorted(covered, key=lambda i: str(g_map[i].get("name"))):
         grp, home = g_map[gid], r_map[homes[gid]]
         if not grp.get("homeroom_room_id"):
