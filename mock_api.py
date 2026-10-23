@@ -4749,6 +4749,64 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # free, or a room existing — because that is the question being handed
     # back. A red cell on a teacher's day off, or a second ค31102 on a Tuesday,
     # would be a second fault invented on top of the first one.
+    def clear_for_overflow(gid: int, tid: int, free_cells: list) -> tuple | None:
+        """Move one of this class's lessons aside so a คาบล้น can land on an
+        hour where its teacher is actually free.
+
+        Why this is worth doing rather than handing the clash back:
+
+        Measured on the school's own data, every red cell that also had a
+        teacher clash looked the same. The class had one to three empty hours
+        left in its week and the teacher was busy in every one of them — so
+        the cell above picks an hour the teacher cannot be in, and the red
+        frame then says two things at once, only one of which anybody can act
+        on. But those same classes had five to twenty hours where the teacher
+        WAS free and some other lesson of theirs happened to be sitting. None
+        of the teachers were overloaded: each needed fifteen to twenty-one
+        hours out of thirty-five.
+
+        So the clash was never a fact about the teacher's week. It was the
+        order things were placed in. One lesson steps aside — into an hour its
+        own teacher is free in, obeying every rule it would have obeyed
+        anyway — and the คาบล้น takes the hour it leaves. The class is no
+        busier, the displaced lesson is no worse off, and what remains on the
+        red cell is the one problem the school can actually solve: no room.
+
+        Returns the freed (day, period), or None when nothing could step aside.
+        """
+        lvl  = _level_key(g_map.get(gid))
+        nums = _class_periods_for_level(lvl)
+        # Hours this teacher is free but the class is not — each holds one
+        # lesson that might be able to move.
+        want = [(d, p) for d in range(5) for p in nums
+                if group_occupied(gid, d, p) and teacher_free(tid, d, gid, p)]
+        random.shuffle(want)
+        for d, p in want:
+            y = next((x for x in SLOTS if x["group_id"] == gid
+                      and x["day"] == d and x["period"] == p), None)
+            # A คาบล้น has no room and books no teacher; moving one would be
+            # shuffling the problem rather than solving it.
+            if y is None or y.get("is_overflow"):
+                continue
+            if not can_leave(y) or not swappable(y):
+                continue
+            y_teacher = t_map.get(y["teacher_id"])
+            home = pull(y)
+            for fd, fp in free_cells:
+                if (fd, fp) == (d, p):
+                    continue
+                if subj_day[(gid, y.get("subject_id"), fd)] > 0:
+                    continue
+                if not can_take(y_teacher, gid, fd, fp):
+                    continue
+                rid = room_for(y, fd, fp, None, home[2])
+                if not rid and home[2]:
+                    continue
+                seat(y, fd, fp, rid)
+                return (d, p)
+            seat(y, home[0], home[1], home[2])
+        return None
+
     overflow_placed = 0
     for req, gid, tid, missing, done in short_rows:
         lvl   = _level_key(g_map.get(gid))
@@ -4784,6 +4842,13 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
                 1 if c[1] == last else 0,
             ))
             d, p = free[0]
+            # The sort above already put any teacher-free hour first, so if
+            # the best one still clashes there was none — ask a lesson to step
+            # aside before handing the school a clash it did not have to have.
+            if not teacher_free(tid, d, gid, p):
+                spot = clear_for_overflow(gid, tid, free)
+                if spot is not None:
+                    d, p = spot
             slot = make_slot(req, d, p, (None, None, None))
             slot["is_overflow"] = True
             # คาบเรียนลาน: a cell with a pick holds its lesson on the ลาน, a
