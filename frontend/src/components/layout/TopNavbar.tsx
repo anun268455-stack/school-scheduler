@@ -7,6 +7,7 @@ import { useReactToPrint } from "react-to-print";
 
 import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
+import { RepairClassesModal } from "../solver/RepairClassesModal";
 import { ConsistencyModal } from "../solver/ConsistencyModal";
 import { PeriodCheckModal } from "../solver/PeriodCheckModal";
 import { CurriculumAuditModal } from "../curriculum/CurriculumAuditModal";
@@ -117,10 +118,11 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     preLockMode, setPreLockMode,
     yardPickMode, setYardPickMode,
     lockAll, unlockAll,
-    liveSync, setLiveSync, syncState, remoteUpdates,
+    liveSync, setLiveSync, syncState, remoteUpdates, isSolving,
   } = useTimetableStore();
 
   const [showSolver,  setShowSolver]  = useState(false);
+  const [showRepair,  setShowRepair]  = useState(false);
   const [showCrud,    setShowCrud]    = useState(false);
   const [showTools,   setShowTools]   = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -383,13 +385,27 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         )}
       </div>
 
-      {/* Solver */}
-      <div ref={solverRef} className="relative px-2 border-r border-gray-700 shrink-0">
+      {/* Solver — two buttons, one above the other, and they must never be
+          mistaken for each other: ⚡ rebuilds the whole school, 🔧 re-places
+          only the classes ticked and leaves every other class exactly where
+          it is. Different colour, different words, and the 🔧 dialog says
+          what it will and will not touch before anything is pressed. */}
+      <div ref={solverRef} className="relative px-2 border-r border-gray-700 shrink-0 flex flex-col items-stretch gap-0.5">
         <button
           onClick={() => { setShowSolver((v) => !v); setShowCrud(false); }}
-          className="flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-semibold transition-colors"
+          className="flex items-center justify-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-semibold transition-colors"
         >
           ⚡ สร้างตาราง
+        </button>
+        <button
+          onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false); setShowRepair(true); }}
+          disabled={isSolving}
+          title={isSolving
+            ? "ระบบกำลังจัดตารางอยู่ — รอให้เสร็จก่อน"
+            : "จัดใหม่เฉพาะห้องที่ติ๊ก ห้องอื่นอยู่ที่เดิมทุกคาบ — ต่างจาก ⚡ สร้างตาราง ที่จัดใหม่ทั้งโรงเรียน"}
+          className="flex items-center justify-center gap-1 px-2 py-0.5 rounded border border-amber-500/70 bg-amber-900/30 text-[11px] font-semibold text-amber-200 hover:bg-amber-800/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          🔧 แก้เฉพาะห้องที่เลือก
         </button>
         {showSolver && (
           <div className="absolute right-0 top-full mt-1 z-50">
@@ -430,6 +446,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       {showCheck && <ConsistencyModal onClose={() => setShowCheck(false)} />}
       {showPeriods && <PeriodCheckModal onClose={() => setShowPeriods(false)} />}
       {showCurric && <CurriculumAuditModal onClose={() => setShowCurric(false)} />}
+      {showRepair && <RepairClassesModal onClose={() => setShowRepair(false)} />}
       {/* Print options */}
       {showPrintOpts && (
         <PrintOptionsModal

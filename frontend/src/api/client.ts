@@ -336,6 +336,12 @@ export const runSolver = (p: {
    * "never" ไม่ใช้เลย, "free" ใช้ได้ตามปกติ
    */
   last_period_mode?: "reserve" | "never" | "free";
+  /**
+   * แก้เฉพาะห้องที่เลือก: re-place only these classes and freeze every other
+   * one. Absent or EMPTY means the full rebuild — so a caller that means
+   * "repair" must never send an empty list.
+   */
+  repair_group_ids?: number[];
 }) => api.post<SolverResult>("/timetable/solve", p).then((r) => r.data);
 
 // ── ส่งต่อครู ────────────────────────────────────────────────────────────────

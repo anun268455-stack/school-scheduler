@@ -201,6 +201,12 @@ interface TimetableStore {
     /** เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 = ไม่จำกัด */
     maxLastPeriod?: number;
     lastPeriodMode?: "reserve" | "never" | "free";
+    /**
+     * แก้เฉพาะห้องที่เลือก — re-place these classes only. Omit for the full
+     * rebuild. An EMPTY list is refused here rather than sent: the server
+     * reads it as "no repair" and would rebuild the whole school.
+     */
+    repairGroupIds?: number[];
   }) => Promise<SolverResult>;
 
   // Bulk operations
@@ -604,6 +610,11 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   },
 
   runSolver: async (opts) => {
+    const repair = opts?.repairGroupIds;
+    const repairing = repair !== undefined;
+    if (repair && repair.length === 0) {
+      throw new Error("ยังไม่ได้เลือกห้องที่จะแก้ — ไม่ส่งไปจัด เพราะรายการว่างจะกลายเป็นจัดใหม่ทั้งโรงเรียน");
+    }
     set({ isSolving: true, solverError: null });
     // Keep a copy of everything as it stands before the solve. This is the
     // heaviest thing the server is ever asked to do and the one most likely
@@ -632,6 +643,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         min_last_period: opts?.minLastPeriod,
         max_last_period: opts?.maxLastPeriod,
         last_period_mode: opts?.lastPeriodMode,
+        repair_group_ids: opts?.repairGroupIds,
       });
       await get().loadSlots();
       void get().loadYardPicks();
@@ -645,7 +657,10 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         ? raw
         : "เซิร์ฟเวอร์ไม่ตอบกลับ (อาจใช้เวลานานเกินไปหรือหน่วยความจำไม่พอ) — "
           + "ลองติ๊ก \"ข้ามวิชาที่มีปัญหา\" แล้วกดใหม่อีกครั้ง";
-      set({ solverError: msg });
+      // A repair reports its own failure in its own dialog, with the server's
+      // sentence (api.errorDetail). Left in solverError it would turn up later
+      // in the ⚡ panel, under a button that had nothing to do with it.
+      if (!repairing) set({ solverError: msg });
       throw err;
     } finally {
       set({ isSolving: false });

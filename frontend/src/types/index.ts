@@ -369,6 +369,16 @@ export interface SolverResult {
   violations:          string[];
   /** Worth saying, but not faults — these do not make a run INFEASIBLE. */
   notes?:              string[];
+  /**
+   * แก้เฉพาะห้องที่เลือก — only present when the request carried
+   * `repair_group_ids`. The summary is Thai, written by the server.
+   */
+  repair_summary?:       string;
+  /**
+   * Lessons OUTSIDE the chosen classes that the server says changed. The
+   * promise is 0; anything else is the button breaking it and is shown as such.
+   */
+  repair_outside_changed?: number;
   engine?:             string;   // "cp-sat" | "greedy" | "greedy-fallback"
   /** Requirements the run tried and failed to place. */
   unplaced_requirement_ids?: number[];

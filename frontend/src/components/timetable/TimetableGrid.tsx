@@ -25,7 +25,7 @@ import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer"
 import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
 import { slotsForTeacher } from "../../utils/teacherSlots";
-import { problemOf, type SlotProblem } from "../../utils/slotProblems";
+import { problemsIn, type SlotProblem } from "../../utils/slotProblems";
 import { TableSearch, matches } from "../common/TableSearch";
 import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../utils/levels";
 import { mergedDoubles, periodsOfCell, picksOfGroup, yardsInCell } from "../../utils/yardPicks";
@@ -321,11 +321,9 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   //
   // คาบกรอบแดงบอกว่า "ตรงนี้มีเรื่อง" แต่ไม่ได้บอกว่าทั้งห้องมีกี่เรื่อง และ
   // วิชาที่ลงไม่ได้เลยก็ไม่มีคาบให้ขึ้นกรอบ ปุ่มนี้จึงรวมสองอย่างไว้ที่เดียว
+  // problemsIn ตัวเดียวกับที่ปุ่ม "แก้เฉพาะห้องที่เลือก" ใช้นับห้องที่มีปัญหา
   const problems: SlotProblem[] = useMemo(
-    () => viewSlots
-      .map((s) => problemOf(s, slots))
-      .filter((p): p is SlotProblem => p !== null)
-      .sort((a, b) => a.slot.day - b.slot.day || a.slot.period - b.slot.period),
+    () => problemsIn(viewSlots, slots),
     [viewSlots, slots]);
 
   // วิชาของห้องนี้ที่ยังลงไม่ครบ — คาบกรอบแดงนับเป็นยังไม่ลง

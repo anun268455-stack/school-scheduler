@@ -9,57 +9,10 @@ import { useTimetableStore } from "../../store/timetableStore";
 import { ClearTimetableModal } from "../timetable/ClearTimetableModal";
 import { UnplacedModal } from "./UnplacedModal";
 import type { RequirementProblem, SolverResult } from "../../types";
-
-/** How much of the problem list to leave out of a run. */
-type SkipMode = "none" | "blocking" | "all";
-
-/**
- * คาบสุดท้ายของวัน — how freely the solver may use it.
- *
- * "ช่วยทำให้ไม่มีคาบ 9 เลย เพราะยังมีคาบว่างอยู่ ... ถ้าระบบลงไม่ได้จริงๆ
- *  ก็ไม่ต้องลงให้ เพราะเดี๋ยวฉันจะไปกำหนดเอง"
- */
-type LastMode = "reserve" | "never" | "free";
-
-/**
- * The panel's settings and its last result, kept across open and close.
- *
- * Everything here used to live in the component, and the component is
- * unmounted the moment the panel is closed — so the result of a run, with its
- * list of what could not be placed and the แนวทางแก้ beneath it, was thrown
- * away by clicking anywhere else, and the only way back to it was to run the
- * whole thing again. The settings went with it.
- *
- * localStorage, because it should also survive a reload: the school reads
- * this list, goes off to fix a timetable, and comes back to it.
- */
-const KEEP = "solver.panel.v1";
-
-interface Kept {
-  clearExisting: boolean; maxConsec: number; minLast: number; maxLast: number;
-  lastMode: LastMode;
-  skipMode: SkipMode; manual: Record<number, boolean>;
-  result: SolverResult | null; ranAt: string | null;
-}
-
-const BLANK: Kept = {
-  clearExisting: true, maxConsec: 3, minLast: 1, maxLast: 3,
-  lastMode: "reserve",
-  skipMode: "blocking", manual: {}, result: null, ranAt: null,
-};
-
-function readKept(): Kept {
-  try {
-    const raw = localStorage.getItem(KEEP);
-    return raw ? { ...BLANK, ...JSON.parse(raw) } : BLANK;
-  } catch {
-    return BLANK;        // private window, full disk, anything — never fatal
-  }
-}
-
-function writeKept(v: Kept) {
-  try { localStorage.setItem(KEEP, JSON.stringify(v)); } catch { /* fine */ }
-}
+import {
+  readKept, writeKept, isSkippedBy, solveOptionsOf,
+  type LastMode, type SkipMode,
+} from "../../utils/solverPanel";
 
 interface Props { onClose: () => void }
 
@@ -105,10 +58,7 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   const blocking = problems.filter((p) => p.severity === "blocking");
 
   /** Does the current setting leave this requirement out? */
-  const isSkipped = (p: RequirementProblem) => {
-    if (p.requirement_id in manual) return manual[p.requirement_id];
-    return skipMode === "all" || (skipMode === "blocking" && p.severity === "blocking");
-  };
+  const isSkipped = (p: RequirementProblem) => isSkippedBy(p, skipMode, manual);
   const skippedIds = useMemo(
     () => problems.filter(isSkipped).map((p) => p.requirement_id),
     [problems, skipMode, manual],
@@ -119,14 +69,9 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
 
   const handleSolve = async () => {
     try {
-      const r = await runSolver({
-        excludeRequirementIds: skippedIds,
-        maxConsecutive: maxConsec,
-        preferConsecutive: Math.min(2, maxConsec),
-        minLastPeriod: minLast,
-        maxLastPeriod: maxLast,
-        lastPeriodMode: lastMode,
-      });
+      // The same options the 🔧 แก้เฉพาะห้องที่เลือก button sends (solveOptionsOf).
+      const r = await runSolver(
+        solveOptionsOf({ maxConsec, minLast, maxLast, lastMode }, skippedIds));
       setResult(r);
       setRanAt(new Date().toISOString());
       await loadProblems();    // the run may have changed what fails

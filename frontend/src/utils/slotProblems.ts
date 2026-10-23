@@ -80,16 +80,28 @@ export function problemOf(s: TimetableSlot, all: TimetableSlot[]): SlotProblem |
   return { slot: s, kinds, text: says.join(" · "), fix: fixes.join(" · ") };
 }
 
+/**
+ * ทุกคาบที่ยังค้างอยู่ในกลุ่มคาบที่ให้มา เรียงตามวัน/คาบ
+ *
+ * `view` คือคาบที่กำลังดู (ตารางของห้องหนึ่ง) ส่วน `all` ต้องเป็นทั้งโรงเรียนเสมอ
+ * เพราะครูชนต้องมองข้ามห้อง · กรอบแดงในตารางกับรายการห้องที่มีปัญหาของปุ่ม
+ * "แก้เฉพาะห้องที่เลือก" เรียกฟังก์ชันนี้ตัวเดียวกัน จึงไม่มีทางนับไม่ตรงกัน
+ */
+export function problemsIn(
+  view: TimetableSlot[], all: TimetableSlot[],
+): SlotProblem[] {
+  return view
+    .map((s) => problemOf(s, all))
+    .filter((p): p is SlotProblem => p !== null)
+    .sort((a, b) => a.slot.day - b.slot.day || a.slot.period - b.slot.period);
+}
+
 /** ทุกคาบที่ยังค้างอยู่ของห้องนี้ เรียงตามวัน/คาบ */
 export function classProblems(
   all: TimetableSlot[], groupIds: number[],
 ): SlotProblem[] {
   const want = new Set(groupIds);
-  return all
-    .filter((s) => want.has(s.group_id))
-    .map((s) => problemOf(s, all))
-    .filter((p): p is SlotProblem => p !== null)
-    .sort((a, b) => a.slot.day - b.slot.day || a.slot.period - b.slot.period);
+  return problemsIn(all.filter((s) => want.has(s.group_id)), all);
 }
 
 /** ชื่อห้องย่อยของห้องนี้รวมตัวมันเอง — ห้องแม่ต้องเห็นปัญหาของลูกด้วย */
