@@ -6,6 +6,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Any, Callable
+import copy as _copy
 import random
 import re as _re
 import os as _os
@@ -630,6 +631,12 @@ def _merge_sibling_rooms() -> int:
     for same_hour in groups.values():
         if len(same_hour) < 2:
             continue
+        # ซ่อมเฉพาะห้องที่เลือก: a roomful with a lesson frozen for this run stays
+        # as it stands. (A repair run never splits one — a subgroup tied to a
+        # sibling left out is frozen with it — so this only ever leaves a roomful
+        # the school itself arranged that way.)
+        if any(_repair_frozen(s) for s in same_hour):
+            continue
         held = [s["room_id"] for s in same_hour if s.get("room_id")]
         if not held:
             continue
@@ -686,6 +693,8 @@ def _tie_adjacent_doubles() -> int:
             a, b = cells.get(nums[i]), cells.get(nums[i + 1])
             if not a or not b or a.get("double_group_key") or b.get("double_group_key"):
                 continue
+            if _repair_frozen(a) or _repair_frozen(b):
+                continue            # ซ่อมเฉพาะห้องที่เลือก: not this pass's to touch
             if (a.get("subject_id") != b.get("subject_id")
                     or a.get("teacher_id") != b.get("teacher_id")):
                 continue
@@ -710,7 +719,7 @@ def _tie_adjacent_doubles() -> int:
     return tied
 
 
-def _merge_teacherless_rows() -> int:
+def _merge_teacherless_rows(only: "set[int] | None" = None) -> int:
     """วิชาเดียวกันของห้องเดียวกันที่เขียนไว้ซ้ำโดยไม่มีครู คือคาบเดียวกัน
 
     Saving a เซ็ตห้องย่อย with the teacher left blank used to write a SECOND
@@ -731,6 +740,8 @@ def _merge_teacherless_rows() -> int:
     global REQUIREMENTS
     by_pair: dict[tuple, list[dict]] = defaultdict(list)
     for r in REQUIREMENTS:
+        if only is not None and r.get("group_id") not in only:
+            continue            # ซ่อมเฉพาะห้องที่เลือก: other classes' rows stay as written
         by_pair[(r.get("group_id"), r.get("subject_id"))].append(r)
 
     doomed: set[int] = set()
@@ -773,7 +784,7 @@ def _merge_teacherless_rows() -> int:
     return merged
 
 
-def _fill_set_teachers() -> int:
+def _fill_set_teachers(only: "set[int] | None" = None) -> int:
     """เซ็ตที่เว้นช่องครูไว้ — ยืมครูของวิชานั้นมาให้ เมื่อบอกได้แน่ชัด
 
     "เปลี่ยนเป็นเวลาที่เลือกเว้นให้ เอามาจากวิชาของครูที่สอนวิชานั้นมา."
@@ -793,6 +804,8 @@ def _fill_set_teachers() -> int:
     for r in REQUIREMENTS:
         if r.get("teacher_id") or not r.get("parallel_group_key"):
             continue
+        if only is not None and r.get("group_id") not in only:
+            continue
         cands = by_subject.get(r.get("subject_id")) or set()
         if len(cands) != 1:
             continue
@@ -805,14 +818,17 @@ def _fill_set_teachers() -> int:
     return filled
 
 
-def _tidy_requirements() -> dict[str, int]:
-    """Both repairs, in the order they have to happen."""
-    merged = _merge_teacherless_rows()
-    filled = _fill_set_teachers()
+def _tidy_requirements(only: "set[int] | None" = None) -> dict[str, int]:
+    """Both repairs, in the order they have to happen.
+
+    `only` limits them to these classes' rows (ซ่อมเฉพาะห้องที่เลือก): a repair
+    run has no business rewriting the plan of a class it was told to leave alone."""
+    merged = _merge_teacherless_rows(only)
+    filled = _fill_set_teachers(only)
     return {"merged": merged, "teachers_filled": filled}
 
 
-def _repair_elective_doubles() -> int:
+def _repair_elective_doubles(only: "set[int] | None" = None) -> int:
     """Put back the missing half of a คาบเสรี that was set up as a คาบคู่.
 
     A double-period elective is two linked slots. Several things can take one
@@ -836,6 +852,8 @@ def _repair_elective_doubles() -> int:
         if len(halves) >= 2:
             continue
         s = halves[0]
+        if only is not None and s.get("group_id") not in only:
+            continue            # ซ่อมเฉพาะห้องที่เลือก: not this class's to heal
         # An ordinary lesson that has lost its partner cannot be re-created
         # from here — nothing says who was meant to teach the other half or
         # where. What it must stop doing is wearing the 2× badge on its own.
@@ -1895,6 +1913,365 @@ def _prefers_morning(subject: dict[str, Any] | None) -> bool:
     return bool((subject or {}).get("prefer_morning"))
 
 
+# ── ซ่อมเฉพาะห้องที่เลือก ─────────────────────────────────────────────────────
+#
+# "ห้องที่บอกว่าล็อกไว้ ต้องล็อคเอาไว้นะ ทุกอย่างยังเหมือนเดิม เพิ่มเติมแค่ฉันจะไป
+#  กดว่าห้องไหนที่ต้องไปเรียนลาน แล้วกดแก้ไขตารางใหม่ ตารางเรียนนั้นก็จะจัดใหม่
+#  ให้เหมาะสมสำหรับห้องนั้น"
+#
+# body.repair_group_ids = [ห้อง, ...]: only those classes' lessons are cleared and
+# placed again. Every other class stays EXACTLY as it is — same day, same period,
+# same room, same teacher.
+#
+# Why this is its own thing and not locked_slot_ids. That flag keeps the slots
+# across the clear, but the tidy passes afterwards (draining the last period,
+# spreading gaps, the room chains, the rescue of lessons with no room) are only
+# told to leave alone what is_locked, so they went on moving and re-rooming the
+# very lessons the flag had kept. is_locked, on the other hand, is honoured by
+# every pass — measured on the school's own data, locking the untouched classes
+# moved 0 lessons in time, changed 0 rooms and lost 0.
+#
+# So the freeze is is_locked's own mechanism: _held() is "locked, or frozen for
+# this run", and every place the solver asked "is it locked?" asks that instead.
+# The frozen set is transient — it exists for the length of one run and is never
+# written onto a lesson, because 🔒 is the school's own mark and has to go on
+# meaning only what the school set it to mean.
+#
+# Three passes did NOT ask about locks at all (the room rescue for lessons with
+# no room, the sibling room merge, the double-period tie), so a lock would not
+# have protected a frozen lesson there; they are told about the freeze directly.
+_REPAIR_FROZEN: set[int] = set()        # ids of lessons that must not change this run
+_REPAIR_ONLY: "set[int] | None" = None  # classes this run may place lessons for; None = all
+_REPAIR_HELD_REQS: set[int] = set()     # their rows tied to a class left out (see _repair_plan)
+
+
+def _held(s: dict[str, Any]) -> bool:
+    """Is this lesson off limits to the solver — locked by the school, or frozen
+    for this run?"""
+    return bool(s.get("is_locked")) or s.get("id") in _REPAIR_FROZEN
+
+
+def _repair_frozen(s: dict[str, Any]) -> bool:
+    """Frozen for this run only. For the passes that never looked at a lock."""
+    return s.get("id") in _REPAIR_FROZEN
+
+
+def _slots_in_teacher_clash(slots: "list[dict[str, Any]] | None" = None) -> set[int]:
+    """id() of every lesson whose teacher is still teaching another class in the
+    same minutes — _teacher_clash_with answered for all of them at once.
+
+    The same rule, one pass: that function walks every lesson for every lesson
+    it is asked about, which is fine for one red cell and far too slow for a
+    list of classes. (Overflow lessons do not count as the OTHER side, exactly
+    as there.)"""
+    slots = SLOTS if slots is None else slots
+    g_map = {g["id"]: g for g in _flat_groups()}
+    cache: dict[tuple, frozenset[int]] = {}
+
+    def buckets(s: dict[str, Any]) -> frozenset[int]:
+        key = (s.get("group_id"), s.get("period"))
+        if key not in cache:
+            cache[key] = _slot_buckets(g_map.get(s.get("group_id")), s.get("period"))
+        return cache[key]
+
+    at: dict[tuple, list] = defaultdict(list)       # (day, teacher, minute) -> lessons
+    for x in slots:
+        if x.get("is_overflow"):
+            continue
+        for t in _slot_teachers(x):
+            for b in buckets(x):
+                at[(x.get("day"), t, b)].append(x)
+    out: set[int] = set()
+    for s in slots:
+        mine = _slot_teachers(s)
+        if not mine:
+            continue
+        if any(x is not s for t in mine for b in buckets(s)
+               for x in at.get((s.get("day"), t, b), ())):
+            out.add(id(s))
+    return out
+
+
+def _class_problem_counts() -> dict[int, dict[str, int]]:
+    """For each class with lessons: how many have no room, how many have a
+    teacher clash, how many are red-framed, and how many have any of the three.
+
+    The red frame's own definition (frontend slotProblems.ts), counted on the
+    server so that the list of classes worth repairing and the before/after of a
+    repair come from one place."""
+    clash = _slots_in_teacher_clash()
+    out: dict[int, dict[str, int]] = {}
+    for s in SLOTS:
+        row = out.setdefault(s["group_id"], {"lessons": 0, "roomless": 0,
+                                             "teacher_clash": 0, "overflow": 0,
+                                             "problems": 0})
+        row["lessons"] += 1
+        # A คาบเสรี or a กิจกรรม has no room of its own — not a fault.
+        bare = (not s.get("room_id")
+                and not (s.get("is_elective") or s.get("is_activity_block")
+                         or s.get("elective_pool_id")))
+        clashing = id(s) in clash
+        framed = bool(s.get("is_overflow"))
+        row["roomless"] += bare
+        row["teacher_clash"] += clashing
+        row["overflow"] += framed
+        row["problems"] += bare or clashing or framed
+    return out
+
+
+def _repair_plan(raw: Any, keep_ids: "set[int] | None" = None) -> dict[str, Any]:
+    """Work out, before anything moves, what a repair run may touch.
+
+    scope   — the classes whose lessons are cleared and placed again: exactly
+              the ones asked for. A parent class does not drag its subgroups in
+              with it (the caller names them if it means them); they simply stay
+              as they are, and the parent is placed around them.
+    held    — requirement rows of those classes that are tied to a class left
+              out: the same เซ็ตห้องย่อย (parallel_group_key), or the same
+              subject and teacher across sibling subgroups, which the solver
+              seats as one roomful. Placed again alone they would leave their
+              partner behind, so they stay where they are, and the result says so.
+    kept    — lessons of the chosen classes the caller asked to keep
+              (locked_slot_ids). In an ordinary run that flag only survives the
+              clear; here it is the same freeze as everything else.
+    frozen  — every lesson that must not change: all of the other classes', the
+              held rows' lessons, and the kept ones.
+    """
+    groups = {g["id"]: g for g in _flat_groups()}
+    asked: list[int] = []
+    junk: list[Any] = []
+    for v in (raw if isinstance(raw, (list, tuple, set)) else [raw]):
+        if isinstance(v, str) and v.strip().isdigit():
+            v = int(v)
+        if isinstance(v, int) and not isinstance(v, bool):
+            if v not in asked:
+                asked.append(v)
+        else:
+            junk.append(v)
+    chosen = [i for i in asked if i in groups]
+    unknown = [i for i in asked if i not in groups] + junk
+    scope = set(chosen)
+
+    tied: dict[tuple, list[dict]] = defaultdict(list)
+    for r in REQUIREMENTS:
+        if r.get("parallel_group_key"):
+            tied[("set", r["parallel_group_key"])].append(r)
+        else:
+            parent = (groups.get(r.get("group_id")) or {}).get("parent_id")
+            if parent is not None and r.get("teacher_id"):
+                tied[("sib", parent, r.get("subject_id"), r["teacher_id"])].append(r)
+    held_reqs: set[int] = set()
+    for rows in tied.values():
+        inside = [r for r in rows if r.get("group_id") in scope]
+        if inside and len(inside) < len(rows):
+            held_reqs |= {r["id"] for r in inside}
+    held_pairs = {(r["group_id"], r.get("subject_id")) for r in REQUIREMENTS
+                  if r["id"] in held_reqs}
+    keep_ids = keep_ids or set()
+    kept = {s["id"] for s in SLOTS if s["id"] in keep_ids and s["group_id"] in scope}
+    frozen = {s["id"] for s in SLOTS
+              if s["group_id"] not in scope
+              or (s["group_id"], s.get("subject_id")) in held_pairs
+              or s["id"] in kept}
+    return {"asked": asked, "chosen": chosen, "unknown": unknown, "scope": scope,
+            "held_reqs": held_reqs, "held_pairs": held_pairs, "kept": kept,
+            "frozen": frozen, "groups": groups}
+
+
+def _names_th(ids, groups: dict[int, dict], limit: int = 8) -> str:
+    names = [(groups.get(i) or {}).get("name") or f"#{i}" for i in ids]
+    return ", ".join(names[:limit]) + (" …" if len(names) > limit else "")
+
+
+def _repair_solve(body: dict[str, Any], raw: Any) -> dict[str, Any]:
+    """Place only the chosen classes again; leave every other lesson exactly as is.
+
+    The rest of the body is the ordinary run's, and means what it always did for
+    the classes being placed: skip lists still skip, the consecutive and
+    last-period settings steer where their lessons go, locked_slot_ids keeps the
+    lessons it names. `clear_existing` is the one option that cannot mean what it
+    says here — honoured as written it would empty the whole school — so it is
+    ignored: a repair run clears the chosen classes and nothing else."""
+    global _REPAIR_ONLY
+    keep = set()
+    for v in (body.get("locked_slot_ids") or []) if isinstance(body.get("locked_slot_ids"), (list, tuple, set)) else []:
+        if isinstance(v, int) and not isinstance(v, bool):
+            keep.add(v)
+    plan = _repair_plan(raw, keep)
+    groups = plan["groups"]
+    if not plan["scope"]:
+        # Nothing to repair is not "repair everything": the one thing this run
+        # must never do is clear a timetable because a class id went stale.
+        _nothing_changed()
+        shown = ", ".join(str(x) for x in plan["unknown"][:5])
+        msg = (f"ไม่พบห้องที่เลือกในระบบ ({shown}) — ยังไม่ได้แก้ตารางเลย "
+               f"(ห้องอาจถูกลบไปแล้ว ลองโหลดหน้าใหม่)")
+        return {
+            "status": "INFEASIBLE", "mode": "repair", "engine": "greedy",
+            "slots_created": 0, "solve_time_seconds": 0.0, "objective_value": 0.0,
+            "violations": [msg], "notes": [],
+            "unplaced_requirement_ids": [], "skipped_requirement_ids": [],
+            "repair_summary": msg, "repair_outside_changed": 0,
+            "repair": {"ok": False, "refused": True, "requested_group_ids": plan["asked"],
+                       "unknown_group_ids": plan["unknown"], "group_ids": [],
+                       "classes": [], "summary": msg,
+                       "outside": {"frozen": 0, "changed": 0}},
+        }
+
+    scope, frozen = plan["scope"], plan["frozen"]
+    problems_before = _class_problem_counts()
+    pre_ids = {s["id"] for s in SLOTS}
+    frozen_before = {s["id"]: _copy.deepcopy(s) for s in SLOTS if s["id"] in frozen}
+    req_group = {r["id"]: r.get("group_id") for r in REQUIREMENTS}
+    prev_unplaced = set(LAST_RUN.get("unplaced_requirement_ids") or [])
+
+    _REPAIR_FROZEN.clear(); _REPAIR_FROZEN.update(frozen)
+    _REPAIR_HELD_REQS.clear(); _REPAIR_HELD_REQS.update(plan["held_reqs"])
+    _REPAIR_ONLY = set(scope)
+    try:
+        res = _solve_greedy_run({**body, "clear_existing": True})
+    finally:
+        _REPAIR_FROZEN.clear()
+        _REPAIR_HELD_REQS.clear()
+        _REPAIR_ONLY = None
+
+    # The classes left out were not asked for anything, so what they were still
+    # missing before is still missing — keep it on the books.
+    mine = set(res.get("unplaced_requirement_ids") or [])
+    req_group_now = {r["id"]: r.get("group_id") for r in REQUIREMENTS}
+    kept_unplaced = {rid for rid in prev_unplaced
+                     if rid in req_group_now and (req_group.get(rid) not in scope
+                                                  or rid in plan["held_reqs"])}
+    LAST_RUN["unplaced_requirement_ids"] = sorted(kept_unplaced | mine)
+
+    # ── Did anything that should have stayed put change? Judged against a copy
+    # of each lesson taken before the run, field for field. Two tallies: the
+    # classes that were not chosen (the promise — and the number the screen
+    # shows), and the chosen classes' own lessons that were held back.
+    now = {s["id"]: s for s in SLOTS}
+    out = {"changed": 0, "moved": 0, "re_roomed": 0, "teacher_changed": 0,
+           "lost": 0, "added": 0, "other_fields": 0}
+    held = {k: 0 for k in out}
+    for sid, old in frozen_before.items():
+        t = out if old["group_id"] not in scope else held
+        cur = now.get(sid)
+        if cur is None:
+            t["lost"] += 1; t["changed"] += 1
+            continue
+        if cur == old:
+            continue
+        t["changed"] += 1
+        same_cell = (cur.get("day"), cur.get("period")) == (old.get("day"), old.get("period"))
+        same_room = cur.get("room_id") == old.get("room_id")
+        same_who = ((cur.get("teacher_id"), cur.get("co_teacher_id"))
+                    == (old.get("teacher_id"), old.get("co_teacher_id")))
+        t["moved"] += not same_cell
+        t["re_roomed"] += not same_room
+        t["teacher_changed"] += not same_who
+        t["other_fields"] += same_cell and same_room and same_who
+    for s in SLOTS:
+        if s["id"] in pre_ids:
+            continue
+        if s["group_id"] not in scope:
+            out["added"] += 1; out["changed"] += 1
+        elif (s["group_id"], s.get("subject_id")) in plan["held_pairs"]:
+            held["added"] += 1; held["changed"] += 1
+    ok = out["changed"] == 0 and held["changed"] == 0
+
+    problems_after = _class_problem_counts()
+    zero = {"lessons": 0, "roomless": 0, "teacher_clash": 0, "overflow": 0, "problems": 0}
+
+    def tally(counts: dict) -> dict[str, int]:
+        rows = [counts.get(g, zero) for g in scope]
+        return {"lessons": sum(r["lessons"] for r in rows),
+                "roomless": sum(r["roomless"] for r in rows),
+                "teacher_clash": sum(r["teacher_clash"] for r in rows),
+                "overflow": sum(r["overflow"] for r in rows),
+                "problems": sum(r["problems"] for r in rows),
+                "classes_with_problems": sum(1 for r in rows if r["problems"])}
+
+    before, after = tally(problems_before), tally(problems_after)
+    order = sorted(scope, key=lambda g: ((groups.get(g) or {}).get("name") or "", g))
+    classes = [{"group_id": g, "name": (groups.get(g) or {}).get("name"),
+                "before": problems_before.get(g, zero), "after": problems_after.get(g, zero)}
+               for g in order]
+    outside_groups = {s["group_id"] for s in SLOTS if s["group_id"] not in scope}
+    outside_lessons = sum(1 for o in frozen_before.values() if o["group_id"] not in scope)
+
+    summary = (
+        f"ซ่อมตารางเฉพาะ {len(scope)} ห้อง ({_names_th(order, groups)}) "
+        f"จัดใหม่ {res.get('slots_created', 0)} คาบ — "
+        f"ห้องที่มีปัญหา {before['classes_with_problems']} → {after['classes_with_problems']} ห้อง · "
+        f"คาบไม่มีห้อง {before['roomless']} → {after['roomless']} คาบ · "
+        f"ครูชนกัน {before['teacher_clash']} → {after['teacher_clash']} คาบ · "
+        f"ห้องอื่นอีก {len(outside_groups)} ห้อง ({outside_lessons} คาบ) เปลี่ยนไป {out['changed']} คาบ")
+    lines = [summary]
+    if ok:
+        lines.append(
+            "ตรวจแล้ว: คาบของห้องที่ไม่ได้เลือกเปลี่ยนไป 0 คาบ — ทุกคาบยังอยู่วัน คาบ ห้อง "
+            "และครูเดิม")
+    else:
+        def kinds(t: dict) -> str:
+            parts = [f"ย้ายเวลา {t['moved']}" if t["moved"] else "",
+                     f"เปลี่ยนห้อง {t['re_roomed']}" if t["re_roomed"] else "",
+                     f"เปลี่ยนครู {t['teacher_changed']}" if t["teacher_changed"] else "",
+                     f"หายไป {t['lost']}" if t["lost"] else "",
+                     f"มีคาบเพิ่มมา {t['added']}" if t["added"] else "",
+                     f"แก้ข้อมูลอื่นของคาบ {t['other_fields']}" if t["other_fields"] else ""]
+            return " · ".join(p for p in parts if p)
+        said = []
+        if out["changed"]:
+            said.append(f"คาบของห้องที่ไม่ได้เลือกเปลี่ยนไป {out['changed']} คาบ ({kinds(out)})")
+        if held["changed"]:
+            said.append(f"คาบของห้องที่เลือกที่ต้องคงไว้เปลี่ยนไป {held['changed']} คาบ ({kinds(held)})")
+        warn = ("⚠ " + " และ ".join(said) + " — ไม่ควรเกิดขึ้น: ตัวซ่อมต้องไม่แตะคาบเหล่านี้เลย "
+                "กรุณาตรวจตารางก่อนใช้งาน หรือกู้คืนจากประวัติ แล้วแจ้งผู้ดูแลระบบ")
+        lines.insert(0, warn)
+        res.setdefault("violations", []).insert(0, warn)
+        res["status"] = "INFEASIBLE"
+    if plan["unknown"]:
+        lines.append("ข้ามห้องที่ไม่พบในระบบ: " + ", ".join(str(x) for x in plan["unknown"][:5]))
+    held_slots = sum(1 for o in frozen_before.values()
+                     if o["group_id"] in scope and (o["group_id"], o.get("subject_id")) in plan["held_pairs"]
+                     and o["id"] not in plan["kept"])
+    if held_slots:
+        held_groups = sorted({g for g, _sid in plan["held_pairs"] if g in scope})
+        lines.append(
+            f"ไม่ได้ขยับ {held_slots} คาบของ {_names_th(held_groups, groups)} — เรียนพร้อมกันกับห้องย่อย"
+            f"ที่ไม่ได้เลือก (เซ็ตหรือครูคนเดียวกัน) ถ้าจะให้ขยับต้องเลือกห้องที่เรียนพร้อมกันด้วย")
+    if plan["kept"]:
+        lines.append(f"คาบของห้องที่เลือกที่ขอให้คงไว้ {len(plan['kept'])} คาบ ไม่ถูกขยับ เหมือนห้องอื่น")
+
+    res["mode"] = "repair"
+    res["notes"] = lines + list(res.get("notes") or [])
+    # Flat on the result, for the screen: what was done, and how many lessons
+    # outside the chosen classes are not exactly as they were (always 0).
+    res["repair_summary"] = summary
+    res["repair_outside_changed"] = out["changed"]
+    res["repair"] = {
+        "ok": ok,
+        "requested_group_ids": plan["asked"], "unknown_group_ids": plan["unknown"],
+        "group_ids": order,
+        "classes": classes, "before": before, "after": after,
+        "outside": {"frozen": len(frozen_before), "lessons_outside": outside_lessons,
+                    "classes_untouched": len(outside_groups), **out},
+        "held": held,
+        "held_lessons": held_slots, "kept_lessons": len(plan["kept"]),
+        "summary": summary,
+    }
+    return res
+
+
+def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
+    """The heuristic placer. With body.repair_group_ids it places only those
+    classes again and freezes the rest (see ซ่อมเฉพาะห้องที่เลือก above);
+    absent or empty it is the whole-school run it always was."""
+    ids = body.get("repair_group_ids")
+    if not ids:
+        return _solve_greedy_run(body)
+    return _repair_solve(body, ids)
+
+
 # ── Solver entry point: prefer CP-SAT (real optimiser), fall back to greedy ────
 def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     """Run the timetable solver.
@@ -1904,6 +2281,11 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     not installed, or the CP-SAT model errors for any reason, we fall back to the
     fast greedy heuristic so the app always produces a result.
     """
+    # ซ่อมเฉพาะห้องที่เลือก: only the heuristic placer can promise that every
+    # other class stays exactly as it is (every pass of it asks _held). CP-SAT
+    # builds the week afresh and would put them somewhere of its own choosing.
+    if body.get("repair_group_ids"):
+        return _solve_greedy(body)
     try:
         from ortools.sat.python import cp_model  # noqa: F401
     except Exception:
@@ -1940,7 +2322,7 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── Greedy Mock Solver (fallback) ──────────────────────────────────────────────
-def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
+def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     global SLOTS
     import time as _time
     _t0 = _time.perf_counter()
@@ -1953,15 +2335,17 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # are made whole: a คาบคู่ that has lost a half gets it back now, while
     # the hour beside it is still empty, rather than after the ordinary
     # lessons have filled it.
-    healed_doubles = _repair_elective_doubles()
+    healed_doubles = _repair_elective_doubles(_REPAIR_ONLY)
     # วิชาซ้ำที่เกิดจากเซ็ตที่เว้นครูไว้ — folded before anything is counted or
     # placed, so the class is not scheduled for the same lesson twice.
-    tidy = _tidy_requirements()
+    tidy = _tidy_requirements(_REPAIR_ONLY)
 
     # Keep only locked slots when clearing — elective slots always survive,
     # regardless of is_locked, so the solver never double-books their teacher/room.
+    # (_held is is_locked, plus the lessons a ซ่อมเฉพาะห้องที่เลือก run is
+    # freezing — empty outside such a run, so this is the old line.)
     if clear:
-        SLOTS = [s for s in SLOTS if s["id"] in locked_ids or s.get("is_locked") or s.get("is_elective")]
+        SLOTS = [s for s in SLOTS if s["id"] in locked_ids or _held(s) or s.get("is_elective")]
     # What stood before this run placed anything, so the end-of-run report
     # about ห้องประจำชั้น speaks only for lessons THIS run seated.
     slots_before = {s["id"] for s in SLOTS}
@@ -2728,7 +3112,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
 
     def may_move_room(s: dict) -> bool:
         """Lessons that must not be shuffled out of the room they are in."""
-        if s.get("is_locked") or s.get("is_elective") or s.get("is_activity_block"):
+        if _held(s) or s.get("is_elective") or s.get("is_activity_block"):
             return False
         # A คาบคู่ is one lesson two periods long and both halves share a room;
         # moving one half alone would make the class pack up halfway through.
@@ -2890,6 +3274,12 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # already does. Rows that do NOT name each other are left alone and the
     # ตรวจสอบวิชาซ้ำ warning stands.
     wanted = [r for r in REQUIREMENTS if r["id"] not in skipped_reqs]
+    if _REPAIR_ONLY is not None:
+        # ซ่อมเฉพาะห้องที่เลือก: a class left out of the run is not asked for
+        # anything — not even the lesson it was already short of. Seating it
+        # now would be a change to a class that was meant to stay as it is.
+        wanted = [r for r in wanted if r.get("group_id") in _REPAIR_ONLY
+                  and r["id"] not in _REPAIR_HELD_REQS]
     by_cell: dict[tuple, list] = defaultdict(list)
     for r in wanted:
         by_cell[(r["group_id"], r["subject_id"])].append(r)
@@ -3488,7 +3878,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             return "free"
         kept = []
         for s in clash:
-            if (s.get("is_locked") or s.get("is_elective")
+            if (_held(s) or s.get("is_elective")
                     or s.get("is_activity_block") or s.get("parallel_group_key")
                     or s.get("double_group_key")):
                 kept.append(s)
@@ -3521,7 +3911,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
             # A lesson the school locked, a คาบเสรี, a คาบกิจกรรม — and a
             # lesson of another เซ็ตห้องย่อย, which is a pinned arrangement of
             # its own and must not be taken apart to serve this one.
-            if (s.get("is_locked") or s.get("is_elective")
+            if (_held(s) or s.get("is_elective")
                     or s.get("is_activity_block") or s.get("parallel_group_key")):
                 kept.append(s)
                 continue
@@ -4079,7 +4469,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # lessons then stacked up on the hour they had just been moved onto.
     # Spreading เวรคาบสุดท้าย is worth having, but not at that price.
     def swappable(x: dict) -> bool:
-        return (not x.get("is_locked") and not x.get("is_elective")
+        return (not _held(x) and not x.get("is_elective")
                 and not x.get("parallel_group_key")
                 # A คาบคู่ is one lesson two periods long. Moving half of it
                 # leaves the class packing up in the middle of its own double
@@ -4318,7 +4708,7 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
         lesson, คาบเสรี, กิจกรรม, a เซ็ตห้องย่อย (every subgroup would have to
         travel together) and anything pinned to an hour.
         """
-        return (not x.get("is_locked") and not x.get("is_elective")
+        return (not _held(x) and not x.get("is_elective")
                 and not x.get("is_activity_block")
                 and not x.get("parallel_group_key")
                 and x.get("co_teacher_id") is None
@@ -4640,7 +5030,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     # lesson that had a room can lose it on the way. A chain may well find one
     # without putting anybody into a room they would not have accepted anyway.
     roomless = [s for s in SLOTS if not s.get("room_id") and not s.get("is_elective")
-                and not s.get("is_activity_block")]
+                and not s.get("is_activity_block")
+                and not _repair_frozen(s)]        # a frozen class keeps its red cells as they are
     if roomless:
         index_rooms()
         # A room the school wrote down for this lesson still outranks anything
@@ -5381,6 +5772,7 @@ def _period_check_rows() -> list[dict[str, Any]]:
         busy[s["group_id"]].add((s["day"], s["period"]))
         mine[s["group_id"]].append(s)
 
+    problems = _class_problem_counts()
     rows = []
     for g in groups:
         nums = _class_periods_for_level(_level_key(g))
@@ -5420,6 +5812,12 @@ def _period_check_rows() -> list[dict[str, Any]]:
             "free": free,
             "gaps": gaps,
             "overflow": sum(1 for s in mine[g["id"]] if s.get("is_overflow")),
+            # ห้องไหนควรซ่อม: คาบที่ไม่มีห้อง, คาบที่ครูติดสอนห้องอื่นในชั่วโมงเดียวกัน,
+            # และคาบทั้งหมดที่มีอย่างใดอย่างหนึ่ง (รวมกรอบแดง) — นับของห้องนี้เอง
+            # ไม่รวมห้องย่อย เหมือน overflow
+            "roomless": problems.get(g["id"], {}).get("roomless", 0),
+            "teacher_clash": problems.get(g["id"], {}).get("teacher_clash", 0),
+            "problems": problems.get(g["id"], {}).get("problems", 0),
             "lessons": len(mine[g["id"]]),
             "want_last": want_last if want_last not in ("",) else None,
             "want_free": want_free if want_free not in ("",) else None,
@@ -5444,6 +5842,9 @@ def period_check():
         "with_last": sum(1 for r in rows if r["last"]),
         "last_slots": sum(r["last"] for r in rows),
         "overflow": sum(r["overflow"] for r in rows),
+        "roomless": sum(r["roomless"] for r in rows),
+        "teacher_clash": sum(r["teacher_clash"] for r in rows),
+        "problem_classes": sum(1 for r in rows if r["problems"]),
         "set": sum(1 for r in rows
                    if r["want_last"] is not None or r["want_free"] is not None),
         "off": sum(1 for r in rows
@@ -8444,7 +8845,7 @@ def _evict_ordinary(day: int, periods: list[int], hits: list[dict]) -> list[dict
     newer one does not get to overrule them silently.
     """
     movable = [s for s in hits
-               if not s.get("is_locked") and not s.get("is_elective")
+               if not _held(s) and not s.get("is_elective")
                and not s.get("is_activity_block")]
     if not movable:
         return []
