@@ -7888,6 +7888,37 @@ def create_slot(body: dict[str, Any]):
             raise HTTPException(409, " · ".join(problems[:3]))
     return _enrich_slot(made[0])
 
+def _teacher_clash_with(s: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+    """ครูของคาบนี้ยังติดสอนคาบอื่นอยู่ในชั่วโมงเดียวกันไหม — (ครู, คาบนั้น)
+
+    The one place that decides whether a red frame's teacher half is settled.
+    _settle_overflow lifts the frame only when this finds nothing, and the
+    yard-rescue answer reads the same function to tell the school that a ลาน
+    will give the lesson a room but not clear its frame — so the advice and the
+    frame cannot disagree about whether a clash exists.
+
+    Judged by the clock (a lesson in คาบ 7 of ม.4 and one in คาบ 7 of ม.2 are
+    the same minutes), over every teacher in the room (สอนร่วม, ครูผู้ดูแล), and
+    a lesson that is itself red-framed does not count: it has not been settled
+    anywhere yet. With several teachers in the clash it names the lesson's own
+    teacher first."""
+    mine = set(_slot_teachers(s))
+    if not mine:
+        return None
+    g_map = {g["id"]: g for g in _flat_groups()}
+    bks = _slot_buckets(g_map.get(s.get("group_id")), s.get("period"))
+    for x in SLOTS:
+        if x is s or x.get("is_overflow") or x.get("day") != s.get("day"):
+            continue
+        both = mine & set(_slot_teachers(x))
+        if not both:
+            continue
+        if bks & _slot_buckets(g_map.get(x.get("group_id")), x.get("period")):
+            own = s.get("teacher_id")
+            return (own if own in both else min(both)), x    # ครูยังติดสอนอยู่ในชั่วโมงนี้
+    return None
+
+
 def _settle_overflow(s: dict[str, Any]) -> dict[str, Any]:
     """คาบกรอบแดงที่แก้เรียบร้อยแล้ว ให้กรอบหายไปเอง
 
@@ -7897,16 +7928,8 @@ def _settle_overflow(s: dict[str, Any]) -> dict[str, Any]:
     """
     if not s.get("is_overflow") or not s.get("room_id"):
         return s
-    g_map = {g["id"]: g for g in _flat_groups()}
-    mine  = set(_slot_teachers(s))
-    bks   = _slot_buckets(g_map.get(s.get("group_id")), s.get("period"))
-    for x in SLOTS:
-        if x is s or x.get("is_overflow") or x.get("day") != s.get("day"):
-            continue
-        if not (mine & set(_slot_teachers(x))):
-            continue
-        if bks & _slot_buckets(g_map.get(x.get("group_id")), x.get("period")):
-            return s                      # ครูยังติดสอนอยู่ในชั่วโมงนี้
+    if _teacher_clash_with(s) is not None:
+        return s                          # ครูยังติดสอนอยู่ในชั่วโมงนี้
     s.pop("is_overflow", None)
     return s
 
@@ -10362,27 +10385,33 @@ def _yard_rescue(group_id: int, day: int, period: int) -> dict[str, Any]:
     `rank` is each one's 1-based position in that whole order (so it can be
     higher than its place in this list when ลาน above it are taken).
     `donors` are other classes that could go out to a ลาน this hour and free
-    an indoor room this lesson may take. `note` says why there is nothing to
-    offer, and is "" when there is something."""
+    an indoor room this lesson may take. `lesson.teacher_clash` names the
+    other class that has the lesson's teacher busy this hour (null when the
+    teacher is free): a ลาน gives the lesson a room but not a clear frame
+    while that stands. The clash is reported there and nowhere else — never
+    in `note`, so the field and the prose cannot drift apart. `note` says only
+    why there is nothing to offer, and is "" when there is something."""
     s_map = {x["id"]: x for x in SUBJECTS}
     t_map = {t["id"]: t for t in TEACHERS}
     r_map = {r["id"]: r for r in ROOMS}
 
     def answer(lesson: dict[str, Any] | None, direct=(), donors=(), note: str = ""):
         return {"lesson": lesson or {"subject": "", "teacher": "", "room_name": None,
-                                     "found": False},
+                                     "found": False, "teacher_clash": None},
                 "direct": list(direct), "donors": list(donors), "note": note}
 
-    def describe(s: dict[str, Any], found: bool) -> dict[str, Any]:
+    def subject_of(s: dict[str, Any]) -> str:
         if s.get("is_elective"):
-            subject = "คาบเสรี"
-        else:
-            subject = ((s_map.get(s.get("subject_id")) or {}).get("name")
-                       or s.get("activity_name") or "")
+            return "คาบเสรี"
+        return ((s_map.get(s.get("subject_id")) or {}).get("name")
+                or s.get("activity_name") or "")
+
+    def describe(s: dict[str, Any], found: bool) -> dict[str, Any]:
         room = r_map.get(s.get("room_id")) if s.get("room_id") else None
-        return {"subject": subject,
+        return {"subject": subject_of(s),
                 "teacher": (t_map.get(s.get("teacher_id")) or {}).get("name") or "",
-                "room_name": room["name"] if room else None, "found": found}
+                "room_name": room["name"] if room else None, "found": found,
+                "teacher_clash": None}
 
     grp = _find_group(group_id)
     if grp is None:
@@ -10399,6 +10428,14 @@ def _yard_rescue(group_id: int, day: int, period: int) -> dict[str, Any]:
     if stuck.get("is_elective") or stuck.get("is_activity_block"):
         return answer(lesson, note="คาบเสรีและคาบกิจกรรมไม่ได้จัดห้องแบบคาบทั่วไป "
                                    "การเลือกลานจึงช่วยไม่ได้")
+    # The same question the red frame asks (see _teacher_clash_with).
+    clash = _teacher_clash_with(stuck)
+    if clash is not None:
+        who, other = clash
+        lesson["teacher_clash"] = {
+            "teacher": (t_map.get(who) or {}).get("name") or "",
+            "with_group": (_find_group(other.get("group_id")) or {}).get("name") or "",
+            "with_subject": subject_of(other)}
 
     # The school's ลาน, most-preferred first; a ลาน marked ห้ามใช้ is not on offer.
     order = _yards_in_order()
