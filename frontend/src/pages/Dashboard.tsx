@@ -99,7 +99,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 // ── Thai label helpers ────────────────────────────────────────────────────────
-const SUBJECT_TYPE_TH: Record<string, string> = { common: "ทั่วไป", parallel: "คู่ขนาน" };
 const ROOM_TYPE_TH: Record<string, string> = { physical: "ห้องเรียนทั่วไป", special: "ห้องพิเศษ", outdoor: "กลางแจ้ง", floating: "ห้องเวียน" };
 
 /**
@@ -923,16 +922,13 @@ const SubjectsPanel: React.FC = () => {
           <SearchableSelect value={form.fixed_room_id} onChange={(v) => setForm({ ...form, fixed_room_id: v })}
             options={roomOptions(rooms, ROOM_TYPE_TH)} emptyLabel="– ไม่มี (ใช้ห้องประจำชั้น) –" />
         </Field>
-        <Field label="ประเภท">
-          <select className={inputCls} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-            <option value="common">ทั่วไป</option>
-            <option value="parallel">คู่ขนาน</option>
-          </select>
-        </Field>
-        <Field label="จำนวนคาบ">
+        {/* "ความยาวคาบ" ไม่ใช่ "คาบต่อสัปดาห์" — คาบต่อสัปดาห์อยู่ที่หน้าแผนการสอน
+            เพราะห้องต่างกันเรียนวิชาเดียวกันไม่เท่ากันได้ ช่องนี้บอกว่าเรียน
+            ครั้งละติดกันกี่คาบ ซึ่งเป็นคนละคำถาม */}
+        <Field label="ความยาวคาบ">
           <select className={inputCls} value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}>
-            <option value={1}>1 คาบ</option>
-            <option value={2}>2 คาบ (คาบคู่)</option>
+            <option value={1}>1 คาบ (คาบเดี่ยว)</option>
+            <option value={2}>2 คาบติดกัน (คาบคู่)</option>
           </select>
         </Field>
         <Field label="วิชากิจกรรม">
@@ -1035,7 +1031,7 @@ const SubjectsPanel: React.FC = () => {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","🏟 ห้องประจำวิชา","ประเภท","คาบ","ช่วงเวลาที่อยากให้สอน",""].map((h) => (
+              {["รหัส","ชื่อวิชา","กลุ่มสาระฯ","🏟 ห้องประจำวิชา","ความยาวคาบ","ช่วงเวลาที่อยากให้สอน",""].map((h) => (
                 <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-gray-600 border-b">{h}</th>
               ))}
             </tr>
@@ -1074,12 +1070,6 @@ const SubjectsPanel: React.FC = () => {
                           <option value="no">🚫 ห้ามลาน</option>
                         </select>
                       </div>
-                    </td>
-                    <td className="px-2 py-1">
-                      <select className={inlineCls} value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}>
-                        <option value="common">ทั่วไป</option>
-                        <option value="parallel">คู่ขนาน</option>
-                      </select>
                     </td>
                     <td className="px-2 py-1">
                       <select className={inlineCls} style={{ width: 50 }} value={editForm.duration} onChange={(e) => setEditForm({ ...editForm, duration: Number(e.target.value) })}>
@@ -1149,7 +1139,6 @@ const SubjectsPanel: React.FC = () => {
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-gray-600">{SUBJECT_TYPE_TH[s.type] ?? s.type}</td>
                     <td className="px-3 py-2 text-gray-600">{s.duration}</td>
                     <td className="px-3 py-2">
                       {/* A tinted background alone was not readable — two pale

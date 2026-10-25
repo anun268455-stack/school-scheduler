@@ -2743,6 +2743,10 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         bad = blocked_days_of(sid)
         return [c for c in cells if c[0] not in bad] if bad else cells
 
+    def is_double_subject(sid) -> bool:
+        """วิชานี้ตั้งไว้ว่าเรียนครั้งละสองคาบติดกันหรือเปล่า"""
+        return ((s_map.get(sid) or {}).get("duration", 1) or 1) == 2
+
     def allow_days_many(cells: list, sids) -> list:
         """เซ็ตห้องย่อยเรียนพร้อมกัน ห้ามวันไหนสักวิชาก็ห้ามทั้งเซ็ต"""
         bad: set = set()
@@ -4033,7 +4037,16 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                     # more periods a week than there are days has no other way
                     # to fit, and a lesson placed twice in a day still beats a
                     # lesson not placed at all.
-                    if (attempt < 5
+                    # วิชาคาบคู่ไม่เคยผ่อนข้อนี้
+                    #
+                    # "ถ้ามี 3 คาบก็ไม่ให้สอนในวันเดียวกัน และถ้ามี 4 คาบก็แบ่ง
+                    #  เป็น 2 คู่ ไม่ให้เรียนวันเดียวกัน"
+                    #
+                    # การผ่อนรอบสุดท้ายมีไว้สำหรับวิชาที่สัปดาห์ละหลายคาบจน
+                    # ห้าวันไม่พอ ซึ่งเป็นคนละเรื่องกับวิชาคาบคู่ — คาบคู่
+                    # สัปดาห์ละสี่คาบคือสองก้อน ห้าวันเหลือเฟือ ถ้าปล่อยให้ผ่อน
+                    # เด็กจะได้วิชาเดียวกันสี่คาบรวดในวันเดียว
+                    if ((attempt < 5 or is_double_subject(req.get("subject_id")))
                             and subj_day[(gid, req.get("subject_id"), day)] > 0):
                         continue
 
@@ -4620,7 +4633,10 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                     # Thursday is the timetable nobody wants, and nothing was
                     # stopping it — the one-a-day rule was only ever applied
                     # to single periods.
-                    if attempt < 2 and subj_day[(gid, req.get("subject_id"), day)] > 0:
+                    # เดิมปล่อยกฎนี้ในรอบที่สาม ซึ่งเป็นรอบที่ทำให้สองคาบคู่
+                    # ของวิชาเดียวกันมาอยู่วันเดียวกันได้จริง โรงเรียนบอกชัดว่า
+                    # ไม่เอา จึงไม่ปล่อยอีกต่อไป ก้อนที่ลงไม่ได้จะถูกรายงานแทน
+                    if subj_day[(gid, req.get("subject_id"), day)] > 0:
                         continue      # สองคาบคู่ของวิชาเดียวกัน คนละวัน
                     # วันที่ไม่สอน, here too: the double loop never asked, so a
                     # teacher's day off could be filled by a คาบคู่ whatever

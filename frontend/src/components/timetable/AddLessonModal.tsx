@@ -391,13 +391,6 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
                     <input className={inputCls} placeholder="เช่น คณิตศาสตร์เพิ่มเติม" value={newSubject.name}
                       onChange={(e) => setNewSubject({ ...newSubject, name: e.target.value })} />
                   </Field>
-                  <Field label="ประเภท">
-                    <select className={inputCls} value={newSubject.type}
-                      onChange={(e) => setNewSubject({ ...newSubject, type: e.target.value as SubjectType })}>
-                      <option value="common">ทั่วไป</option>
-                      <option value="parallel">คู่ขนาน (สอนหลายห้องพร้อมกัน)</option>
-                    </select>
-                  </Field>
                   <Field label="ความยาว">
                     <select className={inputCls} value={newSubject.duration}
                       onChange={(e) => setNewSubject({ ...newSubject, duration: Number(e.target.value) })}>
