@@ -2951,7 +2951,15 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             allow_out = bool(allow_out_override)
         # พละ is the exception the school never has to tick: a department that
         # owns the ลาน owns it because that is where its lessons happen.
-        wants_outdoor = subj.get("department_id") in outdoor_dept_ids
+        #
+        # …but a subject that says "ไม่เรียนนอกอาคาร" means it, department or
+        # not. กลุ่มสาระสุขศึกษาและพลศึกษา holds both พละ, which belongs on a
+        # field, and สุขศึกษา, which is a lesson at a desk — and the department
+        # was sending both outside with no way for the school to say otherwise.
+        # Ticking it off on the subject now keeps those classes in their own
+        # ห้องประจำชั้น, which is what the school asked for.
+        wants_outdoor = (subj.get("department_id") in outdoor_dept_ids
+                         and _subject_outdoor(subj) is not False)
         may_outdoor = wants_outdoor or allow_out
         # ห้องประจำชั้น, or the one this run has settled on for a class that has
         # none. Forty of this school's classes have no homeroom recorded, which
@@ -3359,14 +3367,30 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             # stairs is a cost; sitting in the open because of it is not the
             # trade the school asked for.
             #
-            # Among the ลาน themselves (kind 9 — an ordinary subject sent
-            # outside), the school's ลำดับลาน comes first: this is the other
-            # place the solver falls back to a ลาน on its own. Zero for every
-            # room when no order is saved, so nothing moves.
+            # Among the ลาน themselves, the school's ลำดับลาน decides which one.
+            #
+            # "ลานแนะแนวก็ยังมีห้อง ม.ต้น ออกมา"
+            #
+            # This read the order only for kind 9 — an ordinary subject pushed
+            # outside because every room was full. คาบพละ, which is the lesson
+            # that actually goes out to a ลาน and the only one that belongs
+            # there, never looked at the order at all: with every ลาน the same
+            # type and the same capacity, the tuple ended on r["id"] and it
+            # picked by database id. The school has 37 of them, from ส.ฟุตบอล
+            # to ลานแนะแนว, and ลานแนะแนว got its turn as soon as the
+            # lower-numbered ones were taken — while the order the school had
+            # written down sat unread.
+            #
+            # Placed after `kind` so it only ever chooses between ลาน: ahead of
+            # it, an ordinary classroom (order 0) would have outranked a ลาน
+            # the school had put second, and sent คาบพละ indoors.
+            # Zero for every room when no order is saved, so nothing moves.
+            yard_rank = (yard_pos.get(r["id"], len(yard_pos))
+                         if r["type"] == "outdoor" else 0)
             return (1 if kind >= 9 else 0,
-                    yard_pos.get(r["id"], len(yard_pos)) if kind >= 9 else 0,
+                    yard_rank if kind >= 9 else 0,
                     1 if upstairs(r) else 0, squat,
-                    too_small, kind, r["id"])
+                    too_small, kind, yard_rank, r["id"])
 
         for r in sorted((r for r in ROOMS if eligible(r)), key=rank):
             # First ordinary room this class gets becomes its anchor, so the
