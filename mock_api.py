@@ -382,6 +382,32 @@ def _subject_rooms(subj: dict[str, Any] | None) -> list[int]:
     return [int(one)] if one else []
 
 
+def _subject_blocked_days(subj: dict[str, Any] | None) -> set[int]:
+    """วันที่วิชานี้ห้ามเรียน — ว่างแปลว่าเรียนได้ทุกวัน
+
+      "มีวิชาพละที่ต้องไม่เรียนในวันพฤ เพราะเป็นวันเรียนลูกเสือ"
+
+    ไม่ใช่ความชอบ แต่เป็นวันที่ทั้งโรงเรียนไปทำอย่างอื่น — เหมือน "วันที่ครู
+    ไม่มาสอน" คือครูไม่ได้อยู่ในโรงเรียน ไม่ใช่ครูไม่อยากสอน วิชาที่ถูกห้ามไว้
+    จึงต้องไม่โผล่ในวันนั้นเลยแม้แต่คาบเดียว และถ้าลงไม่ครบเพราะกฎนี้ ต้องบอก
+    ให้โรงเรียนตัดสินใจเอง ไม่ใช่แอบลงวันนั้นให้ครบๆ ไป
+
+    0 = จันทร์ ถึง 4 = ศุกร์ ค่าที่อ่านไม่ได้หรืออยู่นอกช่วงถูกทิ้งเงียบๆ เพราะ
+    ค่าขยะหนึ่งตัวไม่ควรทำให้ทั้งโรงเรียนจัดตารางไม่ได้
+    """
+    if not subj:
+        return set()
+    out: set[int] = set()
+    for d in (subj.get("blocked_days") or []):
+        try:
+            n = int(d)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= n < 5:
+            out.add(n)
+    return out
+
+
 def _subject_buildings(subj: dict[str, Any] | None) -> set[int]:
     """อาคารที่วิชานี้เรียนได้ — empty means anywhere.
 
@@ -2617,6 +2643,35 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     s_map = {s["id"]: s for s in SUBJECTS}
     r_map = {r["id"]: r for r in ROOMS}
 
+    # ── วันที่วิชาห้ามเรียน ───────────────────────────────────────────────────
+    #
+    # "มีวิชาพละที่ต้องไม่เรียนในวันพฤ เพราะเป็นวันเรียนลูกเสือ"
+    #
+    # ตัวจัดลงคาบได้หลายทาง — คาบเดี่ยว คาบคู่ เซ็ตห้องย่อย คาบที่ยัดลงตอนท้าย
+    # และการย้ายคาบไปมาอีกหลายรอบ กฎที่ต้องไปจำไว้ในทุกทางคือกฎที่จะหลุดสักทาง
+    # จึงกรองวันต้องห้ามออกตั้งแต่ตอน "สร้างรายการช่องที่ลงได้" ทางที่เหลือ
+    # มองไม่เห็นวันนั้นเลยตั้งแต่แรก
+    _blocked_cache: dict[Any, set] = {}
+
+    def blocked_days_of(sid) -> set:
+        got = _blocked_cache.get(sid)
+        if got is None:
+            got = _subject_blocked_days(s_map.get(sid))
+            _blocked_cache[sid] = got
+        return got
+
+    def allow_days(cells: list, sid) -> list:
+        """เอาวันที่วิชานี้ห้ามเรียนออกจากรายการช่อง"""
+        bad = blocked_days_of(sid)
+        return [c for c in cells if c[0] not in bad] if bad else cells
+
+    def allow_days_many(cells: list, sids) -> list:
+        """เซ็ตห้องย่อยเรียนพร้อมกัน ห้ามวันไหนสักวิชาก็ห้ามทั้งเซ็ต"""
+        bad: set = set()
+        for sid in sids:
+            bad |= blocked_days_of(sid)
+        return [c for c in cells if c[0] not in bad] if bad else cells
+
     # ── Group hierarchy (ห้องย่อย) ────────────────────────────────────────────
     # A subgroup (ม.4/6ก) shares its students with the parent whole-class (ม.4/6).
     # So a parent lesson and ANY of its subgroup lessons cannot overlap in time,
@@ -3738,7 +3793,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         for attempt in range(6):
             if placed >= needed:
                 break
-            cells = cells_for(gid)
+            cells = allow_days(cells_for(gid), req.get("subject_id"))
             # ล็อควัน/คาบไว้แล้ว — the school has decided when this lesson
             # happens, so there is nothing to search: the only candidates are
             # the cells it named. If they are taken, the lesson is reported
@@ -4270,6 +4325,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             # โรงเรียนเลือกเอง by_tail จึงไม่แตะ
             cells = (by_tail(double_starts(reqs[0]["group_id"]), lead_lvl, pair=True)
                      if pinned is None else [(int(pinned[0]), int(pinned[1]))])
+            cells = allow_days_many(cells, {r.get("subject_id") for r in reqs})
             # หนึ่งรหัสวิชา หนึ่งครั้งต่อวัน, here too. This loop never asked,
             # so a เซ็ต of two คาบคู่ could put both of them on one day —
             # ม.4/10ก sat through ย31206 for four periods of one Tuesday.
@@ -4308,6 +4364,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             cells = (by_tail(cells_for(reqs[0]["group_id"]),
                              _level_key(g_map.get(reqs[0]["group_id"])))
                      if pinned is None else [(int(pinned[0]), int(pinned[1]))])
+            cells = allow_days_many(cells, {r.get("subject_id") for r in reqs})
 
             def already_today(day_: int) -> bool:
                 return any(subj_day[(r["group_id"], r.get("subject_id"), day_)] > 0
@@ -4444,7 +4501,8 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             for attempt in range(3):
                 if pairs_needed <= 0:
                     break
-                cells = by_tail(double_starts(gid), lvl, pair=True)
+                cells = allow_days(by_tail(double_starts(gid), lvl, pair=True),
+                                   req.get("subject_id"))
                 for day, p in cells:
                     if pairs_needed <= 0:
                         break
@@ -4760,7 +4818,8 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             lift(x)
             moved = False
             # 1. a free cell on a day this class does not have the subject
-            cells = [(d, p) for d in range(5) for p in nums if d not in used]
+            cells = allow_days([(d, p) for d in range(5) for p in nums
+                                if d not in used], sid)
             random.shuffle(cells)
             for d, pr in cells:
                 if group_occupied(gid, d, pr) or not can_take(teacher, gid, d, pr):
@@ -4937,8 +4996,8 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                     pair.sort(key=lambda x: x["period"])
                     head, tailh = pair
                     homes = [pull(x) for x in pair]
-                    starts = [(d, p) for d in range(5) for p in nums
-                              if _next_class_period_for(lvl, p) in nums]
+                    starts = allow_days([(d, p) for d in range(5) for p in nums
+                                         if _next_class_period_for(lvl, p) in nums], sid)
                     random.shuffle(starts)
                     moved = False
                     for d, p in starts:
@@ -4967,7 +5026,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                 if not swappable(s):
                     continue
                 home = pull(s)
-                cells = [(d, p) for d in range(5) for p in nums]
+                cells = allow_days([(d, p) for d in range(5) for p in nums], sid)
                 random.shuffle(cells)
                 moved = False
                 for d, p in cells:
@@ -5012,10 +5071,14 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                     # is now, or there is no point moving them at all.
                     if subj_day[(gid, sid, yd)] > 0 or not can_take(teacher, gid, yd, yp):
                         continue
+                    if yd in blocked_days_of(sid):
+                        continue          # วันที่วิชานี้ห้ามเรียน
                     y_home = pull(y)
                     for d, p in free_now:
                         if subj_day[(gid, y.get("subject_id"), d)] > 0:
                             continue
+                        if d in blocked_days_of(y.get("subject_id")):
+                            continue      # วันที่วิชาของคาบที่ขยับห้ามเรียน
                         if group_occupied(gid, d, p) or not can_take(y_teacher, gid, d, p):
                             continue
                         rid_b = room_for(y, d, p, None, y_home[2])
@@ -5121,6 +5184,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                         teacher = t_map.get(x["teacher_id"])
                         home = pull(x)
                         if (subj_day[(gid, x.get("subject_id"), d)] == 0
+                                and d not in blocked_days_of(x.get("subject_id"))
                                 and not group_occupied(gid, d, p)
                                 and can_take(teacher, gid, d, p)):
                             rid = room_for(x, d, p, None, home[2])
@@ -5276,7 +5340,8 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # free, or a room existing — because that is the question being handed
     # back. A red cell on a teacher's day off, or a second ค31102 on a Tuesday,
     # would be a second fault invented on top of the first one.
-    def clear_for_overflow(gid: int, tid: int, free_cells: list) -> tuple | None:
+    def clear_for_overflow(gid: int, tid: int, free_cells: list,
+                           sid=None) -> tuple | None:
         """Move one of this class's lessons aside so a คาบล้น can land on an
         hour where its teacher is actually free.
 
@@ -5305,8 +5370,12 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         nums = _class_periods_for_level(lvl)
         # Hours this teacher is free but the class is not — each holds one
         # lesson that might be able to move.
+        # ช่องที่จะคืนให้คาบล้นไปลง ต้องไม่ใช่วันที่วิชานั้นห้ามเรียน — รายการ
+        # free ข้างนอกถูกกรองวันมาแล้ว แต่รายการนี้สร้างขึ้นเองคนละชุด
+        bad_days = blocked_days_of(sid)
         want = [(d, p) for d in range(5) for p in nums
-                if group_occupied(gid, d, p) and teacher_free(tid, d, gid, p)]
+                if group_occupied(gid, d, p) and teacher_free(tid, d, gid, p)
+                and d not in bad_days]
         random.shuffle(want)
         for d, p in want:
             y = next((x for x in SLOTS if x["group_id"] == gid
@@ -5323,6 +5392,10 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                 if (fd, fp) == (d, p):
                     continue
                 if subj_day[(gid, y.get("subject_id"), fd)] > 0:
+                    continue
+                # คาบที่ถูกขอให้ขยับก็มีวันต้องห้ามของมันเอง — ย้ายมันไปวันนั้น
+                # คือการแหกกฎด้วยมือของเราเอง
+                if fd in blocked_days_of(y.get("subject_id")):
                     continue
                 if not can_take(y_teacher, gid, fd, fp):
                     continue
@@ -5348,9 +5421,11 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                 free = ([(int(pin_d), int(pin_p))]
                         if not group_occupied(gid, int(pin_d), int(pin_p)) else [])
             else:
+                blocked = blocked_days_of(sid)
                 free = [(d, p) for d in range(5) for p in nums
                         if not group_occupied(gid, d, p)
                         and d not in prefs["days_off"]       # วันที่ครูไม่สอน
+                        and d not in blocked                 # วันที่วิชานี้ห้ามเรียน
                         and p not in prefs["avoid_periods"]  # คาบที่ครูเลี่ยง
                         and not (tail_mode == "never" and p == last)]
                 # หนึ่งรหัสวิชา หนึ่งครั้งต่อวัน — ผ่อนให้ก็ต่อเมื่อไม่เหลือวันอื่นจริงๆ
@@ -5373,7 +5448,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             # the best one still clashes there was none — ask a lesson to step
             # aside before handing the school a clash it did not have to have.
             if not teacher_free(tid, d, gid, p):
-                spot = clear_for_overflow(gid, tid, free)
+                spot = clear_for_overflow(gid, tid, free, sid)
                 if spot is not None:
                     d, p = spot
             slot = make_slot(req, d, p, (None, None, None))

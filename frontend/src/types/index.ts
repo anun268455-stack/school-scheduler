@@ -168,6 +168,14 @@ export interface Subject {
   /** วิชายากควรอยู่ช่วงเช้า — a nudge the solver tries first, never a rule. */
   prefer_morning?: boolean;
   /**
+   * วันที่วิชานี้ไม่เรียน — 0 จันทร์ ถึง 4 ศุกร์ ไม่ใส่ = เรียนได้ทุกวัน
+   *
+   * ไม่ใช่ความชอบ แต่เป็นวันที่ทั้งโรงเรียนไปทำอย่างอื่น เช่น พละไม่เรียน
+   * วันพฤหัสเพราะเป็นวันลูกเสือ ระบบจะไม่ลงวิชานี้ในวันนั้นเลยแม้แต่คาบเดียว
+   * และถ้าเหลือวันไม่พอจะลงครบ จะรายงานว่าลงไม่ครบ แทนที่จะแอบลงวันที่ห้ามไว้
+   */
+  blocked_days?: number[] | null;
+  /**
    * เรียนที่ลานได้ไหม — true ได้, false ห้าม, undefined ไม่ได้ระบุ.
    *
    * Open ground is overflow, never a first choice: a ticked subject goes out

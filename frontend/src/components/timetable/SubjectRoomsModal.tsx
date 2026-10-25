@@ -67,6 +67,31 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
     } finally { setBusy(false); }
   };
 
+  // ── วันที่วิชานี้ไม่เรียน ───────────────────────────────────────────────
+  //
+  // "มีวิชาพละที่ต้องไม่เรียนในวันพฤ เพราะเป็นวันเรียนลูกเสือ"
+  //
+  // ไม่ใช่ความชอบ แต่เป็นวันที่ทั้งโรงเรียนไปทำอย่างอื่น — เหมือนวันที่ครูไม่มา
+  // สอน ระบบจะไม่ลงวิชานี้ในวันนั้นเลย และถ้าลงไม่ครบเพราะเหตุนี้ จะรายงานให้
+  // โรงเรียนตัดสินใจเอง ไม่ใช่แอบลงวันนั้นให้ครบๆ ไป
+  const DAY_NAMES = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์"];
+  const blockedDays = useMemo(
+    () => (subject.blocked_days ?? []).filter((d) => d >= 0 && d < 5),
+    [subject.blocked_days],
+  );
+
+  const saveBlockedDays = async (days: number[]) => {
+    setBusy(true);
+    try {
+      const updated = await api.updateSubject(subject.id, {
+        blocked_days: [...days].sort((a, b) => a - b),
+      });
+      useTimetableStore.setState((st) => ({
+        subjects: st.subjects.map((x) => (x.id === subject.id ? { ...x, ...updated } : x)),
+      }));
+    } finally { setBusy(false); }
+  };
+
   const saveRooms = async (ids: number[]) => {
     setBusy(true);
     try {
@@ -185,6 +210,40 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
           เลือกแล้วระบบจะไม่จัดวิชานี้ลงห้องนอกอาคารที่เลือกเลย แม้แต่ห้องประจำชั้นของนักเรียน
           — เช่น แนะแนว ม.6 ต้องอยู่อาคาร 1 เท่านั้น · ถ้าอาคารนั้นไม่มีห้องว่าง
           ระบบจะเลี่ยงไปคาบอื่นแทนที่จะออกนอกอาคาร
+        </p>
+      </div>
+
+      {/* วันที่วิชานี้ไม่เรียน — เช่น พละไม่เรียนวันพฤหัส เพราะเป็นวันลูกเสือ */}
+      <div className="px-5 py-3 border-b border-gray-100 shrink-0">
+        <p className="text-[11px] font-semibold text-gray-500 mb-1">
+          วันที่วิชานี้ไม่เรียน (ไม่เลือก = เรียนได้ทุกวัน)
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {DAY_NAMES.map((name, d) => {
+            const on = blockedDays.includes(d);
+            return (
+              <button key={d} disabled={busy}
+                onClick={() => saveBlockedDays(on
+                  ? blockedDays.filter((x) => x !== d)
+                  : [...blockedDays, d])}
+                className={clsx("px-2.5 py-1 rounded-lg border text-xs transition-colors disabled:opacity-40",
+                  on ? "bg-rose-600 border-rose-600 text-white font-medium"
+                     : "bg-white border-gray-300 text-gray-600 hover:border-rose-400")}>
+                {on ? "🚫 " : ""}{name}
+              </button>
+            );
+          })}
+          {blockedDays.length > 0 && (
+            <button onClick={() => saveBlockedDays([])} disabled={busy}
+              className="px-2.5 py-1 rounded-lg border border-gray-200 text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-40">
+              ล้าง (เรียนได้ทุกวัน)
+            </button>
+          )}
+        </div>
+        <p className="text-[11px] text-gray-400 mt-1">
+          วันที่เลือกไว้ระบบจะไม่ลงวิชานี้เลยแม้แต่คาบเดียว — ใช้กับวันที่ทั้งโรงเรียน
+          ไปทำอย่างอื่น เช่น พละไม่เรียนวันพฤหัสเพราะเป็นวันลูกเสือ · ถ้าเหลือวันไม่พอ
+          จะลงจนครบ ระบบจะรายงานว่าลงไม่ครบ แทนที่จะแอบลงในวันที่ห้ามไว้
         </p>
       </div>
 
