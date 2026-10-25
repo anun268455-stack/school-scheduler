@@ -10,6 +10,7 @@ import { SolverWidget } from "../solver/SolverWidget";
 import { RepairClassesModal } from "../solver/RepairClassesModal";
 import { ConsistencyModal } from "../solver/ConsistencyModal";
 import { PeriodCheckModal } from "../solver/PeriodCheckModal";
+import { CapacityModal } from "../solver/CapacityModal";
 import { CurriculumAuditModal } from "../curriculum/CurriculumAuditModal";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { useDismissOnOutside } from "../common/ModalShell";
@@ -129,6 +130,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showPrintOpts, setShowPrintOpts] = useState(false);
   const [showCheck,   setShowCheck]   = useState(false);
   const [showPeriods, setShowPeriods] = useState(false);
+  const [showCapacity, setShowCapacity] = useState(false);
   const [showCurric,  setShowCurric]  = useState(false);
 
   // Toolbar popovers close when you click anywhere else, or press Esc.
@@ -367,6 +369,14 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
               className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
               🧭 <span>ตรวจความสอดคล้องของข้อมูล</span>
             </button>
+            {/* ของที่สั่งไว้ใส่ลงได้ไหม — ถามก่อนกดสร้างตาราง ไม่ใช่หลังจาก
+                อ่านตารางที่ออกมาแล้วเดาว่าติดกฎข้อไหน ส่วนที่เกินกว่าที่มีไม่มี
+                วิธีจัดแบบไหนแก้ได้ ("ให้ลงคาบให้พอดีให้ได้") */}
+            <button
+              onClick={() => { setShowCapacity(true); setShowTools(false); }}
+              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+              ⚖️ <span>ตรวจว่าของที่สั่งไว้ใส่ลงได้ไหม</span>
+            </button>
             {/* คาบสุดท้ายกับคาบว่างของแต่ละห้อง เทียบกับที่โรงเรียนตั้งไว้ —
                 ตัวเลขที่โรงเรียนรู้ดีกว่าระบบ เพราะมาจากหลักสูตรของห้องนั้น */}
             <button
@@ -445,6 +455,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       <div className="ml-auto" />
       {showCheck && <ConsistencyModal onClose={() => setShowCheck(false)} />}
       {showPeriods && <PeriodCheckModal onClose={() => setShowPeriods(false)} />}
+      {showCapacity && <CapacityModal onClose={() => setShowCapacity(false)} />}
       {showCurric && <CurriculumAuditModal onClose={() => setShowCurric(false)} />}
       {showRepair && <RepairClassesModal onClose={() => setShowRepair(false)} />}
       {/* Print options */}

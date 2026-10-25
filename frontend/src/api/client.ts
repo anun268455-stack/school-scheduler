@@ -627,6 +627,48 @@ export const repairConsistency = (codes?: string[]) =>
              remaining: ConsistencyFinding[] }>(
     "/diagnostics/repair", codes ? { codes } : {}).then((r) => r.data);
 
+// ── ของที่สั่งไว้ใส่ลงได้ไหม ─────────────────────────────────────────────────
+// Read-only. Counts what the school has asked for against what it has, before
+// any solve: periods against cells, bound rooms against hours, teachers against
+// their week. Whatever is over cannot be placed by any method, so it is worth
+// seeing BEFORE pressing สร้างตาราง rather than reading it off a finished grid.
+export interface CapacityRow {
+  need:     number;
+  capacity: number;
+  over:     number;
+  /** ห้องเรียนที่หลักสูตรเกิน */
+  group_id?:        number;
+  name?:            string;
+  last_period_num?: number;
+  before_last_num?: number;
+  /** ห้องของวิชาที่รับไม่ไหว */
+  room_ids?: number[];
+  rooms?:    string[];
+  subjects?: string[];
+  /** ครูที่ชั่วโมงเกิน */
+  teacher_id?: number;
+}
+export interface CapacityFinding {
+  code:     string;
+  title:    string;
+  why:      string;
+  count:    number;
+  rows:     CapacityRow[];
+  examples: string[];
+  fixable:  boolean;
+  fix?:     string | null;
+  severity: "blocking" | "warning";
+}
+export interface CapacityReport {
+  findings: CapacityFinding[];
+  total:    number;
+  room_week_capacity: number;
+  checked: { requirements: number; groups: number; rooms: number; teachers: number };
+}
+
+export const fetchCapacity = () =>
+  api.get<CapacityReport>("/diagnostics/capacity").then((r) => r.data);
+
 // ── หลักสูตร ─────────────────────────────────────────────────────────────────
 // A curriculum says how many periods a week each subject gets; a class that has
 // one attached is held to it. A class with none attached is never checked.

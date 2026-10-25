@@ -5793,6 +5793,175 @@ def consistency_check():
     }
 
 
+# ── ของที่สั่งไว้ ใส่ลงได้ไหม ─────────────────────────────────────────────────
+#
+# "คุณช่วยลองหาแนวทางในการลงวิชาต่างๆให้ได้หน่อย โดยยังมีคาบว่างอยู่ให้ลงคาบให้
+#  พอดีให้ได้"
+#
+# เวลาตารางออกมาไม่พอดี สิ่งแรกที่ทุกคนมองคือวิธีจัด แต่บางครั้งมันไม่ใช่วิธีจัด
+# ที่ลงให้ไม่ได้ — มันคือของที่สั่งไว้เกินกว่าที่โรงเรียนมี และไม่มีวิธีจัดแบบไหน
+# ที่ใส่ 92 คาบลงในห้องที่มี 35 ช่องได้
+#
+# หน้านี้จึงนับของสองฝั่งมาวางเทียบกันตรงๆ ก่อนจะกดจัดตาราง: ฝั่งที่สั่งไว้
+# (หลักสูตรกี่คาบ ผูกห้องอะไรไว้) กับฝั่งที่มี (คาบในผัง ห้องที่ใช้ได้) ส่วนที่
+# เกินคือส่วนที่จะไปโผล่เป็นคาบสุดท้าย เป็นคาบไม่มีห้อง หรือลงไม่ครบ ไม่ว่าจะ
+# กดจัดใหม่อีกกี่ครั้ง
+
+def _room_week_capacity() -> int:
+    """ห้องหนึ่งห้องรับได้กี่คาบต่อสัปดาห์
+
+    นับทุกเลขคาบที่มีชั้นใดชั้นหนึ่งใช้เรียน คูณห้าวัน — ห้องหนึ่งห้องอยู่ได้
+    ห้องเดียวต่อหนึ่งช่องเวลา ไม่ว่าชั้นไหนจะมาใช้ เพดานจึงคิดจากผังคาบจริง
+    ไม่ใช่เลขตายตัว เพราะโรงเรียนเพิ่มหรือลดคาบได้ตลอด
+    """
+    levels = {_level_key(g) for g in _flat_groups()} or {"all"}
+    nums = {p for lvl in levels for p in _class_periods_for_level(lvl)}
+    return len(nums) * 5
+
+
+def _capacity_findings() -> list[dict[str, Any]]:
+    """ของที่สั่งไว้ กับช่องที่มีจริง — ส่วนที่เกินคือส่วนที่ลงไม่ได้"""
+    groups = _flat_groups()
+    g_map = {g["id"]: g for g in groups}
+    s_map = {s["id"]: s for s in SUBJECTS}
+    r_map = {r["id"]: r for r in ROOMS}
+    t_map = {t["id"]: t for t in TEACHERS}
+    out: list[dict[str, Any]] = []
+
+    def add(code, title, why, rows, examples, fix):
+        if rows:
+            out.append({"code": code, "title": title, "why": why,
+                        "count": len(rows), "rows": rows,
+                        "examples": examples[:8], "fixable": True,
+                        "fix": fix, "severity": "warning"})
+
+    # ── 1. ห้องเรียนที่หลักสูตรสั่งเกินกว่าสัปดาห์จะรับไหว ──────────────────
+    #
+    # เทียบกับคาบ 1 ถึงคาบก่อนคาบสุดท้าย เพราะคาบสุดท้ายโรงเรียนขอให้ไว้ใช้
+    # เมื่อจำเป็น ส่วนที่เกินคือจำนวนคาบที่ต้องไปนอนคาบสุดท้ายอย่างเลี่ยงไม่ได้
+    need = Counter()
+    for q in REQUIREMENTS:
+        need[q["group_id"]] += q.get("weekly_count") or 0
+    rows = []
+    for g in groups:
+        if g.get("parent_id"):
+            continue                      # นับรวมอยู่ในห้องแม่แล้ว
+        kids = [c["id"] for c in (g.get("children") or [])]
+        # ห้องย่อยเรียนพร้อมกัน ครอบครัวจึงกินเวลาเท่าห้องย่อยที่หนักที่สุด
+        want = need[g["id"]] + max([need[k] for k in kids] or [0])
+        nums = _class_periods_for_level(_level_key(g))
+        cap = max(0, len(nums) - 1) * 5
+        if not nums or want <= cap:
+            continue
+        rows.append({"group_id": g["id"], "name": g.get("name"),
+                     "need": want, "capacity": cap, "over": want - cap,
+                     "last_period_num": nums[-1],
+                     "before_last_num": nums[-2] if len(nums) > 1 else nums[-1]})
+    rows.sort(key=lambda r: -r["over"])
+    add("class_over_week", "ห้องเรียนที่หลักสูตรสั่งเกินกว่าคาบที่มี",
+        "ส่วนที่เกินต้องไปอยู่คาบสุดท้ายของวัน ไม่ว่าจะกดจัดตารางใหม่อีกกี่ครั้ง "
+        "เพราะคาบก่อนหน้าเต็มไปแล้วจริงๆ",
+        rows,
+        [f"{r['name']} — หลักสูตรสั่ง {r['need']} คาบ แต่คาบ 1 ถึงคาบ "
+         f"{r['before_last_num']} มี {r['capacity']} ช่อง เกิน {r['over']} คาบ"
+         for r in rows],
+        fix="ลดคาบในหลักสูตรของห้องนี้ หรือเพิ่มคาบเรียนในผังคาบ "
+            "ถ้ายอมให้ใช้คาบสุดท้ายได้ ก็ตั้งที่หน้าตั้งค่าว่าใช้ได้ตามปกติ")
+
+    # ── 2. ห้องประจำวิชาที่รับไม่ไหว ────────────────────────────────────────
+    #
+    # วิชาที่ผูกห้องไว้ต้องมาเรียนที่ห้องนั้น ทุกห้องเรียนในโรงเรียนจึงมาแย่ง
+    # ห้องเดียวกัน ถ้าวิชาผูกไว้หลายห้อง (ห้องของกลุ่มสาระ) ก็หารกันในกลุ่มนั้น
+    cap_room = _room_week_capacity()
+    dept_rooms: dict[int, list[int]] = defaultdict(list)
+    for r in ROOMS:
+        if r.get("specialized_dept_id"):
+            dept_rooms[r["specialized_dept_id"]].append(r["id"])
+    pool_need: Counter = Counter()
+    pool_subj: dict[frozenset, set] = defaultdict(set)
+    for q in REQUIREMENTS:
+        n = q.get("weekly_count") or 0
+        if not n:
+            continue
+        subj = s_map.get(q.get("subject_id")) or {}
+        ids = [i for i in _subject_rooms(subj) if i in r_map]
+        if not ids:
+            ids = [i for i in (dept_rooms.get(subj.get("department_id")) or [])
+                   if i in r_map]
+        if not ids:
+            continue                      # วิชาที่ไม่ผูกห้อง ลงห้องไหนก็ได้
+        key = frozenset(ids)
+        pool_need[key] += n
+        pool_subj[key].add(subj.get("code") or f"#{q.get('subject_id')}")
+    rows, examples = [], []
+    for key, want in pool_need.items():
+        cap = cap_room * len(key)
+        if want <= cap:
+            continue
+        names = sorted((r_map.get(i) or {}).get("name") or f"#{i}" for i in key)
+        rows.append({"room_ids": sorted(key), "rooms": names,
+                     "need": want, "capacity": cap, "over": want - cap,
+                     "subjects": sorted(pool_subj[key])})
+    rows.sort(key=lambda r: -r["over"])
+    for r in rows:
+        where = (f"{r['rooms'][0]} (ห้องเดียว)" if len(r["rooms"]) == 1
+                 else f"{len(r['rooms'])} ห้อง: {', '.join(r['rooms'][:3])}"
+                      + ("…" if len(r["rooms"]) > 3 else ""))
+        examples.append(f"{where} — วิชา {len(r['subjects'])} รายการผูกไว้ รวม "
+                        f"{r['need']} คาบ/สัปดาห์ แต่รับได้ {r['capacity']} "
+                        f"เกิน {r['over']} คาบ")
+    add("room_over_week", "ห้องของวิชาที่รับคาบไม่ไหว",
+        f"ห้องหนึ่งห้องมีได้ {cap_room} คาบต่อสัปดาห์ตามผังคาบที่ตั้งไว้ "
+        "คาบส่วนที่เกินต้องไปอยู่ห้องอื่น หรือกลายเป็นคาบไม่มีห้องถ้าไม่มีห้องอื่น "
+        "ว่าง — ห้องที่ติ๊กว่าเรียนในห้องประจำชั้นจะเจอข้อนี้ก่อนห้องอื่น",
+        rows, examples,
+        fix="ปลดห้องประจำวิชาออกจากวิชาที่ไม่ต้องใช้ห้องนั้นจริงๆ "
+            "หรือเพิ่มห้องให้กลุ่มสาระนั้น")
+
+    # ── 3. ครูที่ชั่วโมงเกินเวลาที่ตัวเองมี ─────────────────────────────────
+    t_need = Counter()
+    for q in REQUIREMENTS:
+        if q.get("teacher_id"):
+            t_need[q["teacher_id"]] += q.get("weekly_count") or 0
+    rows, examples = [], []
+    for tid, want in t_need.items():
+        teacher = t_map.get(tid)
+        if not teacher or not tid:
+            continue
+        prefs = _teacher_prefs(teacher)
+        days = 5 - len({d for d in prefs["days_off"] if 0 <= d < 5})
+        per_day = cap_room // 5 - len(set(prefs["avoid_periods"]))
+        cap = max(0, days * max(0, per_day))
+        if want <= cap:
+            continue
+        rows.append({"teacher_id": tid, "name": teacher.get("name"),
+                     "need": want, "capacity": cap, "over": want - cap})
+        examples.append(f"{teacher.get('name')} — สอน {want} คาบ/สัปดาห์ "
+                        f"แต่เวลาที่ว่างมี {cap} คาบ เกิน {want - cap} คาบ")
+    rows.sort(key=lambda r: -r["over"])
+    add("teacher_over_week", "ครูที่ชั่วโมงสอนเกินเวลาที่มี",
+        "ส่วนที่เกินลงตารางไม่ได้เลย เพราะครูอยู่ได้ห้องเดียวต่อหนึ่งคาบ",
+        rows, examples,
+        fix="แบ่งวิชาบางรายการไปให้ครูคนอื่น หรือลดวันหยุด/คาบที่เลี่ยงของครูคนนี้")
+
+    return out
+
+
+@app.get("/api/diagnostics/capacity")
+def capacity_check():
+    """ของที่สั่งไว้ใส่ลงได้ไหม — อ่านเท่านั้น ไม่แก้ข้อมูล"""
+    found = _capacity_findings()
+    return {
+        "findings": found,
+        "total": sum(f["count"] for f in found),
+        "room_week_capacity": _room_week_capacity(),
+        "checked": {
+            "requirements": len(REQUIREMENTS), "groups": len(_flat_groups()),
+            "rooms": len(ROOMS), "teachers": len(TEACHERS),
+        },
+    }
+
+
 def _period_check_rows() -> list[dict[str, Any]]:
     """คาบสุดท้ายกับคาบว่างของแต่ละห้อง เทียบกับที่โรงเรียนตั้งไว้
 
