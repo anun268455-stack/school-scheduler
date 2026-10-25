@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import clsx from "clsx";
 import type { TimetableSlot } from "../../types";
 import { slotTeacherNames, teachingTogether, myElectiveOption, slotLabel } from "../../utils/teacherSlots";
-import { problemOf, type SlotProblem } from "../../utils/slotProblems";
+import { problemOf, parentMap, type SlotProblem } from "../../utils/slotProblems";
 import { useTimetableStore } from "../../store/timetableStore";
 
 interface SlotCellProps {
@@ -36,12 +36,16 @@ export const SlotCell: React.FC<SlotCellProps> = ({
   slots, isDragging, isOver, onLock, onDelete, onSwapRoom, onOpenElective, onRescue, compact,
 }) => {
   // ทุกคาบในตาราง เพราะ "ครูติดสอนห้องอื่นในชั่วโมงนี้" ดูจากคาบของตัวเองไม่ได้
+  // และ "ห้องนี้มีอีกห้องเรียนอยู่ด้วย" ก็เช่นกัน — ต้นไม้ห้องมาด้วยเพราะห้องย่อย
+  // พี่น้องที่เรียนด้วยกันนั่งห้องเดียวกันได้ ไม่ใช่การชน
   const all = useTimetableStore((st) => st.slots);
+  const groups = useTimetableStore((st) => st.groups);
+  const parents = useMemo(() => parentMap(groups), [groups]);
   const probs = useMemo(() => {
     const m = new Map<number, SlotProblem | null>();
-    for (const s of slots) m.set(s.id, problemOf(s, all));
+    for (const s of slots) m.set(s.id, problemOf(s, all, parents));
     return m;
-  }, [slots, all]);
+  }, [slots, all, parents]);
 
   if (!slots.length) return null;
 

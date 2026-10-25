@@ -15,7 +15,7 @@
  * เชื่อทั้งคู่
  */
 import type { StudentGroup, TimetableSlot } from "../types";
-import { classProblems, familyIds, type SlotProblem } from "./slotProblems";
+import { classProblems, familyIds, parentMap, type SlotProblem } from "./slotProblems";
 import { compareNames } from "./groupHierarchy";
 import type { PickRowLike } from "./yardPicks";
 
@@ -26,15 +26,19 @@ export interface ProblemCounts {
   lessons: number;
   noRoom:  number;
   clash:   number;
+  /** ห้องสอนเดียวกันกับอีกห้องเรียนหนึ่งในชั่วโมงเดียวกัน */
+  roomClash: number;
   forced:  number;
 }
 
-export const NO_PROBLEMS: ProblemCounts = { lessons: 0, noRoom: 0, clash: 0, forced: 0 };
+export const NO_PROBLEMS: ProblemCounts =
+  { lessons: 0, noRoom: 0, clash: 0, roomClash: 0, forced: 0 };
 
 /** ใช้คำเดียวกับรายการปัญหาของห้อง (ClassProblemsModal) */
 export const COUNT_LABEL = {
   noRoom: "ไม่มีห้องเรียน",
   clash:  "ครูติดสอนห้องอื่น",
+  roomClash: "ห้องสอนมีสองห้องเรียน",
   forced: "ระบบวางไว้ให้เห็นก่อน",
 } as const;
 
@@ -44,6 +48,7 @@ export function countProblems(ps: SlotProblem[]): ProblemCounts {
     c.lessons++;
     if (p.kinds.includes("no_room"))       c.noRoom++;
     if (p.kinds.includes("teacher_clash")) c.clash++;
+    if (p.kinds.includes("room_clash"))    c.roomClash++;
     if (p.kinds.includes("forced"))        c.forced++;
   }
   return c;
@@ -54,6 +59,7 @@ export function describeCounts(c: ProblemCounts): string[] {
   const out: string[] = [];
   if (c.noRoom) out.push(`${COUNT_LABEL.noRoom} ${c.noRoom} คาบ`);
   if (c.clash)  out.push(`${COUNT_LABEL.clash} ${c.clash} คาบ`);
+  if (c.roomClash) out.push(`${COUNT_LABEL.roomClash} ${c.roomClash} คาบ`);
   if (c.forced) out.push(`${COUNT_LABEL.forced} ${c.forced} คาบ`);
   return out;
 }
@@ -103,6 +109,9 @@ export function repairClassList(
     roomsAt.set(k, set);
   }
 
+  // ห้องย่อย -> ห้องแม่ ไว้ให้ปัญหา "ห้องสอนมีสองห้องเรียน" รู้ว่าสองคาบที่ใช้
+  // ห้องเดียวกันเป็นพี่น้องที่นั่งด้วยกันหรือเป็นสองห้องเรียนจริงๆ
+  const parents = parentMap(groups);
   const roots = [...groups].sort((a, b) => compareNames(a.name, b.name));
   return roots.map((g) => {
     const ids  = familyIds(groups, g.id);
@@ -113,7 +122,7 @@ export function repairClassList(
       ids,
       subNames: (g.children ?? []).map((c) => subLabel(g.name, c.name)),
       lessons: slots.filter((s) => mine.has(s.group_id)).length,
-      counts:  countProblems(classProblems(slots, ids)),
+      counts:  countProblems(classProblems(slots, ids, parents)),
       pendingYard: picks.filter((p) => mine.has(p.group_id)
         && !roomsAt.get(hourKey(p.group_id, p.day, p.period))?.has(p.room_id)).length,
     };

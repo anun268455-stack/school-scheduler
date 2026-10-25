@@ -38,6 +38,7 @@ interface Props {
 const KIND_LABEL: Record<string, string> = {
   no_room:       "ไม่มีห้องเรียน",
   teacher_clash: "ครูติดสอนห้องอื่น",
+  room_clash:    "ห้องสอนมีสองห้องเรียน",
   forced:        "ระบบวางไว้ให้เห็นก่อน",
 };
 

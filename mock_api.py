@@ -2140,6 +2140,71 @@ def _repair_frozen(s: dict[str, Any]) -> bool:
     return s.get("id") in _REPAIR_FROZEN
 
 
+def _one_roomful(v: "list[dict[str, Any]]", g_map: dict) -> bool:
+    """ห้องย่อยพี่น้องที่เรียนวิชาเดียวกันกับครูคนเดียวกัน = คาบเดียว.
+
+    ม.4/6ขค นั่งด้วยกันใน ค31218 กับครูคนเดียว — ไม่ใช่การชนกัน. แต่สอง
+    ห้องเรียนที่ไม่ได้เป็นพี่น้องกัน ต่อให้วิชาและครูตรงกัน ก็คือครูคนเดียวถูก
+    จองไว้สองที่จริง ๆ และห้องเดียวที่มีนักเรียนสองห้องจริง ๆ
+
+    หนึ่งกฎ สองคนอ่าน — หน้าตรวจความสอดคล้อง (clash_room, clash_teacher) กับ
+    ตัวนับปัญหาของห้อง (_class_problem_counts) ใช้ตัวนี้ตัวเดียวกัน จึงไม่มีทาง
+    ที่กรอบแดงในตารางกับรายการในหน้าตรวจจะไม่ตรงกัน
+    """
+    if len({(x.get("subject_id"), x.get("teacher_id")) for x in v}) > 1:
+        return False
+    parents = {(g_map.get(x.get("group_id")) or {}).get("parent_id") for x in v}
+    return len(parents) == 1 and None not in parents
+
+
+def _slots_in_room_clash(slots: "list[dict[str, Any]] | None" = None) -> set[int]:
+    """id() ของทุกคาบที่มีอีกห้องเรียนหนึ่งนั่งอยู่ในห้องสอนเดียวกันในนาทีเดียวกัน
+
+      "ห้อง 1 ไม่ควรมีนักเรียน 2 ห้อง ถ้าไม่ใช้ห้องแม่ลูก"
+
+    ห้องเดียวที่มีนักเรียนสองห้องในเวลาเดียวกันคือคาบที่สอนจริงไม่ได้ ตัวจัด
+    ตารางไม่สร้างมันขึ้นมา (วัดแล้ว 0 คู่ จาก 6 รอบ สองผังคาบ) และการลาก/เพิ่ม
+    คาบด้วยมือก็ถูก _validate_moves ตรวจอยู่แล้ว — แต่ข้อมูลที่มีมันอยู่แล้ว
+    ต้องมีคนบอก ไม่ใช่ปล่อยให้เห็นสองคาบซ้อนกันในช่องแล้วตารางเงียบ
+
+    เทียบด้วยเวลานาฬิกา ไม่ใช่เลขคาบ เพราะ ม.ต้นกับ ม.ปลายนับคาบเหมือนกันแต่
+    นั่งต่างเวลา · คาบที่ยังไม่มีห้องไม่นับ (นั่นคือ "ไม่มีห้อง" ซึ่งนับแยกอยู่)
+    """
+    slots = SLOTS if slots is None else slots
+    g_map = {g["id"]: g for g in _flat_groups()}
+    cache: dict[tuple, frozenset[int]] = {}
+
+    def buckets(s: dict[str, Any]) -> frozenset[int]:
+        key = (s.get("group_id"), s.get("period"))
+        if key not in cache:
+            cache[key] = _slot_buckets(g_map.get(s.get("group_id")), s.get("period"))
+        return cache[key]
+
+    at: dict[tuple, list] = defaultdict(list)       # (room, day, minute) -> lessons
+    for x in slots:
+        if not x.get("room_id"):
+            continue
+        for b in buckets(x):
+            at[(x["room_id"], x.get("day"), b)].append(x)
+
+    out: set[int] = set()
+    for s in slots:
+        if not s.get("room_id"):
+            continue
+        for b in buckets(s):
+            for x in at.get((s["room_id"], s.get("day"), b), ()):
+                if x is s or x.get("group_id") == s.get("group_id"):
+                    continue
+                if _same_activity(s, x) or _one_roomful([s, x], g_map):
+                    continue
+                out.add(id(s))
+                break
+            else:
+                continue
+            break
+    return out
+
+
 def _slots_in_teacher_clash(slots: "list[dict[str, Any]] | None" = None) -> set[int]:
     """id() of every lesson whose teacher is still teaching another class in the
     same minutes — _teacher_clash_with answered for all of them at once.
@@ -2184,22 +2249,28 @@ def _class_problem_counts() -> dict[int, dict[str, int]]:
     server so that the list of classes worth repairing and the before/after of a
     repair come from one place."""
     clash = _slots_in_teacher_clash()
+    shared = _slots_in_room_clash()
     out: dict[int, dict[str, int]] = {}
     for s in SLOTS:
         row = out.setdefault(s["group_id"], {"lessons": 0, "roomless": 0,
-                                             "teacher_clash": 0, "overflow": 0,
-                                             "problems": 0})
+                                             "teacher_clash": 0, "room_clash": 0,
+                                             "overflow": 0, "problems": 0})
         row["lessons"] += 1
         # A คาบเสรี or a กิจกรรม has no room of its own — not a fault.
         bare = (not s.get("room_id")
                 and not (s.get("is_elective") or s.get("is_activity_block")
                          or s.get("elective_pool_id")))
         clashing = id(s) in clash
+        # ห้องสอนเดียวกันกับอีกห้องเรียนหนึ่งในนาทีเดียวกัน — สอนจริงไม่ได้ และ
+        # เป็นคาบที่ "แก้เฉพาะห้องที่เลือก" ซ่อมได้ (จัดห้องนี้ใหม่รอบเดียวจบ)
+        # จึงต้องนับรวมในปัญหาของห้อง ไม่งั้นห้องนั้นไม่ขึ้นในรายการให้กดเลย
+        roomshared = id(s) in shared
         framed = bool(s.get("is_overflow"))
         row["roomless"] += bare
         row["teacher_clash"] += clashing
+        row["room_clash"] += roomshared
         row["overflow"] += framed
-        row["problems"] += bare or clashing or framed
+        row["problems"] += bare or clashing or roomshared or framed
     return out
 
 
@@ -2363,13 +2434,15 @@ def _repair_solve(body: dict[str, Any], raw: Any) -> dict[str, Any]:
     ok = out["changed"] == 0 and held["changed"] == 0
 
     problems_after = _class_problem_counts()
-    zero = {"lessons": 0, "roomless": 0, "teacher_clash": 0, "overflow": 0, "problems": 0}
+    zero = {"lessons": 0, "roomless": 0, "teacher_clash": 0, "room_clash": 0,
+            "overflow": 0, "problems": 0}
 
     def tally(counts: dict) -> dict[str, int]:
         rows = [counts.get(g, zero) for g in scope]
         return {"lessons": sum(r["lessons"] for r in rows),
                 "roomless": sum(r["roomless"] for r in rows),
                 "teacher_clash": sum(r["teacher_clash"] for r in rows),
+                "room_clash": sum(r.get("room_clash", 0) for r in rows),
                 "overflow": sum(r["overflow"] for r in rows),
                 "problems": sum(r["problems"] for r in rows),
                 "classes_with_problems": sum(1 for r in rows if r["problems"])}
@@ -2388,6 +2461,7 @@ def _repair_solve(body: dict[str, Any], raw: Any) -> dict[str, Any]:
         f"ห้องที่มีปัญหา {before['classes_with_problems']} → {after['classes_with_problems']} ห้อง · "
         f"คาบไม่มีห้อง {before['roomless']} → {after['roomless']} คาบ · "
         f"ครูชนกัน {before['teacher_clash']} → {after['teacher_clash']} คาบ · "
+        f"ห้องสอนมีสองห้องเรียน {before['room_clash']} → {after['room_clash']} คาบ · "
         f"ห้องอื่นอีก {len(outside_groups)} ห้อง ({outside_lessons} คาบ) เปลี่ยนไป {out['changed']} คาบ")
     lines = [summary]
     if ok:
@@ -6187,32 +6261,37 @@ def _consistency_findings() -> list[dict[str, Any]]:
         first = group_of_slots[0]
         return not all(_same_activity(first, x) for x in group_of_slots[1:])
 
-    def one_roomful(v) -> bool:
-        """ห้องย่อยพี่น้องที่เรียนวิชาเดียวกันกับครูคนเดียวกัน = คาบเดียว.
+    def clash_rows(seen: dict, label) -> list[str]:
+        """หนึ่งการชน หนึ่งบรรทัด — และบอกคาบไว้ด้วยว่าไปดูที่ไหน
 
-        ม.4/6ขค นั่งด้วยกันใน ค31218 กับครูคนเดียว — ไม่ใช่การชนกัน. แต่สอง
-        ห้องเรียนที่ไม่ได้เป็นพี่น้องกัน ต่อให้วิชาและครูตรงกัน ก็คือครูคนเดียว
-        ถูกจองไว้สองที่จริง ๆ
+        ดัชนีข้างบนเป็นช่วงละ 5 นาที คาบละ 50 นาทีจึงเป็น 10 ช่วง การชนครั้ง
+        เดียวเคยกลายเป็น 10 รายการ หน้านี้จึงขึ้นว่า "ห้องเรียนถูกใช้สองคาบ
+        พร้อมกัน 10 รายการ" ทั้งที่มีอยู่คู่เดียว — ตัวเลขที่โรงเรียนอ่านต้อง
+        เป็นจำนวนเรื่องที่ต้องไปแก้ ไม่ใช่จำนวนนาทีที่เรื่องนั้นกินเวลา
+        และบรรทัดเดิมไม่มีเลขคาบอยู่เลย จึงไม่มีทางรู้ว่าต้องไปเปิดช่องไหน
         """
-        if len({(x.get("subject_id"), x.get("teacher_id")) for x in v}) > 1:
-            return False
-        parents = {(g_map.get(x.get("group_id")) or {}).get("parent_id") for x in v}
-        return len(parents) == 1 and None not in parents
+        out: dict[tuple, str] = {}
+        for k, v in seen.items():
+            if not (real_clash(v) and len({x.get("group_id") for x in v}) > 1
+                    and not _one_roomful(v, g_map)):
+                continue
+            key = (k[0], k[1], frozenset(id(x) for x in v))
+            if key in out:
+                continue
+            day = (_DAYS_TH[k[1]] if isinstance(k[1], int) and 0 <= k[1] < len(_DAYS_TH)
+                   else f"วัน {k[1]}")
+            per = "/".join(str(p) for p in sorted(
+                {x.get("period") for x in v if x.get("period") is not None}))
+            out[key] = (f"{label(k[0])} {day} คาบ {per}: "
+                        + " / ".join(sorted({gname(x.get('group_id')) for x in v})))
+        return list(out.values())
 
-    rows = [f"ครู {t_map.get(k[0], {}).get('name', k[0])} วัน {k[1]}: "
-            + " / ".join(sorted({gname(x.get('group_id')) for x in v}))
-            for k, v in seen_t.items() if real_clash(v)
-            and len({x.get("group_id") for x in v}) > 1
-            and not one_roomful(v)]
+    rows = clash_rows(seen_t, lambda t: f"ครู {t_map.get(t, {}).get('name', t)}")
     add("clash_teacher", "ครูอยู่สองที่พร้อมกัน",
         "ยกเว้นกรณีสอนร่วมหรือสอนห้องย่อยพี่น้องพร้อมกันในวิชาเดียวกัน", rows,
         severity="blocking")
 
-    rows = [f"ห้อง {r_map.get(k[0], {}).get('name', k[0])} วัน {k[1]}: "
-            + " / ".join(sorted({gname(x.get('group_id')) for x in v}))
-            for k, v in seen_r.items() if real_clash(v)
-            and len({x.get("group_id") for x in v}) > 1
-            and not one_roomful(v)]
+    rows = clash_rows(seen_r, lambda r: f"ห้อง {r_map.get(r, {}).get('name', r)}")
     add("clash_room", "ห้องเรียนถูกใช้สองคาบพร้อมกัน",
         "ยกเว้นห้องย่อยพี่น้องที่เรียนวิชาเดียวกันกับครูคนเดียวกัน", rows,
         severity="blocking")
@@ -6566,6 +6645,7 @@ def _period_check_rows() -> list[dict[str, Any]]:
             # ไม่รวมห้องย่อย เหมือน overflow
             "roomless": problems.get(g["id"], {}).get("roomless", 0),
             "teacher_clash": problems.get(g["id"], {}).get("teacher_clash", 0),
+            "room_clash": problems.get(g["id"], {}).get("room_clash", 0),
             "problems": problems.get(g["id"], {}).get("problems", 0),
             "lessons": len(mine[g["id"]]),
             "want_last": want_last if want_last not in ("",) else None,
@@ -6593,6 +6673,7 @@ def period_check():
         "overflow": sum(r["overflow"] for r in rows),
         "roomless": sum(r["roomless"] for r in rows),
         "teacher_clash": sum(r["teacher_clash"] for r in rows),
+        "room_clash": sum(r["room_clash"] for r in rows),
         "problem_classes": sum(1 for r in rows if r["problems"]),
         "set": sum(1 for r in rows
                    if r["want_last"] is not None or r["want_free"] is not None),
