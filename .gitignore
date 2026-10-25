@@ -26,3 +26,10 @@ Thumbs.db
 frontend/tsconfig.check.json
 frontend/typecheck-stubs.d.ts
 data_state.json
+
+# ผลคอมไพล์ที่หลุดมาอยู่ข้างซอร์ส
+#
+# แอปนี้เป็น TypeScript ทั้งหมด ไฟล์ .js ใน src จึงไม่มีทางเป็นซอร์ส มันคือ
+# ผลพลอยได้จากการรัน tsc ของชุดทดสอบที่เดินตาม import เข้ามาถึงไฟล์จริง
+# ถ้า commit ไป ตัวรวมไฟล์อาจหยิบไปใช้แทนตัว .ts ได้
+frontend/src/**/*.js
