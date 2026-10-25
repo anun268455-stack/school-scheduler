@@ -134,7 +134,11 @@ export const CapacityModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                             <span className="block">{rowLabel(r)}</span>
                             {r.subjects != null && r.subjects.length > 0 && (
                               <span className="block text-[10px] text-gray-500 truncate">
-                                วิชาที่ผูกไว้ {r.subjects.length} รายการ:{" "}
+                                {r.source === "subject"
+                                  ? `วิชาที่ตั้งห้องนี้เป็นห้องประจำวิชา ${r.subjects.length} รายการ: `
+                                  : r.departments != null && r.departments.length > 0
+                                  ? `เป็นห้องของ${r.departments.join("/")} · วิชา ${r.subjects.length} รายการ: `
+                                  : `วิชา ${r.subjects.length} รายการ: `}
                                 {r.subjects.slice(0, 6).join(", ")}
                                 {r.subjects.length > 6 ? "…" : ""}
                               </span>

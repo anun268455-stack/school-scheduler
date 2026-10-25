@@ -645,6 +645,11 @@ export interface CapacityRow {
   room_ids?: number[];
   rooms?:    string[];
   subjects?: string[];
+  /** วิชามาถึงห้องได้สองทาง และวิธีแก้ของสองทางไม่เหมือนกัน
+   *  subject    = วิชาตั้งห้องนี้เป็นห้องประจำวิชาของตัวเอง
+   *  department = ห้องนี้ขึ้นทะเบียนเป็นห้องของกลุ่มสาระ */
+  source?:      "subject" | "department" | "both";
+  departments?: string[];
   /** ครูที่ชั่วโมงเกิน */
   teacher_id?: number;
 }

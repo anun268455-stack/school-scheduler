@@ -5826,6 +5826,7 @@ def _capacity_findings() -> list[dict[str, Any]]:
     s_map = {s["id"]: s for s in SUBJECTS}
     r_map = {r["id"]: r for r in ROOMS}
     t_map = {t["id"]: t for t in TEACHERS}
+    d_map = {d["id"]: d for d in DEPARTMENTS}
     out: list[dict[str, Any]] = []
 
     def add(code, title, why, rows, examples, fix):
@@ -5877,46 +5878,72 @@ def _capacity_findings() -> list[dict[str, Any]]:
     for r in ROOMS:
         if r.get("specialized_dept_id"):
             dept_rooms[r["specialized_dept_id"]].append(r["id"])
+    # วิชามาถึงห้องได้สองทาง และวิธีแก้ของสองทางนี้ไม่เหมือนกัน จึงต้องแยกให้ชัด
+    # ว่าแถวนี้มาจากทางไหน:
+    #   subject     วิชาตั้งห้องประจำวิชาของตัวเองไว้ (fixed_room_ids) — แก้ที่วิชา
+    #   department  ห้องถูกขึ้นทะเบียนเป็นห้องของกลุ่มสาระ แล้ววิชาในกลุ่มนั้นถูก
+    #               พาไปลงห้องของกลุ่มก่อน — แก้ที่ห้องหรือที่กลุ่มสาระ
     pool_need: Counter = Counter()
     pool_subj: dict[frozenset, set] = defaultdict(set)
+    pool_src: dict[frozenset, set] = defaultdict(set)
+    pool_dept: dict[frozenset, set] = defaultdict(set)
     for q in REQUIREMENTS:
         n = q.get("weekly_count") or 0
         if not n:
             continue
         subj = s_map.get(q.get("subject_id")) or {}
         ids = [i for i in _subject_rooms(subj) if i in r_map]
+        src = "subject"
         if not ids:
             ids = [i for i in (dept_rooms.get(subj.get("department_id")) or [])
                    if i in r_map]
+            src = "department"
         if not ids:
             continue                      # วิชาที่ไม่ผูกห้อง ลงห้องไหนก็ได้
         key = frozenset(ids)
         pool_need[key] += n
         pool_subj[key].add(subj.get("code") or f"#{q.get('subject_id')}")
-    rows, examples = [], []
+        pool_src[key].add(src)
+        if src == "department":
+            dept = d_map.get(subj.get("department_id")) or {}
+            if dept.get("name"):
+                pool_dept[key].add(dept["name"])
+    rows = []
     for key, want in pool_need.items():
         cap = cap_room * len(key)
         if want <= cap:
             continue
         names = sorted((r_map.get(i) or {}).get("name") or f"#{i}" for i in key)
+        srcs = pool_src[key]
         rows.append({"room_ids": sorted(key), "rooms": names,
                      "need": want, "capacity": cap, "over": want - cap,
-                     "subjects": sorted(pool_subj[key])})
+                     "subjects": sorted(pool_subj[key]),
+                     "source": ("both" if len(srcs) > 1 else next(iter(srcs))),
+                     "departments": sorted(pool_dept[key])})
     rows.sort(key=lambda r: -r["over"])
+    examples = []
     for r in rows:
         where = (f"{r['rooms'][0]} (ห้องเดียว)" if len(r["rooms"]) == 1
                  else f"{len(r['rooms'])} ห้อง: {', '.join(r['rooms'][:3])}"
                       + ("…" if len(r["rooms"]) > 3 else ""))
-        examples.append(f"{where} — วิชา {len(r['subjects'])} รายการผูกไว้ รวม "
-                        f"{r['need']} คาบ/สัปดาห์ แต่รับได้ {r['capacity']} "
-                        f"เกิน {r['over']} คาบ")
+        if r["source"] == "subject":
+            how = f"วิชา {len(r['subjects'])} รายการตั้งห้องนี้เป็นห้องประจำวิชา"
+        elif r["departments"]:
+            how = (f"เป็นห้องของ{'/'.join(r['departments'])} "
+                   f"ซึ่งมีวิชา {len(r['subjects'])} รายการ")
+        else:
+            how = f"วิชา {len(r['subjects'])} รายการมาลงห้องนี้"
+        examples.append(f"{where} — {how} รวม {r['need']} คาบ/สัปดาห์ "
+                        f"แต่รับได้ {r['capacity']} เกิน {r['over']} คาบ")
     add("room_over_week", "ห้องของวิชาที่รับคาบไม่ไหว",
         f"ห้องหนึ่งห้องมีได้ {cap_room} คาบต่อสัปดาห์ตามผังคาบที่ตั้งไว้ "
-        "คาบส่วนที่เกินต้องไปอยู่ห้องอื่น หรือกลายเป็นคาบไม่มีห้องถ้าไม่มีห้องอื่น "
-        "ว่าง — ห้องที่ติ๊กว่าเรียนในห้องประจำชั้นจะเจอข้อนี้ก่อนห้องอื่น",
+        "ส่วนที่เกินระบบเอาไปลงห้องอื่นให้เงียบๆ อยู่แล้ว — โรงเรียนจึงเข้าใจว่า "
+        "ทุกคาบของวิชานั้นอยู่ในห้องของมัน ทั้งที่จริงอยู่ได้เท่าที่ห้องรับไหว "
+        "และในห้องที่ติ๊กว่าเรียนในห้องประจำชั้น ส่วนเกินนี้กลายเป็นคาบไม่มีห้อง",
         rows, examples,
-        fix="ปลดห้องประจำวิชาออกจากวิชาที่ไม่ต้องใช้ห้องนั้นจริงๆ "
-            "หรือเพิ่มห้องให้กลุ่มสาระนั้น")
+        fix="เพิ่มห้องให้กลุ่มสาระนั้น (ตั้งที่หน้าห้องเรียน ช่องกลุ่มสาระของห้อง) "
+            "หรือยอมรับว่าส่วนเกินเรียนในห้องธรรมดา · ถ้าแถวไหนขึ้นว่าเป็น"
+            "ห้องประจำวิชา ก็ปลดออกจากวิชาที่ไม่ต้องใช้ห้องนั้นจริงๆ")
 
     # ── 3. ครูที่ชั่วโมงเกินเวลาที่ตัวเองมี ─────────────────────────────────
     t_need = Counter()
