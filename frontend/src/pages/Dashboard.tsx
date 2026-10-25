@@ -3416,6 +3416,31 @@ const SettingsPanel: React.FC = () => {
             จริง ๆ ให้ตั้งที่รายวิชานั้นว่า “ต้องเรียนที่ห้องประจำวิชา” ·
             ตั้งสวนทางเป็นรายคนได้ที่การตั้งค่าของครูแต่ละคน
           </p>
+
+          {/* "ห้องที่มีครูประจำอยู่ ที่จะให้นักเรียนเข้ามาเรียนในนี้ ถ้าเป็น
+              ม.ปลายบังคับให้ลงครูที่มีชื่อก่อน แล้วค่อยลงครูในหมวดกลุ่มสาระ"
+
+              คนละช่องกับตัวเลือกข้างบน: ข้างบนคือ "ห้องประจำของครู" ที่ตั้งจาก
+              หน้าครู ส่วนอันนี้คือ "กันห้องนี้ไว้ให้ครู" ที่ตั้งจากหน้าห้องสอน
+              ซึ่งหมายถึงห้องที่มีไว้ให้สอน ไม่ใช่ห้องที่ครูชอบนั่ง */}
+          <label className="mt-3 flex gap-2 items-start rounded-lg border border-gray-200
+                            px-3 py-2 cursor-pointer hover:border-blue-300">
+            <input type="checkbox" className="mt-0.5 accent-blue-600"
+              checked={schoolConfig.upper_teacher_room_first !== false}
+              onChange={(e) => {
+                setSchoolConfig({ upper_teacher_room_first: e.target.checked });
+                setSaved(false);
+              }} />
+            <span>
+              <span className="text-sm font-medium text-gray-800">
+                ม.ปลายเดินไปเรียนที่ห้องที่กันไว้ให้ครู
+              </span>
+              <span className="block text-[11px] text-gray-500">
+                ห้องที่หน้า 🚪 ห้องสอน “กันไว้ให้ครู” จะได้คาบของครูคนนั้นก่อน แล้วค่อยเติมครู
+                ในกลุ่มสาระที่ห้องนั้นเป็นของ — ม.ต้นไม่เกี่ยว ยังอยู่ห้องประจำชั้นของตัวเอง
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* โลโก้โรงเรียน */}

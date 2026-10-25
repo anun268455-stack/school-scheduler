@@ -539,6 +539,13 @@ export interface SchoolConfig {
    * ครูแต่ละคนตั้งสวนทางได้ที่การตั้งค่าของตัวเอง
    */
   teacher_room_over_homeroom?: boolean;
+  /**
+   * ม.ปลายเดินไปเรียนที่ห้องที่โรงเรียน "กันไว้ให้ครู" (หน้าห้องสอน)
+   *
+   * คนละช่องกับ teacher_room_over_homeroom ซึ่งเป็นเรื่องของ "ห้องประจำของครู"
+   * ที่ตั้งจากหน้าครู · ไม่ตั้งไว้ = เปิด
+   */
+  upper_teacher_room_first?: boolean;
 }
 
 // Drag item payload

@@ -3214,6 +3214,21 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         real_home = grp.get("homeroom_room_id")
         home_beats_teacher = (not teacher_room_wins) or (
             _lower_homeroom_first() and _level_key(grp) == "lower")
+        # ม.ปลาย: ห้องที่โรงเรียนเขียนชื่อครูไว้ เรียกนักเรียนเข้ามาเรียนได้
+        #
+        # ครูเจ้าของห้องเอง และลูกหมวดในกลุ่มสาระที่ห้องนั้นเป็นของ — เรียงให้
+        # เจ้าของได้ก่อนด้วย place_order ส่วนห้องที่มีชื่อครูคนอื่นและไม่ใช่
+        # ห้องของกลุ่มสาระนี้ ไม่นับ: ครูที่เข้าห้องนั้นไม่ได้ ไม่ควรเสีย
+        # ห้องประจำชั้นไปเพราะห้องที่ตัวเองใช้ไม่ได้
+        if (home_beats_teacher and teacher_id is not None and rule != "homeroom"
+                and not wants_outdoor and _upper_teacher_room_first()
+                and _level_key(grp) == "upper"
+                and any(_room_reserved_for(r)
+                        and (teacher_id in _room_reserved_for(r)
+                             or (want_dept and r.get("specialized_dept_id") == want_dept))
+                        and eligible(r)
+                        for r in ROOMS)):
+            home_beats_teacher = False
         if (real_home and not wants_outdoor and home_beats_teacher
                 and not room_taken(real_home)):
             r = r_map.get(real_home)
@@ -4652,6 +4667,13 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     #   1. lessons that need a facility (ห้องพิเศษ) — fill those rooms first
     #   2. classes that have a room of their own — seat them in it
     #   3. everything else, which can go anywhere
+    # ครูที่มีห้องของตัวเอง — ชื่อบนห้อง หรือห้องประจำที่ตั้งไว้ในหน้าครู
+    # (สองช่องนี้คือเรื่องเดียวกัน เขียนได้จากสองหน้า)
+    room_owners: set[int] = set()
+    for _r in ROOMS:
+        room_owners |= _room_reserved_for(_r)
+    room_owners |= {t["id"] for t in TEACHERS if t.get("fixed_room_id")}
+
     def place_order(r: dict) -> tuple:
         subj = s_map.get(r["subject_id"], {}) or {}
         grp  = g_map.get(r["group_id"], {}) or {}
@@ -4688,6 +4710,14 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             # สำเนานี้ ม.ต้นไม่ได้กำลังแพ้การแย่งห้องอยู่แล้ว เก็บไว้เพราะเป็น
             # ลำดับที่โรงเรียนสั่ง และวัดแล้วว่าไม่ได้ทำให้แย่ลง
             0 if _level_key(grp) == "lower" else 1,
+            # ครูที่โรงเรียนกันห้องไว้ให้ ได้เลือกก่อนลูกหมวดในกลุ่มสาระเดียวกัน
+            #
+            # "เน้นให้ครูที่สำคัญมีห้องสอนก่อนแล้วค่อยเติมลูกหมวดเข้าไป"
+            #
+            # ลูกหมวดใช้ห้องของกลุ่มสาระได้เหมือนกัน และใครลงก่อนได้เลือกก่อน
+            # — เรียงไว้แบบนี้ ชั่วโมงที่เจ้าของต้องการจึงยังว่างเมื่อถึงคิวเขา
+            # แล้วที่เหลือค่อยตกเป็นของลูกหมวด ซึ่งเป็นลำดับที่โรงเรียนสั่ง
+            0 if r["teacher_id"] in room_owners else 1,
             0 if grp.get("homeroom_room_id") else 1,
         )
 
@@ -5776,6 +5806,35 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             f"ส่ง {sent_home} คาบที่หาห้องไม่ได้กลับไปเรียนที่ห้องประจำชั้นของตัวเอง "
             f"— ห้องนั้นว่างอยู่ และห้องที่ไม่เหมาะดีกว่าไม่มีห้อง "
             f"(ถ้าวิชาไหนต้องใช้ห้องเฉพาะจริงๆ ให้ย้ายเองอีกที)")
+
+    # ── ห้องที่กันไว้ให้ครู ใครได้สอนในนั้น ──────────────────────────────────
+    #
+    # "เน้นให้ครูที่สำคัญมีห้องสอนก่อนแล้วค่อยเติมลูกหมวดเข้าไป"
+    #
+    # โรงเรียนเขียนชื่อครูไว้บนห้องแล้วก็ไม่มีทางรู้ว่ามันได้ผลหรือเปล่า นอกจาก
+    # ไปเปิดตารางห้องนั้นดูทีละห้อง บรรทัดนี้ตอบให้ทีเดียว: ห้องที่กันไว้มีคาบ
+    # ของเจ้าของกี่คาบ ของลูกหมวดกี่คาบ และห้องไหนยังว่างทั้งสัปดาห์
+    _res_rooms = {r["id"]: r for r in ROOMS if _room_reserved_for(r)}
+    if _res_rooms:
+        _own = _other = 0
+        _used: set[int] = set()
+        for s_ in SLOTS:
+            _rid = s_.get("room_id")
+            _r = _res_rooms.get(_rid) if _rid else None
+            if _r is None:
+                continue
+            _used.add(_rid)
+            if s_.get("teacher_id") in _room_reserved_for(_r):
+                _own += 1
+            else:
+                _other += 1
+        _empty = [r["name"] for rid, r in _res_rooms.items() if rid not in _used]
+        _line = (f"ห้องที่กันไว้ให้ครู {len(_res_rooms)} ห้อง — คาบของครูเจ้าของห้อง "
+                 f"{_own} คาบ · ของครูคนอื่นในกลุ่มสาระเดียวกัน {_other} คาบ")
+        if _empty:
+            _line += (f" · ยังไม่มีคาบเลย {len(_empty)} ห้อง "
+                      f"({', '.join(_empty[:4])}{' …' if len(_empty) > 4 else ''})")
+        notes.append(_line)
 
 
     # Only teachers who actually have lessons can be given a last period.
@@ -10653,11 +10712,41 @@ SCHOOL_CONFIG: dict[str, Any] = {
     # เด็กเล็กเดินข้ามโรงเรียนทุกคาบไม่ใช่เรื่องเดียวกับ ม.ปลายเดิน ห้องพิเศษ
     # ของวิชา (คอม นาฏศิลป์) ยังมาก่อนทั้งคู่เสมอ ปิดได้ถ้าโรงเรียนเปลี่ยนใจ
     "lower_homeroom_first": True,
+    # ม.ปลายเดินไปเรียนที่ห้องที่โรงเรียน "กันไว้ให้ครู" ที่หน้าห้องสอน
+    #
+    # "ห้องที่มีครูประจำอยู่ ที่จะให้นักเรียนเข้ามาเรียนในนี้ ถ้าเป็น ม.ปลาย
+    #  บังคับให้ลงครูที่มีชื่อก่อน แล้วค่อยลงครูในหมวดกลุ่มสาระ"
+    #
+    # คนละช่องกับ "ห้องประจำของครู" ที่ตั้งจากหน้าครู ซึ่งยังตาม
+    # teacher_room_over_homeroom เหมือนเดิม — ชื่อครูบนห้องคือห้องที่มีไว้ให้
+    # สอน เจ้าของได้ก่อน (place_order) แล้วลูกหมวดในกลุ่มสาระที่ห้องนั้นเป็นของ
+    # ค่อยเติมเข้าไป · ม.ต้นไม่เกี่ยว ยังอยู่ห้องประจำชั้นของตัวเอง
+    "upper_teacher_room_first": True,
 }
 
 
 def _lower_homeroom_first() -> bool:
     v = (SCHOOL_CONFIG or {}).get("lower_homeroom_first")
+    return True if v is None else bool(v)
+
+
+def _upper_teacher_room_first() -> bool:
+    """ม.ปลาย: ห้องที่โรงเรียนเขียนชื่อครูไว้ ชนะห้องประจำชั้นของนักเรียน
+
+      "ห้องที่มีครูประจำอยู่ ที่จะให้นักเรียนเข้ามาเรียนในนี้ ถ้าเป็น ม.ปลาย
+       บังคับให้ลงครูที่มีชื่อก่อน แล้วค่อยลงครูในหมวดกลุ่มสาระ เน้นให้ครูที่
+       สำคัญมีห้องสอนก่อนแล้วค่อยเติมลูกหมวดเข้าไป ทำแบบนี้กับทุกๆห้องเลย"
+
+    คู่กับ lower_homeroom_first ที่สั่งตรงกันข้ามสำหรับ ม.ต้น: เด็กเล็กอยู่กับ
+    ที่และครูเดินไปสอน ส่วน ม.ปลายเดินไปเรียนที่ห้องของครูได้ โรงเรียนนี้ตั้ง
+    teacher_room_over_homeroom ไว้เป็น "นักเรียนอยู่กับที่" ทั้งโรงเรียน ซึ่ง
+    ทำให้ห้องที่เขียนชื่อครูไว้ว่างทั้งสัปดาห์ — ข้อนี้เปิดเฉพาะ ม.ปลาย และ
+    เฉพาะห้องที่มีชื่อครูอยู่จริง ที่เหลือไม่ขยับ
+
+    เป็นการจัดลำดับ ไม่ใช่การบังคับ: ห้องไม่ว่างก็ยังไหลกลับไปห้องประจำชั้น
+    ("บังคับก่อน แต่ถ้าจนตรอกให้ไปห้องอื่นได้")
+    """
+    v = (SCHOOL_CONFIG or {}).get("upper_teacher_room_first")
     return True if v is None else bool(v)
 
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
