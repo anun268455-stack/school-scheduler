@@ -3038,8 +3038,19 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         #     Only a REAL ห้องประจำชั้น counts here. A class that has none is
         #     given an anchor room further down, and an invented room is no
         #     reason to keep anyone out of a lab or their own room.
+        #     ม.ต้นเป็นข้อยกเว้นของ teacher_room_wins
+        #
+        #     "ถ้า ม.ต้นมีห้องประจำ ต้องเรียนที่ห้องประจำก่อน"
+        #
+        #     เด็กเล็กเดินข้ามโรงเรียนทุกคาบไม่ใช่เรื่องเดียวกับ ม.ปลายเดิน
+        #     โรงเรียนจึงตอบมาว่าสำหรับ ม.ต้นให้ห้องประจำชั้นชนะห้องของครู
+        #     ส่วน ม.ปลายยังเป็นไปตามที่ตั้งไว้เหมือนเดิม — และยังเป็นการจัด
+        #     ลำดับ ไม่ใช่การห้าม ห้องไม่ว่างก็ยังไหลลงไปหาห้องอื่นข้างล่าง
+        #     ("บังคับก่อน แต่ถ้าจนตรอกให้ไปห้องอื่นได้")
         real_home = grp.get("homeroom_room_id")
-        if (real_home and not wants_outdoor and not teacher_room_wins
+        home_beats_teacher = (not teacher_room_wins) or (
+            _lower_homeroom_first() and _level_key(grp) == "lower")
+        if (real_home and not wants_outdoor and home_beats_teacher
                 and not room_taken(real_home)):
             r = r_map.get(real_home)
             if (r and building_ok(r) and _room_free_for(r, teacher_id) and not upstairs(r)
@@ -4460,7 +4471,10 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         # while there is still room, rather than being handed whatever is
         # left and reported as unplaceable.
         tp = _teacher_prefs(t_map.get(r["teacher_id"]))
-        tight = len(tp["days_off"]) + (1 if tp["avoid_periods"] else 0)
+        # วันที่วิชาห้ามเรียนบีบพื้นที่แบบเดียวกับวันที่ครูไม่มาสอน — พละที่ห้าม
+        # วันพฤหัสเหลือสี่วันให้ลง เท่ากับครูที่หยุดวันศุกร์
+        tight = (len(tp["days_off"]) + len(_subject_blocked_days(subj))
+                 + (1 if tp["avoid_periods"] else 0))
         return (
             # ล็อกวัน/คาบไว้ = ไม่มีอะไรให้เลือกเลย. Placed before anything
             # else, so the cell it names is still empty when it gets there —
@@ -4471,6 +4485,20 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             0 if subj.get("duration") == 2 else 1,   # คาบคู่ still first
             -tight,                                  # the most constrained next
             0 if needs_facility(r) else 1,
+            # ม.ต้นเลือกก่อน ม.ปลาย
+            #
+            # "ห้องของครูบางคนที่มีห้องประจำ ให้เต็มก่อนสำหรับ ม.ต้น แล้วถ้ามี
+            #  คาบว่างค่อยให้พี่ๆ ม.ปลายมาใช้ห้อง … ม.ต้นไม่ควรที่จะมีปัญหาใน
+            #  การลงคาบ ฉันควรจะได้แก้ปัญหาสำหรับ ม.ปลายเป็นหลัก"
+            #
+            # ใครลงก่อนได้เลือกก่อน ทั้งเรื่องห้องและเรื่องชั่วโมง การวางลำดับ
+            # ตรงนี้จึงเป็นวิธีที่ตรงที่สุดที่จะทำให้ส่วนที่เหลือไปตกกับ ม.ปลาย
+            # ซึ่งเป็นฝั่งที่โรงเรียนบอกว่าจะแก้มือเอง
+            #
+            # วัดบนข้อมูลที่มีแล้วขยับน้อยมาก (คาบไม่มีห้อง 50 -> 48) เพราะใน
+            # สำเนานี้ ม.ต้นไม่ได้กำลังแพ้การแย่งห้องอยู่แล้ว เก็บไว้เพราะเป็น
+            # ลำดับที่โรงเรียนสั่ง และวัดแล้วว่าไม่ได้ทำให้แย่ลง
+            0 if _level_key(grp) == "lower" else 1,
             0 if grp.get("homeroom_room_id") else 1,
         )
 
@@ -4846,8 +4874,12 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                 # lesson coming back must not itself land on a day its class
                 # already studies that subject — one repeat traded for another
                 # is no trade at all.
+                # การแลกย้ายทั้งสองฝั่ง ทั้งสองฝั่งจึงต้องไม่ตกวันที่วิชาของ
+                # ตัวเองห้ามเรียน — ตรวจแค่ฝั่งเดียวคือเปิดรูไว้อีกฝั่ง
                 if (can_take(teacher, gid, d, pr)
                         and can_take(y_teacher, gid, home_day, home_period)
+                        and d not in blocked_days_of(sid)
+                        and home_day not in blocked_days_of(y.get("subject_id"))
                         and subj_day[(gid, y.get("subject_id"), home_day)] == 0):
                     drop(x, d, pr)
                     drop(y, home_day, home_period)
@@ -6175,8 +6207,15 @@ def _period_check_rows() -> list[dict[str, Any]]:
         return out
 
     busy: dict[int, set] = defaultdict(set)
+    kept_free: dict[int, set] = defaultdict(set)
     mine: dict[int, list] = defaultdict(list)
     for s in SLOTS:
+        # คาบว่างที่โรงเรียนจองไว้ให้ว่างพร้อมกัน ไม่ใช่คาบเรียน — ตัวจัดตาราง
+        # เห็นว่าช่องนี้ไม่ว่าง (จะได้ไม่เอาวิชาอื่นมาทับ) แต่ตรงนี้เป็นรายงาน
+        # ที่คนอ่าน และโรงเรียนขอให้ "นับเป็นคาบว่างไปเลย"
+        if s.get("is_free_period"):
+            kept_free[s["group_id"]].add((s["day"], s["period"]))
+            continue
         busy[s["group_id"]].add((s["day"], s["period"]))
         mine[s["group_id"]].append(s)
 
@@ -6188,8 +6227,10 @@ def _period_check_rows() -> list[dict[str, Any]]:
             continue           # ห้องที่ยังไม่มีคาบเลย ไม่ต้องรายงาน
         last = nums[-1]
         taken: set = set()
+        held: set = set()
         for k in family(g["id"]):
             taken |= busy.get(k, set())
+            held |= kept_free.get(k, set())
         free = sum(1 for d in range(5) for p in nums[:-1] if (d, p) not in taken)
         gaps = 0
         for d in range(5):
@@ -6197,7 +6238,10 @@ def _period_check_rows() -> list[dict[str, Any]]:
             if not day_used:
                 continue
             ends = max(day_used)
-            gaps += sum(1 for p in nums if p < ends and p not in day_used)
+            # ช่องที่โรงเรียนจองไว้ให้ว่างไม่ใช่ "คาบว่างที่ต้องตามไปปิด" มัน
+            # ว่างเพราะตั้งใจ การรายงานมันเป็นปัญหาคือการรบกวนเปล่าๆ
+            gaps += sum(1 for p in nums if p < ends and p not in day_used
+                        and (d, p) not in held)
         want_last = g.get("expected_last_period")
         want_free = g.get("expected_free")
 
@@ -9029,12 +9073,46 @@ def _sync_doubles(slot: dict[str, Any]) -> None:
 # locked, so the auto-scheduler treats them as immovable and never books over them.
 # A teacher is optional — many activity periods have no single subject teacher.
 
+def _free_period_subject() -> dict[str, Any]:
+    """วิชาสำหรับคาบว่างที่จองไว้ — มีตัวเดียวทั้งโรงเรียน สร้างให้ครั้งแรกที่ใช้
+
+    มันต้องเป็น "วิชา" เพราะทุกคาบในตารางอ้างวิชา แต่ไม่ใช่วิชาที่ใครต้องสอน
+    จึงไม่มีกลุ่มสาระ ไม่มีหน่วยกิต และไม่เคยปรากฏในแผนการสอนของห้องไหน
+    """
+    for s in SUBJECTS:
+        if s.get("is_free_period"):
+            return s
+    made = {"id": _next("subject"), "code": "FREE", "name": "คาบว่าง",
+            "type": "common", "duration": 1, "department_id": None,
+            "is_activity": True, "is_free_period": True,
+            "fixed_room_id": None, "credits": 0}
+    SUBJECTS.append(made)
+    return made
+
+
 @app.post("/api/timetable/level-activity")
 def create_level_activity(body: dict[str, Any]):
     day        = int(body["day"])
     period     = int(body["period"])
-    subject_id = int(body["subject_id"])
+    # ── คาบว่างที่ตรงกันทั้งกลุ่ม ──────────────────────────────────────────
+    #
+    # "อยากให้ ม.3/5 - 3/14 มีคาบว่างที่ตรงกัน จะได้จัดกิจกรรมต่างๆ ได้
+    #  ก็ให้นับเป็นคาบว่างไปเลย"
+    #
+    # ต่างจากคาบว่างที่เหลือจากการจัดตาราง: อันนี้คือชั่วโมงที่โรงเรียนจองไว้
+    # ให้ว่างพร้อมกันทั้งกลุ่ม จะได้เรียกเด็กมารวมกันได้ มันจึงต้องเป็นสองอย่าง
+    # ที่ดูขัดกัน — ตัวจัดตารางต้องเห็นว่า "ไม่ว่าง" จะได้ไม่เอาวิชาอื่นมาทับ
+    # แต่คนอ่านตารางกับรายงานต้องเห็นว่า "ว่าง" เพราะมันว่างจริงๆ
+    #
+    # ไม่จองครูและไม่จองห้อง เพราะไม่มีใครต้องมาคุมและไม่มีใครต้องใช้ห้อง
+    free_period = bool(body.get("free_period"))
+    if free_period:
+        subject_id = _free_period_subject()["id"]
+    else:
+        subject_id = int(body["subject_id"])
     room_mode  = body.get("room_mode", "homeroom")   # "homeroom" | "none"
+    if free_period:
+        room_mode = "none"
     # teacher_mode: "homeroom" → each class is supervised by its own ครูประจำชั้น
     #               "single"   → one named teacher for every class
     #               "none"     → no teacher assigned
@@ -9043,6 +9121,8 @@ def create_level_activity(body: dict[str, Any]):
     teacher_id   = int(teacher_id) if teacher_id not in (None, "") else None
     if teacher_id is not None and teacher_mode == "none":
         teacher_mode = "single"
+    if free_period:
+        teacher_mode, teacher_id = "none", None
     # ครูผู้ดูแล — one list for the whole activity, not one per class.
     #
     # The school picks the twelve teachers who run ลูกเสือ and sorts out which
@@ -9052,7 +9132,7 @@ def create_level_activity(body: dict[str, Any]):
     # period on their own sheet.
     known = {t["id"] for t in TEACHERS}
     roster: list[int] = []
-    for t in (body.get("teacher_ids") or []):
+    for t in ([] if free_period else (body.get("teacher_ids") or [])):
         t = int(t)
         if t in known and t not in roster:
             roster.append(t)
@@ -9154,6 +9234,9 @@ def create_level_activity(body: dict[str, Any]):
             "parallel_group_key": None,
             "is_locked": True,
             "is_activity_block": True,
+            # ช่องนี้ถูกจองไว้ให้ว่าง ไม่ใช่คาบเรียน — ตัวจัดตารางเห็นว่าไม่ว่าง
+            # แต่รายงานกับตารางที่คนอ่านนับเป็นคาบว่าง
+            "is_free_period": free_period or None,
             "activity_key": key,
             "activity_level": g.get("level") or label,
             # What to show on a teacher's own sheet, where naming one of the
@@ -9201,6 +9284,10 @@ def update_level_activity(activity_key: str, body: dict[str, Any]):
         "room_mode":  body.get("room_mode",
                                "homeroom" if any(s.get("room_id") for s in old) else "none"),
         "label":      body.get("label", ""),
+        # คาบว่างที่จองไว้ ยังเป็นคาบว่างหลังแก้วัน/คาบ ถ้าไม่พกค่านี้ไปด้วย
+        # การย้ายเวลาจะกลายเป็นการเปลี่ยนมันเป็นคาบเรียนเงียบๆ
+        "free_period": body.get("free_period",
+                                bool(first.get("is_free_period"))),
     }
     for k in ("teacher_mode", "teacher_id"):
         if k in body:
@@ -10129,7 +10216,19 @@ SCHOOL_CONFIG: dict[str, Any] = {
     # are both decided before this is asked. One teacher can be set either
     # way on their own card, which overrides this.
     "teacher_room_over_homeroom": False,
+    # ม.ต้นอยู่ห้องประจำชั้นก่อน แม้ครูจะตั้งว่าห้องของครูมาก่อน
+    #
+    # "ถ้า ม.ต้นมีห้องประจำ ต้องเรียนที่ห้องประจำก่อน"
+    #
+    # เด็กเล็กเดินข้ามโรงเรียนทุกคาบไม่ใช่เรื่องเดียวกับ ม.ปลายเดิน ห้องพิเศษ
+    # ของวิชา (คอม นาฏศิลป์) ยังมาก่อนทั้งคู่เสมอ ปิดได้ถ้าโรงเรียนเปลี่ยนใจ
+    "lower_homeroom_first": True,
 }
+
+
+def _lower_homeroom_first() -> bool:
+    v = (SCHOOL_CONFIG or {}).get("lower_homeroom_first")
+    return True if v is None else bool(v)
 
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
 _SAVE_KEYS = ("departments", "buildings", "rooms", "teachers", "subjects",

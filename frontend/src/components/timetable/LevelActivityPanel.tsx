@@ -123,6 +123,8 @@ export const LevelActivityPanel: React.FC = () => {
     classes: string[]; teachers: Set<string>;
     subjectId: number | null; groupIds: number[]; roster: number[];
     teacherIds: (number | null)[]; hasRoom: boolean;
+    /** คาบว่างที่จองไว้ให้ว่างตรงกัน ไม่ใช่กิจกรรมที่มีวิชา */
+    free: boolean;
   }
   const existing = useMemo(() => {
     const m = new Map<string, Existing>();
@@ -136,6 +138,7 @@ export const LevelActivityPanel: React.FC = () => {
         classes: [] as string[], teachers: new Set<string>(),
         subjectId: s.subject_id ?? null, groupIds: [] as number[],
         roster: [] as number[], teacherIds: [] as (number | null)[], hasRoom: false,
+        free: !!s.is_free_period,
       };
       cur.classes.push(s.group_name ?? "");
       cur.groupIds.push(s.group_id);
@@ -210,7 +213,7 @@ export const LevelActivityPanel: React.FC = () => {
     setForm({
       day: String(a.day),
       period: String(a.period),
-      subject_id: a.subjectId != null ? String(a.subjectId) : "",
+      subject_id: a.free ? "FREE" : a.subjectId != null ? String(a.subjectId) : "",
       teacher_choice: a.roster.length > 0 ? "homeroom"
         : single ? String(a.teacherIds[0])
         : a.teacherIds.some((t) => t != null) ? "homeroom" : "none",
@@ -233,18 +236,27 @@ export const LevelActivityPanel: React.FC = () => {
     setBusy(true); setError(null); setResult(null);
     try {
       const choice = form.teacher_choice;
-      const payload = {
+      // คาบว่างไม่มีวิชา ไม่มีครู และไม่จองห้อง — ส่งแค่ว่าเป็นคาบว่าง แล้วให้
+      // เซิร์ฟเวอร์จัดการที่เหลือ ถ้าส่งครูหรือห้องไปด้วยมันจะไม่ว่างจริง
+      const isFree = form.subject_id === "FREE";
+      const base = {
         group_ids: picked,
         label: [...new Set(chosen.map((g) => g.level).filter(Boolean))].join("/") || "ห้องที่เลือก",
         day: Number(form.day),
         period: Number(form.period),
-        subject_id: Number(form.subject_id),
-        teacher_mode: (choice === "homeroom" ? "homeroom" : choice === "none" ? "none" : "single") as
-          "homeroom" | "single" | "none",
-        teacher_id: choice !== "homeroom" && choice !== "none" ? Number(choice) : null,
-        teacher_ids: roster,
-        room_mode: form.room_mode,
       };
+      const payload = isFree
+        ? { ...base, free_period: true, teacher_ids: [], room_mode: "none" as const }
+        : {
+          ...base,
+          subject_id: Number(form.subject_id),
+          free_period: false,
+          teacher_mode: (choice === "homeroom" ? "homeroom" : choice === "none" ? "none" : "single") as
+            "homeroom" | "single" | "none",
+          teacher_id: choice !== "homeroom" && choice !== "none" ? Number(choice) : null,
+          teacher_ids: roster,
+          room_mode: form.room_mode,
+        };
       // Editing replaces the activity in one call. If nothing can be placed at
       // the new time the server keeps the old one and says so, so a failed
       // edit never costs the school the activity it already had.
@@ -314,6 +326,9 @@ export const LevelActivityPanel: React.FC = () => {
               <select className={inputCls} value={form.subject_id}
                 onChange={(e) => setForm({ ...form, subject_id: e.target.value })}>
                 <option value="">เลือกกิจกรรม</option>
+                {/* คาบว่างที่จองไว้ให้ว่างตรงกันทั้งกลุ่ม — "อยากให้ ม.3/5 - 3/14
+                    มีคาบว่างที่ตรงกัน จะได้จัดกิจกรรมต่างๆ ได้" */}
+                <option value="FREE">⬜ คาบว่าง — จองไว้ให้ว่างตรงกัน</option>
                 {activitySubjects.length > 0 && (
                   <optgroup label="กิจกรรม">
                     {activitySubjects.map((s) => <option key={s.id} value={s.id}>{s.code} – {s.name}</option>)}

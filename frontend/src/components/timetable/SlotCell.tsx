@@ -106,6 +106,27 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
   const viewingTeacher = useTimetableStore((st) => st.selectedTeacherId);
   const myOption = viewingTeacher != null ? myElectiveOption(slot, viewingTeacher) : null;
   const extra = names.length - 1;
+
+  // ── คาบว่างที่จองไว้ให้ว่างตรงกันทั้งกลุ่ม ────────────────────────────────
+  //
+  // "อยากให้ ม.3/5 - 3/14 มีคาบว่างที่ตรงกัน จะได้จัดกิจกรรมต่างๆ ได้
+  //  ก็ให้นับเป็นคาบว่างไปเลย"
+  //
+  // ช่องนี้ว่างจริงๆ ไม่มีวิชา ไม่มีครู ไม่มีห้อง การวาดมันเหมือนคาบเรียนจะทำให้
+  // คนอ่านตารางเข้าใจว่ามีอะไรสักอย่างเรียนอยู่ แต่ถ้าปล่อยว่างเปล่าก็จะดูเหมือน
+  // ช่องที่ระบบลงไม่ได้ จึงวาดเป็นช่องจางๆ ที่บอกตรงๆ ว่าจองไว้ให้ว่าง
+  if (slot.is_free_period) {
+    return (
+      <div className="relative flex h-full items-center justify-center p-1
+                      bg-gray-50 border border-dashed border-gray-300"
+           title="คาบว่างที่จองไว้ให้ว่างตรงกันทั้งกลุ่ม — ไม่มีวิชา ไม่มีครู">
+        <span className="text-[9px] text-gray-400 leading-tight text-center">
+          คาบว่าง
+        </span>
+      </div>
+    );
+  }
+
   return (
   <div
     className={clsx(

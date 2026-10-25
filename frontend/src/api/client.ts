@@ -265,7 +265,9 @@ export const createLevelActivity = (d: {
   label?: string;
   /** Kept for activities created by the old per-level screen. */
   level?: string;
-  day: number; period: number; subject_id: number;
+  day: number; period: number;
+  /** ต้องส่ง ยกเว้นเมื่อ free_period เป็นจริง ซึ่งคาบว่างไม่มีวิชา */
+  subject_id?: number;
   teacher_mode?: "homeroom" | "single" | "none";
   teacher_id?: number | null;
   /**
@@ -275,6 +277,14 @@ export const createLevelActivity = (d: {
    */
   teacher_ids?: number[];
   room_mode?: "homeroom" | "none";
+  /**
+   * คาบว่างที่จองไว้ให้ว่างตรงกันทั้งกลุ่ม — ไม่ใช่กิจกรรมที่มีวิชา
+   *
+   * ตัวจัดตารางเห็นว่าช่องนี้ไม่ว่าง จะได้ไม่เอาวิชาอื่นมาลงทับ แต่รายงานกับ
+   * ตารางที่คนอ่านนับเป็นคาบว่าง และไม่จองทั้งครูและห้อง ส่งค่านี้มาแล้ว
+   * subject_id กับ teacher ไม่ต้องส่ง
+   */
+  free_period?: boolean;
 }) => api.post<{
   created: TimetableSlot[];
   skipped: { group: string; reason: string }[];
@@ -297,6 +307,8 @@ export const updateLevelActivity = (activityKey: string, d: {
   teacher_id?: number | null;
   teacher_ids?: number[];
   room_mode?: "homeroom" | "none";
+  /** ไม่ส่งมา = เก็บค่าเดิมไว้ ย้ายเวลาคาบว่างแล้วยังเป็นคาบว่างอยู่ */
+  free_period?: boolean;
 }) =>
   // The key travels in the body, not in the path. Some keys already saved
   // carry the activity's own name — "ACT-ลูกเสือ/เนตรนารี-3-1-7" — and a
