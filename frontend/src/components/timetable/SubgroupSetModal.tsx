@@ -196,7 +196,12 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
         }
       }
       useTimetableStore.setState({ requirements: await api.fetchRequirements() });
-      setNote(`บันทึก "${name}" แล้ว — ${rows.length} ห้องย่อยจะเรียนพร้อมกัน`);
+      // "ตั้งค่าแล้วแต่ทำไมไม่เห็นอัปเดตข้อมูลเลย" — เพราะเซ็ตเป็นแผนการสอน
+      // ไม่ใช่ตาราง ตารางที่มีอยู่ไม่ขยับจนกดสร้างตาราง เดิมข้อความบันทึกไม่ได้
+      // บอกไว้ คนที่เพิ่งตั้งจึงไปเปิดตารางแล้วเห็นของเดิม
+      setNote(`บันทึก "${name}" แล้ว — ${rows.length} ห้องย่อยจะเรียนพร้อมกัน · `
+        + "ตารางที่มีอยู่ยังไม่เปลี่ยน กดสร้างตารางเพื่อให้เซ็ตนี้ลงจริง "
+        + "(ดูผลได้ที่แท็บตรวจคาบจริง)");
       setEditing(null);
     } catch (e) {
       const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;

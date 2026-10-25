@@ -11,6 +11,7 @@
  * its own subgroups, two subgroups in one room, one teacher in two of them.
  */
 import { useMemo, useState } from "react";
+import clsx from "clsx";
 import { useTimetableStore } from "../../store/timetableStore";
 import { auditSubgroups, auditAll, cellHasProblem } from "../../utils/subgroupAudit";
 import { DAYS, periodLabel } from "../../types";
@@ -22,16 +23,20 @@ interface Props {
 }
 
 export const SubgroupAuditView = ({ parentId }: Props) => {
-  const { groups, slots, periods } = useTimetableStore();
+  const { groups, slots, periods, requirements, subjects, teachers } = useTimetableStore();
   const [onlyProblems, setOnlyProblems] = useState(false);
 
+  // แผนการสอนมาด้วย เพราะคำถามของหน้านี้คือ "เซ็ตที่ตั้งไว้ลงในตารางแล้วหรือยัง"
+  // ซึ่งตอบจากตารางเพียงอย่างเดียวไม่ได้ — เซ็ตที่ลงไม่ได้เลยไม่มีคาบให้ดู
+  const src = useMemo(() => ({ requirements, subjects, teachers }),
+    [requirements, subjects, teachers]);
   const reports = useMemo(() => {
     if (parentId != null) {
-      const one = auditSubgroups(groups, slots, parentId);
+      const one = auditSubgroups(groups, slots, parentId, src);
       return one ? [one] : [];
     }
-    return auditAll(groups, slots);
-  }, [groups, slots, parentId]);
+    return auditAll(groups, slots, src);
+  }, [groups, slots, parentId, src]);
 
   if (reports.length === 0) {
     return (
@@ -89,6 +94,56 @@ export const SubgroupAuditView = ({ parentId }: Props) => {
               </span>
             </div>
 
+            {/* เซ็ตที่ตั้งไว้ เทียบกับตารางที่ออกมา — "ตั้งค่าแล้วทำไมไม่อัปเดต"
+                ตอบได้ที่นี่ที่เดียว ตารางเพียงอย่างเดียวตอบไม่ได้ เพราะเซ็ตที่
+                ลงไม่ได้เลยไม่มีคาบให้ดู */}
+            {r.sets.length > 0 && (
+              <div className="px-3 py-2 border-b border-gray-100 bg-white space-y-1.5">
+                <p className="text-[10px] font-semibold text-gray-500">
+                  เซ็ตที่ตั้งไว้ {r.sets.length} เซ็ต
+                </p>
+                {r.sets.map((st) => (
+                  <div key={st.key} className="text-[11px] leading-relaxed">
+                    <span className={clsx("font-semibold",
+                      st.missing ? "text-red-700" : st.short ? "text-amber-700" : "text-emerald-700")}>
+                      {st.missing
+                        ? "⚠ ยังไม่ได้ลงในตาราง"
+                        : st.short
+                          ? `⚠ ยังขาด ${st.short} คาบ`
+                          : "✓ ลงครบตามที่ตั้งไว้"}
+                    </span>
+                    {st.pinned && (
+                      <span className="text-gray-500">
+                        {" "}· ล็อกไว้ {DAYS[st.pinned.day]} {periodLabel(st.pinned.period, periods)}
+                      </span>
+                    )}
+                    {st.hours.length > 0 && (
+                      <span className="text-gray-500">
+                        {" "}· อยู่ที่ {st.hours.map((h) =>
+                          `${DAYS[h.day]} ${periodLabel(h.period, periods)}`).join(" · ")}
+                      </span>
+                    )}
+                    <ul className="ml-3 text-gray-600">
+                      {st.rows.map((row) => (
+                        <li key={`${row.groupId}-${row.subjectId}`}>
+                          · {row.groupName} {row.subjectName} · {row.teacherName}{" "}
+                          <span className={row.got >= row.want ? "text-gray-400" : "text-amber-700"}>
+                            ลงแล้ว {row.got}/{row.want} คาบ
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+                {r.sets.some((st) => st.missing || st.short > 0) && (
+                  <p className="text-[10px] text-gray-400">
+                    เซ็ตที่เพิ่งตั้งหรือเพิ่งแก้ จะลงในตารางเมื่อกดสร้างตาราง (หรือ
+                    “แก้เฉพาะห้องที่เลือก” โดยเลือกทุกห้องย่อยของเซ็ตพร้อมกัน)
+                  </p>
+                )}
+              </div>
+            )}
+
             {rows.length === 0 ? (
               <p className="text-xs text-gray-400 py-5 text-center">
                 {onlyProblems ? "ชั้นนี้ไม่มีคาบที่มีปัญหา" : "ยังไม่มีคาบของห้องย่อยในตาราง"}
@@ -128,6 +183,13 @@ export const SubgroupAuditView = ({ parentId }: Props) => {
                                   {e.slot.room_name ? ` · ${e.slot.room_name}` : ""}
                                 </span>
                               </>
+                            ) : e.note ? (
+                              /* ช่องว่างที่บอกเหตุ — "ครบตามแผนแล้ว" (ปกติ) กับ
+                                 "เซ็ตนี้ลงให้ไม่ได้" (ต้องแก้) หน้าตาเคยเหมือนกัน */
+                              <span className={e.note.startsWith("ยังขาด")
+                                ? "text-amber-700" : "text-gray-300"}>
+                                ว่าง <span className="text-[10px]">({e.note})</span>
+                              </span>
                             ) : (
                               <span className="text-gray-300">ว่าง</span>
                             )}
@@ -158,17 +220,31 @@ export const SubgroupAuditView = ({ parentId }: Props) => {
                               ห้อง" tells the school that something is wrong
                               but not which room to go and look at, and the
                               one that is missing is the whole question. */}
-                          {!bad && c.busy < r.subgroups.length && (
-                            <span className="text-amber-700">
-                              ขาด {c.entries
-                                .filter((e) => !e.slot)
-                                .map((e) => e.groupName)
-                                .join(", ")}
-                              <span className="text-gray-400">
-                                {" "}— เรียน {c.busy}/{r.subgroups.length} ห้อง
-                              </span>
-                            </span>
-                          )}
+                          {!bad && c.busy < r.subgroups.length && (() => {
+                            const blank = c.entries.filter((e) => !e.slot);
+                            // ขาดเพราะเซ็ตลงให้ไม่ได้ = ต้องแก้ · ขาดเพราะได้คาบ
+                            // ครบตามแผนแล้ว = ปกติ สองอย่างนี้เคยขึ้นคำเดียวกัน
+                            const owed = blank.filter((e) => e.note?.startsWith("ยังขาด"));
+                            const list = (es: typeof blank) =>
+                              es.map((e) => e.groupName).join(", ");
+                            return (
+                              <>
+                                {owed.length > 0 && (
+                                  <span className="text-amber-700 block">
+                                    ⚠ เซ็ตลงให้ {list(owed)} ไม่ได้
+                                  </span>
+                                )}
+                                <span className={owed.length ? "text-gray-400" : "text-amber-700"}>
+                                  {owed.length === blank.length
+                                    ? null
+                                    : <>ว่าง {list(blank.filter((e) => !owed.includes(e)))}{" "}</>}
+                                  <span className="text-gray-400">
+                                    เรียน {c.busy}/{r.subgroups.length} ห้อง
+                                  </span>
+                                </span>
+                              </>
+                            );
+                          })()}
                           {!bad && c.busy === r.subgroups.length && (
                             <span className="text-emerald-700">ครบทุกห้อง</span>
                           )}
