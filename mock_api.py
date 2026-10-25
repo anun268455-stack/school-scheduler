@@ -382,6 +382,84 @@ def _subject_rooms(subj: dict[str, Any] | None) -> list[int]:
     return [int(one)] if one else []
 
 
+# ── รหัสวิชาบอกชั้นอยู่ในตัวมันเอง ────────────────────────────────────────────
+#
+# "วิชา พ21104 ที่อยู่กับ ม.2 ให้เปลี่ยนเป็น พ22104 พลศึกษาพื้นฐาน 4"
+#
+# พ22104 = พ(สุขศึกษาและพลศึกษา) + 2(มัธยม) + 2(ปีที่สองของระดับ คือ ม.2)
+# + 104(ภาคเรียนและลำดับ) ห้อง ม.2 ที่ถือ พ21104 จึงไม่ใช่เรื่องรสนิยม แต่เป็น
+# ข้อมูลผิดที่ตรวจจับได้จากตัวรหัสเอง โดยไม่ต้องมีไฟล์หลักสูตรมาเทียบ
+#
+# ข้อยกเว้นที่ต้องระวัง: เลขปี 0 (พ20202, ศ30201) คือรายวิชาเพิ่มเติมที่ใช้ได้
+# ทุกชั้นในระดับนั้น ไม่ได้ผูกกับปีใดปีหนึ่ง การไปแก้มันคือการทำข้อมูลพัง
+# วัดบนข้อมูลจริง: ตรวจได้ 1120 แถว มีแบบนี้ 100 แถว ต้องข้ามทั้งหมด
+
+def _code_year_digits(code: str | None) -> tuple[int, int] | None:
+    """(เลขระดับ, เลขปี) ที่ฝังอยู่ในรหัสวิชา — None ถ้าอ่านไม่ออก"""
+    m = _re.match(r"^\D+(\d)(\d)\d{3}$", (code or "").strip())
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _class_year(name: str | None) -> int | None:
+    """ม.1 ถึง ม.6 จากชื่อห้อง — None ถ้าอ่านไม่ออก"""
+    m = _re.search(r"ม\.?\s*([1-6])", name or "")
+    return int(m.group(1)) if m else None
+
+
+def _year_digits_for_class(year: int) -> tuple[int, int]:
+    """ชั้นที่เรียน -> (เลขระดับ, เลขปี) ที่รหัสวิชาควรเป็น"""
+    return (2, year) if year <= 3 else (3, year - 3)
+
+
+def _subject_year_mismatches() -> list[dict[str, Any]]:
+    """แถวหลักสูตรที่รหัสวิชาบอกชั้นหนึ่ง แต่ห้องที่เรียนเป็นอีกชั้นหนึ่ง"""
+    s_map = {s["id"]: s for s in SUBJECTS}
+    g_map = {g["id"]: g for g in _flat_groups()}
+    by_code: dict[str, dict] = {}
+    for s in SUBJECTS:
+        c = (s.get("code") or "").strip()
+        if c and c not in by_code:
+            by_code[c] = s
+    out: list[dict[str, Any]] = []
+    for r in REQUIREMENTS:
+        subj, grp = s_map.get(r.get("subject_id")), g_map.get(r.get("group_id"))
+        if not subj or not grp:
+            continue
+        code = (subj.get("code") or "").strip()
+        dig, year = _code_year_digits(code), _class_year(grp.get("name"))
+        if dig is None or year is None or dig[1] == 0:
+            continue
+        want = _year_digits_for_class(year)
+        if dig == want:
+            continue
+        head = code[:-5]
+        want_code = f"{head}{want[0]}{want[1]}{code[-3:]}"
+        out.append({"req": r, "code": code, "want_code": want_code,
+                    "group": grp.get("name") or f"#{grp['id']}",
+                    "subject": subj, "target": by_code.get(want_code)})
+    return out
+
+
+def _name_for_new_code(code: str, like: dict[str, Any]) -> str:
+    """ชื่อของวิชาที่ต้องสร้างใหม่ — เอาจากวิชาพี่น้อง ไม่ใช่เดาเอง
+
+    พ22104 ยังไม่มีในระบบ แต่ พ21104 กับ พ23104 มีและชื่อ "พลศึกษา" เหมือนกัน
+    ชื่อที่พี่น้องใช้ตรงกันจึงเป็นคำตอบที่มาจากข้อมูล ไม่ใช่จากการเดา ถ้าพี่น้อง
+    ตั้งชื่อไม่ตรงกัน ก็ใช้ชื่อของวิชาที่กำลังแก้ แล้วให้โรงเรียนแก้ชื่อเอง
+    """
+    head, tail = code[:-5], code[-3:]
+    names = [(s.get("name") or "").strip() for s in SUBJECTS
+             if (s.get("code") or "").startswith(head)
+             and (s.get("code") or "").endswith(tail)
+             and len(s.get("code") or "") == len(code)
+             and (s.get("name") or "").strip()]
+    if names:
+        best, n = Counter(names).most_common(1)[0]
+        if n > 1 or len(set(names)) == 1:
+            return best
+    return (like.get("name") or code).strip()
+
+
 def _subject_blocked_days(subj: dict[str, Any] | None) -> set[int]:
     """วันที่วิชานี้ห้ามเรียน — ว่างแปลว่าเรียนได้ทุกวัน
 
@@ -5167,9 +5245,21 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     gaps_filled = 0
 
     def holes_of(gid: int, nums: list[int]) -> list[tuple[int, int]]:
+        """ช่องว่างกลางวันของห้องนี้ — นับเวลาของห้องแม่และห้องย่อยรวมกัน
+
+        "ไม่อยากให้มีคาบว่างสองคาบขึ้นไปในวันเดียวกัน"
+
+        ห้องแม่กับห้องย่อยเป็นนักเรียนกลุ่มเดียวกัน ม.4/6ค ที่มีคาบของตัวเอง
+        ถึงคาบ 2 แล้วไปเรียนรวมกับห้องแม่ตอนคาบ 7 นั้น เด็กเลิกคาบ 7 ไม่ใช่
+        คาบ 2 — คาบ 3 ถึง 6 คือคาบว่างกลางวันจริงๆ
+        เดิมนับเฉพาะคาบของห้องตัวเอง วันนั้นจึงดูเหมือนเลิกตั้งแต่คาบ 2 และ
+        ไม่มีช่องว่างเลย ทั้งที่ว่างอยู่สี่คาบ ตัวปิดคาบว่างใช้ตัวนี้หาช่อง
+        มันจึงไล่ปิดผิดช่องมาตลอด และรายงานก็บอกตัวเลขต่ำกว่าความจริง
+        """
+        kin = group_conflict_ids(gid)
         used: dict[int, set] = defaultdict(set)
         for x in SLOTS:
-            if x["group_id"] == gid:
+            if x["group_id"] in kin:
                 used[x["day"]].add(x["period"])
         out = []
         for d in range(5):
@@ -5213,12 +5303,13 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                              if not (x["day"] == d and x["period"] < p)]
                     random.shuffle(cands)
                     for x in cands:
+                        owner = x["group_id"]
                         teacher = t_map.get(x["teacher_id"])
                         home = pull(x)
-                        if (subj_day[(gid, x.get("subject_id"), d)] == 0
+                        if (subj_day[(owner, x.get("subject_id"), d)] == 0
                                 and d not in blocked_days_of(x.get("subject_id"))
-                                and not group_occupied(gid, d, p)
-                                and can_take(teacher, gid, d, p)):
+                                and not group_occupied(owner, d, p)
+                                and can_take(teacher, owner, d, p)):
                             rid = room_for(x, d, p, None, home[2])
                             if rid or not home[2]:
                                 seat(x, d, p, rid)
@@ -5233,28 +5324,10 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         if not moved_any:
             break
 
-    # What is left is what "ยกเว้นว่าจำเป็นจริงๆ" means in this timetable, so
-    # it is named rather than passed over.
-    gap_days, gap_classes = 0, []
-    for grp in g_map.values():
-        nums = _class_periods_for_level(_level_key(grp))
-        if not nums:
-            continue
-        per_day = Counter(d for d, _ in holes_of(grp["id"], nums))
-        crowded = [d for d, n in per_day.items() if n > 1]
-        if crowded:
-            gap_days += len(crowded)
-            gap_classes.append(grp.get("name", "?"))
     if gaps_filled:
         notes.append(
             f"ย้ายคาบมาปิดคาบว่างกลางวันของนักเรียน {gaps_filled} คาบ "
             f"— เอาคาบสุดท้ายของอีกวันมาลง วันนั้นจึงเลิกเร็วขึ้นแทน")
-    if gap_days:
-        notes.append(
-            f"ยังเหลือ {gap_days} วันที่ห้องเรียนว่างเกินหนึ่งคาบในวันเดียว "
-            f"({', '.join(sorted(gap_classes)[:5])}"
-            f"{' …' if len(gap_classes) > 5 else ''}) — ย้ายต่อไม่ได้แล้ว "
-            f"ติดครูหรือห้องในชั่วโมงนั้น")
 
     # ── คาบที่ลงแล้วแต่ไม่มีห้อง: ขยับห้องให้เหมือนกัน ────────────────────────
     #
@@ -5496,6 +5569,33 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             group_busy.add((gid, d, p))
             note_subject(gid, sid, d)
             overflow_placed += 1
+    # ── คาบว่างกลางวันที่เหลืออยู่ นับตอนนี้ ไม่ใช่ตอนที่ปิดเสร็จ ────────────
+    #
+    # "ไม่อยากให้มีคาบว่างสองคาบขึ้นไปในวันเดียวกัน (ถ้าจำเป็นจริงๆ ค่อยให้)"
+    #
+    # ตัวเลขนี้เคยนับทันทีหลังรอบปิดคาบว่าง ซึ่งยังไม่ใช่ตารางสุดท้าย — ตัวยัด
+    # คาบล้นข้างบนลงคาบเพิ่มทีหลัง และคาบที่ลงท้ายวันทำให้วันนั้นเลิกช้าลง
+    # ช่องที่เคยเป็น "เลิกเร็ว" จึงกลายเป็นรูกลางวัน รายงานที่นับก่อนหน้านั้น
+    # จึงบอกตัวเลขต่ำกว่าความจริง (13 ทั้งที่จริง 14)
+    #
+    # สิ่งที่โรงเรียนอ่านคือตารางที่ออกมา ตัวเลขจึงต้องเป็นของตารางนั้น
+    gap_days, gap_classes = 0, []
+    for grp in g_map.values():
+        nums = _class_periods_for_level(_level_key(grp))
+        if not nums:
+            continue
+        per_day = Counter(d for d, _ in holes_of(grp["id"], nums))
+        crowded = [d for d, n in per_day.items() if n > 1]
+        if crowded:
+            gap_days += len(crowded)
+            gap_classes.append(grp.get("name", "?"))
+    if gap_days:
+        notes.append(
+            f"ยังเหลือ {gap_days} วันที่ห้องเรียนว่างเกินหนึ่งคาบในวันเดียว "
+            f"({', '.join(sorted(gap_classes)[:5])}"
+            f"{' …' if len(gap_classes) > 5 else ''}) — ย้ายต่อไม่ได้แล้ว "
+            f"ติดครูหรือห้องในชั่วโมงนั้น")
+
     if overflow_placed:
         notes.append(
             f"วางคาบที่ยังจัดไม่ลงตัวไว้ให้เห็น {overflow_placed} คาบ — "
@@ -5708,11 +5808,22 @@ def _consistency_findings() -> list[dict[str, Any]]:
     b_ids = {b["id"] for b in BUILDINGS}
     out: list[dict[str, Any]] = []
 
-    def add(code, title, why, rows, fix=None, severity="warning"):
+    def add(code, title, why, rows, fix=None, severity="warning", examples=None,
+            collapsed=False):
+        """examples: ข้อความที่จะโชว์ ถ้าไม่ส่งมาก็เอาแปดบรรทัดแรกของ rows
+
+        มีไว้สำหรับหัวข้อที่บรรทัดส่วนใหญ่ซ้ำกันเอง — ถ้าปัญหาเดียวกันเกิด 14
+        ห้อง มันจะกินช่องตัวอย่างทั้งแปดช่อง แล้วปัญหาอีกแบบที่เกิดห้องเดียว
+        จะมองไม่เห็นเลย ทั้งที่เป็นคนละเรื่องกันและต้องแก้คนละแบบ
+        """
         if rows:
             out.append({"code": code, "title": title, "why": why,
-                        "count": len(rows), "examples": rows[:8],
-                        "fixable": bool(fix), "fix": fix, "severity": severity})
+                        "count": len(rows),
+                        "examples": (examples if examples is not None else rows)[:8],
+                        "fixable": bool(fix), "fix": fix, "severity": severity,
+                        # ตัวอย่างถูกยุบรวมแล้ว หน้าจอจึงต้องไม่พูดว่า "และอีก N
+                        # รายการ" เพราะบรรทัดที่เห็นครอบคลุมทั้งหมดอยู่แล้ว
+                        "collapsed": collapsed})
 
     def gname(i):
         g = g_map.get(i)
@@ -5855,6 +5966,36 @@ def _consistency_findings() -> list[dict[str, Any]]:
         "ห้องย่อยบอกว่ามีห้องแม่ แต่ห้องแม่ไม่มีมันอยู่ในรายการ "
         "การตรวจคาบซ้อนของห้องแม่-ห้องลูกจะพลาด", rows,
         fix="ผูกกลับเข้าห้องแม่", severity="blocking")
+
+    # ── 5b. รหัสวิชาไม่ตรงกับชั้นที่เรียน ───────────────────────────────────
+    miss = _subject_year_mismatches()
+    rows = [f"{m['group']} · {m['code']} → ควรเป็น {m['want_code']}"
+            f"{'' if m['target'] else ' (ยังไม่มีวิชานี้ในระบบ จะสร้างให้)'}"
+            for m in miss]
+    # ยุบบรรทัดที่เป็นปัญหาเดียวกันให้เหลือบรรทัดเดียว พร้อมบอกว่ากี่ห้อง
+    # ไม่งั้น พ21104 ที่ผิดอยู่ 14 ห้องจะกินช่องตัวอย่างทั้งหมด แล้วรหัสอื่นที่
+    # ผิดอยู่ห้องเดียวจะไม่มีวันถูกเห็น
+    by_pair: dict[tuple, list] = defaultdict(list)
+    for m in miss:
+        by_pair[(m["code"], m["want_code"], m["target"] is None)].append(m["group"])
+    examples = []
+    for (code_, want_, is_new), names in sorted(
+            by_pair.items(), key=lambda kv: (-len(kv[1]), kv[0][0])):
+        who = ", ".join(sorted(names)[:3]) + (" …" if len(names) > 3 else "")
+        examples.append(
+            f"{code_} → ควรเป็น {want_} · {len(names)} ห้อง ({who})"
+            f"{' — ยังไม่มีวิชานี้ในระบบ จะสร้างให้' if is_new else ''}")
+    add("subject_year", "รหัสวิชาไม่ตรงกับชั้นที่เรียน",
+        "รหัสวิชาบอกชั้นอยู่ในตัวมันเอง — พ22104 คือ ม.2 ส่วน พ21104 คือ ม.1 "
+        "ห้องที่ถือรหัสผิดชั้นจะพิมพ์ออกใบ ปพ. ผิด และเทียบกับหลักสูตรไม่ตรง "
+        "(รายวิชาเพิ่มเติมที่เลขปีเป็น 0 เช่น พ20202 ใช้ได้ทุกชั้น ไม่นับว่าผิด) · "
+        "กดซ่อมแล้วแถวเหล่านี้จะย้ายไปใช้วิชาที่รหัสตรงชั้น ถ้ายังไม่มีวิชานั้นในระบบ "
+        "จะสร้างให้ โดยยกกลุ่มสาระ คาบคู่/คาบเดี่ยว และหน่วยกิตมาจากวิชาเดิม "
+        "ส่วนชื่อเอามาจากวิชาพี่น้องที่รหัสลงท้ายเหมือนกัน ควรเปิดดูแล้วแก้ชื่อให้ตรง "
+        "หลักสูตรอีกครั้ง · วิชาเดิมไม่ถูกแตะ เพราะห้องชั้นอื่นยังใช้รหัสนั้นถูกต้องอยู่",
+        rows,
+        fix="ย้ายไปใช้วิชาที่รหัสตรงชั้น",
+        examples=examples, collapsed=True)
 
     # ── 6. เซ็ตห้องย่อยที่ข้อมูลในเซ็ตไม่ตรงกันเอง ───────────────────────────
     by_key: dict[str, list] = defaultdict(list)
@@ -6621,6 +6762,34 @@ def consistency_repair(body: dict[str, Any] | None = None):
             if len(kept) != len(p.get("options") or []):
                 p["options"] = kept; _sync_pool_slots(p); n += 1
         note("pool_option", n)
+
+    if want("subject_year"):
+        # ย้ายแถวไปใช้วิชาที่รหัสตรงชั้น สร้างวิชาให้ถ้ายังไม่มี
+        #
+        # ไม่แตะรหัสของวิชาเดิม เพราะ พ21104 ยังถูกต้องสำหรับห้อง ม.1 ที่ใช้อยู่
+        # การแก้รหัสวิชาจะลากห้อง ม.1 ผิดไปด้วยทั้งหมด สิ่งที่ผิดคือ "แถวนี้ชี้
+        # ไปวิชาผิดตัว" ไม่ใช่ "วิชานี้มีรหัสผิด"
+        n = 0
+        for m in _subject_year_mismatches():
+            target = m["target"]
+            if target is None:
+                old = m["subject"]
+                target = {
+                    "id": _next("subject"),
+                    "code": m["want_code"],
+                    "name": _name_for_new_code(m["want_code"], old),
+                    "type": old.get("type", "common"),
+                    "duration": old.get("duration", 1) or 1,
+                    "department_id": old.get("department_id"),
+                    "is_activity": bool(old.get("is_activity")),
+                    "fixed_room_id": None,
+                    "credits": old.get("credits"),
+                }
+                SUBJECTS.append(target)
+            m["req"]["subject_id"] = target["id"]
+            _refresh_names_for(subject_id=target["id"])
+            n += 1
+        note("subject_year", n)
 
     if want("half_double"):
         note("half_double", _repair_elective_doubles())

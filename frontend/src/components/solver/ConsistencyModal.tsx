@@ -127,7 +127,7 @@ export const ConsistencyModal: React.FC<{ onClose: () => void }> = ({ onClose })
                 <div className="px-3 pb-3 pt-1 bg-gray-50/60 border-t border-gray-100 space-y-2">
                   <ul className="text-[11px] text-gray-600 space-y-0.5">
                     {f.examples.map((e, i) => <li key={i}>· {e}</li>)}
-                    {f.count > f.examples.length && (
+                    {!f.collapsed && f.count > f.examples.length && (
                       <li className="text-gray-400">… และอีก {f.count - f.examples.length} รายการ</li>
                     )}
                   </ul>

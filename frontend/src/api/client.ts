@@ -635,6 +635,8 @@ export interface ConsistencyFinding {
   fixable: boolean;
   fix?: string | null;
   severity: "blocking" | "warning";
+  /** ตัวอย่างถูกยุบรวมแล้ว — อย่าเติม "และอีก N รายการ" ต่อท้าย */
+  collapsed?: boolean;
 }
 export interface ConsistencyReport {
   findings: ConsistencyFinding[];
