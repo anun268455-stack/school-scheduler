@@ -12,6 +12,20 @@ const BASE_URL = import.meta.env.VITE_API_URL
 
 const api = axios.create({ baseURL: BASE_URL, timeout: 180_000 });
 
+/**
+ * สร้างตาราง รอได้นานกว่าคำขออื่น
+ *
+ * "ถ้ามันนานก็ปล่อยให้นานไปเลย อยากให้มันเสร็จ"
+ *
+ * คำขอทั่วไปที่ค้างเกินสามนาทีคือค้างจริง ยอมแพ้ดีกว่าให้คนนั่งรอหน้าค้าง แต่
+ * การจัดตารางทั้งโรงเรียนเป็นงานที่ "นาน" กับ "พัง" หน้าตาเหมือนกันจากฝั่งนี้
+ * และของโรงเรียนเคยใช้ไป 109 วินาที เหลือที่หายใจจากเพดานสามนาทีไม่ถึงเท่าตัว
+ * พอข้อมูลโตขึ้นอีกนิดเดียวก็ชนเพดาน ทั้งที่เซิร์ฟเวอร์ยังคิดอยู่ดีๆ
+ *
+ * สิบห้านาทีจึงเป็นเพดานของงานนี้โดยเฉพาะ ไม่ใช่ของทั้งแอป
+ */
+export const SOLVE_TIMEOUT_MS = 15 * 60 * 1000;
+
 // ── Departments ──────────────────────────────────────────────────────────────
 export const fetchDepartments  = () => api.get<Department[]>("/departments/").then((r) => r.data);
 export const createDepartment  = (d: Partial<Department>) => api.post<Department>("/departments/", d).then((r) => r.data);
@@ -342,7 +356,8 @@ export const runSolver = (p: {
    * "repair" must never send an empty list.
    */
   repair_group_ids?: number[];
-}) => api.post<SolverResult>("/timetable/solve", p).then((r) => r.data);
+}) => api.post<SolverResult>("/timetable/solve", p, { timeout: SOLVE_TIMEOUT_MS })
+  .then((r) => r.data);
 
 // ── ส่งต่อครู ────────────────────────────────────────────────────────────────
 /** ห้องหนึ่งห้องที่ครูคนนี้สอนวิชานั้นอยู่ */

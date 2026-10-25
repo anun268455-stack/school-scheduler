@@ -677,14 +677,29 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       void get().loadYardPicks();
       return result;
     } catch (err: unknown) {
-      const raw = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
-      // No `detail` means the backend never answered — it timed out or ran out
-      // of memory and was killed. "Solver error" alone leaves the person with
-      // nothing to act on, so say what actually happens and what to do.
+      const e = err as {
+        code?: string;
+        response?: { status?: number; data?: { detail?: unknown } };
+      };
+      const raw = e?.response?.data?.detail;
+      // สามอย่างนี้หน้าตาเหมือนกันหมดจากฝั่งนี้ ถ้าไม่แยก คนอ่านจะไม่รู้ว่าควร
+      // รอต่อ กดใหม่ หรือไปแก้ข้อมูล — เดิมเขียนรวมเป็นประโยคเดียวว่า "อาจใช้
+      // เวลานานเกินไปหรือหน่วยความจำไม่พอ" ซึ่งบอกแค่ว่าเราเองก็ไม่รู้
+      //   · รอจนครบเพดานแล้วยังไม่ตอบ — เซิร์ฟเวอร์อาจยังคิดอยู่
+      //   · ตอบกลับมาเป็นรหัสผิดพลาด — มีคำตอบ แต่เป็นคำตอบว่าพัง
+      //   · ไม่มีอะไรตอบกลับเลย — เซิร์ฟเวอร์น่าจะถูกปิดกลางคัน
+      const minutes = Math.round(api.SOLVE_TIMEOUT_MS / 60_000);
       const msg = typeof raw === "string"
         ? raw
-        : "เซิร์ฟเวอร์ไม่ตอบกลับ (อาจใช้เวลานานเกินไปหรือหน่วยความจำไม่พอ) — "
-          + "ลองติ๊ก \"ข้ามวิชาที่มีปัญหา\" แล้วกดใหม่อีกครั้ง";
+        : (e?.code === "ECONNABORTED" || e?.code === "ETIMEDOUT")
+        ? `จัดตารางไม่เสร็จภายใน ${minutes} นาที จึงหยุดรอ — เซิร์ฟเวอร์อาจยัง`
+          + "คิดอยู่ ลองรอสักครู่แล้วรีเฟรชดูตารางก่อน ถ้ายังไม่มีอะไรเปลี่ยน "
+          + "ให้ติ๊ก \"ข้ามวิชาที่มีปัญหา\" แล้วกดใหม่"
+        : e?.response?.status
+        ? `เซิร์ฟเวอร์ตอบว่าผิดพลาด (รหัส ${e.response.status}) — ตารางยังไม่ถูก`
+          + "แก้ ลองกดใหม่อีกครั้ง"
+        : "เซิร์ฟเวอร์ไม่ตอบกลับเลย — น่าจะถูกปิดกลางคันเพราะหน่วยความจำไม่พอ "
+          + "ตารางเดิมยังอยู่ครบ ลองกดใหม่อีกครั้ง หรือติ๊ก \"ข้ามวิชาที่มีปัญหา\"";
       // A repair reports its own failure in its own dialog, with the server's
       // sentence (api.errorDetail). Left in solverError it would turn up later
       // in the ⚡ panel, under a button that had nothing to do with it.

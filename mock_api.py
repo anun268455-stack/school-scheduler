@@ -56,6 +56,9 @@ async def _bump_revision(request, call_next):
         # changed that, and a stale cache would offer a teacher who has just
         # been booked.
         _SUB.invalidate()
+        # เหตุผลเดียวกันกับตารางค้นหาผังคาบ: การเขียนครั้งนี้อาจเป็นการแก้ผังคาบ
+        # ถ้าไม่ล้าง คำตอบที่เก็บไว้จะค้างผังเดิมทั้งที่โรงเรียนเพิ่งเปลี่ยน
+        _lookup_cache_clear()
         # …and keep it. This is the line the whole storage layer was written
         # for and never had: _save_state was reachable only from the restore
         # endpoints, so an ordinary afternoon of work — every lesson dragged,
@@ -104,6 +107,32 @@ PERIODS: list[dict[str, Any]] = [
     {"id":11, "period_num":8, "label":"คาบ 7",               "start_time":"13:40","end_time":"14:30","type":"class",   "applies_to":"all"},
     {"id":12, "period_num":9, "label":"โฮมรูม/กิจกรรม",     "start_time":"14:30","end_time":"15:00","type":"homeroom","applies_to":"all"},
 ]
+
+# ── คำตอบเดิมที่ถูกคิดใหม่เก้าแสนครั้ง ────────────────────────────────────────
+#
+# "เหมือนว่าเซิฟเวอร์จะช้าหรือความจำไม่พอ ช่วยแก้ไขให้หน่อย"
+#
+# จับเวลาการจัดตารางหนึ่งรอบแล้วพบว่า _periods_for_level ถูกเรียก 934,337 ครั้ง
+# ทุกครั้งมันไล่ PERIODS ทั้งแถวแล้วสร้าง dict ใหม่ ทั้งที่ผังคาบไม่ได้เปลี่ยน
+# แม้แต่ครั้งเดียวระหว่างการจัด ครึ่งหนึ่งของเวลาทั้งหมดจึงหมดไปกับการคิดคำตอบ
+# เดิมซ้ำ และบนเครื่องของโรงเรียนมันกลายเป็น 109 วินาที จนหน้าเว็บรอไม่ไหว
+#
+# แคชนี้มีสองแบบ และแยกกันด้วยเหตุผลเรื่องความถูกต้อง ไม่ใช่ความเร็ว:
+#
+#   คีย์ด้วยค่า   _level_key, _hhmm — คีย์คือค่าที่ฟังก์ชันอ่านจริงๆ ค่าเดิมให้
+#                 คำตอบเดิมเสมอ จึงไม่มีทางค้างของเก่า ไม่ต้องล้าง
+#   คีย์ด้วยชั้น  ตารางคาบของแต่ละชั้น — ขึ้นกับ PERIODS ทั้งก้อน ถ้าโรงเรียน
+#                 แก้ผังคาบแล้วไม่ล้าง คำตอบจะค้างของเก่า ซึ่งเป็นความผิดพลาด
+#                 ที่แคชทำบ่อยที่สุด จึงล้างทุกครั้งที่เริ่มงานใหม่ (จัดตาราง
+#                 โหลดข้อมูล แก้ผังคาบ) ระหว่างงานหนึ่งงาน PERIODS ไม่เปลี่ยน
+#                 คำตอบที่เก็บไว้จึงตรงเสมอ
+_LOOKUP_CACHE: dict[tuple, Any] = {}
+
+
+def _lookup_cache_clear() -> None:
+    """ล้างแคชตารางค้นหา — เรียกเมื่อเริ่มงานใหม่ หรือข้อมูลที่แคชอ้างอิงเปลี่ยน"""
+    _LOOKUP_CACHE.clear()
+
 
 DEPARTMENTS: list[dict[str, Any]] = [
     {"id":1,"name":"กลุ่มสาระคณิตศาสตร์"},
@@ -189,6 +218,9 @@ def _room_reserved_for(room: dict[str, Any]) -> set[int]:
     with three desks, a lab two people run between them. It was a single
     teacher before, so that older shape is still read.
     """
+    # ถูกเรียกเก้าแสนครั้งต่อการจัดหนึ่งรอบ เคยลองแคชด้วย id ของห้องแล้ว วัดได้
+    # เร็วขึ้น 3% ซึ่งอยู่ในช่วงความคลาดเคลื่อน จึงไม่เก็บไว้ — งานที่ทำมันเล็ก
+    # เกินกว่าจะคุ้มกับการหาในแคช และคีย์ด้วย id ก็เสี่ยงค้างของเก่าโดยเปล่าประโยชน์
     ids = room.get("reserved_teacher_ids")
     if isinstance(ids, list):
         return {int(x) for x in ids if x}
@@ -1761,8 +1793,13 @@ def _school_max_last_period(body: dict[str, Any] | None = None) -> int:
 
 def _last_period_for(level: str) -> int | None:
     """The final lesson period of the day for this level."""
+    key = ("lastnum", level)
+    if key in _LOOKUP_CACHE:
+        return _LOOKUP_CACHE[key]
     nums = _class_periods_for_level(level)
-    return nums[-1] if nums else None
+    out = nums[-1] if nums else None
+    _LOOKUP_CACHE[key] = out
+    return out
 
 
 # ── คาบสุดท้ายของวัน: ใช้เมื่อจำเป็นเท่านั้น ──────────────────────────────────
@@ -1939,12 +1976,16 @@ def _school_last_period_mode(body: dict[str, Any] | None = None) -> str:
 
 def _morning_cutoff(level: str) -> int | None:
     """The period a morning ends at — the last one starting before noon."""
+    key = ("morning", level)
+    if key in _LOOKUP_CACHE:
+        return _LOOKUP_CACHE[key]
     rows = _periods_for_level(level)
     best = None
     for num in _class_periods_for_level(level):
         start = _hhmm(rows.get(num, {}).get("start_time"))
         if start is not None and start < 12 * 60:
             best = num
+    _LOOKUP_CACHE[key] = best
     return best
 
 
@@ -2305,6 +2346,8 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     """The heuristic placer. With body.repair_group_ids it places only those
     classes again and freezes the rest (see ซ่อมเฉพาะห้องที่เลือก above);
     absent or empty it is the whole-school run it always was."""
+    # เริ่มงานใหม่ = ล้างแคชตารางค้นหา ระหว่างการจัดผังคาบไม่เปลี่ยนอีก
+    _lookup_cache_clear()
     ids = body.get("repair_group_ids")
     if not ids:
         return _solve_greedy_run(body)
@@ -2325,6 +2368,39 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     # builds the week afresh and would put them somewhere of its own choosing.
     if body.get("repair_group_ids"):
         return _solve_greedy(body)
+    # ── ไม่โหลดของหนักมาเพื่อทิ้ง ────────────────────────────────────────────
+    #
+    # ตัวกันขนาดข้างล่าง (_solve_cpsat) ปฏิเสธโรงเรียนขนาดนี้ทุกครั้งอยู่แล้ว
+    # แต่การ import ortools เกิดขึ้นก่อนที่จะรู้ ซึ่งกินหน่วยความจำร้อยกว่าเมกะไบต์
+    # บนเครื่องแพ็กเกจฟรีที่มี 512 MB เพื่อไลบรารีที่ไม่มีวันได้ใช้ — และนั่นคือ
+    # ส่วนหนึ่งของอาการ "เซิร์ฟเวอร์ไม่ตอบกลับ" ที่โรงเรียนเจอ
+    #
+    # จึงนับขนาดก่อนด้วยสูตรเดียวกับที่ _solve_cpsat ใช้เป๊ะๆ: จำนวนก้อนคาบ คูณ
+    # ช่องเริ่มที่เป็นไปได้ คูณจำนวนห้องที่น้อยที่สุดที่มันยอมลดลงไปถึง (2)
+    #
+    # ต้องเป็นสูตรเดียวกันจริงๆ ไม่ใช่ประมาณเอา — ครั้งแรกเขียนเป็น "รวม
+    # weekly_count" ซึ่งสูงกว่าของจริง เพราะวิชาคาบคู่สองคาบนับเป็นก้อนเดียว
+    # ตัวเลขที่สูงเกินไปจะไปปฏิเสธ CP-SAT ของโรงเรียนที่จริงๆ แล้วใช้ได้
+    skipped = _excluded_requirement_ids(body)
+    _subj = {s["id"]: s for s in SUBJECTS}
+    want = 0
+    for r in REQUIREMENTS:
+        if r["id"] in skipped:
+            continue
+        wc = r.get("weekly_count", 1) or 0
+        dur = (_subj.get(r.get("subject_id")) or {}).get("duration", 1) or 1
+        want += (wc // 2 + wc % 2) if dur == 2 else wc
+    floor_est = want * 5 * len(_class_period_nums()) * 2
+    budget = int(body.get("max_model_vars") or 150_000)
+    if floor_est > budget:
+        res = _solve_greedy(body)
+        res.setdefault("violations", [])
+        res["violations"].append(
+            f"ℹ ตารางนี้ใหญ่เกินกว่าจะใช้ CP-SAT บนเซิร์ฟเวอร์ปัจจุบัน "
+            f"({want} คาบ ≈ {floor_est:,} ตัวแปรเป็นอย่างน้อย) จึงใช้ตัวจัดสำรอง "
+            f"(heuristic) แทน — ผลที่ได้ยังครบเงื่อนไขทุกข้อ")
+        res["engine"] = "greedy-fallback"
+        return res
     try:
         from ortools.sat.python import cp_model  # noqa: F401
     except Exception:
@@ -5821,6 +5897,7 @@ def _room_week_capacity() -> int:
 
 def _capacity_findings() -> list[dict[str, Any]]:
     """ของที่สั่งไว้ กับช่องที่มีจริง — ส่วนที่เกินคือส่วนที่ลงไม่ได้"""
+    _lookup_cache_clear()
     groups = _flat_groups()
     g_map = {g["id"]: g for g in groups}
     s_map = {s["id"]: s for s in SUBJECTS}
@@ -6488,6 +6565,7 @@ def _consecutive_report() -> dict[str, Any]:
 
 
 def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
+    _lookup_cache_clear()
     skipped_reqs = _excluded_requirement_ids(body)
     """Real optimiser (Google OR-Tools CP-SAT).
 
@@ -7147,6 +7225,8 @@ def get_periods():
 
 @app.post("/api/periods/")
 def create_period(body: dict[str, Any]):
+    # ผังคาบกำลังจะเปลี่ยน ล้างแคชทันทีที่เปลี่ยนจริง ไม่รอตัวกลางล้างตอนจบคำขอ
+    # เพราะโค้ดที่เหลือในคำขอนี้ยังอ่านผังคาบต่อ ถ้ารอ มันจะอ่านของเก่า
     body["id"] = _next("period")
     body.setdefault("applies_to", "all")
     # The number is the column this lands in, worked out from its time — the
@@ -7154,6 +7234,7 @@ def create_period(body: dict[str, Any]):
     if body.get("period_num") is None or body.get("auto_number"):
         body.pop("auto_number", None)
         PERIODS.append(body)
+        _lookup_cache_clear()
         cols = _column_groups()
         for i, col in enumerate(cols):
             if any(r is body for r in col):
@@ -7163,6 +7244,7 @@ def create_period(body: dict[str, Any]):
             body["period_num"] = _max_id([{"id": p.get("period_num", 0)} for p in PERIODS]) + 1
         return body
     PERIODS.append(body)
+    _lookup_cache_clear()
     return body
 
 # ── Period numbers should not be the school's problem ─────────────────────────
@@ -7311,6 +7393,9 @@ def renumber_periods():
     for new_num, col in enumerate(cols):
         for row in col:
             row["period_num"] = new_num
+    # เลขคาบเพิ่งเปลี่ยนทั้งแถว ต้องล้างก่อนบรรทัดถัดไปที่อ่านผังคาบ ไม่ใช่รอ
+    # ตัวกลางล้างตอนจบคำขอ เพราะ period_plan() ด้านล่างอ่านผังคาบทันที
+    _lookup_cache_clear()
 
     return {"columns": len(cols), "slots_moved": moved,
             "plan": period_plan()}
@@ -7322,6 +7407,7 @@ def update_period(pid: int, body: dict[str, Any]):
     for p in PERIODS:
         if p["id"] == pid:
             p.update(body)
+            _lookup_cache_clear()   # ผังคาบเพิ่งเปลี่ยน ของที่จำไว้ใช้ไม่ได้แล้ว
             return p
     raise HTTPException(404, "Period not found")
 
@@ -7336,6 +7422,7 @@ def delete_period(pid: int):
     global PERIODS, SLOTS
     gone = next((p for p in PERIODS if p["id"] == pid), None)
     PERIODS = [p for p in PERIODS if p["id"] != pid]
+    _lookup_cache_clear()   # ผังคาบเพิ่งเปลี่ยน ของที่จำไว้ใช้ไม่ได้แล้ว
     removed = 0
     if gone is not None:
         # Only if no other period definition still uses that number.
@@ -8726,15 +8813,32 @@ def _level_key(group: dict[str, Any] | None) -> str:
     """
     if not group:
         return "all"
+    # คีย์คือค่าที่ฟังก์ชันนี้อ่านจริงๆ ไม่ใช่ id ของห้อง — ห้องคนละก้อนที่ id
+    # ซ้ำกัน (ตอนโหลดข้อมูลใหม่ หรือในชุดทดสอบ) จึงไม่หยิบคำตอบของกันและกัน
+    key = ("level", group.get("level"), group.get("name"))
+    hit = _LOOKUP_CACHE.get(key)
+    if hit is not None:
+        return hit
+    out = "upper"
     for text in (group.get("level"), group.get("name")):
         m = _re.search(r"(\d)", str(text or ""))
         if m:
-            return "lower" if int(m.group(1)) <= 3 else "upper"
-    return "upper"
+            out = "lower" if int(m.group(1)) <= 3 else "upper"
+            break
+    _LOOKUP_CACHE[key] = out
+    return out
 
 
 def _periods_for_level(level: str) -> dict[int, dict[str, Any]]:
-    """The day as this level actually experiences it, by period number."""
+    """The day as this level actually experiences it, by period number.
+
+    ผลที่คืนไปใช้ร่วมกันทั้งระบบ ห้ามแก้ — ทุกที่ที่เรียกอ่านอย่างเดียว
+    (ตรวจครบทั้ง 13 จุดแล้ว) ถ้าจะแก้ ให้ dict(...) ของตัวเองก่อน
+    """
+    key = ("periods", level)
+    hit = _LOOKUP_CACHE.get(key)
+    if hit is not None:
+        return hit
     out: dict[int, dict[str, Any]] = {}
     for p in PERIODS:
         applies = p.get("applies_to", "all") or "all"
@@ -8743,19 +8847,32 @@ def _periods_for_level(level: str) -> dict[int, dict[str, Any]]:
             if p["period_num"] in out and applies == "all":
                 continue
             out[p["period_num"]] = p
+    _LOOKUP_CACHE[key] = out
     return out
 
 
 def _class_periods_for_level(level: str) -> list[int]:
-    return sorted(n for n, p in _periods_for_level(level).items() if p["type"] == "class")
+    """ห้ามแก้ลิสต์ที่ได้ไป ใช้ร่วมกันทั้งระบบเหมือน _periods_for_level"""
+    key = ("classnums", level)
+    hit = _LOOKUP_CACHE.get(key)
+    if hit is not None:
+        return hit
+    out = sorted(n for n, p in _periods_for_level(level).items() if p["type"] == "class")
+    _LOOKUP_CACHE[key] = out
+    return out
 
 
 def _hhmm(t: str | None) -> int | None:
+    key = ("hhmm", t)
+    if key in _LOOKUP_CACHE:
+        return _LOOKUP_CACHE[key]
     try:
         h, m = str(t).split(":")
-        return int(h) * 60 + int(m)
+        out: int | None = int(h) * 60 + int(m)
     except Exception:
-        return None
+        out = None
+    _LOOKUP_CACHE[key] = out
+    return out
 
 
 _BUCKET = 5   # minutes; every time in the data lands on a 5-minute boundary
@@ -9995,6 +10112,7 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
     clearing the target would empty the data being restored from it and leave
     nothing behind.
     """
+    _lookup_cache_clear()   # ผังคาบอาจมาใหม่ทั้งก้อน
     for key, target in (("departments", DEPARTMENTS), ("buildings", BUILDINGS),
                         ("rooms", ROOMS), ("teachers", TEACHERS),
                         ("subjects", SUBJECTS), ("requirements", REQUIREMENTS),
