@@ -4487,9 +4487,30 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     for req, gid, tid, missing, done in short_rows:
         code = s_map.get(req["subject_id"], {}).get("code", "?")
         unplaced_ids.append(req["id"])
+        # บอกห้องด้วย ไม่ใช่แค่รหัสวิชา
+        #
+        # "ไม่สามารถจัด ท21204 ครบ 2 คาบ (จัดได้ 1/2)" เป็นจริงแต่ทำอะไรต่อ
+        # ไม่ได้ โรงเรียนมี 93 ห้อง และวิชาเดียวกันสอนหลายห้อง คนอ่านจึงไม่รู้
+        # ว่าต้องไปเปิดห้องไหน และถ้าแถวนั้นอยู่ในเซ็ตห้องย่อย ก็ยิ่งหายาก
+        # เพราะห้องย่อยไม่ได้อยู่ในรายการห้องปกติ
+        #
+        # เหตุผลรายคาบมีอยู่แล้วใน _unplaced_report — สิ่งที่ขาดคือป้ายบอกทาง
+        # ไปหามัน
+        who = (g_map.get(gid) or {}).get("name") or f"ห้อง #{gid}"
+        key = req.get("parallel_group_key")
+        in_set = ""
+        if key:
+            label = str(key).split(":")[-1] if ":" in str(key) else str(key)
+            in_set = f" · อยู่ในเซ็ตห้องย่อย “{label}”"
+        pinned = ""
+        if req.get("pinned_day") is not None and req.get("pinned_period") is not None:
+            d = int(req["pinned_day"])
+            pinned = (f" · ล็อกเวลาไว้ที่ "
+                      f"{_DAYS_TH[d] if 0 <= d < len(_DAYS_TH) else d} "
+                      f"คาบ {req['pinned_period']}")
         violations.append(
-            f"ไม่สามารถจัด {code} ครบ {req['weekly_count']} คาบ "
-            f"(จัดได้ {done}/{req['weekly_count']})"
+            f"ไม่สามารถจัด {code} ของ {who} ครบ {req['weekly_count']} คาบ "
+            f"(จัดได้ {done}/{req['weekly_count']}){in_set}{pinned}"
         )
 
 
