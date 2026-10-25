@@ -5509,9 +5509,73 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # fit in คาบ 1-8, named so the school can see at a glance whether that
     # matches what it expects of each class.
     tail_left: dict[str, int] = defaultdict(int)
+    tail_slots: dict[int, list] = defaultdict(list)
     for s_ in SLOTS:
         if s_["period"] == _last_period_for(_level_key(g_map.get(s_["group_id"]))):
             tail_left[(g_map.get(s_["group_id"]) or {}).get("name", "?")] += 1
+            tail_slots[s_["group_id"]].append(s_)
+
+    # ── ห้องที่ยังนั่งถึงคาบสุดท้ายทั้งที่สัปดาห์ยังมีช่องว่าง ───────────────
+    #
+    # "ลงคาบให้ครบก่อน ไม่ให้มีคาบว่าง ถ้ามีคาบว่างต้องไม่มีคาบ 9"
+    #
+    # ข้อความเดิมบอกกับทุกห้องที่มีคาบอยู่คาบสุดท้ายว่า "ห้องเหล่านี้มีวิชาเกิน
+    # กว่าคาบ 1-8 จะรับไหว" โดยไม่เคยตรวจว่าจริงหรือเปล่า ห้องที่สัปดาห์ยังมี
+    # ช่องว่างเหลืออยู่จึงถูกอธิบายผิด แล้วโรงเรียนก็ไปแก้ผิดที่ — ไปลดหลักสูตร
+    # ทั้งที่เหตุจริงคือครูติดสอนห้องอื่นอยู่ในชั่วโมงที่ว่างนั้น
+    #
+    # สองกรณีนี้ทางแก้อยู่คนละขั้วกัน จึงต้องแยกให้ขาด
+    #   สัปดาห์เต็มจริง      ลดคาบในหลักสูตร หรือเพิ่มคาบในผังคาบ
+    #   ยังมีช่องว่างเหลือ   ไปดูครู/ห้อง/กฎวันละวิชาเดียวในชั่วโมงนั้น
+    busy_cells: dict[int, set] = defaultdict(set)
+    for s_ in SLOTS:
+        busy_cells[s_["group_id"]].add((s_["day"], s_["period"]))
+
+    def tail_free_cells(gid: int) -> list:
+        """ช่องว่างก่อนคาบสุดท้ายของห้องนี้ นับเวลาของห้องแม่และห้องย่อยด้วย
+
+        ห้องแม่กับห้องย่อยเป็นนักเรียนกลุ่มเดียวกัน ถ้านับแยก ห้องแม่จะดู
+        เหมือนว่างสิบกว่าช่องทั้งที่เด็กนั่งเรียนอยู่ในห้องย่อย
+        """
+        g = g_map.get(gid) or {}
+        nums = _class_periods_for_level(_level_key(g))
+        if not nums:
+            return []
+        last = nums[-1]
+        taken: set = set()
+        for k in _group_family(gid, g):
+            taken |= busy_cells.get(k, set())
+        return [(d, p) for d in range(5) for p in nums
+                if p != last and (d, p) not in taken]
+
+    def tail_block_reason(s_: dict, free: list) -> str:
+        """ทำไมคาบนี้ดึงขึ้นมาไม่ได้ ทั้งที่ห้องยังมีช่องว่าง
+
+        ตอบด้วยเหตุที่พบบ่อยที่สุดในบรรดาช่องว่างที่มี เพราะโรงเรียนต้องการ
+        รู้ว่า "ไปแก้ตรงไหน" ไม่ใช่รายการเหตุผลของทุกช่อง
+        """
+        if not can_leave(s_) or not swappable(s_):
+            return "คาบนี้ถูกล็อกไว้ หรือเป็นคาบคู่/เซ็ตห้องย่อย/คาบเสรี จึงย้ายไม่ได้"
+        gid, sid = s_["group_id"], s_.get("subject_id")
+        teacher = t_map.get(s_.get("teacher_id"))
+        counts: Counter = Counter()
+        for d, p in free:
+            if subj_day[(gid, sid, d)] > 0:
+                counts["วันนั้นห้องนี้เรียนวิชาเดียวกันไปแล้ว"] += 1
+            elif teacher is None or not can_take(teacher, gid, d, p):
+                counts["ครูติดสอนห้องอื่นหรือไม่ว่างในชั่วโมงนั้น"] += 1
+            else:
+                counts["ไม่มีห้องว่างให้ในชั่วโมงนั้น"] += 1
+        return counts.most_common(1)[0][0] if counts else ""
+
+    tail_open: list[tuple] = []       # (ชื่อห้อง, ช่องว่างที่เหลือ, เหตุที่ย้ายไม่ได้)
+    for gid, rows in tail_slots.items():
+        free = tail_free_cells(gid)
+        if not free:
+            continue                  # สัปดาห์เต็มจริง อธิบายด้วยข้อความเดิม
+        name = (g_map.get(gid) or {}).get("name", "?")
+        tail_open.append((name, len(free), tail_block_reason(rows[0], free)))
+    tail_open.sort(key=lambda r: (-r[1], r[0]))
     last_period_stats = {
         "teachers": len(expected),
         "met": sum(1 for t in expected if last_period_shortfall(t["id"]) <= 0),
@@ -5524,15 +5588,29 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         "classes": dict(sorted(tail_left.items())),
     }
     if tail_mode != "free":
-        if tail_left:
-            top = sorted(tail_left.items(), key=lambda kv: (-kv[1], kv[0]))
+        open_names = {n for n, _c, _w in tail_open}
+        full = {n: c for n, c in tail_left.items() if n not in open_names}
+        if full:
+            top = sorted(full.items(), key=lambda kv: (-kv[1], kv[0]))
+            nums_hint = _class_periods_for_level("lower")
+            upto = nums_hint[-2] if len(nums_hint) > 1 else "ก่อนคาบสุดท้าย"
             notes.append(
-                f"ยังต้องใช้คาบสุดท้ายอยู่ {sum(tail_left.values())} คาบ ใน "
-                f"{len(tail_left)} ห้อง — ห้องเหล่านี้มีวิชาเกินกว่าคาบ 1-8 จะรับไหว "
+                f"ยังต้องใช้คาบสุดท้ายอยู่ {sum(full.values())} คาบ ใน "
+                f"{len(full)} ห้อง — ห้องเหล่านี้มีวิชาเกินกว่าคาบ 1-{upto} จะรับไหว "
                 f"({', '.join(f'{n} {c}' for n, c in top[:5])}"
                 f"{' …' if len(top) > 5 else ''})"
             )
-        else:
+        if tail_open:
+            # ห้องกลุ่มนี้ไม่ได้วิชาล้น ช่องว่างยังเหลือ แต่ย้ายขึ้นมาไม่ได้
+            # บอกชื่อห้อง จำนวนช่องที่เหลือ และเหตุที่ติด เพื่อให้ไปแก้ถูกที่
+            shown = ", ".join(f"{n} (ว่าง {w} ช่อง — {why})"
+                              for n, w, why in tail_open[:4])
+            notes.append(
+                f"มี {len(tail_open)} ห้องที่ยังนั่งถึงคาบสุดท้าย ทั้งที่สัปดาห์ยัง"
+                f"มีช่องว่างเหลือ — ไม่ใช่เพราะวิชาล้น แต่ย้ายขึ้นมาไม่ได้: {shown}"
+                f"{' …' if len(tail_open) > 4 else ''}"
+            )
+        if not tail_left:
             notes.append("ไม่มีห้องไหนต้องเรียนถึงคาบสุดท้ายเลย")
 
     # Not a violation. Nothing is wrong with a timetable in which a teacher
