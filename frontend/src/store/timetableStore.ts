@@ -8,6 +8,7 @@ import { DEFAULT_PERIODS } from "../types";
 import { buildImpactMap } from "../utils/conflictAnalyzer";
 import { buildSharesStudents } from "../utils/groupHierarchy";
 import * as api from "../api/client";
+import { writeGuard } from "../utils/writeGuard";
 import { putSavePoint, storageAvailable } from "../utils/savePoints";
 import { applyPickResult } from "../utils/yardPicks";
 
@@ -48,6 +49,8 @@ async function quietRefresh(
   get: () => TimetableStore,
 ): Promise<void> {
   const cur = get();
+  // What the world looked like when this question was asked.
+  const askedAt = writeGuard.token();
   const [departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods] =
     await Promise.all([
       api.fetchDepartments().catch(() => cur.departments),
@@ -60,6 +63,10 @@ async function quietRefresh(
       api.fetchSlots().catch(() => cur.slots),
       api.fetchPeriods().catch(() => cur.periods),
     ]);
+  // An edit started or finished while this was in the air, so this copy of the
+  // timetable predates it. Dropping it loses nothing — the next poll asks again
+  // — while applying it would undo what the person just did.
+  if (writeGuard.stale(askedAt)) return;
   if (wouldWipeTheScreen(
         { slots: cur.slots.length, teachers: cur.teachers.length },
         { slots: slots.length, teachers: teachers.length })) {
@@ -76,6 +83,15 @@ async function quietRefresh(
  * would put a mark back that was just removed.
  */
 let yardLoadSeq = 0;
+
+/**
+ * กันการดึงข้อมูลมาทับสิ่งที่เพิ่งแก้ — เหตุผลทั้งหมดอยู่ใน utils/writeGuard.ts
+ *
+ * กับดักเดียวกันนี้เคยถูกเข้าใจแล้วที่ของข้างๆ: yardLoadSeq มีอยู่เพราะการโหลด
+ * ลาน "ตอบคำถามที่เลยไปแล้ว" ตัวนี้คือความคิดเดียวกัน แต่ใช้กับสิ่งที่โรงเรียน
+ * แก้อยู่ทั้งวัน
+ */
+const withWrite = <T,>(fn: () => Promise<T>): Promise<T> => writeGuard.run(fn);
 
 // One reversible change to a slot, used by the undo stack.
 interface SlotPatch {
@@ -352,7 +368,9 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       const st = get();
       // Never yank data out from under an interaction in progress.
       if (!st.liveSync) return;
-      if (st.draggingSlot || st.isSolving || st.isLoading) return;
+      // An edit in flight is the third way the screen can be mid-change, beside
+      // a drag and a solve. Refreshing across one is what made edits bounce.
+      if (st.draggingSlot || st.isSolving || st.isLoading || writeGuard.busy) return;
       if (typeof document !== "undefined" && document.hidden) return;
       try {
         const info = await api.fetchStateVersion();
@@ -392,7 +410,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
 
   // Add a single lesson to one cell (used by "click an empty cell to add").
   addLesson: async (d) => {
-    await api.createSlot(d);
+    await withWrite(() => api.createSlot(d));
     // Reload rather than append: a คาบคู่ is two cells and only the first
     // comes back, so appending would leave the second half off the grid
     // until something else refreshed it.
@@ -440,7 +458,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       patches: affected.map((s) => ({ slotId: s.id, day: s.day, period: s.period })),
     }].slice(-25) }));
     try {
-      await api.updateSlot(slotId, { day: newDay, period: newPeriod });
+      await withWrite(() => api.updateSlot(slotId, { day: newDay, period: newPeriod }));
     } catch (err: unknown) {
       // The backend refuses a move that would double-book a class, teacher or
       // room. Put the lesson back and say why, rather than letting it snap
@@ -465,9 +483,19 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       patches: [{ slotId, room_id: slot.room_id ?? null }],
     }].slice(-25) }));
     try {
-      await api.updateSlot(slotId, { room_id: newRoomId });
+      await withWrite(() => api.updateSlot(slotId, { room_id: newRoomId }));
     } catch (err: unknown) {
-      set({ slots, solverError: moveRefusal(err) });
+      // Put back THIS slot's room, not the whole timetable as it looked when
+      // the call began. Restoring that snapshot would also undo any edit made
+      // in between — the same bug this guard exists to stop, arriving by way
+      // of the error path instead of the refresh.
+      set((st) => ({
+        slots: st.slots.map((s) => (s.id === slotId
+          ? { ...s, room_id: slot.room_id ?? null,
+              room_name: slot.room_name ?? null, room_type: slot.room_type ?? null }
+          : s)),
+        solverError: moveRefusal(err),
+      }));
     }
   },
 
@@ -520,7 +548,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         .filter((s) => s.action !== "delete")
         .map((s) => ({ slot_id: s.slotId, day: s.toDay, period: s.toPeriod, room_id: s.toRoomId }));
       if (moves.length > 0) {
-        const r = await api.moveSlots(moves);
+        const r = await withWrite(() => api.moveSlots(moves));
         if (!r.ok) {
           // Someone else may have taken the cell since the plan was drawn.
           set({ solverError: `ย้ายไม่ได้: ${r.conflicts.slice(0, 2).join(" · ")}` });
@@ -529,7 +557,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         }
       }
       for (const step of route.steps) {
-        if (step.action === "delete") await api.deleteSlot(step.slotId);
+        if (step.action === "delete") await withWrite(() => api.deleteSlot(step.slotId));
       }
     } catch {
       await get().loadSlots();
@@ -569,7 +597,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         if (p.day !== undefined) body.day = p.day;
         if (p.period !== undefined) body.period = p.period;
         if (p.room_id !== undefined) body.room_id = p.room_id;
-        await api.updateSlot(p.slotId, body);
+        await withWrite(() => api.updateSlot(p.slotId, body));
       }
     } catch {
       await get().loadSlots();
@@ -580,12 +608,12 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     const { slots } = get();
     const slot = slots.find((s) => s.id === slotId);
     if (!slot) return;
-    const updated = await api.updateSlot(slotId, { is_locked: !slot.is_locked });
+    const updated = await withWrite(() => api.updateSlot(slotId, { is_locked: !slot.is_locked }));
     set({ slots: slots.map((s) => (s.id === slotId ? { ...s, ...updated } : s)) });
   },
 
   deleteSlot: async (slotId) => {
-    await api.deleteSlot(slotId);
+    await withWrite(() => api.deleteSlot(slotId));
     set({ slots: get().slots.filter((s) => s.id !== slotId) });
   },
 
@@ -602,7 +630,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   },
 
   bulkLockSlots: async (params) => {
-    const result = await api.bulkLockSlots(params);
+    const result = await withWrite(() => api.bulkLockSlots(params));
     // Re-fetch slots to reflect changes
     const slots = await api.fetchSlots();
     set({ slots });
