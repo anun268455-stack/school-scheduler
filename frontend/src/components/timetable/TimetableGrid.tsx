@@ -26,6 +26,7 @@ import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
 import { slotsForTeacher } from "../../utils/teacherSlots";
 import { problemsIn, parentMap, type SlotProblem } from "../../utils/slotProblems";
+import { countProblems, describeCounts } from "../../utils/repairClasses";
 import { TableSearch, matches } from "../common/TableSearch";
 import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../utils/levels";
 import { mergedDoubles, periodsOfCell, picksOfGroup, yardsInCell } from "../../utils/yardPicks";
@@ -855,8 +856,11 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
           >
             <span className="text-base leading-none">⚠</span>
             <span>{viewTitle} — มี {problemCount} จุดที่ต้องแก้</span>
+            {/* บอกว่าเป็นเรื่องอะไร ไม่ใช่แค่กี่คาบ — "คาบที่ยังไม่เรียบร้อย 4"
+                ไม่ได้บอกว่าต้องไปหาห้อง ย้ายเวลา หรือแก้ห้องซ้ำ ซึ่งแก้คนละวิธี
+                และต้องเปิดหน้าต่างอีกชั้นถึงจะรู้ */}
             <span className="font-normal opacity-90 hidden sm:inline">
-              {[problems.length ? `คาบที่ยังไม่เรียบร้อย ${problems.length}` : "",
+              {[...describeCounts(countProblems(problems)),
                 shortRows.length ? `วิชาที่ลงไม่ครบ ${shortRows.length}` : ""]
                 .filter(Boolean).join(" · ")}
             </span>

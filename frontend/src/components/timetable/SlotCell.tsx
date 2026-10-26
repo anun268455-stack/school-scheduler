@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import clsx from "clsx";
 import type { TimetableSlot } from "../../types";
 import { slotTeacherNames, teachingTogether, myElectiveOption, slotLabel } from "../../utils/teacherSlots";
-import { problemOf, parentMap, type SlotProblem } from "../../utils/slotProblems";
+import { problemOf, parentMap, type ProblemKind, type SlotProblem } from "../../utils/slotProblems";
 import { useTimetableStore } from "../../store/timetableStore";
 
 interface SlotCellProps {
@@ -16,6 +16,24 @@ interface SlotCellProps {
   /** หาลานให้คาบที่ไม่มีห้อง — ปุ่มขึ้นเฉพาะคาบกรอบแดงที่ไม่มีห้อง */
   onRescue?:   (slot: TimetableSlot) => void;
   compact?:    boolean;
+}
+
+/**
+ * คำสั้นๆ บนกรอบแดง — ช่องกว้างไม่กี่ตัวอักษร จึงบอกได้เรื่องเดียว
+ *
+ * บอกเรื่องที่ "ต้องไปทำอะไรสักอย่าง" ก่อนเสมอ: ไม่มีห้องเลย แก้ด้วยการหาห้อง ·
+ * ห้องซ้ำกับอีกห้องเรียน แก้ด้วยการเปลี่ยนห้องให้คาบใดคาบหนึ่ง · ครูติดสอนที่
+ * อื่น แก้ด้วยการย้ายเวลา · ที่เหลือคือคาบที่ระบบวางไว้ให้เห็นเฉยๆ
+ *
+ * เดิมมีสองคำ ("ไม่มีห้อง" กับ "ต้องแก้") — พอเพิ่มเรื่องห้องซ้ำเข้ามา คาบที่
+ * ห้องซ้ำจึงขึ้นว่า "ต้องแก้" ซึ่งไม่ได้บอกอะไรเลย ทั้งที่เป็นคนละเรื่องกับ
+ * คาบที่ไม่มีห้อง และแก้คนละวิธี
+ */
+function badgeWord(kinds: ProblemKind[]): string {
+  if (kinds.includes("no_room"))       return "ไม่มีห้อง";
+  if (kinds.includes("room_clash"))    return "ห้องซ้ำ";
+  if (kinds.includes("teacher_clash")) return "ครูซ้ำ";
+  return "ต้องแก้";
 }
 
 function slotColors(s: TimetableSlot, bad?: boolean): string {
@@ -145,8 +163,7 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
           className="shrink-0 inline-block bg-rose-600 text-white text-[7px] px-0.5 rounded-sm leading-tight font-bold"
           title={`${problem.text} — ${problem.fix}`}
         >
-          ⚠ {problem.kinds.includes("no_room") && !problem.kinds.includes("teacher_clash")
-            ? "ไม่มีห้อง" : "ต้องแก้"}
+          ⚠ {badgeWord(problem.kinds)}
         </span>
       )}
       {slot.is_locked && (
