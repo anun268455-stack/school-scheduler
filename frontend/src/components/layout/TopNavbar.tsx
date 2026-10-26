@@ -17,6 +17,7 @@ import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { byTeacherCode } from "../../utils/teacherOrder";
+import { stepTarget, stepPosition } from "../../utils/entityStep";
 import type { PrintOptions } from "../print/PrintView";
 import type { ViewMode } from "../../types";
 
@@ -160,6 +161,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const selectedId = viewMode === "group" ? selectedGroupId
     : viewMode === "teacher" ? selectedTeacherId : selectedRoomId;
 
+  // ลำดับที่ปุ่ม ◀ ▶ เดินตาม — ลำดับเดียวกับในช่องเลือก ไม่ใช่ลำดับ id
+  const entityIds = useMemo(
+    () => entityOptions.map((e) => (e as { id: number }).id),
+    [entityOptions],
+  );
+  const entityPos = stepPosition(entityIds, selectedId);
+
   /** null clears the selection and shows the "pick one" screen again. */
   const handleEntityChange = (id: number | null) => {
     if (viewMode === "group")   setSelectedGroupId(id);
@@ -241,7 +249,17 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           wraps to a second line when it must, which is the better way to lose
           space. */}
       {currentPage === "timetable" && (
-        <div className="px-2 border-r border-gray-700 w-[252px] shrink-0">
+        <div className="flex items-center gap-1 px-2 border-r border-gray-700 shrink-0">
+          {/* ◀ ▶ เลื่อนดูคนต่อไปตามลำดับรายชื่อ — ตรวจตารางครู 170 คนด้วยการ
+              พิมพ์ชื่อทีละคน ต้องจำเองว่าดูถึงใคร ปุ่มนี้จำแทนให้ */}
+          <button
+            onClick={() => handleEntityChange(stepTarget(entityIds, selectedId, -1))}
+            disabled={stepTarget(entityIds, selectedId, -1) === null}
+            title={viewMode === "teacher" ? "ครูคนก่อนหน้า"
+              : viewMode === "group" ? "ห้องก่อนหน้า" : "ห้องสอนก่อนหน้า"}
+            className="px-1.5 py-1 rounded text-sm text-gray-300 hover:bg-gray-700 disabled:text-gray-600 disabled:hover:bg-transparent shrink-0"
+          >◀</button>
+          <div className="w-[252px]">
           {/* Typing beats scrolling 143 teachers or 93 classes. */}
           <SearchableSelect
             tone="dark"
@@ -265,6 +283,18 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
               };
             })}
           />
+          </div>
+          <button
+            onClick={() => handleEntityChange(stepTarget(entityIds, selectedId, 1))}
+            disabled={stepTarget(entityIds, selectedId, 1) === null}
+            title={viewMode === "teacher" ? "ครูคนต่อไป"
+              : viewMode === "group" ? "ห้องต่อไป" : "ห้องสอนต่อไป"}
+            className="px-1.5 py-1 rounded text-sm text-gray-300 hover:bg-gray-700 disabled:text-gray-600 disabled:hover:bg-transparent shrink-0"
+          >▶</button>
+          {/* ดูถึงคนที่เท่าไรจากทั้งหมดกี่คน — ไม่ต้องเดาว่าเหลืออีกเยอะไหม */}
+          <span className="text-[10px] text-gray-400 tabular-nums w-11 shrink-0">
+            {entityPos.index > 0 ? `${entityPos.index}/${entityPos.total}` : `${entityPos.total} ราย`}
+          </span>
         </div>
       )}
 
