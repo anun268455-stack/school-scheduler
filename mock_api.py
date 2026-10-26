@@ -2660,6 +2660,18 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # these, or it takes a room another class is entitled to sit in all week.
     homeroom_ids: set[int] = {g["homeroom_room_id"] for g in g_map.values()
                               if g.get("homeroom_room_id")}
+    # ห้องประจำชั้นของ ม.ต้น -> ห้องเรียนที่เป็นเจ้าของ
+    #
+    # ใช้ในรอบซ่อมท้ายสุด (ดู "ม.ต้นไม่มีห้อง แต่ห้องประจำชั้นถูกห้องอื่นนั่งอยู่")
+    # ไม่ได้ใช้เป็นตัวกรองตอนเลือกห้อง: ลองแล้ววัด — กันห้องไว้ตั้งแต่ตอนเลือก
+    # ทำให้เวลาจัดขึ้นจาก 1.77 เป็น 4.06 วินาที (ตัวจัดต้องไล่หาห้องไกลขึ้นทุกคาบ)
+    # โดยที่บนข้อมูลที่วัดได้ ม.ต้นไม่มีคาบไม่มีห้องอยู่แล้วทั้งก่อนและหลัง
+    # เซิร์ฟเวอร์ของโรงเรียนเคยหมดเวลาเพราะจัดนาน จึงไม่คุ้มที่จะแลก
+    homeroom_owner: dict[int, int] = {}
+    for _g in g_map.values():
+        _hr = _g.get("homeroom_room_id")
+        if _hr and _hr not in homeroom_owner and _level_key(_g) == "lower":
+            homeroom_owner[_hr] = _g["id"]
 
     def cell_buckets(gid: int, period: int) -> frozenset[int]:
         return _slot_buckets(g_map.get(gid), period)
@@ -5840,6 +5852,65 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             f"ส่ง {sent_home} คาบที่หาห้องไม่ได้กลับไปเรียนที่ห้องประจำชั้นของตัวเอง "
             f"— ห้องนั้นว่างอยู่ และห้องที่ไม่เหมาะดีกว่าไม่มีห้อง "
             f"(ถ้าวิชาไหนต้องใช้ห้องเฉพาะจริงๆ ให้ย้ายเองอีกที)")
+
+    # ── ม.ต้นไม่มีห้อง แต่ห้องประจำชั้นของตัวเองถูกห้องอื่นนั่งอยู่ ───────────
+    #
+    # "นักเรียน ม.ต้นที่มีห้องประจำจะต้องลงวิชาก่อน … ม.ต้นต้องมีวิชาครบก่อน
+    #  ต้องไม่มีปัญหา ส่วนนักเรียน ม.ปลายฉันจะไปจัดหาลานเอง คือถ้านักเรียน
+    #  ม.ปลายไม่มีห้อง สามารถมาห้องครูที่สอนห้องประจำได้"
+    #
+    # ห้องประจำชั้นเป็นของห้องเรียนนั้น ถ้าเจ้าของต้องใช้ในชั่วโมงนั้นจริงๆ แล้ว
+    # ไม่มีห้องเลย คนที่มานั่งอยู่ต้องลุกให้ — โรงเรียนบอกไว้ชัดว่าฝั่งไหนยอมได้
+    #
+    # ทำที่นี่ ไม่ใช่ตอนเลือกห้อง: กันห้องไว้ตั้งแต่ตอนเลือกวัดแล้วเวลาจัดขึ้นจาก
+    # 1.77 เป็น 4.06 วินาที เพราะทุกคาบต้องไล่หาห้องไกลขึ้น ส่วนรอบนี้วิ่งเฉพาะ
+    # คาบของ ม.ต้นที่ไม่มีห้องจริงๆ ซึ่งมีไม่กี่คาบ จึงแทบไม่มีราคา
+    evicted = 0
+    for s_ in SLOTS:
+        if (s_.get("room_id") or s_.get("is_elective") or s_.get("is_activity_block")
+                or _repair_frozen(s_)):
+            continue
+        grp_ = g_map.get(s_["group_id"]) or {}
+        if _level_key(grp_) != "lower":
+            continue
+        hr = homeroom_owner.get(grp_.get("homeroom_room_id") or -1)
+        if hr is None or hr not in group_conflict_ids(s_["group_id"]):
+            continue                       # ไม่ใช่ห้องประจำชั้นของตัวเอง
+        room = r_map.get(grp_["homeroom_room_id"])
+        if not room or not _room_usable(room) or room.get("type") == "outdoor":
+            continue
+        subj_ = s_map.get(s_.get("subject_id")) or {}
+        if _subject_room_rule(subj_) == "subject":
+            continue                       # ต้องเรียนที่ห้องประจำวิชาเท่านั้น
+        bks = cell_buckets(s_["group_id"], s_["period"])
+        here = [room_holder.get((room["id"], s_["day"], b)) for b in bks]
+        here = [x for x in here if x is not None]
+        if not here or len({id(x) for x in here}) > 1:
+            continue                       # ว่างอยู่ (รอบก่อนจัดการแล้ว) หรือมีหลายคาบ
+        occ = here[0]
+        if (occ["group_id"] in group_conflict_ids(s_["group_id"])
+                or _held(occ) or _repair_frozen(occ)
+                or (occ["group_id"], occ["day"], occ["period"]) in pick_at):
+            continue                       # ครอบครัวเดียวกัน ล็อกไว้ หรือมีลานของมันเอง
+        # ลำดับสำคัญ: ให้เจ้าของเข้าห้องก่อน แล้วค่อยหาห้องใหม่ให้คนที่ลุก
+        #
+        # ทำกลับกันแล้วพัง — พอปล่อยห้องว่าง ตัวหาห้องของคนที่ลุกเห็นห้องนั้น
+        # ว่างพอดี ก็ย้ายกลับเข้าไปที่เดิม แล้วเจ้าของก็เข้าไปซ้อนอีกที
+        # กลายเป็นห้องเดียวสองห้องเรียน ซึ่งเป็นอาการที่เพิ่งแก้ไปเมื่อกี้
+        hold_room(occ, None)
+        hold_room(s_, room["id"])
+        moved = shuffle_for(occ.get("teacher_id"), occ["group_id"],
+                            occ.get("subject_id"), occ["day"], occ["period"])
+        if moved:
+            hold_room(occ, moved)
+        # ย้ายไม่ได้ก็ยังให้เจ้าของเข้าห้อง — คาบที่ลุกออกไปกลายเป็น "ไม่มีห้อง"
+        # ซึ่งเป็นฝั่งที่โรงเรียนบอกว่าจะไปจัดเอง และมันขึ้นกรอบแดงให้เห็น
+        evicted += 1
+    if evicted:
+        notes.append(
+            f"คืนห้องประจำชั้นให้ ม.ต้น {evicted} คาบ — เจ้าของห้องไม่มีห้องเรียน "
+            f"ทั้งที่ห้องของตัวเองถูกห้องอื่นใช้อยู่ ห้องที่ลุกให้ถูกย้ายไปห้องอื่น "
+            f"(ถ้าไม่มีห้องว่างจะขึ้นกรอบแดงให้จัดเอง)")
 
     # ── ห้องที่กันไว้ให้ครู ใครได้สอนในนั้น ──────────────────────────────────
     #
