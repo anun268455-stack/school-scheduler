@@ -16,7 +16,7 @@ import * as api from "../../api/client";
 import {
   classesWithSubgroups, subgroupsOf, readSets, makeSetKey, planSetSave, setProblems,
   setNotes,
-  suggestTeacher,
+  suggestTeacher, savedRowIds, UNLINK_SET_PATCH,
   type SubgroupSet, type SetRow,
 } from "../../utils/subgroupSets";
 import { DAYS, periodLabel } from "../../types";
@@ -209,17 +209,31 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
     } finally { setBusy(false); }
   };
 
+  /**
+   * ลบเซ็ต = เลิกจับคู่ ไม่ใช่ลบวิชาทิ้ง
+   *
+   * "ตอนนี้เกิดปัญหาคือเมื่อลบแล้ววิชาหายไปเลย ช่วยทำให้แค่ลบเซ็ต
+   *  แล้ววิชาไม่หายไป"
+   *
+   * เดิมปุ่มนี้สั่งลบแถวในแผนการสอนทิ้งทั้งแถว ห้องย่อยจึงไม่มีวิชานั้นเหลือ
+   * อยู่เลย ทั้งที่เซ็ตเป็นแค่การบอกว่าวิชาเหล่านี้เรียนพร้อมกัน — ตัววิชาเป็น
+   * ของห้องเรียน มีอยู่ก่อนเซ็ตและต้องอยู่ต่อหลังลบเซ็ต
+   */
   const removeSet = async (s: SubgroupSet) => {
     setBusy(true); setErr(null);
     try {
-      for (const r of s.rows) {
-        if (r.requirementId != null) await api.deleteRequirement(r.requirementId);
+      for (const id of savedRowIds(s)) {
+        await api.updateRequirement(id, { ...UNLINK_SET_PATCH });
       }
       useTimetableStore.setState({ requirements: await api.fetchRequirements() });
-      setNote(`ลบ "${s.name}" แล้ว`);
+      setNote(`ลบเซ็ต "${s.name}" แล้ว — ${s.rows.length} วิชายังอยู่ในแผนการสอน `
+        + "เหมือนเดิม แค่ไม่ต้องเรียนพร้อมกันอีกต่อไป "
+        + "(ถ้าจะลบวิชาออกจริงๆ ให้ไปลบที่หน้ารายวิชาของห้องนั้น) "
+        + "· กดสร้างตารางเพื่อให้ตารางเปลี่ยนตาม");
       if (editing?.key === s.key) setEditing(null);
-    } catch {
-      setErr("ลบไม่สำเร็จ");
+    } catch (e) {
+      const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setErr(d ?? "ลบไม่สำเร็จ");
     } finally { setBusy(false); }
   };
 
@@ -478,9 +492,12 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                       className="px-2 py-1 text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded hover:bg-amber-100">
                       ✏️ แก้ไข
                     </button>
+                    {/* ปุ่มนี้เลิกจับคู่ ไม่ได้ลบวิชา จึงไม่ใช้สีแดงแบบปุ่มลบ
+                        ของจริง และบอกไว้ใน title ว่าวิชายังอยู่ */}
                     <button onClick={() => removeSet(s)} disabled={busy}
-                      className="px-2 py-1 text-xs bg-red-50 text-red-600 border border-red-200 rounded hover:bg-red-100">
-                      ลบ
+                      title="เลิกจับคู่เซ็ตนี้ — วิชาทั้งหมดยังอยู่ในแผนการสอน แค่ไม่ต้องเรียนพร้อมกัน"
+                      className="px-2 py-1 text-xs bg-gray-50 text-gray-700 border border-gray-300 rounded hover:bg-gray-100">
+                      ลบเซ็ต
                     </button>
                   </span>
                 </div>

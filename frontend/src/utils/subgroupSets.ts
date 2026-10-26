@@ -47,6 +47,34 @@ export interface SubgroupSet {
 
 const PREFIX = "SET";
 
+/**
+ * สิ่งที่ต้องลบออกจากแถวแผนการสอน เมื่อลบเซ็ต — ไม่ใช่ตัวแถว
+ *
+ * "ตอนนี้เกิดปัญหาคือเมื่อลบแล้ววิชาหายไปเลย ช่วยทำให้แค่ลบเซ็ต
+ *  แล้ววิชาไม่หายไป"
+ *
+ * เซ็ตไม่ใช่เจ้าของวิชา มันคือการบอกว่า "สามวิชานี้เรียนพร้อมกัน" แถวในแผนการ
+ * สอนเป็นของห้องเรียนกับวิชา ซึ่งมีอยู่ก่อนและต้องอยู่ต่อหลังเลิกจับคู่ — ลบ
+ * เซ็ตแล้วห้องย่อยก็ยังต้องเรียนวิชานั้นอยู่ แค่ไม่ต้องเรียนพร้อมกันอีกต่อไป
+ *
+ * วัน/คาบที่ล็อกไว้ถูกลบไปด้วย เพราะมันเป็นของเซ็ต ไม่ใช่ของแถว — ถ้าปล่อยไว้
+ * ทุกแถวจะยังถูกล็อกไว้ที่ชั่วโมงเดียวกันอยู่ดี เท่ากับเซ็ตยังอยู่แต่มองไม่เห็น
+ * ซึ่งแย่กว่าการลบไม่ขาด
+ */
+export const UNLINK_SET_PATCH = {
+  parallel_group_key: null,
+  pinned_day: null,
+  pinned_period: null,
+  pinned_double: false,
+} as const;
+
+/** แถวของเซ็ตนี้ที่บันทึกไว้แล้ว — แถวที่ยังไม่บันทึกไม่มีอะไรให้ปลด */
+export function savedRowIds(s: SubgroupSet): number[] {
+  return s.rows
+    .map((r) => r.requirementId)
+    .filter((id): id is number => typeof id === "number");
+}
+
 /** "SET:12:เซ็ต A" — the parent and the name, so both survive a reload. */
 export function makeSetKey(parentId: number, name: string): string {
   return `${PREFIX}:${parentId}:${name.trim() || "ไม่มีชื่อ"}`;
