@@ -12,6 +12,7 @@ import { ConsistencyModal } from "../solver/ConsistencyModal";
 import { PeriodCheckModal } from "../solver/PeriodCheckModal";
 import { CapacityModal } from "../solver/CapacityModal";
 import { CurriculumAuditModal } from "../curriculum/CurriculumAuditModal";
+import { AlertChips } from "../common/AlertChips";
 import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
@@ -268,7 +269,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       <SaveIndicator />
 
       {/* Live-sync indicator — shows that two people can edit at once */}
-      <div className="flex items-center px-2 border-r border-gray-700 shrink-0">
+      {/* relative เพื่อให้กล่องรายละเอียดของ AlertChips กางออกมาใต้ป้ายพอดี */}
+      <div className="relative flex items-center gap-1.5 px-2 border-r border-gray-700 shrink-0">
         <button
           onClick={() => setLiveSync(!liveSync)}
           title={
@@ -294,6 +296,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
             <span className="text-emerald-400/70">·{remoteUpdates}</span>
           )}
         </button>
+        {/* เรื่องที่ต้องรู้แต่ไม่ต้องกินพื้นที่: รุ่นของเซิร์ฟเวอร์ · คาบไม่พอ
+            เงียบสนิทเมื่อไม่มีอะไรผิด กดแล้วค่อยกางรายละเอียด */}
+        <AlertChips />
       </div>
 
       {/* เครื่องมือ — one button.

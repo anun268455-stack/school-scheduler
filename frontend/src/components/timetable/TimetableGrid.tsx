@@ -259,7 +259,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     slots, rooms, teachers, periods, groups, subjects, requirements, selectedGroupId, selectedTeacherId, selectedRoomId,
     impactMap, draggingSlot, startDrag, endDrag,
     moveSlot, swapRoom, toggleLock, deleteSlot, applySwapRoute, preLockMode,
-    manualMode, undo, undoStack,
+    undo, undoStack,
     yardPickMode, yardPicks, yardList,
   } = useTimetableStore();
 
@@ -665,17 +665,8 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         </div>
       )}
 
-      {/* โหมดจัดเอง — ระบบเตือน แต่ไม่ห้าม
-          "จะมีแจ้งเตือนเฉย ๆ แต่จะไม่บังคับใด ๆ ... ถ้าชนกันก็จะขึ้นสีแดง
-           ให้ไปเลื่อนคาบที่ชนแทน" */}
-      {manualMode && (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-4 py-1.5 bg-indigo-50 border-b border-indigo-300 text-indigo-900 text-xs shrink-0">
-          <span>✋ <strong>โหมดจัดเอง:</strong></span>
-          <span>ลากวางได้ตามต้องการ ถึงจะชนครู ชนห้อง หรือชนนักเรียนก็วางได้ — คาบที่ชนจะขึ้นกรอบแดงให้เห็น แล้วค่อยไปเลื่อนคาบที่ชนแทน</span>
-          <span className="font-semibold">ยกเว้นคาบที่ล็อกไว้ 🔒 ซึ่งยังทับไม่ได้</span>
-        </div>
-      )}
-
+      {/* โหมดจัดเองไม่มีแถบของตัวเองแล้ว — ปุ่มบนแถบเครื่องมือขึ้นว่า "✋ จัดเอง"
+          อยู่ตลอดเวลาที่เปิด ซึ่งบอกเรื่องเดียวกันโดยไม่กินที่เหนือตาราง */}
       {/* Pre-lock banner */}
       {preLockMode && (
         <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-900/40 border-b border-amber-700 text-amber-200 text-xs shrink-0">
