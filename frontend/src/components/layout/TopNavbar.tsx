@@ -120,7 +120,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     preLockMode, setPreLockMode, manualMode, setManualMode,
     yardPickMode, setYardPickMode,
     lockAll, unlockAll,
-    liveSync, setLiveSync, syncState, remoteUpdates, isSolving,
+    liveSync, setLiveSync, syncState, remoteUpdates, isSolving, runSolver,
   } = useTimetableStore();
 
   const [showSolver,  setShowSolver]  = useState(false);
@@ -422,6 +422,22 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           className="flex items-center justify-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-semibold transition-colors"
         >
           ⚡ สร้างตาราง
+        </button>
+        {/* จัดให้เสร็จ — ปิดคาบว่างกลางวันให้หมด แม้ชั่วโมงนั้นจะไม่มีห้องว่าง
+            วัดบนข้อมูลจริง: รูกลางวัน ม.ต้น 17→10 · ม.ปลาย 74→25
+            แลกกับคาบที่ยังไม่มีห้องเพิ่มขึ้น ซึ่งขึ้นกรอบแดงให้หาห้องเองทีหลัง */}
+        <button
+          onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false);
+                           void runSolver({ closeGapsHard: true }); }}
+          disabled={isSolving}
+          title={isSolving
+            ? "ระบบกำลังจัดตารางอยู่ — รอให้เสร็จก่อน"
+            : "จัดใหม่ทั้งโรงเรียน แล้วไล่ปิดคาบว่างกลางวันให้หมดเท่าที่ทำได้ "
+              + "คาบที่หาห้องไม่ได้จะลงไปก่อนแล้วขึ้นกรอบแดงให้หาห้องเอง "
+              + "— คาบที่ล็อกไว้ไม่ถูกแตะ"}
+          className="flex items-center justify-center gap-1.5 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 rounded text-xs font-semibold transition-colors"
+        >
+          ✅ จัดให้เสร็จ
         </button>
         <button
           onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false); setShowRepair(true); }}

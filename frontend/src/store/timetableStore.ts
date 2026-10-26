@@ -223,6 +223,8 @@ interface TimetableStore {
 
   runSolver: (opts?: {
     timeLimitSeconds?: number;
+    /** ปุ่ม "จัดให้เสร็จ" — ปิดคาบว่างกลางวันให้หมด ยอมให้ยังไม่มีห้องได้ */
+    closeGapsHard?: boolean;
     excludeRequirementIds?: number[];
     skipProblems?: boolean | "blocking";
     maxConsecutive?: number;
@@ -753,6 +755,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       const lockedIds = get().slots.filter((s) => s.is_locked).map((s) => s.id);
       const result = await api.runSolver({
         clear_existing: true,
+        close_gaps_hard: opts?.closeGapsHard,
         time_limit_seconds: opts?.timeLimitSeconds,
         locked_slot_ids: lockedIds,
         exclude_requirement_ids: opts?.excludeRequirementIds,

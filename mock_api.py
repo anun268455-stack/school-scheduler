@@ -5647,8 +5647,26 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         if _nums:
             holes_before += len(holes_of(_g["id"], _nums))
 
-    for _round in range(6):
+    # ── ปุ่ม "จัดให้เสร็จ" — ปิดคาบว่างกลางวันให้หมด แม้จะยังไม่มีห้องให้ ────
+    #
+    #   "ช่วยมีปุ่มที่จัดแบบให้คาบลงลานพร้อม จะได้ไม่ให้มีคาบว่าง ไม่ว่าจะเป็น
+    #    ยังไง ยกเว้นคาบที่ล็อกไว้กับเงื่อนไขต่าง ๆ ... ทำให้คาบ ม.ต้น ครบก่อน"
+    #
+    # วัดบนข้อมูลจริง: ม.ต้นเหลือรูกลางวัน 17 รู และ 13 รูในนั้น คาบที่จะย้าย
+    # มาปิดได้ "ครูว่าง · ไม่ซ้ำวิชาในวันนั้น" อยู่แล้ว — ติดข้อเดียวคือหาห้อง
+    # ว่างในชั่วโมงนั้นไม่ได้ รอบปกติจึงถอย แล้วปล่อยให้เป็นคาบว่างต่อไป
+    #
+    # โรงเรียนบอกว่าคาบว่างแย่กว่า และคาบที่ไม่มีห้องขึ้นกรอบแดงให้เห็นอยู่แล้ว
+    # หาห้องเองทีหลังได้ ส่วนคาบว่างมองไม่เห็นว่าต้องไปทำอะไรกับมัน
+    #
+    # เปิดเฉพาะเมื่อกดปุ่มนี้ รอบปกติไม่เปลี่ยนพฤติกรรมเลย
+    finish_mode = bool(body.get("close_gaps_hard"))
+    gaps_roomless = 0
+    for _round in range(8 if finish_mode else 6):
         relax_one_a_day = _round >= 4
+        # สองรอบสุดท้ายของโหมด "จัดให้เสร็จ" เท่านั้น: ยอมให้ลงทั้งที่ยังไม่มี
+        # ห้อง ทำทีหลังรอบที่หาห้องได้จริง เพื่อให้คาบที่มีห้องได้ห้องไปก่อน
+        relax_room = finish_mode and _round >= 6
         moved_any = False
         for grp in sorted(g_map.values(), key=lambda g: g["id"]):
             gid  = grp["id"]
@@ -5686,10 +5704,12 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                                 and not group_occupied(owner, d, p)
                                 and can_take(teacher, owner, d, p)):
                             rid = room_for(x, d, p, None, home[2])
-                            if rid or not home[2]:
+                            if rid or not home[2] or relax_room:
                                 seat(x, d, p, rid)
                                 gaps_filled += 1
                                 gaps_cost += was_dup
+                                if not rid and home[2]:
+                                    gaps_roomless += 1
                                 filled = moved_any = True
                                 break
                         seat(x, home[0], home[1], home[2])
@@ -5719,6 +5739,11 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                 f"— เอาคาบสุดท้ายของอีกวันมาลง วันนั้นจึงเลิกเร็วขึ้นแทน "
                 f"(ย้ายทั้งหมด {gaps_filled} ครั้ง "
                 f"ในนั้น {idle} ครั้งย้ายแล้วไม่ได้ปิดรูเพิ่ม)")
+        if gaps_roomless:
+            # ราคาที่จ่ายไปของปุ่ม "จัดให้เสร็จ" ต้องเห็น ไม่ใช่เกิดขึ้นเงียบ ๆ
+            line += (f" · ในนั้นมี {gaps_roomless} คาบที่ลงไปโดยยังไม่มีห้อง "
+                     f"(ขึ้นกรอบแดง) เพราะชั่วโมงนั้นไม่มีห้องว่างเลย — "
+                     f"โรงเรียนเลือกเองว่าคาบว่างแย่กว่าคาบที่ยังไม่มีห้อง")
         if gaps_cost:
             # ราคาที่จ่ายไป ต้องเห็น ไม่ใช่เกิดขึ้นเงียบๆ — โรงเรียนเป็นคนบอก
             # ว่ากฎไหนยอมได้ จึงต้องรู้ว่ายอมไปกี่คาบ

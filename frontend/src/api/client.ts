@@ -380,6 +380,12 @@ export const fetchSolveProgress = () =>
 
 export const runSolver = (p: {
   clear_existing?: boolean;
+  /**
+   * ปุ่ม "จัดให้เสร็จ" — ปิดคาบว่างกลางวันให้หมด แม้ชั่วโมงนั้นจะไม่มีห้องว่าง
+   * คาบที่ลงไปโดยยังไม่มีห้องจะขึ้นกรอบแดงให้หาห้องเองทีหลัง ซึ่งโรงเรียน
+   * บอกว่าดีกว่าปล่อยให้เป็นคาบว่าง
+   */
+  close_gaps_hard?: boolean;
   time_limit_seconds?: number;
   locked_slot_ids?: number[];
   /** Leave these lesson requirements out of the run entirely. */
