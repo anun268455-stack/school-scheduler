@@ -9,6 +9,7 @@
  */
 import type { TimetableSlot, CellImpact, ImpactLevel, Period } from "../types";
 import { strictShares, type SharesStudents } from "./groupHierarchy";
+import type { LevelKey } from "./levels";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Single-cell analysis
@@ -21,6 +22,7 @@ export function analyzeDropTarget(
   gridPeriods:   Period[],
   sharesStudents: SharesStudents = strictShares,
   manualMode:    boolean = false,
+  level:         LevelKey | null = null,
 ): CellImpact {
   // ── Same position ──────────────────────────────────────────────────────────
   if (drag.day === targetDay && drag.period === targetPeriod) {
@@ -28,7 +30,22 @@ export function analyzeDropTarget(
   }
 
   // ── Fixed / non-class period ───────────────────────────────────────────────
-  const periodDef = gridPeriods.find((p) => p.period_num === targetPeriod);
+  // ม.ต้นกับ ม.ปลายใช้ "เลขคาบ" ชุดเดียวกัน แต่คนละความหมาย เพราะพักกลางวัน
+  // คนละเวลา: เลขคาบ 5 เป็นคาบ 4 ของ ม.ปลาย และเป็นพักกลางวันของ ม.ต้น
+  // ส่วนเลขคาบ 6 เป็นคาบ 5 ของ ม.ต้น และเป็นพักกลางวันของ ม.ปลาย
+  //
+  //   "เหมือนว่าจะเลื่อนลงคาบ 4 ไม่ได้"
+  //
+  // เดิมหาด้วย "เลขคาบตรงกัน" เฉย ๆ ซึ่งคืนแถวแรกที่เจอ และในผังคาบจริงของ
+  // โรงเรียน แถวพักกลางวันถูกบันทึกไว้ก่อนแถวคาบเรียนทั้งสองคู่ — ทุกครั้งจึง
+  // ไปเจอพักกลางวันของอีกฝั่ง แล้วตอบว่า "ช่องนี้ไม่ใช่คาบเรียน"
+  //
+  // ผลคือ ม.ปลายวางลงคาบ 4 ไม่ได้เลย และ ม.ต้นก็วางลงคาบ 5 ไม่ได้เลย ทั้งที่
+  // เป็นคาบเรียนปกติของตัวเอง — ชั้นละหนึ่งคาบเต็ม ๆ ที่ลากวางไม่ได้มาตลอด
+  const forLevel = (p: Period) =>
+    !level || !p.applies_to || p.applies_to === "all" || p.applies_to === level;
+  const periodDef = gridPeriods.find((p) => p.period_num === targetPeriod && forLevel(p))
+    ?? gridPeriods.find((p) => p.period_num === targetPeriod);
   if (!periodDef || periodDef.type !== "class") {
     return mk("fixed", 0, periodDef ? `${periodDef.label} – จัดคาบไม่ได้` : "คาบพิเศษ");
   }
@@ -134,13 +151,15 @@ export function buildImpactMap(
   numDays:      number = 5,
   sharesStudents: SharesStudents = strictShares,
   manualMode:   boolean = false,
+  level:        LevelKey | null = null,
 ): Map<string, CellImpact> {
   const map = new Map<string, CellImpact>();
   const periodNums = gridPeriods.map((p) => p.period_num);
   for (let d = 0; d < numDays; d++) {
     for (const p of periodNums) {
       map.set(`${d}-${p}`,
-        analyzeDropTarget(drag, d, p, allSlots, gridPeriods, sharesStudents, manualMode));
+        analyzeDropTarget(drag, d, p, allSlots, gridPeriods, sharesStudents,
+                          manualMode, level));
     }
   }
   return map;

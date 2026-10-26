@@ -7,6 +7,7 @@ import type {
 import { DEFAULT_PERIODS } from "../types";
 import { buildImpactMap } from "../utils/conflictAnalyzer";
 import { buildSharesStudents, flattenGroups } from "../utils/groupHierarchy";
+import { levelKeyOf } from "../utils/levels";
 import { lockClashAt } from "../utils/lockGuard";
 import * as api from "../api/client";
 import { writeGuard } from "../utils/writeGuard";
@@ -472,7 +473,14 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     const shares = buildSharesStudents(groups);
     // สีตอนลากต้องรู้จักโหมดจัดเองด้วย ไม่งั้นมันจะขึ้น "ไม่สามารถวางได้"
     // เต็มตาราง ทั้งที่โหมดนั้นวางได้แล้ว
-    const map = buildImpactMap(slot, slots, periods, 5, shares, manualMode);
+    //
+    // และต้องรู้ด้วยว่าคาบนี้เป็นของชั้นไหน เพราะ ม.ต้นกับ ม.ปลายใช้เลขคาบ
+    // ชุดเดียวกันแต่คนละความหมาย — เลขคาบ 5 เป็นคาบ 4 ของ ม.ปลาย และเป็น
+    // พักกลางวันของ ม.ต้น ถ้าไม่บอกชั้น ตัวเช็คจะหยิบแถวแรกที่เลขตรง ซึ่งเป็น
+    // พักกลางวันของอีกฝั่งเสมอ แล้วบอกว่าวางไม่ได้
+    const owner = flattenGroups(groups).find((g) => g.id === slot.group_id);
+    const map = buildImpactMap(slot, slots, periods, 5, shares, manualMode,
+                               levelKeyOf(owner));
     set({ draggingSlot: slot, impactMap: map });
   },
 
