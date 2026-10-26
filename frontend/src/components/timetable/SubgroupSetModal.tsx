@@ -16,7 +16,7 @@ import * as api from "../../api/client";
 import {
   classesWithSubgroups, subgroupsOf, readSets, makeSetKey, planSetSave, setProblems,
   setNotes,
-  suggestTeacher, savedRowIds, UNLINK_SET_PATCH,
+  suggestTeacher, savedRowIds, UNLINK_SET_PATCH, setStatus,
   type SubgroupSet, type SetRow,
 } from "../../utils/subgroupSets";
 import { DAYS, periodLabel } from "../../types";
@@ -480,10 +480,22 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
             </p>
           )}
           <div className="space-y-2">
-            {saved.map((s) => (
+            {saved.map((s) => {
+              // "เซ็ตค่าไว้แล้ว … แต่ไม่ขึ้นในตาราง" — รายการนี้เคยบอกแต่ว่า
+              // ตั้งไว้ว่าอะไร ไม่เคยบอกว่าได้ผลไหม เซ็ตที่ลงไม่ได้จึงหน้าตา
+              // เหมือนเซ็ตที่ลงเรียบร้อยทุกประการ
+              const st = setStatus(s, slots, (id) =>
+                subs.find((g) => g.id === id)?.name ?? `ห้อง ${id}`);
+              return (
               <div key={s.key} className="border border-gray-200 rounded-lg px-3 py-2">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-gray-800">{s.name}</span>
+                  <span className={clsx("text-[10px] rounded px-1.5 py-0.5 font-semibold shrink-0",
+                    st.kind === "ok" ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                      : st.kind === "short" ? "bg-amber-50 text-amber-800 border border-amber-200"
+                        : "bg-rose-50 text-rose-700 border border-rose-200")}>
+                    {st.kind === "ok" ? "✓" : "⚠"} {st.label}
+                  </span>
                   <span className="text-[11px] text-gray-500">
                     {s.rows.length} ห้องย่อย · {Math.max(...s.rows.map((r) => r.weekly ?? 1), 1)} คาบ/สัปดาห์
                   </span>
@@ -513,8 +525,17 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
                     );
                   })}
                 </div>
+                {/* เหตุที่ลงไม่ได้ อยู่ตรงที่โรงเรียนมองหา — เดิมไปอยู่ในรายการ
+                    เตือนของการจัดตาราง ซึ่งเลื่อนผ่านไปแล้วก็หาย */}
+                {st.reason && (
+                  <p className={clsx("mt-1 text-[11px] leading-relaxed",
+                    st.kind === "missing" ? "text-rose-700" : "text-amber-800")}>
+                    {st.reason}
+                  </p>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 

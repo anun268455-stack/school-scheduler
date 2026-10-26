@@ -341,6 +341,34 @@ export const fetchStateVersion = () =>
   }>("/state/version", { timeout: 8000 }).then((r) => r.data);
 
 // ── Solver ───────────────────────────────────────────────────────────────────
+/**
+ * ตัวจัดตารางถึงไหนแล้ว — ถามระหว่างรอคำตอบของการจัด
+ *
+ * "ในหน้าโหลดช่วยทำเป็นเปอร์เซ็นต์หรือคาบที่กำลังลงอยู่ได้ไหม จะได้รู้ว่ามัน
+ *  กำลังทำงานอยู่"
+ *
+ * การจัดตารางเป็นคำขอเดียวที่ค้างเป็นนาที ค้างจริงกับทำงานอยู่จึงหน้าตาเหมือน
+ * กันเป๊ะ — และเซิร์ฟเวอร์ของโรงเรียนเคยไม่ตอบจริงๆ มาแล้ว
+ */
+export interface SolveProgress {
+  running: boolean;
+  /** "กำลังลงคาบ" · "กำลังปิดคาบว่างกลางวัน" ฯลฯ */
+  phase: string;
+  done: number;
+  total: number;
+  /** null เมื่อยังไม่รู้ตัวหาร (ช่วงต้นของการจัด) */
+  percent: number | null;
+  elapsed_seconds: number;
+  /** ห้อง/วิชาที่กำลังลงอยู่ หรือชื่อเซ็ต */
+  note: string;
+  /** เพิ่มขึ้นทุกครั้งที่มีการรายงาน — ใช้ดูว่ายังขยับอยู่ไหม */
+  seq: number;
+}
+
+export const fetchSolveProgress = () =>
+  api.get<SolveProgress>("/timetable/solve/progress", { timeout: 8000 })
+    .then((r) => r.data);
+
 export const runSolver = (p: {
   clear_existing?: boolean;
   time_limit_seconds?: number;

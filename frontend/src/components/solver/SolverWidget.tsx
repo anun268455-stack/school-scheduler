@@ -18,6 +18,7 @@ interface Props { onClose: () => void }
 
 export const SolverWidget: React.FC<Props> = ({ onClose }) => {
   const { slots, isSolving, solverError, runSolver, groups, teachers, subjects } = useTimetableStore();
+  const progress = useTimetableStore((s) => s.solveProgress);
 
   const kept0 = useMemo(readKept, []);
   const [clearExisting, setClearExisting] = useState(kept0.clearExisting);
@@ -505,6 +506,46 @@ export const SolverWidget: React.FC<Props> = ({ onClose }) => {
             "🚀 เริ่มจัดตารางอัตโนมัติ"
           )}
         </button>
+
+        {/* ── ถึงไหนแล้ว ───────────────────────────────────────────────────────
+            "ในหน้าโหลดช่วยทำเป็นเปอร์เซ็นต์หรือคาบที่กำลังลงอยู่ได้ไหม จะได้รู้
+             ว่ามันกำลังทำงานอยู่"
+
+            วินาทีที่เดินอยู่คือส่วนที่สำคัญที่สุด: ตัวเลขที่ขยับแปลว่า
+            เซิร์ฟเวอร์ยังตอบอยู่ ไม่ได้ตายไปแล้ว ซึ่งเป็นสิ่งที่โรงเรียนอยากรู้ */}
+        {isSolving && (
+          <div className="rounded-lg border border-indigo-700/50 bg-indigo-900/30 px-3 py-2 space-y-1.5">
+            <div className="flex items-baseline gap-2 text-[11px]">
+              <span className="text-indigo-100 font-semibold">
+                {progress?.phase || "กำลังเริ่ม…"}
+              </span>
+              <span className="ml-auto text-indigo-300 tabular-nums">
+                {progress ? `${Math.floor(progress.elapsed_seconds)} วิ` : ""}
+              </span>
+            </div>
+            {progress && progress.total > 0 && (
+              <>
+                <div className="h-1.5 rounded-full bg-indigo-950 overflow-hidden">
+                  <div
+                    className="h-full bg-indigo-400 transition-all duration-500"
+                    style={{ width: `${Math.min(100, progress.percent ?? 0)}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-indigo-200/80 tabular-nums">
+                  ลงแล้ว {progress.done.toLocaleString()} / {progress.total.toLocaleString()} คาบ
+                  {progress.percent != null && ` · ${progress.percent}%`}
+                  {progress.note && <span className="text-indigo-300/70"> · {progress.note}</span>}
+                </p>
+              </>
+            )}
+            {!progress && (
+              <p className="text-[10px] text-indigo-200/70">
+                กำลังติดต่อเซิร์ฟเวอร์… ถ้าตัวเลขวินาทีไม่ขึ้นภายในสักครู่ แปลว่าเซิร์ฟเวอร์
+                ยังไม่ตอบ (ตารางเดิมยังอยู่ครบ)
+              </p>
+            )}
+          </div>
+        )}
 
         {/* ── Pipeline Steps ─────────────────────────────────────────────────── */}
         <div className="space-y-1.5 text-[10px] text-gray-500">

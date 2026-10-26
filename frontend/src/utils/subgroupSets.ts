@@ -16,7 +16,7 @@
  * ordinary thing for a school to want and the commonest reason to open the
  * dialog at all.
  */
-import type { LessonRequirement, StudentGroup } from "../types";
+import type { LessonRequirement, StudentGroup, TimetableSlot } from "../types";
 
 export interface SetRow {
   /** The requirement this row came from, if it is already saved. */
@@ -136,6 +136,95 @@ export function readSets(
     by.set(key, cur);
   }
   return [...by.values()].sort((a, b) => a.name.localeCompare(b.name, "th", { numeric: true }));
+}
+
+/**
+ * เซ็ตนี้ลงในตารางแล้วหรือยัง และถ้ายัง เป็นเพราะอะไร
+ *
+ * "ตอนนี้มีปัญหาเรื่องห้องแม่ลูกคือเซ็ตค่าไว้แล้วเป็นวัน พฤ คาบ 2 เป็นวิชา
+ *  ท30214 แต่ไม่ขึ้นในตาราง"
+ *
+ * หน้ารายการเซ็ตบอกแต่ว่า "ตั้งไว้ว่าอะไร" ไม่เคยบอกว่า "ได้ผลไหม" — เซ็ตที่ลง
+ * ไม่ได้จึงหน้าตาเหมือนเซ็ตที่ลงเรียบร้อยทุกประการ และเหตุที่ลงไม่ได้ไปอยู่ใน
+ * รายการเตือนของการจัดตาราง ซึ่งเลื่อนผ่านไปแล้วก็หาย
+ *
+ * เหตุที่พบบ่อยที่สุดคือชั่วโมงที่ล็อกไว้มีคาบที่ล็อก 🔒 อยู่ก่อนแล้ว — ตัวจัด
+ * ตารางย้ายคาบที่ล็อกไม่ได้ตามนิยาม เซ็ตจึงลงทับไม่ได้ และโรงเรียนนี้มีคาบที่
+ * ล็อกไว้ 517 คาบ
+ */
+export interface SetStatus {
+  kind:   "ok" | "short" | "missing";
+  label:  string;
+  /** เหตุเท่าที่อ่านได้จากตาราง — ว่างเมื่อไม่รู้ */
+  reason: string;
+  placed: number;
+  want:   number;
+}
+
+export function setStatus(
+  s: SubgroupSet, slots: TimetableSlot[], groupName: (id: number) => string,
+): SetStatus {
+  const want = s.rows.reduce((n, r) => n + (r.weekly ?? 1), 0);
+  const mine = slots.filter((x) => x.parallel_group_key === s.key);
+  const placed = s.rows.reduce((n, r) => n + Math.min(
+    r.weekly ?? 1,
+    mine.filter((x) => x.group_id === r.groupId && x.subject_id === r.subjectId).length,
+  ), 0);
+
+  // ทำไมถึงลงไม่ได้ — ตอบได้เฉพาะเซ็ตที่ล็อกวัน/คาบไว้ เพราะเซ็ตที่ไม่ล็อกมี
+  // ทั้งสัปดาห์ให้เลือก เหตุจึงไม่ได้อยู่ที่ช่องใดช่องหนึ่ง
+  let reason = "";
+  if (placed < want && s.day != null && s.period != null) {
+    const blockers: string[] = [];
+    for (const r of s.rows) {
+      // แถวนี้ลงไปแล้วก็ไม่ต้องหาเหตุ — เหตุมีไว้สำหรับแถวที่ยังไม่ลง
+      const got = mine.some((x) => x.group_id === r.groupId
+        && x.subject_id === r.subjectId);
+      if (got) continue;
+      // ยังไม่ได้เลือกครู คือเหตุที่ตรงที่สุด และแถวนั้นจะไม่ถูกลงเลย
+      if (!r.teacherId) {
+        blockers.push(`${groupName(r.groupId)} ยังไม่ได้เลือกครู`);
+        continue;
+      }
+      const here = slots.filter((x) => x.group_id === r.groupId
+        && x.day === s.day && x.period === s.period
+        && x.parallel_group_key !== s.key);
+      const locked = here.find((x) => x.is_locked);
+      if (locked) {
+        blockers.push(`${groupName(r.groupId)} มีคาบที่ล็อกไว้ 🔒 `
+          + `(${locked.subject_code ?? locked.subject_name ?? "คาบหนึ่ง"}) อยู่ในชั่วโมงนี้`);
+        continue;
+      }
+      if (here.length) {
+        blockers.push(`${groupName(r.groupId)} มีคาบอื่น `
+          + `(${here[0].subject_code ?? here[0].subject_name ?? "คาบหนึ่ง"}) อยู่ในชั่วโมงนี้`);
+        continue;
+      }
+      // ครูของแถวนี้ติดสอนห้องอื่นอยู่ในชั่วโมงเดียวกัน — เหตุที่มองไม่เห็นจาก
+      // ตารางของชั้นนี้เลย ต้องไปเปิดตารางของครูถึงจะรู้
+      const busy = slots.find((x) => x.day === s.day && x.period === s.period
+        && x.group_id !== r.groupId && x.teacher_id === r.teacherId);
+      if (busy) {
+        blockers.push(`ครูของ ${groupName(r.groupId)} ติดสอน `
+          + `${busy.group_name ?? "ห้องอื่น"} ในชั่วโมงนี้`);
+      }
+    }
+    if (blockers.length) {
+      reason = blockers.join(" · ")
+        + " — ต้องปลดคาบนั้นก่อน หรือย้ายเซ็ตไปคาบอื่น";
+    }
+  }
+  if (placed === 0 && !reason) {
+    reason = s.day != null
+      ? "ยังไม่ได้กดสร้างตาราง หรือครูของแถวใดแถวหนึ่งติดสอนห้องอื่นในชั่วโมงที่ล็อกไว้"
+      : "ยังไม่ได้กดสร้างตาราง หรือหาชั่วโมงที่ทุกห้องย่อยว่างพร้อมกันไม่ได้";
+  }
+
+  if (placed === 0) return { kind: "missing", label: "ยังไม่ได้ลงในตาราง", reason, placed, want };
+  if (placed < want) {
+    return { kind: "short", label: `ลงแล้ว ${placed}/${want} คาบ`, reason, placed, want };
+  }
+  return { kind: "ok", label: "ลงครบแล้ว", reason: "", placed, want };
 }
 
 /**

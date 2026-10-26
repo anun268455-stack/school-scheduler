@@ -12,6 +12,7 @@ import re as _re
 import os as _os
 import json as _json
 import datetime as _dt
+import time as _time
 from collections import Counter, defaultdict
 from contextvars import ContextVar
 import substitution as _SUB
@@ -2536,6 +2537,62 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     return _repair_solve(body, ids)
 
 
+# ── ความคืบหน้าระหว่างจัดตาราง ────────────────────────────────────────────────
+#
+# "ในหน้าโหลดช่วยทำเป็นเปอร์เซ็นต์หรือคาบที่กำลังลงอยู่ได้ไหม จะได้รู้ว่ามัน
+#  กำลังทำงานอยู่"
+#
+# การจัดตารางเป็นคำขอเดียวที่ค้างอยู่เป็นนาที หน้าจอจึงไม่มีอะไรบอกเลยว่าระหว่าง
+# นั้นเกิดอะไรขึ้น — ค้างอยู่กับทำงานอยู่หน้าตาเหมือนกันเป๊ะ และโรงเรียนเคยเจอ
+# เซิร์ฟเวอร์ไม่ตอบจริงๆ มาแล้ว จึงไม่มีทางรู้ว่าควรจะรอต่อหรือกดใหม่
+#
+# ตัวจัดเขียนความคืบหน้าลงตรงนี้ หน้าจอถามเป็นระยะด้วยคำขออีกเส้นหนึ่ง ซึ่ง
+# FastAPI ตอบได้พร้อมกันเพราะ handler เป็น def ธรรมดา (วิ่งใน threadpool)
+SOLVE_PROGRESS: dict[str, Any] = {
+    "running": False, "phase": "", "done": 0, "total": 0,
+    "started_at": 0.0, "note": "", "seq": 0,
+}
+
+
+def _progress(phase: str | None = None, done: int | None = None,
+              total: int | None = None, note: str | None = None) -> None:
+    """บอกว่าตอนนี้ทำอะไรอยู่ ถึงไหนแล้ว — ค่าไหนไม่ส่งมาก็คงของเดิม"""
+    if phase is not None:
+        SOLVE_PROGRESS["phase"] = phase
+    if done is not None:
+        SOLVE_PROGRESS["done"] = done
+    if total is not None:
+        SOLVE_PROGRESS["total"] = total
+    if note is not None:
+        SOLVE_PROGRESS["note"] = note
+    SOLVE_PROGRESS["seq"] += 1
+
+
+def _progress_start(note: str = "") -> None:
+    SOLVE_PROGRESS.update(running=True, phase="เริ่มต้น", done=0, total=0,
+                          started_at=_time.time(), note=note)
+    SOLVE_PROGRESS["seq"] += 1
+
+
+def _progress_end() -> None:
+    SOLVE_PROGRESS.update(running=False, phase="เสร็จแล้ว")
+    SOLVE_PROGRESS["seq"] += 1
+
+
+@app.get("/api/timetable/solve/progress")
+def solve_progress():
+    """ตัวจัดตารางถึงไหนแล้ว — หน้าจอถามเส้นนี้ระหว่างรอคำตอบของการจัด
+
+    ไม่มีการจัดอยู่ ก็ตอบสถานะล่าสุดพร้อม running=False ซึ่งหน้าจอใช้เป็นสัญญาณ
+    ว่าเลิกถามได้แล้ว
+    """
+    p = dict(SOLVE_PROGRESS)
+    p["elapsed_seconds"] = round(_time.time() - (p.get("started_at") or _time.time()), 1)
+    tot = p.get("total") or 0
+    p["percent"] = round(100 * (p.get("done") or 0) / tot) if tot else None
+    return p
+
+
 # ── Solver entry point: prefer CP-SAT (real optimiser), fall back to greedy ────
 def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     """Run the timetable solver.
@@ -2548,6 +2605,16 @@ def _run_solver(body: dict[str, Any]) -> dict[str, Any]:
     # ซ่อมเฉพาะห้องที่เลือก: only the heuristic placer can promise that every
     # other class stays exactly as it is (every pass of it asks _held). CP-SAT
     # builds the week afresh and would put them somewhere of its own choosing.
+    _progress_start("กำลังอ่านข้อกำหนดคาบและเงื่อนไขห้อง")
+    try:
+        return _run_solver_inner(body)
+    finally:
+        # ปิดเสมอ แม้จะพัง — ไม่งั้นหน้าจอจะถามความคืบหน้าของงานที่ตายไปแล้ว
+        # ไปเรื่อยๆ และขึ้นว่ากำลังทำงานอยู่ทั้งที่ไม่มีอะไรวิ่ง
+        _progress_end()
+
+
+def _run_solver_inner(body: dict[str, Any]) -> dict[str, Any]:
     if body.get("repair_group_ids"):
         return _solve_greedy(body)
     # ── ไม่โหลดของหนักมาเพื่อทิ้ง ────────────────────────────────────────────
@@ -4369,7 +4436,10 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # out with two of its three subgroups placed and the third missing.
     #
     # Hardest first: the sets choose, then everything else fits around them.
-    for pgk, reqs in parallel.items():
+    if parallel:
+        _progress("กำลังลงเซ็ตห้องย่อย", done=0, total=len(parallel))
+    for _i_set, (pgk, reqs) in enumerate(parallel.items()):
+        _progress(done=_i_set, note=pgk.split(":")[-1])
         # ── คาบของแต่ละห้องย่อยไม่จำเป็นต้องเท่ากัน ──────────────────────────
         #
         # "ห้อง ข ต้องเรียนวิชาหนึ่ง 3 คาบ ซึ่งไม่เหมือนอีกห้องที่ต้องเรียน
@@ -4768,7 +4838,11 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         )
 
     solo.sort(key=place_order)
-    for req in solo:
+    # จำนวนคาบที่แผนการสอนขอไว้ทั้งหมด — ตัวหารของเปอร์เซ็นต์ที่หน้าจอแสดง
+    _want_total = sum(r.get("weekly_count") or 0 for r in solo)
+    _progress("กำลังลงคาบ", done=0, total=_want_total,
+              note=f"{len(solo)} รายการในแผนการสอน")
+    for _i_req, req in enumerate(solo):
         gid, tid = req["group_id"], req["teacher_id"]
         subj     = s_map.get(req["subject_id"], {})
         duration = subj.get("duration", 1) or 1
@@ -4869,6 +4943,14 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         if placed < needed:
             short_rows.append((req, gid, tid, needed - placed, placed + already))
 
+        # บอกความคืบหน้าทุกๆ 10 รายการ — ถี่กว่านี้ไม่ได้ช่วยให้คนอ่านรู้อะไร
+        # เพิ่ม และการเขียน dict ทุกรอบในลูปที่วิ่งพันกว่ารอบก็ไม่ฟรี
+        if _i_req % 10 == 0 or _i_req == len(solo) - 1:
+            _progress(done=len(SLOTS),
+                      note=f"{(g_map.get(gid) or {}).get('name', '')} "
+                           f"{subj.get('code') or ''}".strip())
+
+    _progress("กำลังขยับห้องให้คาบที่ยังลงไม่ได้", done=len(SLOTS))
     # ── ยังลงไม่ได้: กลับไปขยับห้อง แล้วลองใหม่ ───────────────────────────────
     #
     # "ถ้ายังไม่ได้ให้กลับไปเลื่อนห้องต่างๆให้ลงได้ หาเส้นทางเหมาะสมที่สุด"
@@ -5267,6 +5349,8 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     drained = 0
     drained_pairs = 0
     if tail_mode != "free":
+        _progress("กำลังย้ายคาบออกจากคาบสุดท้ายของวัน", done=len(SLOTS))
+
         def tail_total() -> int:
             return sum(1 for x in SLOTS
                        if x["period"] == _last_period_for(
@@ -5432,6 +5516,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # there was nothing after it — and the day it joins has one hole fewer.
     # So every move here is a strict improvement, and the pass can simply keep
     # going until no move is left.
+    _progress("กำลังปิดคาบว่างกลางวัน", done=len(SLOTS))
     gaps_filled = 0
 
     def holes_of(gid: int, nums: list[int]) -> list[tuple[int, int]]:
@@ -5519,6 +5604,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             f"ย้ายคาบมาปิดคาบว่างกลางวันของนักเรียน {gaps_filled} คาบ "
             f"— เอาคาบสุดท้ายของอีกวันมาลง วันนั้นจึงเลิกเร็วขึ้นแทน")
 
+    _progress("กำลังหาห้องให้คาบที่ยังไม่มีห้อง", done=len(SLOTS))
     # ── คาบที่ลงแล้วแต่ไม่มีห้อง: ขยับห้องให้เหมือนกัน ────────────────────────
     #
     # Last of all, because the passes above move lessons between cells and a

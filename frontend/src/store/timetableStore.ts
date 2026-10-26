@@ -120,6 +120,8 @@ interface TimetableStore {
   selectedRoomId:    number | null;
   isLoading:         boolean;
   isSolving:         boolean;
+  /** ตัวจัดตารางถึงไหนแล้ว — null เมื่อไม่ได้จัด หรือเซิร์ฟเวอร์ตอบเรื่องนี้ไม่ได้ */
+  solveProgress:     api.SolveProgress | null;
   solverError:       string | null;
 
   // ── School config ─────────────────────────────────────────────────────────
@@ -254,6 +256,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   selectedRoomId:    null,
   isLoading:         false,
   isSolving:         false,
+  solveProgress:     null,
   solverError:       null,
   preLockMode:       false,
   yardPickMode:      false,
@@ -643,7 +646,17 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     if (repair && repair.length === 0) {
       throw new Error("ยังไม่ได้เลือกห้องที่จะแก้ — ไม่ส่งไปจัด เพราะรายการว่างจะกลายเป็นจัดใหม่ทั้งโรงเรียน");
     }
-    set({ isSolving: true, solverError: null });
+    set({ isSolving: true, solverError: null, solveProgress: null });
+    // ถามความคืบหน้าระหว่างรอ — คำขอการจัดค้างเป็นนาที และ "ค้างจริง" กับ
+    // "ทำงานอยู่" หน้าตาเหมือนกันเป๊ะถ้าไม่มีอะไรบอก
+    //
+    // ถามไม่ได้ก็ไม่เป็นไร (เซิร์ฟเวอร์รุ่นเก่ายังไม่มีเส้นนี้) — ปล่อยให้เป็น
+    // null แล้วหน้าจอกลับไปแสดงแบบเดิม ไม่ใช่ขึ้น error ทับงานที่ยังวิ่งอยู่
+    const poll = setInterval(() => {
+      void api.fetchSolveProgress()
+        .then((p) => { if (get().isSolving) set({ solveProgress: p }); })
+        .catch(() => { /* ไม่มีเส้นนี้ หรือถามไม่ทัน — ข้ามรอบนี้ไป */ });
+    }, 900);
     // Keep a copy of everything as it stands before the solve. This is the
     // heaviest thing the server is ever asked to do and the one most likely
     // to take it down with it — and a solve replaces the whole timetable, so
@@ -706,7 +719,8 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       if (!repairing) set({ solverError: msg });
       throw err;
     } finally {
-      set({ isSolving: false });
+      clearInterval(poll);
+      set({ isSolving: false, solveProgress: null });
     }
   },
 }));
