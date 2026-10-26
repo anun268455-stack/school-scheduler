@@ -355,15 +355,38 @@ def _room_allows_group(room: dict[str, Any], group_id: int | None,
     A school short of rooms gives one to a class outright: 247 is ม.5/1's and
     nobody else's. Empty means anyone. A sub-class counts as its parent, so
     reserving a room for ม.5/1 does not shut out ม.5/1ก.
+
+    กันไว้ทั้งชั้นก็ได้ (reserved_levels)
+
+      "ช่วยมีตัวเลือก ม.ปลาย 456 ให้ด้วย เพราะไม่ต้องการให้ ม.ต้นมาใช้ห้องนี้"
+
+    ห้อง 351 เคมี ถูกกันไว้ด้วยการไล่ใส่ชื่อห้องเรียนทีละห้อง — ม.4/3 ม.4/4
+    ม.4/5 ม.4/6 ม.5/3 ม.5/5 … สิบห้าห้อง ซึ่งเจ็บปวดที่จะพิมพ์ และพอโรงเรียน
+    เพิ่มห้องเรียนใหม่ก็ต้องไล่มาเติมทุกห้องที่กันไว้แบบนี้
+
+    ใส่เป็นชั้นไปเลยจึงตรงกับสิ่งที่โรงเรียนหมายถึงจริง ๆ: "ห้องนี้ของ ม.ปลาย"
+    ทั้งสองช่องรวมกันแบบ "อย่างใดอย่างหนึ่งก็พอ" — กันไว้ให้ ม.ปลาย แล้วยัง
+    ใส่ชื่อ ม.3/6 เพิ่มได้ ถ้ามีห้องเรียนหนึ่งที่ต้องเข้าได้เป็นกรณีพิเศษ
     """
     kept = room.get("reserved_group_ids")
-    if not isinstance(kept, list) or not kept:
+    levels = room.get("reserved_levels")
+    has_groups = isinstance(kept, list) and kept
+    has_levels = isinstance(levels, list) and levels
+    if not has_groups and not has_levels:
         return True
-    want = {int(x) for x in kept if x}
     mine = set(family or ())
     if group_id is not None:
         mine.add(group_id)
-    return bool(want & mine)
+    if has_groups and {int(x) for x in kept if x} & mine:
+        return True
+    if has_levels:
+        want = {str(x) for x in levels if x}
+        # ห้องย่อยนับตามสายของตัวเอง — ชั้นของ ม.4/6ก คือ ม.ปลายเหมือนห้องแม่
+        for gid in mine:
+            g = _find_group(gid)
+            if g and _level_key(g) in want:
+                return True
+    return False
 
 
 def _subject_room_rule(subj: dict[str, Any]) -> str:

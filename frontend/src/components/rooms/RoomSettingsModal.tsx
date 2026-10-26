@@ -46,6 +46,10 @@ export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
   // ห้องเรียนพิเศษของชั้นไหน — empty means any class may be seated here.
   const [forGroups, setForGroups] = useState<number[]>(
     Array.isArray(room?.reserved_group_ids) ? [...room!.reserved_group_ids!] : []);
+  // กันไว้ทั้งชั้น — "ช่วยมีตัวเลือก ม.ปลาย 456 ให้ด้วย เพราะไม่ต้องการให้
+  // ม.ต้นมาใช้ห้องนี้" ห้อง 351 เคมี ถูกกันด้วยการไล่ใส่ชื่อทีละห้องสิบห้าห้อง
+  const [forLevels, setForLevels] = useState<("lower" | "upper")[]>(
+    Array.isArray(room?.reserved_levels) ? [...room!.reserved_levels!] : []);
   const [busy, setBusy]         = useState(false);
   const [error, setError]       = useState<string | null>(null);
 
@@ -67,6 +71,7 @@ export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
       specialized_dept_id: deptId ? Number(deptId) : null,
       reserved_teacher_ids: keptFor,
       reserved_group_ids: forGroups,
+      reserved_levels: forLevels,
     };
     try {
       if (room) {
@@ -191,6 +196,22 @@ export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
         {/* ชั้นเรียนที่ใช้ห้องนี้ได้ */}
         <div>
           <label className={label}>🎒 กันไว้ให้ชั้นเรียน (เลือกได้หลายห้อง)</label>
+          {/* เลือกทั้งชั้นได้ ไม่ต้องไล่ใส่ชื่อทีละห้อง — ห้อง 351 เคมี ถูกกัน
+              ไว้ด้วยการพิมพ์ชื่อห้องเรียนสิบห้าห้อง และทุกครั้งที่โรงเรียน
+              เพิ่มห้องเรียนใหม่ ก็ต้องไล่มาเติมทุกห้องที่กันไว้แบบนั้น */}
+          <div className="flex flex-wrap gap-3 mb-2">
+            {([["lower", "ม.ต้น (ม.1-3)"], ["upper", "ม.ปลาย (ม.4-6)"]] as const)
+              .map(([key, text]) => (
+              <label key={key} className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+                <input type="checkbox" className="accent-indigo-600"
+                  checked={forLevels.includes(key)}
+                  onChange={(e) => setForLevels(e.target.checked
+                    ? [...forLevels, key]
+                    : forLevels.filter((x) => x !== key))} />
+                <span className="text-gray-700">ทั้งชั้น {text}</span>
+              </label>
+            ))}
+          </div>
           {forGroups.length > 0 && (
             <div className="flex flex-wrap gap-1 mb-1.5">
               {forGroups.map((id) => (
@@ -210,7 +231,8 @@ export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
             }))}
             placeholder={forGroups.length ? "+ เพิ่มชั้นอีกห้อง" : "– ชั้นไหนก็ใช้ได้ –"} />
           <p className="text-[11px] text-gray-400 mt-1">
-            เว้นว่าง = ชั้นไหนก็มาเรียนได้ · ใส่ชื่อไว้ = เฉพาะชั้นเหล่านั้นเท่านั้นที่ระบบจะจัดคาบลงห้องนี้
+            เว้นว่าง = ชั้นไหนก็มาเรียนได้ · ติ๊กทั้งชั้นหรือใส่ชื่อไว้ = เฉพาะที่เลือกเท่านั้นที่ระบบจะจัดคาบลงห้องนี้
+            · ติ๊ก “ทั้งชั้น ม.ปลาย” แล้วยังใส่ชื่อห้อง ม.ต้นเพิ่มได้ ถ้ามีห้องเรียนหนึ่งที่ต้องเข้าได้เป็นกรณีพิเศษ
             — ใช้กับห้องที่ยกให้ห้องเรียนใดห้องเรียนหนึ่งไปเลย เช่น 247 เป็นของ ม.5/1
             <br/>ห้องย่อย (ก/ข/ค) นับรวมกับห้องแม่อยู่แล้ว ไม่ต้องใส่ซ้ำ
           </p>

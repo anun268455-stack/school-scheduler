@@ -57,6 +57,13 @@ export interface Room {
    * and nobody else's. A sub-class counts as its parent.
    */
   reserved_group_ids?: number[];
+  /**
+   * กันห้องไว้ให้ทั้งชั้น — "lower" = ม.1-3 · "upper" = ม.4-6
+   *
+   * รวมกับ reserved_group_ids แบบ "อย่างใดอย่างหนึ่งก็พอ" จึงติ๊กทั้งชั้น
+   * ม.ปลาย แล้วยังใส่ชื่อห้อง ม.ต้นเพิ่มเป็นกรณีพิเศษได้
+   */
+  reserved_levels?: ("lower" | "upper")[];
   reserved_teacher_id?: number | null;
   /**
    * ห้ามใช้ — false keeps the scheduler out of this room entirely.
