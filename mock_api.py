@@ -1348,7 +1348,11 @@ def _requirement_problems() -> list[dict[str, Any]]:
 
     def has_any_room(r: dict) -> bool:
         subj = s_map.get(r["subject_id"], {})
-        outdoor = subj.get("department_id") in dep_out
+        # วิชาที่สั่งว่า "ไม่เรียนนอกอาคาร" ชนะกลุ่มสาระ เหมือนในตัวจัดตาราง
+        # ทั้งสองตัว — ไม่งั้นที่นี่จะตอบว่าวิชาสุขศึกษาที่ติ๊กไว้ "มีห้องให้ใช้"
+        # เพราะยังมีลานว่าง ทั้งที่มันต้องอยู่ในห้อง
+        outdoor = (subj.get("department_id") in dep_out
+                   and _subject_outdoor(subj) is not False)
         dept = subj.get("department_id")
         for room in ROOMS:
             if room["id"] in _subject_rooms(subj):
@@ -3216,17 +3220,29 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             _lower_homeroom_first() and _level_key(grp) == "lower")
         # ม.ปลาย: ห้องที่โรงเรียนเขียนชื่อครูไว้ เรียกนักเรียนเข้ามาเรียนได้
         #
-        # ครูเจ้าของห้องเอง และลูกหมวดในกลุ่มสาระที่ห้องนั้นเป็นของ — เรียงให้
-        # เจ้าของได้ก่อนด้วย place_order ส่วนห้องที่มีชื่อครูคนอื่นและไม่ใช่
-        # ห้องของกลุ่มสาระนี้ ไม่นับ: ครูที่เข้าห้องนั้นไม่ได้ ไม่ควรเสีย
-        # ห้องประจำชั้นไปเพราะห้องที่ตัวเองใช้ไม่ได้
+        # เฉพาะห้องที่เขียนชื่อ "ครูคนนี้" ไว้ และเข้าได้จริงในชั่วโมงนี้
+        #
+        # เคยนับห้องของกลุ่มสาระที่มีชื่อครูคนใดคนหนึ่งอยู่ด้วย เพื่อให้ลูกหมวด
+        # เข้ามาเติมห้องได้ — ซึ่งผิดและผิดแรง วัดบนข้อมูลจริง: กันห้องวิทย์ไว้
+        # ให้ครูวิทย์คนเดียวคนหนึ่ง แล้ว ม.ปลายเสียห้องประจำชั้นไป 78 คาบจาก 214
+        # (206 -> 128) เพราะทั้งกลุ่มสาระเลิกใช้ห้องประจำชั้น แล้วไหลลงไปขั้นที่ 2
+        # ซึ่งเรียง "ห้องที่ไม่มีใครจอง" ไว้ก่อน — คาบเหล่านั้นจึงไปอยู่เคมี
+        # ชีววิทยา ฟิสิกส์ ห้องที่ไม่ได้ถูกกันไว้เลย และคาบในห้องที่กันไว้เอง
+        # กลับลดลง (31 -> 29) คือเสียทั้งสองทาง
+        #
+        # ลูกหมวดเข้าห้องที่กันไว้ได้อยู่แล้วตามกติกาเดิม (ห้องของกลุ่มสาระ
+        # ขั้นที่ 2) เมื่อห้องประจำชั้นของเขาไม่ว่าง — "เติมลูกหมวดเข้าไป" คือ
+        # ใช้ชั่วโมงที่เหลือของห้องนั้น ไม่ใช่ไล่ห้องเรียนอื่นออกจากห้องตัวเอง
+        # ส่วน "เจ้าของได้ก่อน" ทำด้วยลำดับการลงใน place_order
+        #
+        # upstairs เหมือนกับขั้น 1b และ 2a ที่เป็นคนใช้ห้องนี้จริง: ครูที่ขึ้น
+        # บันไดไม่ได้และห้องที่กันไว้อยู่ชั้นสอง จะไม่ได้ห้องนั้นอยู่ดี จึงไม่
+        # ควรเสียห้องประจำชั้นไปเพราะห้องที่ตัวเองไปไม่ได้
         if (home_beats_teacher and teacher_id is not None and rule != "homeroom"
                 and not wants_outdoor and _upper_teacher_room_first()
                 and _level_key(grp) == "upper"
-                and any(_room_reserved_for(r)
-                        and (teacher_id in _room_reserved_for(r)
-                             or (want_dept and r.get("specialized_dept_id") == want_dept))
-                        and eligible(r)
+                and any(teacher_id in _room_reserved_for(r)
+                        and eligible(r) and not upstairs(r)
                         for r in ROOMS)):
             home_beats_teacher = False
         if (real_home and not wants_outdoor and home_beats_teacher
@@ -3402,6 +3418,18 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             # Zero for every room when no order is saved, so nothing moves.
             yard_rank = (yard_pos.get(r["id"], len(yard_pos))
                          if r["type"] == "outdoor" else 0)
+            # ลำดับต้องอยู่หลัง kind เพื่อให้มันเลือกได้แค่ "ลานไหน" ไม่ใช่
+            # "ลานหรือในห้อง": ย้ายขึ้นไปไว้ต้นๆ แล้ววัด คาบที่ไปลานหายไป
+            # 36 -> 19 เพราะห้องเรียนธรรมดา (ลำดับ 0) ชนะลานที่โรงเรียนจัดไว้
+            # ลำดับที่สอง แล้วคาบพละก็เข้าไปนั่งในห้อง
+            #
+            # แต่ squat กับ too_small ไม่มีความหมายกับลาน — ลานที่เผลอถูกบันทึก
+            # เป็นห้องประจำชั้นของห้องไหน หรือที่กรอกความจุไว้น้อย ไม่ควรชนะ
+            # ลำดับที่โรงเรียนสั่ง จึงปิดสองตัวนั้นสำหรับลาน เพื่อให้ในกลุ่มลาน
+            # เหลือลำดับเป็นตัวตัดสินจริง เท่ากับทางของวิชาที่ถูกดันออกไป
+            # ข้างนอก (kind >= 9) · ของในร่มไม่ขยับเลย
+            if r["type"] == "outdoor":
+                squat = too_small = 0
             return (1 if kind >= 9 else 0,
                     yard_rank if kind >= 9 else 0,
                     1 if upstairs(r) else 0, squat,
@@ -4667,12 +4695,18 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     #   1. lessons that need a facility (ห้องพิเศษ) — fill those rooms first
     #   2. classes that have a room of their own — seat them in it
     #   3. everything else, which can go anywhere
-    # ครูที่มีห้องของตัวเอง — ชื่อบนห้อง หรือห้องประจำที่ตั้งไว้ในหน้าครู
-    # (สองช่องนี้คือเรื่องเดียวกัน เขียนได้จากสองหน้า)
+    # ครูที่โรงเรียน "กันห้องไว้ให้" ที่หน้าห้องสอน
+    #
+    # เฉพาะช่องนั้นช่องเดียว ไม่รวม "ห้องประจำของครู" ที่ตั้งจากหน้าครู ซึ่งเป็น
+    # คนละการตั้งค่า (ตาม teacher_room_over_homeroom) — ถ้ารวมเข้ามา โรงเรียนที่
+    # ตั้งแต่ห้องประจำของครูไว้และไม่ได้กันห้องไว้ให้ใครเลย จะถูกสลับลำดับการลง
+    # คาบด้วยฟีเจอร์เรื่องห้องที่กันไว้ ซึ่งไม่เกี่ยวกันเลย
+    #
+    # และปิดตามการตั้งค่าเดียวกัน เพื่อให้การติ๊กออกคืนตารางเดิมได้จริง
     room_owners: set[int] = set()
-    for _r in ROOMS:
-        room_owners |= _room_reserved_for(_r)
-    room_owners |= {t["id"] for t in TEACHERS if t.get("fixed_room_id")}
+    if _upper_teacher_room_first():
+        for _r in ROOMS:
+            room_owners |= _room_reserved_for(_r)
 
     def place_order(r: dict) -> tuple:
         subj = s_map.get(r["subject_id"], {}) or {}
@@ -7302,7 +7336,13 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         teacher = t_map.get(occ["teacher_id"], {})
         grp = g_map.get(occ["group_id"], {})
         size = grp.get("size", 40)
-        wants_outdoor = subj.get("department_id") in dep_out
+        # วิชาที่สั่งว่า "ไม่เรียนนอกอาคาร" ชนะกลุ่มสาระ เหมือนใน _solve_greedy
+        #
+        # ที่นี่เป็นตัวกรองแบบตายตัว (ข้างล่าง: wants_outdoor แล้วห้องไม่ใช่ลาน
+        # = ข้าม) ถ้าไม่เคารพธง วิชาสุขศึกษาที่ติ๊กว่าไม่เรียนนอกอาคารจะได้
+        # เฉพาะลานเท่านั้น ซึ่งตรงข้ามกับที่สั่งเป๊ะๆ · สองที่ หนึ่งกฎ
+        wants_outdoor = (subj.get("department_id") in dep_out
+                         and _subject_outdoor(subj) is not False)
         # A specialised room belongs to whoever teaches the subject, not to the
         # teacher's own กลุ่มสาระ — a maths teacher taking a computer period
         # still needs the lab.
@@ -7450,7 +7490,10 @@ def _solve_cpsat(body: dict[str, Any]) -> dict[str, Any]:
         homeroom = g_map.get(occ["group_id"], {}).get("homeroom_room_id")
         fixed = t_map.get(occ["teacher_id"], {}).get("fixed_room_id")
         subj = s_map.get(occ["subject_id"], {})
-        wants_outdoor = subj.get("department_id") in dep_out
+        # กฎเดียวกับ compatible_rooms ข้างบน — วิชาที่ติ๊กว่าไม่เรียนนอกอาคาร
+        # ต้องถูกตีราคาเหมือนวิชาในห้อง ไม่ใช่เหมือนพละ
+        wants_outdoor = (subj.get("department_id") in dep_out
+                         and _subject_outdoor(subj) is not False)
         subj_room = set(_subject_rooms(subj))   # ห้องประจำวิชา (ได้หลายห้อง)
         own_rooms = dept_rooms.get(subj.get("department_id") or -1, set())
         lvl_last = _last_period_for(occ_level(occ))
