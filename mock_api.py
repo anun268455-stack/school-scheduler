@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-26.8"
+API_BUILD = "2026-10-27.1"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────

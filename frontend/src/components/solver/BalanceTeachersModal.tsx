@@ -54,7 +54,13 @@ export const BalanceTeachersModal: React.FC<{ onClose: () => void }> = ({ onClos
       setRes(r);
       if (!dry && r.moved) await loadSlots();
     } catch (e) {
-      setErr(api.errorDetail(e, "เกลี่ยไม่สำเร็จ — ลองใหม่อีกครั้ง"));
+      // 404 = ตัวจัดตารางบน Render ยังเป็นรุ่นเก่าที่ไม่มีปุ่มนี้ คนละที่กับ
+      // หน้าเว็บและอัปเดตช้ากว่า — บอกให้รอ ไม่ใช่บอกว่าพัง
+      const code = (e as { response?: { status?: number } })?.response?.status;
+      setErr(code === 404
+        ? "ตัวจัดตารางบนเซิร์ฟเวอร์ยังเป็นรุ่นเก่าที่ไม่มีปุ่มนี้ — "
+          + "รออีกสองสามนาทีแล้วกดใหม่ (ป้าย 🚧 บนแถบด้านบนจะหายไปเมื่อพร้อม)"
+        : api.errorDetail(e, "เกลี่ยไม่สำเร็จ — ลองใหม่อีกครั้ง"));
     } finally {
       setBusy("");
     }
