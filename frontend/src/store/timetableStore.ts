@@ -7,6 +7,7 @@ import type {
 import { DEFAULT_PERIODS } from "../types";
 import { buildImpactMap } from "../utils/conflictAnalyzer";
 import { buildSharesStudents } from "../utils/groupHierarchy";
+import { lockClashAt } from "../utils/lockGuard";
 import * as api from "../api/client";
 import { writeGuard } from "../utils/writeGuard";
 import { putSavePoint, storageAvailable } from "../utils/savePoints";
@@ -446,9 +447,21 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   endDrag: () => set({ draggingSlot: null, impactMap: new Map(), tooltipText: null }),
 
   moveSlot: async (slotId, newDay, newPeriod) => {
-    const { slots, manualMode } = get();
+    const { slots, manualMode, groups } = get();
     const slot = slots.find((s) => s.id === slotId);
     if (!slot || slot.is_locked) return;
+
+    // โหมดจัดเอง: วางทับกันได้ ยกเว้นคาบที่ล็อกไว้ ซึ่งหน้าเว็บเป็นคนยืนด่าน
+    // เพราะคำสั่งที่ส่งไปคือ "ข้ามการตรวจทั้งหมด" (ดู utils/lockGuard.ts)
+    if (manualMode) {
+      const clash = lockClashAt(slot, newDay, newPeriod, slot.room_id,
+                                slots, buildSharesStudents(groups));
+      if (clash) {
+        set({ solverError: `วางตรงนี้ไม่ได้ — ${clash.reason} 🔒 ` +
+                           "ถ้าจะวางจริง ต้องปลดล็อกคาบนั้นก่อน" });
+        return;
+      }
+    }
 
     // Optimistic update – also move parallel siblings
     const patchSlots = (prev: TimetableSlot[]) =>
@@ -476,8 +489,21 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       patches: affected.map((s) => ({ slotId: s.id, day: s.day, period: s.period })),
     }].slice(-25) }));
     try {
-      await withWrite(() => api.updateSlot(
-        slotId, { day: newDay, period: newPeriod }, manualMode));
+      // force = ข้ามการตรวจของเซิร์ฟเวอร์ ซึ่งเป็นธงที่เซิร์ฟเวอร์รุ่นที่รัน
+      // อยู่ตอนนี้รู้จักอยู่แล้ว โหมดจัดเองจึงใช้ได้ทันทีโดยไม่ต้องรออัปเดต
+      // ส่วนด่านคาบล็อก หน้าเว็บเช็คไปแล้วข้างบน
+      // เส้นทาง force ย้ายทีละคาบตามที่สั่ง ไม่ได้พาห้องย่อยที่เรียนพร้อมกัน
+      // ไปด้วยเหมือนเส้นทางปกติ จึงต้องใส่พี่น้องของเซ็ตลงไปในชุดเดียวกันเอง
+      // ไม่งั้นเซ็ตห้องแม่ลูกจะขาดครึ่ง
+      await withWrite(async () => {
+        if (manualMode) {
+          await api.moveSlots(
+            affected.map((s) => ({ slot_id: s.id, day: newDay, period: newPeriod })),
+            true);
+        } else {
+          await api.updateSlot(slotId, { day: newDay, period: newPeriod });
+        }
+      });
     } catch (err: unknown) {
       // The backend refuses a move that would double-book a class, teacher or
       // room. Put the lesson back and say why, rather than letting it snap
@@ -507,9 +533,14 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     }].slice(-25) }));
     try {
       // โหมดจัดเอง: "เราสามารถเปลี่ยนห้องได้" — ย้ายเข้าห้องที่มีคนใช้อยู่ได้
-      // แล้วไปขึ้นกรอบแดง "ห้องซ้ำ" แทน
-      await withWrite(() => api.updateSlot(
-        slotId, { room_id: newRoomId }, get().manualMode));
+      // แล้วไปขึ้นกรอบแดง "ห้องซ้ำ" แทน (force ใช้ได้กับเซิร์ฟเวอร์รุ่นปัจจุบัน)
+      await withWrite(async () => {
+        if (get().manualMode) {
+          await api.moveSlots([{ slot_id: slotId, room_id: newRoomId }], true);
+        } else {
+          await api.updateSlot(slotId, { room_id: newRoomId });
+        }
+      });
     } catch (err: unknown) {
       // Put back THIS slot's room, not the whole timetable as it looked when
       // the call began. Restoring that snapshot would also undo any edit made
@@ -574,7 +605,31 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         .filter((s) => s.action !== "delete")
         .map((s) => ({ slot_id: s.slotId, day: s.toDay, period: s.toPeriod, room_id: s.toRoomId }));
       if (moves.length > 0) {
-        const r = await withWrite(() => api.moveSlots(moves));
+        // ในโหมดจัดเอง เส้นทางที่เลือกไว้ต้องได้ลงจริง ไม่ใช่ถูกปฏิเสธกลับมา
+        // ทั้งชุดเพราะมีจุดหนึ่งยังชนอยู่ — คาบที่ยังชนจะไปขึ้นกรอบแดงแทน
+        //
+        // แต่ต้องยืนด่านคาบล็อกเองก่อนส่ง เพราะ force แปลว่า "ข้ามการตรวจ
+        // ทั้งหมด" ซึ่งรวมด่านนั้นด้วย ตรวจทุกก้าวของเส้นทาง ไม่ใช่แค่ก้าวแรก
+        const manual = get().manualMode;
+        if (manual) {
+          const now = get().slots;
+          const shares = buildSharesStudents(get().groups);
+          const moved = new Set(moves.map((m) => m.slot_id));
+          for (const m of moves) {
+            const s = now.find((x) => x.id === m.slot_id);
+            if (!s) continue;
+            const clash = lockClashAt(s, m.day ?? s.day, m.period ?? s.period,
+                                      m.room_id ?? s.room_id,
+                                      now.filter((x) => !moved.has(x.id)), shares);
+            if (clash) {
+              set({ solverError: `เส้นทางนี้ใช้ไม่ได้ — ${clash.reason} 🔒 ` +
+                                 "ลองเส้นทางอื่น หรือปลดล็อกคาบนั้นก่อน" });
+              await get().loadSlots();
+              return;
+            }
+          }
+        }
+        const r = await withWrite(() => api.moveSlots(moves, manual));
         if (!r.ok) {
           // Someone else may have taken the cell since the plan was drawn.
           set({ solverError: `ย้ายไม่ได้: ${r.conflicts.slice(0, 2).join(" · ")}` });
