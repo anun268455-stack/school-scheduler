@@ -618,8 +618,38 @@ export const fetchStateInfo = () =>
     last_saved_at?: string | null;
     /** The server is refusing to save, because what it holds is not the school's. */
     write_blocked?: boolean;
+    /** รุ่นของตัวจัดตารางที่กำลังรันอยู่ — ไม่มีช่องนี้เลยคือรุ่นก่อนหน้านี้ */
+    api_build?: string | null;
     counts: Record<string, number>;
   }>("/state/info").then((r) => r.data);
+
+/**
+ * รุ่นของตัวจัดตารางที่หน้าเว็บรุ่นนี้คู่กัน
+ *
+ * หน้าเว็บอยู่บน GitHub Pages ส่วนตัวจัดตารางอยู่บน Render — คนละที่ และ
+ * อัปเดตแยกกัน หน้าเว็บจึงใหม่ได้ทั้งที่ตัวจัดตารางยังเป็นรุ่นเก่า: ข้อความบน
+ * จอเปลี่ยนไปหมดแล้ว แต่ตารางที่ออกมายังเป็นของเดิม ซึ่งมองไม่เห็นเลยว่าเกิด
+ * อะไรขึ้น และโรงเรียนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
+ *
+ * ต้องตรงกับ API_BUILD ใน mock_api.py และขยับพร้อมกันเสมอ — มีเทสต์
+ * (scratchpad/apibuild.py) คอยจับไว้ว่าสองที่นี้ตรงกัน
+ */
+export const EXPECTED_API_BUILD = "2026-10-26.6";
+
+export interface ApiBuildCheck {
+  /** รุ่นที่เซิร์ฟเวอร์ตอบมา — null เมื่อเก่าจนไม่มีช่องนี้เลย */
+  server: string | null;
+  expected: string;
+  /** ตรงกันไหม — false แปลว่าตัวจัดตารางที่รันอยู่ยังเป็นรุ่นเก่า */
+  ok: boolean;
+}
+
+/** เทียบรุ่นของหน้าเว็บกับรุ่นของตัวจัดตารางที่รันอยู่จริง */
+export const checkApiBuild = async (): Promise<ApiBuildCheck> => {
+  const info = await fetchStateInfo();
+  const server = info.api_build ?? null;
+  return { server, expected: EXPECTED_API_BUILD, ok: server === EXPECTED_API_BUILD };
+};
 
 // ── ประวัติย้อนหลังบนเซิร์ฟเวอร์ ─────────────────────────────────────────────
 // Dated copies kept in the database alongside the live one. The live copy is

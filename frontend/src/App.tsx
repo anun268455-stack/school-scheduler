@@ -7,6 +7,7 @@ import { PrintView, DEFAULT_PRINT_OPTIONS, type PrintOptions } from "./component
 import { TimetableGrid } from "./components/timetable/TimetableGrid";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { StorageWarningBanner } from "./components/backup/StorageWarningBanner";
+import { ApiBuildBanner } from "./components/common/ApiBuildBanner";
 import { useAutoSavePoints } from "./utils/useAutoSavePoints";
 import { useTimetableStore } from "./store/timetableStore";
 import type { DashPage } from "./pages/Dashboard";
@@ -90,6 +91,11 @@ export default function App() {
       {/* Stands above everything: if the server has thrown its data away, the
           copy on screen is the only one left and a reload would end it. */}
       <StorageWarningBanner />
+
+      {/* The page and the solver deploy separately, so the page can be new
+          while the solver is still old — invisible from in here, and it looks
+          exactly like a fix that did not work. */}
+      <ApiBuildBanner />
 
       <main className="flex-1 overflow-hidden flex flex-col">
         <ErrorBoundary>

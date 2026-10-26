@@ -19,6 +19,16 @@ import substitution as _SUB
 import curriculum as _CUR
 
 app = FastAPI(title="School Scheduler Mock API v3")
+
+# รุ่นของตัวจัดตาราง — เลขนี้ต้องขยับทุกครั้งที่แก้พฤติกรรมของเซิร์ฟเวอร์
+#
+# หน้าเว็บอยู่บน GitHub Pages ส่วนตัวจัดตารางอยู่บน Render คนละที่กัน และ
+# อัปเดตแยกกัน หน้าเว็บจึงใหม่ได้ทั้งที่ตัวจัดตารางยังเป็นรุ่นเก่า — ข้อความ
+# บนจอเปลี่ยนไปหมดแล้ว แต่ตารางที่ออกมายังเป็นของเดิม ซึ่งมองไม่เห็นเลยว่า
+# เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
+#
+# หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
+API_BUILD = "2026-10-26.6"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -12630,6 +12640,11 @@ def state_info():
     """What the data is and where it came from — shown on the backup screen."""
     return {
         "revision": REVISION["n"],
+        # รุ่นของเซิร์ฟเวอร์ — หน้าเว็บกับเซิร์ฟเวอร์อยู่คนละที่ (GitHub Pages
+        # กับ Render) และอัปเดตแยกกัน หน้าเว็บจึงใหม่ได้ทั้งที่ตัวจัดตารางยัง
+        # เป็นรุ่นเก่า ซึ่งมองไม่เห็นเลย: ข้อความบนจอเปลี่ยน แต่ตารางที่ออกมา
+        # ยังเป็นของเดิม และโรงเรียนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
+        "api_build": API_BUILD,
         "source": _STATE_SOURCE,
         "disk_snapshot": _os.path.exists(_STATE_PATH),
         # Which store is really in use. A database that was configured but
