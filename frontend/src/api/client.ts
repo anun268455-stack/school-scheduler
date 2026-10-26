@@ -414,6 +414,69 @@ export const runSolver = (p: {
 }) => api.post<SolverResult>("/timetable/solve", p, { timeout: SOLVE_TIMEOUT_MS })
   .then((r) => r.data);
 
+// ── เกลี่ยคาบครู ─────────────────────────────────────────────────────────────
+/** ตัวเลขชุดเดียวกัน วัดก่อนและหลังกดปุ่ม */
+export interface BalanceTotals {
+  /** คาบที่ล้นเพดานรายวัน รวมทุกคน */
+  over_day:      number;
+  /** คาบที่ติดกันเกินเพดาน รวมทุกคน */
+  over_run:      number;
+  /** จำนวนช่วงที่ติดกันเกินเพดาน */
+  runs_over:     number;
+  teachers_over: number;
+  days_over:     number;
+  /** วันที่หนักสุดของทั้งโรงเรียน กี่คาบ */
+  worst_day:     number;
+}
+
+/** ครูหนึ่งคนที่ยังล้นอยู่ หลังเกลี่ยแล้ว */
+export interface BalanceStuck {
+  teacher: string;
+  /** 0 = จันทร์ … 4 = ศุกร์ */
+  day:     number;
+  periods: number;
+  problem: string;
+  why:     string;
+}
+
+export interface BalanceResult {
+  ok:              boolean;
+  moved:           number;
+  dry_run:         boolean;
+  before:          BalanceTotals;
+  after:           BalanceTotals;
+  max_per_day:     number;
+  max_consecutive: number;
+  /** ห้องที่ปิดไว้ว่าจัดเสร็จแล้ว — ไม่ถูกแตะ เว้นแต่สั่งให้เกลี่ยด้วย */
+  locked_classes:  number;
+  touched_locked:  boolean;
+  seconds:         number;
+  notes:           string[];
+  /** ที่ยังเหลืออยู่ — ใครวันไหน และติดอะไร */
+  stuck:           BalanceStuck[];
+}
+
+/**
+ * เกลี่ยคาบครูในตารางที่จัดเสร็จแล้ว โดยไม่รื้อตารางใหม่
+ *
+ * "อยากให้คุณมีปุ่มที่ช่วยทำให้คาบครูมีไม่มากใน 1 วัน และไม่ติดกันมากเกิน
+ *  ความจำเป็นช่วยที"
+ *
+ * วิธีที่ใช้คือสลับคาบของห้องเดียวกันข้ามวัน ตารางนักเรียนจึงมีคาบเท่าเดิมใน
+ * ช่องเดิมทุกช่อง เปลี่ยนแค่ว่าชั่วโมงนั้นเรียนวิชาอะไร
+ */
+export const balanceTeachers = (p: {
+  /** คาบต่อวันต่อครูที่ถือว่าพอแล้ว — ไม่ส่งมาใช้ค่าของโรงเรียน */
+  max_per_day?:            number;
+  /** สอนติดกันได้ไม่เกินกี่คาบ */
+  max_consecutive?:        number;
+  /** ดูก่อนว่าจะเปลี่ยนอะไร ไม่แตะตารางจริง */
+  dry_run?:                boolean;
+  /** เกลี่ยห้องที่ปิดไว้ว่าจัดเสร็จแล้วด้วย */
+  include_locked_classes?: boolean;
+}) => api.post<BalanceResult>("/timetable/balance-teachers", p,
+  { timeout: SOLVE_TIMEOUT_MS }).then((r) => r.data);
+
 // ── ส่งต่อครู ────────────────────────────────────────────────────────────────
 /** ห้องหนึ่งห้องที่ครูคนนี้สอนวิชานั้นอยู่ */
 export interface HoldingClass {

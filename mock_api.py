@@ -11337,6 +11337,483 @@ def bulk_lock(body: dict[str, Any]):
 def solve(body: dict[str, Any] = {}):
     return _run_solver(body)
 
+
+# ── เกลี่ยคาบครู ──────────────────────────────────────────────────────────────
+# "อยากให้คุณมีปุ่มที่ช่วยทำให้คาบครูมีไม่มากใน 1 วัน และไม่ติดกันมากเกิน
+#  ความจำเป็นช่วยที"
+#
+# ตารางจัดเสร็จแล้ว ปุ่มนี้จึงต้องไม่รื้อใหม่ วิธีที่ปลอดภัยที่สุดคือ "สลับคาบ
+# ของห้องเดียวกันข้ามวัน" — ตารางนักเรียนมีคาบเท่าเดิมในช่องเดิม เปลี่ยนแค่ว่า
+# ชั่วโมงนั้นเรียนวิชาอะไร ครูจึงกระจายได้โดยที่ไม่มีคาบว่างใหม่เกิดขึ้นเลย
+#
+# ที่ไม่แตะเลย: คาบที่ล็อกไว้ · ห้องที่ปิดไว้ว่าจัดเสร็จแล้ว · คาบคู่ (แยกจากกัน
+# ไม่ได้) · คาบกิจกรรม/วิชาเสรี/คาบที่เรียนร่วมหลายห้อง (เป็นคาบของหลายห้อง
+# พร้อมกัน) · ชั่วโมงที่โรงเรียนเลือกลานไว้ให้เอง
+BAL_MAX_PER_DAY = 6       # คาบต่อวันต่อครู ที่ถือว่า "พอแล้ว"
+
+
+def _span_at(level: str, period: int) -> tuple[int, int] | None:
+    """(เวลาเริ่ม, เวลาจบ) เป็นนาที ของคาบนี้สำหรับชั้นนี้"""
+    row = _periods_for_level(level).get(period)
+    if not row:
+        return None
+    a, b = _hhmm(row.get("start_time")), _hhmm(row.get("end_time"))
+    return None if a is None or b is None or b <= a else (a, b)
+
+
+def _slot_span(s: dict[str, Any]) -> tuple[int, int] | None:
+    return _span_at(_level_key(_find_group(s.get("group_id"))), s["period"])
+
+
+def _runs_over(spans, limit: int) -> tuple[int, int]:
+    """(ผลรวมคาบที่เกินเพดาน, จำนวนช่วงที่เกิน) ของการสอนติดกัน
+
+    พัก 10 นาทีไม่ใช่การพัก (_GAP_IS_REST) — กฎเดียวกับที่ตัวจัดตารางใช้ ไม่งั้น
+    ปุ่มนี้จะบอกว่าไม่มีปัญหา ในขณะที่ตัวจัดตารางถือว่ามี
+    """
+    total = count = 0
+    cur, prev = 0, None
+    for a, b in sorted(spans):
+        if prev is not None and a - prev < _GAP_IS_REST:
+            cur += 1
+        else:
+            if cur > limit:
+                total += cur - limit; count += 1
+            cur = 1
+        prev = b if prev is None else max(prev, b)
+    if cur > limit:
+        total += cur - limit; count += 1
+    return total, count
+
+
+def _teacher_max_per_day(teacher: dict[str, Any] | None, cap: int) -> int:
+    """เพดานของครูคนนี้ ซึ่งอาจตั้งไว้เองเป็นรายคน"""
+    adv = (teacher or {}).get("advanced_settings") or {}
+    v = adv.get("max_per_day")
+    if v in (None, ""):
+        return cap
+    try:
+        return max(1, int(v))
+    except (TypeError, ValueError):
+        return cap
+
+
+@app.post("/api/timetable/balance-teachers")
+def balance_teachers(body: dict[str, Any] = {}):
+    """เกลี่ยคาบครูในตารางที่จัดเสร็จแล้ว โดยไม่ทำให้ตารางนักเรียนเปลี่ยนรูป
+
+    body: { max_per_day?, max_consecutive?, dry_run?, budget_s?, rounds? }
+    """
+    body = body or {}
+    cfg = SCHOOL_CONFIG if isinstance(SCHOOL_CONFIG, dict) else {}
+    cap_def = BAL_MAX_PER_DAY
+    for src in (body, cfg):
+        v = src.get("max_per_day")
+        if v not in (None, ""):
+            try:
+                cap_def = max(1, int(v)); break
+            except (TypeError, ValueError):
+                pass
+    hard, _soft = _consec_settings(body)
+    dry = bool(body.get("dry_run"))
+    with_locked = bool(body.get("include_locked_classes"))
+    budget = float(body.get("budget_s") or 25.0)
+    rounds = int(body.get("rounds") or 8)
+
+    _refresh_class_locks()
+    t_map = {t["id"]: t for t in TEACHERS}
+    g_of = {g["id"]: g for g in _flat_groups()}
+    s_map = {x["id"]: x for x in SUBJECTS}
+    r_of = {r["id"]: r for r in ROOMS}
+    lvl_of = {gid: _level_key(g) for gid, g in g_of.items()}
+    cap_of = {tid: _teacher_max_per_day(t, cap_def) for tid, t in t_map.items()}
+    lim_of = {tid: _consec_limit(t, hard) for tid, t in t_map.items()}
+    off_of = {tid: _teacher_prefs(t)["days_off"] for tid, t in t_map.items()}
+    late_max = _school_max_last_period(body)
+    late_floor = _school_min_last_period(body)
+
+    def late_min_of(tid: int) -> int:
+        own = _teacher_prefs(t_map.get(tid))["min_last_period"]
+        return late_floor if own is None else own
+
+    # ครูคนไหนอยู่ในคาบไหน และห้องเรียนไหนมีคาบอะไร — คิดครั้งเดียว ชุดครูของ
+    # คาบไม่เปลี่ยนเมื่อย้ายวัน/คาบ
+    tslots: dict[int, list[dict]] = defaultdict(list)
+    gslots: dict[int, list[dict]] = defaultdict(list)
+    for s in SLOTS:
+        for tid in _slot_teachers(s):
+            tslots[tid].append(s)
+        gslots[s["group_id"]].append(s)
+
+    pos: dict[int, tuple[int, int]] = {s["id"]: (s["day"], s["period"]) for s in SLOTS}
+
+    def spans_by_day(tid: int) -> dict[int, set]:
+        out: dict[int, set] = {}
+        for s in tslots[tid]:
+            d, p = pos[s["id"]]
+            sp = _span_at(lvl_of.get(s["group_id"], "all"), p)
+            if sp:
+                out.setdefault(d, set()).add(sp)
+        return out
+
+    def pain(tid: int) -> tuple[int, int]:
+        """(คาบที่ล้นเพดานรายวัน, คาบที่ติดกันเกินเพดาน) ของครูคนนี้"""
+        over_day = over_run = 0
+        cap, lim = cap_of.get(tid, cap_def), lim_of.get(tid, hard)
+        for _d, spans in spans_by_day(tid).items():
+            over_day += max(0, len(spans) - cap)
+            over_run += _runs_over(spans, lim)[0]
+        return over_day, over_run
+
+    def late_days(tid: int) -> int:
+        """กี่วันในสัปดาห์ที่ครูคนนี้ต้องอยู่คาบสุดท้าย"""
+        n = 0
+        for d, spans in spans_by_day(tid).items():
+            ends = {_span_at(lv, _last_period_for(lv) or -1)
+                    for lv in ("lower", "upper")}
+            if spans & {e for e in ends if e}:
+                n += 1
+        return n
+
+    def dups(gid: int) -> int:
+        """ห้องนี้มีวิชาเดียวกันลงวันเดียวกันกี่ครั้ง (คาบคู่ไม่นับ)"""
+        seen: set = set()
+        n = 0
+        for s in gslots[gid]:
+            if s.get("double_group_key"):
+                continue
+            key = (s.get("subject_id"), pos[s["id"]][0])
+            if s.get("subject_id") and key in seen:
+                n += 1
+            seen.add(key)
+        return n
+
+    def holes(gid: int) -> int:
+        """คาบว่างกลางวันของห้องนี้ — ช่องว่างระหว่างคาบแรกกับคาบสุดท้ายของวัน"""
+        nums = _class_periods_for_level(lvl_of.get(gid, "all"))
+        if not nums:
+            return 0
+        where: dict[int, set] = {}
+        for s in gslots[gid]:
+            d, p = pos[s["id"]]
+            if p in nums:
+                where.setdefault(d, set()).add(nums.index(p))
+        n = 0
+        for _d, idx in where.items():
+            if idx:
+                n += (max(idx) - min(idx) + 1) - len(idx)
+        return n
+
+    def movable(s: dict[str, Any]) -> bool:
+        if s.get("is_locked"):
+            return False
+        # ห้องที่ปิดไว้ว่า "จัดเสร็จแล้ว" ไม่ถูกแตะ เว้นแต่สั่งมาว่าให้เกลี่ย
+        # ด้วย — โรงเรียนนี้ปิดไว้เกือบทุกห้อง ถ้าไม่มีทางเลือกนี้ ปุ่มจะทำอะไร
+        # ไม่ได้เลยแล้วดูเหมือนปุ่มเสีย
+        if s.get("group_id") in _CLASS_LOCKED and not with_locked:
+            return False
+        # คาบของหลายห้องพร้อมกัน — เป็นคาบของหลายห้องในชั่วโมงเดียว ย้ายของห้อง
+        # เดียวไม่ได้ (คาบคู่ย้ายได้ แต่ต้องยกไปทั้งคู่ ดู units ด้านล่าง)
+        if (s.get("activity_teacher_ids") or s.get("is_elective")
+                or s.get("elective_pool_id") or s.get("parallel_group_key")):
+            return False
+        if not _slot_teachers(s):
+            return False
+        d, p = pos[s["id"]]
+        return _yard_pick_for(s.get("group_id"), d, p) is None
+
+    # ── คาบคู่นับเป็นชิ้นเดียว ────────────────────────────────────────────
+    # คาบคู่คือคาบเดียวที่ยาวสองชั่วโมง เก็บเป็นสองแถวที่ผูกกันด้วย
+    # double_group_key — ยกไปทั้งคู่ หรือไม่ยกเลย ถ้าแยกได้ เด็กจะต้องเก็บของ
+    # ย้ายห้องกลางคาบ และคาบคู่คือสาเหตุของ "ติดกันยาว" ถึงสิบในยี่สิบเจ็ดวัน
+    # ที่เหลือ จึงคุ้มที่จะยกทั้งชิ้น
+    units_of: dict[int, list[list[dict]]] = defaultdict(list)
+    unit_at: dict[int, list[dict]] = {}
+    for gid, rows in gslots.items():
+        by_key: dict[Any, list[dict]] = {}
+        for s in rows:
+            key = s.get("double_group_key") or ("solo", s["id"])
+            by_key.setdefault(key, []).append(s)
+        for u in by_key.values():
+            u.sort(key=lambda x: pos[x["id"]][1])
+            units_of[gid].append(u)
+            for s in u:
+                unit_at[s["id"]] = u
+
+    def unit_cells(u: list[dict]) -> list[tuple[int, int]]:
+        return [pos[s["id"]] for s in sorted(u, key=lambda x: pos[x["id"]][1])]
+
+    def unit_movable(u: list[dict]) -> bool:
+        if not all(movable(s) for s in u):
+            return False
+        # คาบคู่ที่กระจัดกระจายอยู่คนละวัน (ข้อมูลเก่าที่เคยพลาด) อย่าไปยุ่ง
+        return len({d for d, _p in unit_cells(u)}) == 1
+
+    def cell_ok(s: dict[str, Any], day: int, period: int) -> bool:
+        lvl = lvl_of.get(s["group_id"], "all")
+        if period not in _class_periods_for_level(lvl):
+            return False
+        if day in _subject_blocked_days(s_map.get(s.get("subject_id"))):
+            return False
+        for tid in _slot_teachers(s):
+            if day in off_of.get(tid, set()):
+                return False
+        return _yard_pick_for(s.get("group_id"), day, period) is None
+
+    def ordinary(s: dict[str, Any]) -> bool:
+        """คาบที่ห้องเรียนไม่ผูกกับวิชา จึงสลับห้องกันได้"""
+        subj = s_map.get(s.get("subject_id"))
+        if _subject_room_rule(subj) == "subject" or _subject_rooms(subj):
+            return False
+        if _subject_outdoor(subj):
+            return False
+        r = r_of.get(s.get("room_id"))
+        if r and (r.get("type") == "outdoor" or not _room_usable(r)):
+            return False
+        return True
+
+    def totals() -> dict[str, int]:
+        od = orun = nruns = 0
+        t_over = d_over = worst = 0
+        for tid in tslots:
+            cap, lim = cap_of.get(tid, cap_def), lim_of.get(tid, hard)
+            hit = False
+            for _d, spans in spans_by_day(tid).items():
+                worst = max(worst, len(spans))
+                if len(spans) > cap:
+                    od += len(spans) - cap; d_over += 1; hit = True
+                a, b = _runs_over(spans, lim)
+                orun += a; nruns += b
+            t_over += hit
+        return {"over_day": od, "over_run": orun, "runs_over": nruns,
+                "teachers_over": t_over, "days_over": d_over, "worst_day": worst}
+
+    before = totals()
+    done: list[tuple[dict, tuple[int, int], int | None]] = []   # slot, เดิม(day,period), เดิม room
+
+    def apply(pairs: list[tuple[dict, int, int, int | None]]) -> None:
+        for s, d, p, rid in pairs:
+            done.append((s, (s["day"], s["period"]), s.get("room_id")))
+            s["day"], s["period"] = d, p
+            if rid is not None and rid != s.get("room_id"):
+                r = r_of.get(rid)
+                s["room_id"] = rid
+                s["room_name"] = r["name"] if r else None
+                s["room_type"] = r["type"] if r else None
+            pos[s["id"]] = (d, p)
+
+    def try_pairs(pairs: list[tuple[dict, int, int, int | None]]) -> bool:
+        """ลองย้ายชุดนี้ — ย้ายจริงเมื่อดีขึ้นและไม่ผิดกฎข้อใดเลย"""
+        who: set[int] = set()
+        gids: set[int] = set()
+        for s, d, p, _rid in pairs:
+            if not cell_ok(s, d, p):
+                return False
+            who |= _slot_teachers(s)
+            gids.add(s["group_id"])
+        was_pain = [pain(t) for t in who]
+        was_dup = {gid: dups(gid) for gid in gids}
+        was_holes = {gid: holes(gid) for gid in gids}
+        was_late = {t: late_days(t) for t in who}
+        keep = [(s, (s["day"], s["period"]), s.get("room_id")) for s, _d, _p, _r in pairs]
+        n_done = len(done)
+        apply(pairs)
+
+        def undo():
+            del done[n_done:]
+            for s, (d, p), rid in keep:
+                s["day"], s["period"] = d, p
+                if s.get("room_id") != rid:
+                    r = r_of.get(rid)
+                    s["room_id"] = rid
+                    s["room_name"] = r["name"] if r else None
+                    s["room_type"] = r["type"] if r else None
+                pos[s["id"]] = (d, p)
+
+        now_pain = [pain(t) for t in who]
+        better = ((sum(a for a, _b in now_pain), sum(b for _a, b in now_pain))
+                  < (sum(a for a, _b in was_pain), sum(b for _a, b in was_pain)))
+        if not better:
+            undo(); return False
+        if any(dups(gid) > was_dup[gid] or holes(gid) > was_holes[gid] for gid in gids):
+            undo(); return False
+        if late_max and any(late_days(t) > max(late_max, was_late[t]) for t in who):
+            undo(); return False
+        # เวรคาบสุดท้าย — เกลี่ยคาบแล้วหลบเวรคาบสุดท้ายไปด้วยไม่ได้ ไม่งั้นงาน
+        # ที่ไม่มีใครอยากได้จะไปกองที่คนอื่น
+        if any(late_days(t) < min(late_min_of(t), was_late[t]) for t in who):
+            undo(); return False
+        # ชนกันจริงหรือไม่ ให้ตัวตรวจเดิมตอบ — จุดเดียวที่รู้เรื่องนี้ทั้งระบบ
+        moves = [{"slot_id": s["id"], "day": d, "period": p,
+                  **({"room_id": rid} if rid is not None else {})}
+                 for s, d, p, rid in pairs]
+        undo()
+        if _validate_moves(moves):
+            return False
+        apply(pairs)
+        return True
+
+    t0 = _time.perf_counter()
+    for _r in range(rounds):
+        moved_any = False
+        hurt = sorted(((sum(pain(tid)), tid) for tid in tslots), reverse=True)
+        for score, tid in hurt:
+            if score <= 0:
+                break
+            if _time.perf_counter() - t0 > budget:
+                break
+            cap, lim = cap_of.get(tid, cap_def), lim_of.get(tid, hard)
+            # วันที่เจ็บของครูคนนี้เท่านั้น — ไม่ต้องไล่ทุกคาบของทั้งสัปดาห์
+            sore = {d for d, spans in spans_by_day(tid).items()
+                    if len(spans) > cap or _runs_over(spans, lim)[0]}
+            seen_units: list[list[dict]] = []
+            for s in tslots[tid]:
+                u = unit_at.get(s["id"])
+                if (u is None or any(u is x for x in seen_units)
+                        or pos[s["id"]][0] not in sore or not unit_movable(u)):
+                    continue
+                seen_units.append(u)
+            for u in seen_units:
+                gid = u[0]["group_id"]
+                mine_cells = unit_cells(u)
+                src_day = mine_cells[0][0]
+                hit = False
+                # 1) สลับกับคาบของห้องเดียวกันในวันอื่น — ตารางนักเรียนคงรูปเดิม
+                for v in units_of[gid]:
+                    if (v is u or len(v) != len(u) or not unit_movable(v)
+                            or unit_cells(v)[0][0] == src_day):
+                        continue
+                    v_cells = unit_cells(v)
+                    plain = ([(s_, d, p, None) for s_, (d, p) in zip(u, v_cells)]
+                             + [(s_, d, p, None) for s_, (d, p) in zip(v, mine_cells)])
+                    if try_pairs(plain):
+                        hit = True; break
+                    # ห้องชนกัน: สลับห้องกันด้วย ชั่วโมงนั้นห้องจึงถูกใช้เท่าเดิม
+                    if (all(ordinary(x) for x in u + v)
+                            and u[0].get("room_id") != v[0].get("room_id")):
+                        traded = (
+                            [(s_, d, p, v[0].get("room_id"))
+                             for s_, (d, p) in zip(u, v_cells)]
+                            + [(s_, d, p, u[0].get("room_id"))
+                               for s_, (d, p) in zip(v, mine_cells)])
+                        if try_pairs(traded):
+                            hit = True; break
+                if hit:
+                    moved_any = True
+                    continue
+                # 2) ย้ายไปช่องว่างของห้องเดียวกัน — ทำได้เมื่อไม่เพิ่มคาบว่าง
+                lvl = lvl_of.get(gid, "all")
+                nums = _class_periods_for_level(lvl)
+                used = {pos[x["id"]] for x in gslots[gid]}
+                for d in range(5):
+                    if d == src_day:
+                        continue
+                    for i in range(len(nums) - len(u) + 1):
+                        want = nums[i:i + len(u)]
+                        # คาบคู่ต้องลงในช่องที่ติดกันจริง ไม่ใช่คนละฝั่งพักเที่ยง
+                        if any(_next_class_period_for(lvl, a) != b
+                               for a, b in zip(want, want[1:])):
+                            continue
+                        if any((d, p) in used for p in want):
+                            continue
+                        if try_pairs([(s_, d, p, None)
+                                      for s_, p in zip(u, want)]):
+                            moved_any = True; hit = True; break
+                    if hit:
+                        break
+        if not moved_any or _time.perf_counter() - t0 > budget:
+            break
+
+    after = totals()
+    # คาบที่ถูกย้ายหลายทอดแล้วกลับมาที่เดิม ไม่ใช่ "ย้าย" — รายงานตามที่เห็นใน
+    # ตารางจริง ไม่ใช่ตามจำนวนครั้งที่ลงมือ
+    started: dict[int, tuple[int, int]] = {}
+    for s, old, _r in done:
+        started.setdefault(s["id"], old)
+    out_slots = [_enrich_slot(s) for s in {id(s): s for s, _o, _r in done}.values()
+                 if (s["day"], s["period"]) != started[s["id"]]]
+    moved = len(out_slots)
+    if dry:
+        for s, (d, p), rid in reversed(done):
+            s["day"], s["period"] = d, p
+            if s.get("room_id") != rid:
+                r = r_of.get(rid)
+                s["room_id"] = rid
+                s["room_name"] = r["name"] if r else None
+                s["room_type"] = r["type"] if r else None
+            pos[s["id"]] = (d, p)
+        out_slots = []
+
+    # ที่ยังเหลือ — บอกชื่อกับวันไปเลย เพราะ "แก้ไม่ได้" ที่ไม่บอกว่าของใครวันไหน
+    # แปลว่าโรงเรียนต้องไปไล่หาเองในตาราง 2,700 คาบ
+    stuck: list[dict[str, Any]] = []
+    for tid in tslots:
+        od, orun = pain(tid)
+        if not (od or orun):
+            continue
+        cap, lim = cap_of.get(tid, cap_def), lim_of.get(tid, hard)
+        worst = None
+        for d, spans in spans_by_day(tid).items():
+            run_n = _runs_over(spans, lim)
+            hurt = max(0, len(spans) - cap) + run_n[0]
+            if hurt and (worst is None or hurt > worst[0]):
+                worst = (hurt, d, len(spans), run_n[0])
+        if worst is None:
+            continue
+        _hurt, d, n, run_over = worst
+        day_slots = [s for s in tslots[tid] if pos[s["id"]][0] == d]
+        why = ("คาบที่ล็อกไว้" if any(s.get("is_locked") for s in day_slots)
+               else "คาบคู่" if any(s.get("double_group_key") for s in day_slots)
+               else "คาบกิจกรรม/วิชาเสรี"
+               if any(s.get("activity_teacher_ids") or s.get("is_elective")
+                      for s in day_slots)
+               else "ย้ายไปวันไหนก็ไปชนที่อื่นต่อ")
+        stuck.append({
+            "teacher": (t_map.get(tid) or {}).get("name") or f"ครู {tid}",
+            "day": d, "periods": n,
+            "problem": (f"เกินเพดาน {n} คาบ" if n > cap
+                        else f"สอนติดกันเกิน {lim} คาบ"),
+            "why": why})
+    stuck.sort(key=lambda r: (-r["periods"], r["teacher"]))
+    stuck = stuck[:12]
+
+    skipped = len({s["group_id"] for s in SLOTS
+                   if s.get("group_id") in _CLASS_LOCKED})
+    notes: list[str] = []
+    if moved:
+        notes.append(
+            f"ย้าย {moved} คาบ โดยสลับกับคาบอื่นของห้องเดียวกัน — "
+            f"ตารางนักเรียนมีคาบเท่าเดิมในช่องเดิม")
+    notes.append(
+        f"ครูที่มีวันเกิน {cap_def} คาบ: {before['teachers_over']} -> "
+        f"{after['teachers_over']} คน (วันที่เกิน {before['days_over']} -> "
+        f"{after['days_over']} วัน · วันที่หนักสุด {before['worst_day']} -> "
+        f"{after['worst_day']} คาบ)")
+    notes.append(
+        f"ช่วงที่สอนติดกันเกิน {hard} คาบ: {before['runs_over']} -> "
+        f"{after['runs_over']} ช่วง")
+    # โหมดดูก่อน และกรณีที่ไม่มีอะไรขยับ ไม่ใช่การแก้ตาราง — ไม่ต้องเด้งเลข
+    # revision ให้เครื่องอื่นโหลดใหม่ทั้งตาราง และไม่ต้องเขียนไฟล์
+    if dry or not moved:
+        _nothing_changed()
+
+    if skipped and not with_locked:
+        notes.append(
+            f"ไม่ได้แตะห้องที่ปิดไว้ว่าจัดเสร็จแล้ว {skipped} ห้อง — "
+            f"ถ้าติ๊ก \"เกลี่ยห้องที่ปิดไว้ด้วย\" จะเกลี่ยได้อีกมาก "
+            f"(ตารางนักเรียนยังมีคาบเท่าเดิมในช่องเดิม เปลี่ยนแค่ว่า"
+            f"ชั่วโมงนั้นเรียนวิชาอะไร)")
+    if after["over_day"] or after["over_run"]:
+        notes.append(
+            "ที่เหลือแก้ด้วยการสลับวันไม่ได้ — ติดคาบที่ล็อกไว้ หรือเป็นคาบคู่ "
+            "คาบกิจกรรม วิชาเสรี ที่ย้ายแล้วจะไปชนที่อื่นต่อ")
+    return {"ok": True, "moved": moved, "dry_run": dry,
+            "before": before, "after": after,
+            "max_per_day": cap_def, "max_consecutive": hard,
+            "locked_classes": skipped, "touched_locked": with_locked,
+            "seconds": round(_time.perf_counter() - t0, 1),
+            "notes": notes, "stuck": stuck, "slots": out_slots}
+
 # ── Conflict analysis ─────────────────────────────────────────────────────────
 @app.get("/api/timetable/conflict")
 def analyze_conflict(slot_id: int, target_day: int, target_period: int):

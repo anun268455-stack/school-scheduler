@@ -543,6 +543,8 @@ export interface SchoolConfig {
   /** Most periods in a row a teacher may be given, and what to aim for. */
   max_consecutive?:    number;
   prefer_consecutive?: number;
+  /** ปุ่มเกลี่ยคาบครู: ครูหนึ่งคนสอนได้ไม่เกินกี่คาบต่อวัน */
+  max_per_day?:        number;
   /** เวรคาบสุดท้าย: last-period lessons each teacher should carry per week. */
   min_last_period?:    number;
   /** เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 = ไม่จำกัด */

@@ -8,6 +8,7 @@ import { useReactToPrint } from "react-to-print";
 import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
 import { RepairClassesModal } from "../solver/RepairClassesModal";
+import { BalanceTeachersModal } from "../solver/BalanceTeachersModal";
 import { ConsistencyModal } from "../solver/ConsistencyModal";
 import { PeriodCheckModal } from "../solver/PeriodCheckModal";
 import { CapacityModal } from "../solver/CapacityModal";
@@ -126,6 +127,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
 
   const [showSolver,  setShowSolver]  = useState(false);
   const [showRepair,  setShowRepair]  = useState(false);
+  const [showBalance, setShowBalance] = useState(false);
   const [showCrud,    setShowCrud]    = useState(false);
   const [showTools,   setShowTools]   = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -503,6 +505,22 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         >
           🔧 แก้เฉพาะห้องที่เลือก
         </button>
+        {/* เกลี่ยคาบครู — ไม่ใช่การจัดใหม่ จึงอยู่คนละปุ่มกับสามอันข้างบน
+            สลับคาบของห้องเดียวกันข้ามวัน ตารางนักเรียนมีคาบเท่าเดิมในช่องเดิม
+            วัดบนตารางจริง: ช่วงที่สอนติดกันเกิน 3 คาบ 60 -> 26 ช่วง */}
+        <button
+          onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false);
+                           setShowBalance(true); }}
+          disabled={isSolving}
+          title={isSolving
+            ? "ระบบกำลังจัดตารางอยู่ — รอให้เสร็จก่อน"
+            : "ทำให้ครูไม่มีคาบมากเกินไปในวันเดียว และไม่สอนติดกันยาวเกิน"
+              + "จำเป็น โดยสลับคาบของห้องเดียวกันข้ามวัน — ตารางนักเรียนมีคาบ"
+              + "เท่าเดิมในช่องเดิม คาบที่ล็อกไว้ไม่ถูกแตะ"}
+          className="flex items-center justify-center gap-1 px-2 py-0.5 rounded border border-sky-500/70 bg-sky-900/30 text-[11px] font-semibold text-sky-200 hover:bg-sky-800/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          ⚖️ เกลี่ยคาบครู
+        </button>
         {showSolver && (
           <div className="absolute right-0 top-full mt-1 z-50">
             <SolverWidget onClose={() => setShowSolver(false)} />
@@ -544,6 +562,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       {showCapacity && <CapacityModal onClose={() => setShowCapacity(false)} />}
       {showCurric && <CurriculumAuditModal onClose={() => setShowCurric(false)} />}
       {showRepair && <RepairClassesModal onClose={() => setShowRepair(false)} />}
+      {showBalance && <BalanceTeachersModal onClose={() => setShowBalance(false)} />}
       {/* Print options */}
       {showPrintOpts && (
         <PrintOptionsModal
