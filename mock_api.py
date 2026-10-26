@@ -5584,6 +5584,13 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # ("ไม่อยากให้มีคาบว่างสองคาบขึ้นไปในวันเดียวกัน ถ้าจำเป็นจริงๆ ค่อยให้")
     # แต่ไม่ผ่อนให้วิชาคาบคู่ เพราะโรงเรียนสั่งไว้ชัดว่าก้อนของวิชาคาบคู่ต้อง
     # อยู่คนละวัน และสี่คาบรวดในวันเดียวคือสิ่งที่โรงเรียนเคยเจอมาแล้ว
+    # นับรูไว้ก่อนเริ่ม เพื่อบอกทีหลังได้ว่า "ย้ายกี่ครั้ง" ปิดรูได้จริงกี่รู
+    holes_before = 0
+    for _g in g_map.values():
+        _nums = _class_periods_for_level(_level_key(_g))
+        if _nums:
+            holes_before += len(holes_of(_g["id"], _nums))
+
     for _round in range(6):
         relax_one_a_day = _round >= 4
         moved_any = False
@@ -5638,8 +5645,24 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             break
 
     if gaps_filled:
-        line = (f"ย้ายคาบมาปิดคาบว่างกลางวันของนักเรียน {gaps_filled} คาบ "
-                f"— เอาคาบสุดท้ายของอีกวันมาลง วันนั้นจึงเลิกเร็วขึ้นแทน")
+        # "ย้ายกี่ครั้ง" กับ "ปิดรูได้กี่รู" ไม่ใช่เลขเดียวกัน และต่างกันมาก
+        #
+        # การย้ายหนึ่งครั้งปิดรูตรงนี้ แต่เปิดรูใหม่ที่ห้องเดิมได้ รายงานที่บอก
+        # แต่จำนวนครั้งที่ย้ายจึงฟังดูเหมือนทำงานได้ผลกว่าความจริงมาก — วัดบน
+        # ข้อมูลจริง ย้าย 898 ครั้ง แต่รูที่หายไปจริงมี 539 อีก 359 ครั้งคือ
+        # ย้ายแล้วรูไปโผล่ที่อื่น โรงเรียนต้องเห็นทั้งสองเลขถึงจะรู้ว่าควร
+        # ปล่อยให้วนต่อ หรือปัญหาอยู่ที่อื่นแล้ว
+        holes_after = 0
+        for _g in g_map.values():
+            _nums = _class_periods_for_level(_level_key(_g))
+            if _nums:
+                holes_after += len(holes_of(_g["id"], _nums))
+        closed = max(0, holes_before - holes_after)
+        idle = max(0, gaps_filled - closed)
+        line = (f"ปิดคาบว่างกลางวันของนักเรียนได้ {closed} คาบ "
+                f"— เอาคาบสุดท้ายของอีกวันมาลง วันนั้นจึงเลิกเร็วขึ้นแทน "
+                f"(ย้ายทั้งหมด {gaps_filled} ครั้ง "
+                f"ในนั้น {idle} ครั้งย้ายแล้วไม่ได้ปิดรูเพิ่ม)")
         if gaps_cost:
             # ราคาที่จ่ายไป ต้องเห็น ไม่ใช่เกิดขึ้นเงียบๆ — โรงเรียนเป็นคนบอก
             # ว่ากฎไหนยอมได้ จึงต้องรู้ว่ายอมไปกี่คาบ
@@ -5996,9 +6019,10 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # 1.77 เป็น 4.06 วินาที เพราะทุกคาบต้องไล่หาห้องไกลขึ้น ส่วนรอบนี้วิ่งเฉพาะ
     # คาบของ ม.ต้นที่ไม่มีห้องจริงๆ ซึ่งมีไม่กี่คาบ จึงแทบไม่มีราคา
     evicted = 0
+    reclaimed = 0
     for s_ in SLOTS:
-        if (s_.get("room_id") or s_.get("is_elective") or s_.get("is_activity_block")
-                or _repair_frozen(s_)):
+        if (s_.get("is_elective") or s_.get("is_activity_block")
+                or _repair_frozen(s_) or _held(s_)):
             continue
         grp_ = g_map.get(s_["group_id"]) or {}
         if _level_key(grp_) != "lower":
@@ -6009,38 +6033,142 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         room = r_map.get(grp_["homeroom_room_id"])
         if not room or not _room_usable(room) or room.get("type") == "outdoor":
             continue
+        if s_.get("room_id") == room["id"]:
+            continue                       # อยู่ห้องตัวเองอยู่แล้ว
         subj_ = s_map.get(s_.get("subject_id")) or {}
         if _subject_room_rule(subj_) == "subject":
             continue                       # ต้องเรียนที่ห้องประจำวิชาเท่านั้น
+        # ── คาบที่ "มีห้องแล้ว แต่ไม่ใช่ห้องตัวเอง" ────────────────────────
+        #
+        # "ห้องเรียนห้อง 332 ควรจะเป็นของ 1/5 แต่ทำไมมีห้อง 4/12 มาแทนล่ะ
+        #  คือช่วยจัด ม.ต้นให้เสร็จก่อนแล้วค่อยว่ากันใหม่"
+        #
+        # รอบนี้เคยแตะเฉพาะคาบที่ "ไม่มีห้อง" ซึ่งพลาดอาการที่โรงเรียนเห็นจริง:
+        # ม.1/5 ไม่ได้ไม่มีห้อง แต่ถูกไล่ไป 363 / 362 / ห้องสมุด แล้ว ม.4/12
+        # กับ ม.6/x เข้ามานั่งใน 332 แทน — วัดบนข้อมูลจริงของโรงเรียน (26 ต.ค.)
+        # ห้องประจำของ ม.ต้นถูกชั้นอื่นนั่งไป 398 คาบ ใน 30 ห้อง (ม.ปลาย 341)
+        # และของ ม.1/5 ทั้ง 7 คาบที่ถูกยึด เป็นชั่วโมงที่เจ้าของไปอยู่ห้องอื่นพอดี
+        #
+        # แต่ไม่ใช่ทุกคาบที่ออกจากห้องแล้วผิด — ของ ม.1/5 เก้าคาบที่ออกไป มีห้า
+        # คาบที่ถูกต้อง (ว21286/ว21184 ไปห้องคอมฯ ซึ่งเป็นห้องของกลุ่มสาระนั้น
+        # และ พ21103/พ21104 ไปลาน) เหลือสี่คาบที่ออกไปเพราะแพ้การแย่งห้องเฉยๆ
+        # ด่านล่างนี้จึงแยกสองอย่างนั้นออกจากกัน
+        if s_.get("room_id"):
+            at = r_map.get(s_["room_id"]) or {}
+            # ห้องที่ถูกเลือกไว้ "ตั้งใจ" ต้องไม่ถูกเรียกกลับ — ไม่งั้นรอบนี้จะ
+            # ไปล้มการตั้งค่าที่โรงเรียนทำไว้เอง สามทางที่ตั้งใจได้:
+            #   · โรงเรียนกำหนดห้องให้แถวนั้นในแผนการสอน (req_room)
+            #   · วิชาผูกห้องไว้เอง
+            #   · เป็นห้องของครูคนนั้น (ห้องประจำครู หรือห้องที่เขียนชื่อไว้)
+            if req_room.get((s_["group_id"], s_.get("subject_id"),
+                             s_.get("teacher_id"))) == s_["room_id"]:
+                continue                   # โรงเรียนกำหนดห้องนี้ไว้เอง
+            _t = t_map.get(s_.get("teacher_id")) or {}
+            if (at.get("id") == _t.get("fixed_room_id")
+                    or (s_.get("teacher_id") is not None
+                        and s_["teacher_id"] in _room_reserved_for(at))):
+                continue                   # ห้องของครูคนนี้เอง
+            if _subject_rooms(subj_):
+                continue                   # วิชาผูกห้องไว้เอง
+            if at.get("type") == "outdoor" or _subject_outdoor(subj_):
+                continue                   # วิชาเรียนนอกอาคาร
+            dept_ = subj_.get("department_id")
+            if dept_ and at.get("specialized_dept_id") == dept_:
+                continue                   # อยู่ห้องของกลุ่มสาระตัวเอง ถูกแล้ว
+            if (s_["group_id"], s_["day"], s_["period"]) in pick_at:
+                continue                   # โรงเรียนเลือกลานไว้ให้ชั่วโมงนี้
+        want_b = _subject_buildings(subj_)
+        if want_b and room.get("building_id") not in want_b:
+            continue                       # วิชานี้เรียนได้เฉพาะบางอาคาร
+        if (_teacher_prefs(t_map.get(s_.get("teacher_id")))["ground_floor"]
+                and (room.get("floor") or 1) > 1):
+            continue                       # ครูขึ้นชั้นบนไม่ได้
         bks = cell_buckets(s_["group_id"], s_["period"])
         here = [room_holder.get((room["id"], s_["day"], b)) for b in bks]
         here = [x for x in here if x is not None]
-        if not here or len({id(x) for x in here}) > 1:
-            continue                       # ว่างอยู่ (รอบก่อนจัดการแล้ว) หรือมีหลายคาบ
+        if len({id(x) for x in here}) > 1:
+            continue                       # มีหลายคาบคาอยู่ ไม่ใช่การแย่งห้องเดี่ยวๆ
+        if not here:
+            # ห้องของตัวเองว่างอยู่ แต่คาบนี้ไปนั่งห้องอื่น — เดินกลับบ้านได้เลย
+            # ไม่ต้องไล่ใคร (คาบที่ "ไม่มีห้อง" รอบก่อนหน้าจัดการไปแล้ว)
+            if s_.get("room_id"):
+                hold_room(s_, room["id"])
+                reclaimed += 1
+            continue
         occ = here[0]
         if (occ["group_id"] in group_conflict_ids(s_["group_id"])
                 or _held(occ) or _repair_frozen(occ)
                 or (occ["group_id"], occ["day"], occ["period"]) in pick_at):
             continue                       # ครอบครัวเดียวกัน ล็อกไว้ หรือมีลานของมันเอง
-        # ลำดับสำคัญ: ให้เจ้าของเข้าห้องก่อน แล้วค่อยหาห้องใหม่ให้คนที่ลุก
+        # ── สลับห้องกันตรง ๆ ก่อน ────────────────────────────────────────
         #
-        # ทำกลับกันแล้วพัง — พอปล่อยห้องว่าง ตัวหาห้องของคนที่ลุกเห็นห้องนั้น
-        # ว่างพอดี ก็ย้ายกลับเข้าไปที่เดิม แล้วเจ้าของก็เข้าไปซ้อนอีกที
-        # กลายเป็นห้องเดียวสองห้องเรียน ซึ่งเป็นอาการที่เพิ่งแก้ไปเมื่อกี้
-        hold_room(occ, None)
-        hold_room(s_, room["id"])
-        moved = shuffle_for(occ.get("teacher_id"), occ["group_id"],
-                            occ.get("subject_id"), occ["day"], occ["period"])
-        if moved:
-            hold_room(occ, moved)
-        # ย้ายไม่ได้ก็ยังให้เจ้าของเข้าห้อง — คาบที่ลุกออกไปกลายเป็น "ไม่มีห้อง"
-        # ซึ่งเป็นฝั่งที่โรงเรียนบอกว่าจะไปจัดเอง และมันขึ้นกรอบแดงให้เห็น
+        # เจ้าของอยู่ห้อง X ส่วนคนที่มานั่งอยู่ในห้องประจำ H ของเจ้าของ และ
+        # ทั้งคู่อยู่ชั่วโมงเดียวกัน — สลับกันจึงได้ห้องครบทั้งสองฝ่าย ไม่ต้อง
+        # ไล่ใครออกไปไม่มีห้อง
+        #
+        # ลองแบบไล่ออกอย่างเดียวมาแล้ว: ห้องประจำที่ถูกยึดลดจาก 398 เหลือ 335
+        # แต่คาบที่ไม่มีห้องเพิ่มจาก 26 เป็น 57 เพราะ shuffle_for หาห้องใหม่
+        # ให้คนที่ลุกไม่ได้ การสลับไม่มีราคานั้น เพราะห้องที่เจ้าของเพิ่งว่าง
+        # ลงคือห้องที่คนนั้นเข้าได้อยู่แล้วในชั่วโมงนั้น
+        mine_room = s_.get("room_id")
+        swapped = False
+        if mine_room and mine_room != room["id"]:
+            occ_subj = s_map.get(occ.get("subject_id")) or {}
+            at = r_map.get(mine_room) or {}
+            occ_dept = occ_subj.get("department_id")
+            # คนที่ลุกต้องเข้าห้อง X ได้จริง ด้วยกฎเดียวกับตอนเลือกห้อง
+            # ม.ต้นกับ ม.ปลายใช้เลขคาบคนละชุด "คาบ 6" ของสองชั้นจึงไม่ใช่เวลา
+            # เดียวกันเสมอไป ถ้าช่วงเวลาที่สองคาบกินไม่ตรงกันเป๊ะ การสลับห้อง
+            # จะปล่อยช่องเวลาไม่ครบ แล้วกลายเป็นห้องเดียวสองห้องเรียน
+            # (วัดแล้วเกิดจริง 4-7 ที่) — ไม่ตรงกันก็ไม่สลับ ใช้ทางไล่ออกแทน
+            ok_for_occ = (
+                cell_buckets(occ["group_id"], occ["period"]) == bks
+                and _subject_room_rule(occ_subj) != "subject"
+                and not _subject_rooms(occ_subj)
+                and at.get("type") != "outdoor"
+                and not _subject_outdoor(occ_subj)
+                and _room_usable(at)
+                and (not at.get("specialized_dept_id")
+                     or at["specialized_dept_id"] == occ_dept)
+                and (not _subject_buildings(occ_subj)
+                     or at.get("building_id") in _subject_buildings(occ_subj))
+                and not (_teacher_prefs(t_map.get(occ.get("teacher_id")))["ground_floor"]
+                         and (at.get("floor") or 1) > 1))
+            if ok_for_occ:
+                hold_room(occ, None)
+                hold_room(s_, None)
+                hold_room(s_, room["id"])
+                hold_room(occ, mine_room)
+                swapped = True
+        if not swapped:
+            # ลำดับสำคัญ: ให้เจ้าของเข้าห้องก่อน แล้วค่อยหาห้องใหม่ให้คนที่ลุก
+            #
+            # ทำกลับกันแล้วพัง — พอปล่อยห้องว่าง ตัวหาห้องของคนที่ลุกเห็นห้อง
+            # นั้นว่างพอดี ก็ย้ายกลับเข้าไปที่เดิม แล้วเจ้าของก็เข้าไปซ้อนอีกที
+            # กลายเป็นห้องเดียวสองห้องเรียน ซึ่งเป็นอาการที่เพิ่งแก้ไปเมื่อกี้
+            hold_room(occ, None)
+            hold_room(s_, room["id"])
+            moved = shuffle_for(occ.get("teacher_id"), occ["group_id"],
+                                occ.get("subject_id"), occ["day"], occ["period"])
+            if moved:
+                hold_room(occ, moved)
+            # ย้ายไม่ได้ก็ยังให้เจ้าของเข้าห้อง — คาบที่ลุกออกไปกลายเป็น
+            # "ไม่มีห้อง" ซึ่งเป็นฝั่งที่โรงเรียนบอกว่าจะไปจัดเอง และมันขึ้น
+            # กรอบแดงให้เห็น
         evicted += 1
-    if evicted:
+    if evicted or reclaimed:
+        parts = []
+        if evicted:
+            parts.append(f"ไล่ห้องที่มานั่งแทนออกไป {evicted} คาบ")
+        if reclaimed:
+            parts.append(f"เรียกเจ้าของที่ไปนั่งห้องอื่นกลับเข้าห้องตัวเอง "
+                         f"{reclaimed} คาบ")
         notes.append(
-            f"คืนห้องประจำชั้นให้ ม.ต้น {evicted} คาบ — เจ้าของห้องไม่มีห้องเรียน "
-            f"ทั้งที่ห้องของตัวเองถูกห้องอื่นใช้อยู่ ห้องที่ลุกให้ถูกย้ายไปห้องอื่น "
-            f"(ถ้าไม่มีห้องว่างจะขึ้นกรอบแดงให้จัดเอง)")
+            f"คืนห้องประจำชั้นให้ ม.ต้น {evicted + reclaimed} คาบ "
+            f"({' · '.join(parts)}) — ห้องประจำชั้นเป็นของห้องเรียนนั้น "
+            f"ชั้นอื่นเข้าได้เฉพาะชั่วโมงที่เจ้าของไม่ได้ใช้ "
+            f"ส่วนคาบที่ต้องเรียนห้องเฉพาะ (คอมฯ ลาน ห้องกลุ่มสาระ) ไม่ถูกเรียกกลับ "
+            f"(ถ้าไม่มีห้องว่างให้คนที่ลุก จะขึ้นกรอบแดงให้จัดเอง)")
 
     # ── ห้องที่กันไว้ให้ครู ใครได้สอนในนั้น ──────────────────────────────────
     #
@@ -6707,10 +6835,16 @@ def _capacity_findings() -> list[dict[str, Any]]:
     d_map = {d["id"]: d for d in DEPARTMENTS}
     out: list[dict[str, Any]] = []
 
-    def add(code, title, why, rows, examples, fix):
+    def add(code, title, why, rows, examples, fix, kind="over"):
+        """kind="short" = สั่งไว้ "น้อยกว่า" ที่มี ซึ่งเป็นคนละเรื่องกับส่วนเกิน
+
+        หน้าจอนี้พูดเรื่องส่วนเกินทั้งหน้า ("ทุกบรรทัดคือส่วนที่เกินกว่าที่มี")
+        การเอาส่วนที่ขาดมานับรวมในเลขเดียวกันจะทำให้ตัวเลขบนหัวจอผิดความหมาย
+        จึงแยก kind ไว้ แล้วให้หน้าจอกับ total เลือกเองว่าจะนับอันไหน
+        """
         if rows:
             out.append({"code": code, "title": title, "why": why,
-                        "count": len(rows), "rows": rows,
+                        "count": len(rows), "rows": rows, "kind": kind,
                         "examples": examples[:8], "fixable": True,
                         "fix": fix, "severity": "warning"})
 
@@ -6746,6 +6880,57 @@ def _capacity_findings() -> list[dict[str, Any]]:
          for r in rows],
         fix="ลดคาบในหลักสูตรของห้องนี้ หรือเพิ่มคาบเรียนในผังคาบ "
             "ถ้ายอมให้ใช้คาบสุดท้ายได้ ก็ตั้งที่หน้าตั้งค่าว่าใช้ได้ตามปกติ")
+
+    # ── 1ข. ห้องเรียนที่แผนการสอนสั่งไม่เต็มสัปดาห์ ─────────────────────────
+    #
+    # ด้านตรงข้ามของข้อบน และเป็นคำตอบของคำถามที่ถามซ้ำมาหลายรอบว่า
+    #
+    #   "ปัญหายังอยู่เหมือนเดิมคือมีคาบว่าง แต่ก็ไม่สามารถลงคาบได้"
+    #   "ช่วยทำให้ลงตารางให้ได้หน่อยไม่ว่าจะยังไง อาจจะทำสูตรการหาใหม่ก็ได้"
+    #   "ม.1/5 มีห้องประจำแต่ไม่มีห้องเรียน"
+    #
+    # คาบว่างมีสองแบบคนละเรื่องกัน และแก้คนละทาง:
+    #   ลงไม่ได้      — มีวิชาที่ต้องลง แต่หาที่ลงไม่ได้ → เรื่องของตัวจัดตาราง
+    #   ไม่มีอะไรจะลง — แผนการสอนสั่งชั่วโมงน้อยกว่าช่องที่มี → เรื่องของแผน
+    #
+    # วัดบนข้อมูลของโรงเรียนด้วยผังคาบจริง: ลงไม่ได้ 0 คาบ ทุกวิชาที่แผนสั่งลง
+    # ครบแล้ว ช่องที่เหลือจึงว่างเพราะไม่มีวิชาไหนขอใช้ ไม่ใช่เพราะหาที่ลงไม่ได้
+    # — กดจัดใหม่อีกกี่ครั้งก็ไม่เปลี่ยน และเดิมไม่มีอะไรบนจอบอกเรื่องนี้เลย
+    # กล่องเขียว "ทุกอย่างอยู่ในวิสัยที่จัดลงได้" ยังบอกต่อว่าถ้าตารางไม่ดีให้
+    # ไปดูวิธีจัดวาง ซึ่งพาไปผิดทางเต็มที่
+    #
+    # เทียบกับคาบ 1 ถึงคาบก่อนคาบสุดท้าย ฐานเดียวกับข้อบน สองข้อนี้จึงเป็นด้าน
+    # ตรงข้ามกันจริง ๆ และห้องหนึ่งเข้าได้ข้อเดียวเท่านั้น
+    MIN_SHORT = 3        # ขาดหนึ่งสองคาบคือเรื่องปกติ ไม่ต้องรบกวนให้มาดู
+    rows = []
+    for g in groups:
+        if g.get("parent_id"):
+            continue                      # นับรวมอยู่ในห้องแม่แล้ว
+        kids = [c["id"] for c in (g.get("children") or [])]
+        want = need[g["id"]] + max([need[k] for k in kids] or [0])
+        nums = _class_periods_for_level(_level_key(g))
+        cap = max(0, len(nums) - 1) * 5
+        if not nums or not want or cap - want < MIN_SHORT:
+            continue
+        rows.append({"group_id": g["id"], "name": g.get("name"),
+                     "need": want, "capacity": cap, "short": cap - want,
+                     # ช่องทั้งสัปดาห์รวมคาบสุดท้าย — capacity ข้างบนตัดคาบ
+                     # สุดท้ายออกเพราะโรงเรียนขอเก็บไว้ใช้เมื่อจำเป็น สองเลข
+                     # นี้ต่างกัน และหน้าจอต้องพูดถึงได้ทั้งคู่
+                     "week": len(nums) * 5,
+                     "last_period_num": nums[-1],
+                     "before_last_num": nums[-2] if len(nums) > 1 else nums[-1]})
+    rows.sort(key=lambda r: -r["short"])
+    add("class_under_week", "ห้องเรียนที่แผนการสอนสั่งไม่เต็มสัปดาห์",
+        "ช่องที่เหลือว่างเพราะไม่มีวิชาไหนขอใช้ ไม่ใช่เพราะตัวจัดตารางหาที่ลง "
+        "ไม่ได้ — กดสร้างตารางใหม่อีกกี่ครั้งก็เท่าเดิม",
+        rows,
+        [f"{r['name']} — แผนการสอนสั่ง {r['need']} คาบ แต่คาบ 1 ถึงคาบ "
+         f"{r['before_last_num']} มี {r['capacity']} ช่อง จึงว่าง {r['short']} คาบ"
+         for r in rows],
+        fix="ถ้าตั้งใจให้นักเรียนเลิกเร็วก็ถือว่าปกติ ไม่ต้องแก้ "
+            "ถ้าไม่ใช่ ต้องไปเพิ่มชั่วโมงในแผนการสอนของห้องนี้",
+        kind="short")
 
     # ── 2. ห้องประจำวิชาที่รับไม่ไหว ────────────────────────────────────────
     #
@@ -6858,7 +7043,10 @@ def capacity_check():
     found = _capacity_findings()
     return {
         "findings": found,
-        "total": sum(f["count"] for f in found),
+        # total = ส่วนที่ "เกิน" เท่านั้น ส่วนที่ขาดนับแยก เพราะไม่ใช่ปัญหา
+        # ของการจัดตาราง และหัวจอพูดถึงสองอย่างนี้คนละประโยค
+        "total": sum(f["count"] for f in found if f.get("kind") != "short"),
+        "short_total": sum(f["count"] for f in found if f.get("kind") == "short"),
         "room_week_capacity": _room_week_capacity(),
         "checked": {
             "requirements": len(REQUIREMENTS), "groups": len(_flat_groups()),

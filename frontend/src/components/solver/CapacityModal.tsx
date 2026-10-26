@@ -46,6 +46,9 @@ export const CapacityModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
   }, []);
 
   const findings = data?.findings ?? [];
+  // ห้องที่แผนการสอนสั่งไม่เต็มสัปดาห์ — นับแยกจากส่วนเกิน เพราะไม่ใช่ปัญหา
+  // ของการจัดตาราง และคำแนะนำที่ต้องให้ก็ตรงกันข้ามกัน
+  const short = data?.short_total ?? 0;
 
   return (
     <ModalShell onClose={onClose} maxWidth="max-w-3xl" tall>
@@ -58,9 +61,11 @@ export const CapacityModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
           <p className="text-slate-200 text-xs mt-0.5">
             {data == null
               ? "กำลังตรวจ…"
-              : data.total === 0
+              : data.total === 0 && short === 0
               ? "ทุกอย่างอยู่ในวิสัยที่จัดลงได้"
-              : `พบ ${data.total} รายการที่เกินกว่าที่มี`}
+              : [data.total > 0 ? `พบ ${data.total} รายการที่เกินกว่าที่มี` : null,
+                 short > 0 ? `${short} ห้องที่แผนการสอนสั่งไม่เต็มสัปดาห์` : null]
+                .filter(Boolean).join(" · ")}
             {data != null
               && ` · ห้องหนึ่งห้องรับได้ ${data.room_week_capacity} คาบ/สัปดาห์`}
           </p>
@@ -72,7 +77,7 @@ export const CapacityModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2">
         {err != null && <p className="text-xs text-red-700">{err}</p>}
 
-        {data != null && data.total === 0 && (
+        {data != null && data.total === 0 && short === 0 && (
           <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-3 text-sm text-green-800">
             ✓ หลักสูตรของทุกห้องพอดีกับคาบที่มี ห้องประจำวิชาทุกห้องรับไหว และ
             ไม่มีครูที่ชั่วโมงเกินเวลาตัวเอง — ถ้าตารางยังออกมาไม่ดี ปัญหาอยู่ที่
@@ -80,31 +85,64 @@ export const CapacityModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
           </div>
         )}
 
+        {/* คำตอบของคำถามที่ถามซ้ำมาหลายรอบว่า "มีคาบว่าง แต่ลงคาบไม่ได้"
+            กล่องเขียวเดิมบอกว่า "ถ้าตารางยังออกมาไม่ดี ปัญหาอยู่ที่การจัดวาง"
+            ซึ่งพาไปผิดทางเต็มที่ เมื่อความจริงคือแผนการสอนสั่งชั่วโมงไม่เต็ม
+            สัปดาห์ แล้วไม่มีอะไรบนจอบอกเรื่องนี้เลย */}
+        {data != null && short > 0 && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+            <b>คาบว่างมีสองแบบ และแก้คนละทาง</b>
+            <ul className="mt-1.5 space-y-1 text-[12px] leading-relaxed list-disc pl-4">
+              <li>
+                <b>ลงไม่ได้</b> — มีวิชาที่ต้องลง แต่หาที่ลงไม่ได้ อันนี้เป็นเรื่อง
+                ของตัวจัดตาราง
+              </li>
+              <li>
+                <b>ไม่มีอะไรจะลง</b> — แผนการสอนสั่งชั่วโมงน้อยกว่าช่องที่มี ช่องที่
+                เหลือจึงว่างเพราะไม่มีวิชาไหนขอใช้ กดสร้างตารางใหม่อีกกี่ครั้งก็
+                เท่าเดิม ต้องไปเพิ่มชั่วโมงที่<b>แผนการสอน</b>
+              </li>
+            </ul>
+            <p className="mt-1.5 text-[12px]">
+              ตอนนี้มี <b>{short} ห้อง</b> ที่เป็นแบบที่สอง — ดูรายละเอียดใน
+              หัวข้อสีเหลืองข้างล่าง (ถ้าตั้งใจให้นักเรียนเลิกเร็ว ก็ถือว่าปกติ
+              ไม่ต้องแก้)
+            </p>
+          </div>
+        )}
+
         {data != null && data.total > 0 && (
           <p className="text-[11px] text-slate-600 leading-relaxed">
-            ทุกบรรทัดข้างล่างคือส่วนที่<b>เกินกว่าที่มี</b> ไม่ใช่เรื่องที่วิธีจัด
-            ตารางจะแก้ได้ — กดสร้างตารางใหม่อีกกี่ครั้งส่วนเกินก็ยังอยู่ ต้องลดของ
-            ที่สั่ง หรือเพิ่มของที่มี อย่างใดอย่างหนึ่ง
+            หัวข้อ<b className="text-rose-700">สีแดง</b>คือส่วนที่<b>เกินกว่าที่มี</b>{" "}
+            ไม่ใช่เรื่องที่วิธีจัดตารางจะแก้ได้ — กดสร้างตารางใหม่อีกกี่ครั้งส่วนเกิน
+            ก็ยังอยู่ ต้องลดของที่สั่ง หรือเพิ่มของที่มี อย่างใดอย่างหนึ่ง
+            {short > 0 && <> ส่วนหัวข้อ<b className="text-amber-700">สีเหลือง</b>
+              คือส่วนที่<b>ขาด</b> ซึ่งเป็นเรื่องตรงกันข้าม</>}
           </p>
         )}
 
         {findings.map((f) => {
           const isOpen = open === f.code;
-          const worst = f.rows.reduce((n, r) => Math.max(n, r.over), 0);
+          // หัวข้อ "ขาด" ใช้ช่อง short ไม่ใช่ over และไม่ใช่ความผิดพลาด จึง
+          // ใช้สีเหลืองไม่ใช่สีแดง และพูดว่า "ว่าง" ไม่ใช่ "เกิน"
+          const isShort = f.kind === "short";
+          const amount  = (r: api.CapacityRow) => (isShort ? r.short : r.over) ?? 0;
+          const worst   = f.rows.reduce((n, r) => Math.max(n, amount(r)), 0);
           return (
             <div key={f.code} className="border border-gray-200 rounded-lg overflow-hidden">
               <button onClick={() => setOpen(isOpen ? null : f.code)}
                 className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-50">
-                <span className="shrink-0 px-1.5 py-0.5 rounded text-[11px] font-bold
-                                 bg-rose-100 text-rose-800">
+                <span className={clsx("shrink-0 px-1.5 py-0.5 rounded text-[11px] font-bold",
+                  isShort ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800")}>
                   {f.count}
                 </span>
                 <span className="flex-1 min-w-0">
                   <span className="text-sm font-semibold text-gray-800">{f.title}</span>
                   <span className="block text-[11px] text-gray-500">{f.why}</span>
                 </span>
-                <span className="shrink-0 text-[10px] text-rose-700 font-semibold">
-                  เกินมากสุด {worst} คาบ
+                <span className={clsx("shrink-0 text-[10px] font-semibold",
+                  isShort ? "text-amber-700" : "text-rose-700")}>
+                  {isShort ? `ว่างมากสุด ${worst} คาบ` : `เกินมากสุด ${worst} คาบ`}
                 </span>
                 <span className="text-gray-400 text-xs shrink-0">{isOpen ? "▲" : "▼"}</span>
               </button>
@@ -122,8 +160,12 @@ export const CapacityModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                       <tr className="text-gray-500 text-left">
                         <th className="py-1 font-semibold">ที่ไหน</th>
                         <th className="py-1 font-semibold text-right">สั่งไว้</th>
-                        <th className="py-1 font-semibold text-right">รับได้</th>
-                        <th className="py-1 font-semibold text-right">เกิน</th>
+                        <th className="py-1 font-semibold text-right">
+                          {isShort ? "ช่องที่มี" : "รับได้"}
+                        </th>
+                        <th className="py-1 font-semibold text-right">
+                          {isShort ? "ว่างแน่ๆ" : "เกิน"}
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -152,8 +194,9 @@ export const CapacityModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                           </td>
                           <td className="py-1 text-right tabular-nums text-gray-700">{r.need}</td>
                           <td className="py-1 text-right tabular-nums text-gray-700">{r.capacity}</td>
-                          <td className="py-1 text-right tabular-nums font-bold text-rose-700">
-                            +{r.over}
+                          <td className={clsx("py-1 text-right tabular-nums font-bold",
+                            isShort ? "text-amber-700" : "text-rose-700")}>
+                            {isShort ? `−${r.short ?? 0}` : `+${r.over ?? 0}`}
                           </td>
                         </tr>
                       ))}

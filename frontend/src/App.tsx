@@ -8,6 +8,7 @@ import { TimetableGrid } from "./components/timetable/TimetableGrid";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { StorageWarningBanner } from "./components/backup/StorageWarningBanner";
 import { ApiBuildBanner } from "./components/common/ApiBuildBanner";
+import { CapacityBanner } from "./components/common/CapacityBanner";
 import { useAutoSavePoints } from "./utils/useAutoSavePoints";
 import { useTimetableStore } from "./store/timetableStore";
 import type { DashPage } from "./pages/Dashboard";
@@ -96,6 +97,10 @@ export default function App() {
           while the solver is still old — invisible from in here, and it looks
           exactly like a fix that did not work. */}
       <ApiBuildBanner />
+
+      {/* A week shorter than the curriculum cannot be solved by solving
+          harder — and until now nothing on this screen said so. */}
+      <CapacityBanner />
 
       <main className="flex-1 overflow-hidden flex flex-col">
         <ErrorBoundary>

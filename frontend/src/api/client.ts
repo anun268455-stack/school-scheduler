@@ -722,7 +722,10 @@ export const repairConsistency = (codes?: string[]) =>
 export interface CapacityRow {
   need:     number;
   capacity: number;
-  over:     number;
+  /** ส่วนที่เกินช่องที่มี — มีในหัวข้อ kind "over" */
+  over?:    number;
+  /** ช่องที่เหลือว่างเพราะแผนสั่งไม่เต็ม — มีในหัวข้อ kind "short" */
+  short?:   number;
   /** ห้องเรียนที่หลักสูตรเกิน */
   group_id?:        number;
   name?:            string;
@@ -750,10 +753,15 @@ export interface CapacityFinding {
   fixable:  boolean;
   fix?:     string | null;
   severity: "blocking" | "warning";
+  /** "over" = สั่งไว้เกินช่องที่มี · "short" = สั่งไว้ไม่เต็มช่องที่มี
+   *  สองอย่างนี้แก้คนละทาง และหน้าจอพูดถึงคนละประโยค */
+  kind?:    "over" | "short";
 }
 export interface CapacityReport {
   findings: CapacityFinding[];
+  /** นับแค่ส่วนที่เกิน — ส่วนที่ขาดอยู่ใน short_total */
   total:    number;
+  short_total?: number;
   room_week_capacity: number;
   checked: { requirements: number; groups: number; rooms: number; teachers: number };
 }
