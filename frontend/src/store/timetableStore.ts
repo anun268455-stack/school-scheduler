@@ -562,14 +562,28 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     const room = rooms.find((r) => r.id === newRoomId);
     if (!slot || !room) return;
 
+    // คาบคู่คือคาบเดียวที่ยาวสองชั่วโมง เก็บเป็นสองแถวที่ผูกกันด้วย
+    // double_group_key — ย้ายห้องให้แถวเดียว เด็กต้องเก็บของย้ายกลางคาบ
+    //
+    //   "เมื่อกดย้ายห้องคาบคู่ มันไปได้แค่คาบเดียว"
+    //
+    // เซิร์ฟเวอร์พาอีกครึ่งไปให้แล้ว ตรงนี้ทำให้จอตรงกันทันทีโดยไม่ต้องรอโหลดใหม่
+    const dbl = slot.double_group_key;
+    const together = (s: TimetableSlot) =>
+      s.id === slotId
+      || (!!dbl && s.double_group_key === dbl && s.group_id === slot.group_id
+          && s.day === slot.day);
     set({
-      slots: slots.map((s) => (s.id === slotId
+      slots: slots.map((s) => (together(s)
         ? { ...s, room_id: newRoomId, room_name: room.name, room_type: room.type }
         : s)),
     });
     set((st) => ({ undoStack: [...st.undoStack, {
       label: "เปลี่ยนห้อง",
-      patches: [{ slotId, room_id: slot.room_id ?? null }],
+      // ย้อนทั้งคาบคู่ ไม่ใช่ครึ่งเดียว — ไม่งั้นย้อนแล้วสองครึ่งอยู่คนละห้อง
+      // ซึ่งแย่กว่าตอนก่อนกดย้ายเสียอีก
+      patches: slots.filter(together)
+        .map((s) => ({ slotId: s.id, room_id: s.room_id ?? null })),
     }].slice(-25) }));
     try {
       // โหมดจัดเอง: "เราสามารถเปลี่ยนห้องได้" — ย้ายเข้าห้องที่มีคนใช้อยู่ได้

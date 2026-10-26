@@ -10126,11 +10126,16 @@ def _sync_doubles(slot: dict[str, Any]) -> None:
     key = slot.get("double_group_key")
     if not key:
         return
+    # คาบคู่ไม่ได้เป็นวิชาเสรีเสมอไป — คาบคู่ธรรมดา (พละ ฯลฯ) ไม่มีช่อง
+    # elective_options เลย การอ่านตรง ๆ จึงทำให้ทั้งคำขอพังด้วย KeyError
+    # ซึ่งเป็นสิ่งที่เกิดจริงตอนย้ายห้องให้คาบคู่ผ่านเส้นทางย้ายทีละชุด
+    if "elective_options" not in slot:
+        return
     for s in SLOTS:
         if s is slot or s.get("double_group_key") != key:
             continue
         s["elective_options"] = [dict(o) for o in slot["elective_options"]]
-        s["selected_option_id"] = slot["selected_option_id"]
+        s["selected_option_id"] = slot.get("selected_option_id")
         _apply_selected_option(s)
 
 # ── Level-wide activity periods (คาบกิจกรรมประจำระดับชั้น) ───────────────────
@@ -11126,6 +11131,10 @@ def move_slots(body: dict[str, Any]):
             if k in mv:
                 slot[k] = mv[k]
         _sync_doubles(slot)
+        # คาบคู่ย้ายห้อง ต้องย้ายทั้งสองครึ่ง — เส้นทางนี้ (ย้ายทีละชุด เช่น
+        # โหมดจัดเองกับการสลับตามเส้นทาง) ก็เปลี่ยนห้องได้เหมือนกัน
+        if "room_id" in mv:
+            _sync_double_room(slot)
         landed.append((slot, came_from, "room_id" in mv))
     out = []
     for slot, came_from, room_given in landed:
@@ -11134,6 +11143,42 @@ def move_slots(body: dict[str, Any]):
         _settle_yard(slot, came_from, room_given)
         out.append(_enrich_slot(_settle_overflow(slot)))
     return {"ok": True, "conflicts": [], "slots": out}
+
+
+def _sync_double_room(s: dict[str, Any]) -> list[dict[str, Any]]:
+    """คาบคู่ย้ายห้อง ต้องย้ายทั้งสองครึ่ง
+
+      "ตอนย้ายห้อง เมื่อกดย้ายห้องคาบคู่ มันไปได้แค่คาบเดียว"
+
+    คาบคู่คือคาบเดียวที่ยาวสองชั่วโมง เก็บไว้เป็นสองแถวที่ผูกกันด้วย
+    double_group_key — เปลี่ยนห้องให้แถวเดียว เด็กจึงต้องเก็บของย้ายห้อง
+    กลางคาบ ซึ่งไม่มีใครตั้งใจให้เกิด
+
+    ยกเว้นครึ่งที่โรงเรียนเลือกลานไว้ให้เอง — ชั่วโมงนั้นมีคำตอบของมันแล้ว
+    และลานนั้นอาจไม่ว่างในอีกชั่วโมงหนึ่ง (กฎเดียวกับตอนจับคู่คาบคู่)
+    """
+    key = s.get("double_group_key")
+    if not key:
+        return []
+    moved = []
+    for o in SLOTS:
+        if (o is s or o.get("double_group_key") != key
+                or o.get("group_id") != s.get("group_id")
+                or o.get("day") != s.get("day")):
+            continue
+        if _yard_pick_for(o["group_id"], o["day"], o["period"]) is not None:
+            continue                       # ชั่วโมงนี้โรงเรียนเลือกลานไว้เอง
+        if o.get("room_id") == s.get("room_id"):
+            continue
+        # อ่านชื่อห้องจาก ROOMS ตรง ๆ ไม่ใช่ลอกจากแถวที่เพิ่งแก้ — คำขอที่ส่ง
+        # มาอาจมีแค่ room_id ทำให้ room_name ของแถวนั้นยังเป็นของห้องเดิมอยู่
+        rid = s.get("room_id")
+        r = next((x for x in ROOMS if x["id"] == rid), None) if rid else None
+        o["room_id"] = rid
+        o["room_name"] = r["name"] if r else None
+        o["room_type"] = r["type"] if r else None
+        moved.append(o)
+    return moved
 
 
 @app.patch("/api/timetable/slots/{slot_id}")
@@ -11173,6 +11218,8 @@ def patch_slot(slot_id: int, body: dict[str, Any]):
                         sib.update({k: v for k, v in body.items() if k in ("day", "period")})
                         travelled.append(sib)
             s.update(body)
+            if "room_id" in body:
+                _sync_double_room(s)
             # คาบเรียนลาน: a lesson that comes to rest on a picked cell takes
             # that ลาน, and one that has left a picked cell gives it up. Only
             # when the edit is about WHERE the lesson is — locking it or
