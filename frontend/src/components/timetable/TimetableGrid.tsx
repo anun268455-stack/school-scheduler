@@ -259,7 +259,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     slots, rooms, teachers, periods, groups, subjects, requirements, selectedGroupId, selectedTeacherId, selectedRoomId,
     impactMap, draggingSlot, startDrag, endDrag,
     moveSlot, swapRoom, toggleLock, deleteSlot, applySwapRoute, preLockMode,
-    undo, undoStack, toggleClassLock,
+    undo, undoStack, toggleClassLock, manualMode,
     yardPickMode, yardPicks, yardList,
   } = useTimetableStore();
 
@@ -432,6 +432,16 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       return;
     }
 
+    // โหมดจัดเอง = "วางเลย" ไม่ต้องเลือกเส้นทาง
+    //
+    // หน้าต่างเลือกเส้นทางมีไว้ตอนที่ระบบต้องหาทางให้ไม่ชนกัน แต่โหมดนี้ยอมให้
+    // ชนได้อยู่แล้ว การบังคับให้เลือกเส้นทางก่อนทุกครั้งจึงเป็นการขวางสิ่งที่
+    // โหมดนี้มีไว้ทำ — คาบที่ชนจะขึ้นกรอบแดงให้ไปเลื่อนทีหลังตามที่สั่งไว้
+    if (manualMode) {
+      moveSlot(item.slotId, nd, np);
+      return;
+    }
+
     // Compute concrete replacement routes for this drop.
     const routes = planRoutes(movingSlot, nd, np, slots, rooms, teachers, periods, groups, 5, subjects);
 
@@ -441,7 +451,8 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       return;
     }
     setRoutePlan({ moving: movingSlot, target: { day: nd, period: np }, routes });
-  }, [endDrag, impactMap, moveSlot, applySwapRoute, slots, rooms, teachers, periods, groups]);
+  }, [endDrag, impactMap, moveSlot, applySwapRoute, slots, rooms, teachers, periods, groups,
+      manualMode, subjects]);
 
   const activeSlots = useMemo(() => {
     if (!draggingSlot) return [];
@@ -695,11 +706,20 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       {isDragActive && (
         <div className="flex items-center gap-3 px-4 py-1.5 bg-gray-900 text-xs text-white shrink-0">
           <span className="text-gray-400">ผลกระทบ:</span>
-          {[
-            { color: "bg-green-500",  label: "🟢 ปลอดภัย"         },
-            { color: "bg-yellow-500", label: "🟡 ต้องสลับ 2-4 คาบ" },
-            { color: "bg-red-500",    label: "🔴 ไม่สามารถวางได้"  },
-          ].map(({ color, label }) => (
+          {/* คำอธิบายสีต้องตรงกับสิ่งที่เกิดขึ้นจริงในโหมดนั้น ๆ — ในโหมดจัดเอง
+              สีเหลืองไม่ได้แปลว่า "ต้องสลับ" แต่แปลว่า "วางได้ แล้วจะชน" */}
+          {(manualMode
+            ? [
+                { color: "bg-green-500",  label: "🟢 ว่าง วางได้เลย" },
+                { color: "bg-yellow-500", label: "🟡 วางได้ แต่จะชนกัน (ขึ้นกรอบแดง)" },
+                { color: "bg-red-500",    label: "🔴 ชนคาบที่ล็อกไว้ 🔒 วางไม่ได้" },
+              ]
+            : [
+                { color: "bg-green-500",  label: "🟢 ปลอดภัย"         },
+                { color: "bg-yellow-500", label: "🟡 ต้องสลับ 2-4 คาบ" },
+                { color: "bg-red-500",    label: "🔴 ไม่สามารถวางได้"  },
+              ]
+          ).map(({ color, label }) => (
             <span key={label} className="flex items-center gap-1">
               <span className={clsx("inline-block w-2.5 h-2.5 rounded-full", color)} />{label}
             </span>

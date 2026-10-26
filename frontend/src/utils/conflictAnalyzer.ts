@@ -20,6 +20,7 @@ export function analyzeDropTarget(
   allSlots:      TimetableSlot[],   // entire DB snapshot (all groups/teachers)
   gridPeriods:   Period[],
   sharesStudents: SharesStudents = strictShares,
+  manualMode:    boolean = false,
 ): CellImpact {
   // ── Same position ──────────────────────────────────────────────────────────
   if (drag.day === targetDay && drag.period === targetPeriod) {
@@ -30,6 +31,35 @@ export function analyzeDropTarget(
   const periodDef = gridPeriods.find((p) => p.period_num === targetPeriod);
   if (!periodDef || periodDef.type !== "class") {
     return mk("fixed", 0, periodDef ? `${periodDef.label} – จัดคาบไม่ได้` : "คาบพิเศษ");
+  }
+
+  // ── โหมดจัดเอง: ชนกันได้ ยกเว้นชนกับคาบที่ล็อกไว้ ────────────────────────
+  //
+  //   "วางไม่ได้ ช่วยทำให้วางได้หน่อย"
+  //
+  // ตอนทำโหมดจัดเอง แก้แต่ฝั่งที่ส่งไปเซิร์ฟเวอร์ ไม่ได้แก้สีตอนลาก หน้าจอจึง
+  // ยังขึ้นจุดแดง "ไม่สามารถวางได้" เต็มตารางเหมือนเดิม ทั้งที่วางได้แล้ว —
+  // คนอ่านว่าวางไม่ได้ ก็ไม่วาง กลายเป็นว่าโหมดที่ทำไว้ไม่มีใครได้ใช้
+  //
+  // ในโหมดนี้เหลือสีแดงไว้กรณีเดียว คือชนกับคาบที่ล็อกไว้จริง ๆ
+  if (manualMode) {
+    const here = allSlots.filter(
+      (s) => s.day === targetDay && s.period === targetPeriod && s.id !== drag.id);
+    const co = (x: TimetableSlot) =>
+      [x.teacher_id, (x as { co_teacher_id?: number | null }).co_teacher_id]
+        .filter((t): t is number => t != null);
+    const mine = co(drag);
+    const lockHit = here.find((s) => s.is_locked && (
+      sharesStudents(s.group_id, drag.group_id)
+      || co(s).some((t) => mine.includes(t))
+      || (drag.room_id != null && s.room_id === drag.room_id)));
+    if (lockHit) {
+      return mk("red", 0,
+        `🔒 ชนกับคาบที่ล็อกไว้ของ ${lockHit.group_name ?? "ห้องอื่น"} — วางตรงนี้ไม่ได้`);
+    }
+    if (here.length === 0) return mk("green", 0, "✅ ว่าง – วางได้ทันที");
+    return mk("yellow", here.length,
+      `✋ วางได้ — จะชนกับ ${here.length} คาบ แล้วขึ้นกรอบแดงให้ไปเลื่อนทีหลัง`);
   }
 
   // ── Slots already at the target (day, period) — exclude current drag slot ─
@@ -103,12 +133,14 @@ export function buildImpactMap(
   gridPeriods:  Period[],
   numDays:      number = 5,
   sharesStudents: SharesStudents = strictShares,
+  manualMode:   boolean = false,
 ): Map<string, CellImpact> {
   const map = new Map<string, CellImpact>();
   const periodNums = gridPeriods.map((p) => p.period_num);
   for (let d = 0; d < numDays; d++) {
     for (const p of periodNums) {
-      map.set(`${d}-${p}`, analyzeDropTarget(drag, d, p, allSlots, gridPeriods, sharesStudents));
+      map.set(`${d}-${p}`,
+        analyzeDropTarget(drag, d, p, allSlots, gridPeriods, sharesStudents, manualMode));
     }
   }
   return map;

@@ -468,9 +468,11 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
 
   // ── DnD ─────────────────────────────────────────────────────────────────
   startDrag: (slot) => {
-    const { slots, periods, groups } = get();
+    const { slots, periods, groups, manualMode } = get();
     const shares = buildSharesStudents(groups);
-    const map = buildImpactMap(slot, slots, periods, 5, shares);
+    // สีตอนลากต้องรู้จักโหมดจัดเองด้วย ไม่งั้นมันจะขึ้น "ไม่สามารถวางได้"
+    // เต็มตาราง ทั้งที่โหมดนั้นวางได้แล้ว
+    const map = buildImpactMap(slot, slots, periods, 5, shares, manualMode);
     set({ draggingSlot: slot, impactMap: map });
   },
 
