@@ -3127,6 +3127,9 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         # room per class and coming back to it costs nothing and behaves like a
         # homeroom until the school records a real one.
         home = grp.get("homeroom_room_id") or anchor_room.get(group_id)
+        # คาบนี้เป็นของ ม.ปลายหรือเปล่า — ใช้ตัดสินว่าห้องประจำของ ม.ต้น
+        # จะถูกกันไว้ในรอบแรกหรือไม่ (ดูท้ายฟังก์ชัน)
+        upper_here = bool(grp) and _level_key(grp) == "upper"
         # สอนได้เฉพาะชั้น 1 — a teacher who cannot manage stairs. Honoured as a
         # ranking, not a filter: a hard rule here would simply lose the lesson
         # on a day the ground floor is full, which helps nobody.
@@ -3212,6 +3215,17 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             # Free at this hour, and a room this lesson may sit in at all —
             # the second half is _room_suits, shared with the yard-rescue
             # advice so the two cannot disagree about what "suits" means.
+            # ห้องประจำของ ม.ต้น กันไว้ให้เจ้าของ — ม.ปลายมองไม่เห็นเลย
+            #
+            #   "สำคัญมากต้องลงวิชาของห้องประจำเสร็จก่อน"
+            #
+            # ปิดไว้เป็นค่าตั้งต้น เพราะราคาสูง (ม.ปลายไม่มีห้อง 32 -> 204 คาบ)
+            # โรงเรียนเปิดเองได้ที่ตั้งค่า ถ้ายอมแลกเพื่อให้ห้องประจำว่างให้
+            # เจ้าของจริง ๆ — ดู _lower_home_guard()
+            if (upper_here and r["id"] in homeroom_owner
+                    and r["id"] != home and r.get("type") != "outdoor"
+                    and _lower_home_guard()):
+                return False
             return (not room_taken(r["id"])
                     and _room_suits(r, teacher_id=teacher_id, group_id=group_id,
                                     family=family, want_dept=want_dept,
@@ -11355,6 +11369,37 @@ def _upper_teacher_room_first() -> bool:
     v = (SCHOOL_CONFIG or {}).get("upper_teacher_room_first")
     return True if v is None else bool(v)
 
+
+def _lower_home_guard() -> bool:
+    """ห้องประจำของ ม.ต้น กันไว้ให้เจ้าของก่อน ม.ปลายเข้าได้เป็นทางสุดท้าย
+
+      "ช่วยเอาคาบของ ม.ต้นลงให้เสร็จก่อนแล้วค่อยลงคาบของ ม.ปลาย
+       (สำคัญมากต้องลงวิชาของห้องประจำเสร็จก่อน)"
+
+    ห้องประจำของ ม.ต้นว่างราว 12 ชั่วโมงต่อสัปดาห์ (เรียน 28 จาก 40 ช่อง) และ
+    ม.ปลายก็เข้ามาใช้ช่องที่ว่างนั้น — เปิดตารางห้อง 135 ของ ม.3/6 แล้วเห็นแต่
+    ม.5/8 ม.6/8 ม.5/4 ม.4/11
+
+    เป็นการห้ามขาด ไม่ใช่แค่จัดลำดับ จึงมีราคาที่ต้องจ่าย วัดบนข้อมูลจริง:
+
+      ปิด (ค่าตั้งต้น)  ม.ปลายนั่งห้อง ม.ต้น 322 คาบ · ม.ต้นอยู่ห้องตัวเอง 81%
+                        · ม.ปลายไม่มีห้อง  32 คาบ · 63 วินาที
+      เปิด              ม.ปลายนั่งห้อง ม.ต้น   0 คาบ · ม.ต้นอยู่ห้องตัวเอง 87%
+                        · ม.ปลายไม่มีห้อง 204 คาบ · 19 วินาที
+
+    ทั้งสองแบบลงวิชาได้ครบเท่ากัน และ ม.ต้นไม่มีคาบที่ขาดห้องทั้งคู่ ต่างกันที่
+    ม.ปลาย 172 คาบจะกลายเป็นกรอบแดงให้หาห้องเอง — ซึ่งเป็นฝั่งที่โรงเรียนบอกว่า
+    จะจัดเอง แต่แพงพอที่จะไม่ควรเปิดให้โดยไม่ได้สั่ง
+
+    เคยลองแบบ "กันไว้ก่อน แล้วถ้าจนตรอกค่อยเปิดให้" ด้วยการวิ่งหาห้องรอบสอง
+    ได้ตัวเลขดีกว่าทั้งสองแบบ (นั่ง 266 · ไม่มีห้อง 13 · 32 วินาที) แต่การวิ่ง
+    บันไดหาห้องซ้ำทำให้ขั้นที่มีผลข้างเคียง (เลือกห้องประจำชั่วคราว · จดห้องลง
+    homeroom_ids) ทำงานสองรอบ แล้วเกิดห้องเดียวสองห้องเรียน — roomswap.py จับได้
+    ถอยออกไปก่อน ยังไม่ปลอดภัยพอ
+    """
+    v = (SCHOOL_CONFIG or {}).get("lower_home_guard")
+    return bool(v)
+
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
 _SAVE_KEYS = ("departments", "buildings", "rooms", "teachers", "subjects",
               "requirements", "periods", "slots", "elective_pools", "school_config",
@@ -12976,7 +13021,7 @@ def get_school_config():
 # "ตั้งค่าแล้วทำไมไม่เห็นอัปเดตข้อมูลเลย" แต่เงียบกว่า เพราะจอโชว์ค่าที่กดไว้
 # จนกว่าจะรีเฟรช
 _CONFIG_FLAGS = ("teacher_room_over_homeroom", "lower_homeroom_first",
-                 "upper_teacher_room_first")
+                 "upper_teacher_room_first", "lower_home_guard")
 
 
 @app.put("/api/school/config")

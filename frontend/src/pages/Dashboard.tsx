@@ -3441,6 +3441,35 @@ const SettingsPanel: React.FC = () => {
               </span>
             </span>
           </label>
+
+          {/* "ตอนนี้ทำปุ่มห้ามให้นักเรียน [ที่ไม่ใช่] ม.ต้นใช้ห้องเลย"
+              "สำคัญมากต้องลงวิชาของห้องประจำเสร็จก่อน"
+
+              ปิดไว้เป็นค่าตั้งต้น เพราะเป็นการห้ามขาดและราคาสูง ต้องให้โรงเรียน
+              เห็นราคาก่อนแล้วเลือกเอง ไม่ใช่เปิดให้เงียบ ๆ */}
+          <label className="mt-3 flex gap-2 items-start rounded-lg border border-gray-200
+                            px-3 py-2 cursor-pointer hover:border-blue-300">
+            <input type="checkbox" className="mt-0.5 accent-blue-600"
+              checked={schoolConfig.lower_home_guard === true}
+              onChange={(e) => {
+                setSchoolConfig({ lower_home_guard: e.target.checked });
+                setSaved(false);
+              }} />
+            <span>
+              <span className="text-sm font-medium text-gray-800">
+                กันห้องประจำของ ม.ต้นไว้ — ม.ปลายเข้าไม่ได้เลย
+              </span>
+              <span className="block text-[11px] text-gray-500">
+                เปิดแล้ว ห้องประจำของ ม.ต้นจะเป็นของห้องนั้นห้องเดียว ชั้นอื่นใช้ไม่ได้
+                แม้ในชั่วโมงที่ว่าง — วัดบนข้อมูลจริง: ม.ปลายที่เข้ามานั่ง 322 → 0 คาบ ·
+                ม.ต้นได้อยู่ห้องตัวเอง 81% → 87% · จัดเร็วขึ้นจาก 63 เหลือ 19 วินาที
+              </span>
+              <span className="block text-[11px] text-amber-700 mt-0.5">
+                ราคาที่ต้องจ่าย: ม.ปลายจะไม่มีห้องเพิ่มจาก 32 เป็น 204 คาบ (ขึ้นกรอบแดง
+                ให้หาห้องเอง) ส่วนวิชาที่ลงได้ยังครบเท่าเดิม และ ม.ต้นไม่มีคาบไหนขาดห้อง
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* โลโก้โรงเรียน */}
