@@ -155,8 +155,17 @@ export const fetchSlots = (params?: { group_id?: number; teacher_id?: number; da
   api.get<TimetableSlot[]>("/timetable/slots", { params }).then((r) => r.data);
 export const createSlot = (d: Partial<TimetableSlot>) =>
   api.post<TimetableSlot>("/timetable/slots", d).then((r) => r.data);
-export const updateSlot = (id: number, d: Partial<TimetableSlot>) =>
-  api.patch<TimetableSlot>(`/timetable/slots/${id}`, d).then((r) => r.data);
+/**
+ * แก้คาบหนึ่งคาบ
+ *
+ * manual = โหมดจัดเอง: ยอมให้ย้ายไปชนกับคาบอื่นได้ แล้วไปขึ้นกรอบแดงแทน
+ * เหลือข้อห้ามเดียวคือทับคาบที่ล็อกไว้ไม่ได้ (เซิร์ฟเวอร์ยังปฏิเสธข้อนั้น)
+ */
+export const updateSlot = (id: number, d: Partial<TimetableSlot>,
+                           manual = false) =>
+  api.patch<TimetableSlot>(`/timetable/slots/${id}`,
+                           manual ? { ...d, manual: true } : d)
+    .then((r) => r.data);
 export const deleteSlot  = (id: number) => api.delete(`/timetable/slots/${id}`);
 
 /**

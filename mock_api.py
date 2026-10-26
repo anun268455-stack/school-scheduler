@@ -220,6 +220,9 @@ REQUIREMENTS: list[dict[str, Any]] = [
 
 SLOTS: list[dict[str, Any]] = []
 
+# เซ็ตว่างที่ใช้ร่วมกัน — ไม่ต้องสร้างใหม่ทุกครั้งที่ห้องไม่ได้กันไว้ให้ใคร
+_EMPTY_RESERVED: set[int] = set()
+
 
 
 def _room_reserved_for(room: dict[str, Any]) -> set[int]:
@@ -229,9 +232,15 @@ def _room_reserved_for(room: dict[str, Any]) -> set[int]:
     with three desks, a lab two people run between them. It was a single
     teacher before, so that older shape is still read.
     """
-    # ถูกเรียกเก้าแสนครั้งต่อการจัดหนึ่งรอบ เคยลองแคชด้วย id ของห้องแล้ว วัดได้
-    # เร็วขึ้น 3% ซึ่งอยู่ในช่วงความคลาดเคลื่อน จึงไม่เก็บไว้ — งานที่ทำมันเล็ก
-    # เกินกว่าจะคุ้มกับการหาในแคช และคีย์ด้วย id ก็เสี่ยงค้างของเก่าโดยเปล่าประโยชน์
+    # ไม่แคชตรงนี้ — ลองแล้วพัง: หน้าตรวจความถูกต้องแก้ ROOMS ตรง ๆ แล้วถามซ้ำ
+    # ทันที (เช่น "ห้องกันไว้ให้ครูที่ไม่มีแล้ว") คำตอบที่แคชไว้จึงเป็นของเก่า
+    # การแคชค่าที่อ่านจาก dict ที่คนอื่นแก้ได้ตลอดเวลา ต้องมีคนคอยล้างให้ถูกจุด
+    # ซึ่งเป็นสัญญาที่ผิดพลาดง่ายเกินไป
+    #
+    # ฟังก์ชันนี้ถูกเรียก 107 ล้านครั้งต่อการจัดหนึ่งรอบบนข้อมูลจริง ซึ่งแพงจริง
+    # แต่ที่มาทั้งหมดอยู่ในตัวจัดตาราง ซึ่งระหว่างนั้น ROOMS ไม่เปลี่ยน จึงไปทำ
+    # ตารางไว้ครั้งเดียวที่นั่นแทน (reserved_of) — ได้ความเร็วโดยไม่ต้องเชื่อใจ
+    # ว่าจะมีใครล้างแคชให้ถูกเวลา
     ids = room.get("reserved_teacher_ids")
     if isinstance(ids, list):
         return {int(x) for x in ids if x}
@@ -2744,6 +2753,16 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # ทำให้เวลาจัดขึ้นจาก 1.77 เป็น 4.06 วินาที (ตัวจัดต้องไล่หาห้องไกลขึ้นทุกคาบ)
     # โดยที่บนข้อมูลที่วัดได้ ม.ต้นไม่มีคาบไม่มีห้องอยู่แล้วทั้งก่อนและหลัง
     # เซิร์ฟเวอร์ของโรงเรียนเคยหมดเวลาเพราะจัดนาน จึงไม่คุ้มที่จะแลก
+    # ห้องไหนกันไว้ให้ครูคนไหน — ทำครั้งเดียวต่อการจัดหนึ่งรอบ
+    #
+    # _room_reserved_for ถูกเรียก 107 ล้านครั้งต่อรอบบนข้อมูลจริงของโรงเรียน
+    # และสร้างเซ็ตใหม่ทุกครั้ง รวมเป็นราวหนึ่งในห้าของเวลาทั้งหมด ระหว่างการจัด
+    # หนึ่งรอบ ROOMS ไม่เปลี่ยน ตารางนี้จึงตรงเสมอ และไม่ต้องพึ่งการล้างแคช
+    reserved_of: dict[int, set[int]] = {r["id"]: _room_reserved_for(r) for r in ROOMS}
+
+    def room_reserved_for(room: dict[str, Any]) -> set[int]:
+        return reserved_of.get(room["id"], _EMPTY_RESERVED)
+
     homeroom_owner: dict[int, int] = {}
     for _g in g_map.values():
         _hr = _g.get("homeroom_room_id")
@@ -3274,7 +3293,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         #     this case.
         if teacher_id is not None and rule != "homeroom":
             special = [r for r in ROOMS
-                       if (r["id"] == fr or teacher_id in _room_reserved_for(r))
+                       if (r["id"] == fr or teacher_id in room_reserved_for(r))
                        and r.get("type") == "special"
                        and eligible(r) and not upstairs(r)]
             if special:
@@ -3330,7 +3349,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         if (home_beats_teacher and teacher_id is not None and rule != "homeroom"
                 and not wants_outdoor and _upper_teacher_room_first()
                 and _level_key(grp) == "upper"
-                and any(teacher_id in _room_reserved_for(r)
+                and any(teacher_id in room_reserved_for(r)
                         and eligible(r) and not upstairs(r)
                         for r in ROOMS)):
             home_beats_teacher = False
@@ -3376,7 +3395,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         #     exists precisely to say "not the teacher's room, theirs".
         if teacher_id is not None and rule != "homeroom":
             own_rooms = [r for r in ROOMS
-                         if (r["id"] == fr or teacher_id in _room_reserved_for(r))
+                         if (r["id"] == fr or teacher_id in room_reserved_for(r))
                          and eligible(r) and not upstairs(r)]
             if own_rooms:
                 r = min(own_rooms, key=lambda r: (r["id"] != fr, r["id"]))
@@ -3571,7 +3590,41 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # with twenty ordinary rooms closed, which is the shortage the school
     # describes: a chain of 5 across 8 rooms got 3 lessons of 11 into a room,
     # 9 across 20 got 7, and the solve took the same four seconds either way.
+    # ลึก 9 มาจากการวัดบนข้อมูลตัวอย่าง ซึ่ง "ใช้เวลาเท่ากันทั้งสองแบบ" จริง
+    # — แต่ข้อมูลตัวอย่างจัดเสร็จใน ~2 วินาที ความต่างจึงมองไม่เห็น
+    #
+    # บนข้อมูลจริงของโรงเรียน (26 ต.ค. · แผนการสอน 1,720 แถว · 2,425 คาบ)
+    # การไล่สลับห้องเป็นลูกโซ่คือเกือบทั้งหมดของเวลาที่ใช้: shuffle_for ถูกเรียก
+    # 918 ครั้งจากข้างนอก แต่เรียกตัวเองต่อจนเป็น 134,530 ครั้ง และ eligible()
+    # ถูกเรียก 33 ล้านครั้ง วัดเทียบความลึกบนข้อมูลจริง 2 เมล็ด:
+    #
+    #   ลึก 9   119.3 / 58.6 วินาที · ถูกนั่ง 330/333 · ไม่มีห้อง 26/28
+    #   ลึก 5    78.6 / 36.4 วินาที · ถูกนั่ง 324/329 · ไม่มีห้อง 27/27
+    #   ลึก 3    34.8 / 23.9 วินาที · ถูกนั่ง 327/326 · ไม่มีห้อง 27/24
+    #
+    # เร็วขึ้น 3.4 เท่า โดยคาบที่จัดได้เท่าเดิมทุกเมล็ด (2,425/2,423) และคุณภาพ
+    # อยู่ในช่วงความคลาดเคลื่อนเดียวกัน บนข้อมูลตัวอย่างก็เท่ากันทุกตัว
+    # (คาบ 2,209 · ไม่มีห้อง 0 · ห้องชนกัน 0 ทั้งลึก 9 และลึก 3)
+    #
+    # เรื่องนี้สำคัญกว่าความสวยของตาราง: โรงเรียนรันบน Render รุ่นฟรี และอาการ
+    # ที่แจ้งซ้ำมาหลายรอบคือ "สร้างตารางแล้วเซิร์ฟเวอร์ไม่ตอบ" — ตารางที่ดีขึ้น
+    # นิดหน่อยแต่จัดไม่เสร็จ ไม่มีประโยชน์กับใครเลย
+    #
+    # แต่ลดเป็น 3 ตลอดเวลาไม่ได้: วัดแล้วรอบซ่อมกับรอบตรวจความถูกต้องแย่ลงจริง
+    # (consistency · repair · repair_new · yardrescue ล้ม) ความลึกจึงมีค่าของมัน
+    # อยู่ เพียงแต่ราคามันแพงขึ้นตามขนาดงาน
+    #
+    # ตัดสินด้วย "เวลาที่ใช้ไปแล้ว" ไม่ใช่ขนาดข้อมูล เพราะเส้นแบ่งตามจำนวนแถว
+    # จะเป็นการวัดให้พอดีกับข้อมูลสองชุดที่บังเอิญมีอยู่ตรงหน้า ส่วนเวลาปรับ
+    # ตัวตามเครื่องจริง — Render ช้ากว่าเครื่องที่วัด เส้นนี้ก็จะมาถึงเร็วขึ้นเอง
+    #
+    # งานขนาดปกติจัดเสร็จใน ~2 วินาที จึงไม่มีวันแตะเส้นนี้ และได้ความลึกเต็ม 9
+    # เหมือนเดิมทุกประการ ส่วนงานของโรงเรียนที่ใช้เวลาเป็นนาที จะลดความลึกลง
+    # หลังผ่านไป 20 วินาที ซึ่งตอนนั้นคาบส่วนใหญ่ลงที่แล้ว เหลือแต่การไล่หา
+    # ห้องให้คาบที่ยากที่สุด
     SHUFFLE_DEPTH = 9
+    SHUFFLE_DEPTH_LATE = 3
+    SHUFFLE_BUDGET_S = 20.0
     SHUFFLE_WIDTH = 20
     shuffle_on = False         # switched on for the repair pass at the end
     # Who is sitting in each room at each hour. Kept as an index because the
@@ -3666,7 +3719,10 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
         or returns None having moved nothing.
         """
         tried = tried if tried is not None else set()
-        if depth >= SHUFFLE_DEPTH:
+        limit = (SHUFFLE_DEPTH
+                 if _time.perf_counter() - _t0 < SHUFFLE_BUDGET_S
+                 else SHUFFLE_DEPTH_LATE)
+        if depth >= limit:
             return None
         bks = cell_buckets(gid, period)
         if also_period is not None:
@@ -4798,7 +4854,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     room_owners: set[int] = set()
     if _upper_teacher_room_first():
         for _r in ROOMS:
-            room_owners |= _room_reserved_for(_r)
+            room_owners |= room_reserved_for(_r)
 
     def place_order(r: dict) -> tuple:
         subj = s_map.get(r["subject_id"], {}) or {}
@@ -6066,7 +6122,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             _t = t_map.get(s_.get("teacher_id")) or {}
             if (at.get("id") == _t.get("fixed_room_id")
                     or (s_.get("teacher_id") is not None
-                        and s_["teacher_id"] in _room_reserved_for(at))):
+                        and s_["teacher_id"] in room_reserved_for(at))):
                 continue                   # ห้องของครูคนนี้เอง
             if _subject_rooms(subj_):
                 continue                   # วิชาผูกห้องไว้เอง
@@ -6177,7 +6233,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # โรงเรียนเขียนชื่อครูไว้บนห้องแล้วก็ไม่มีทางรู้ว่ามันได้ผลหรือเปล่า นอกจาก
     # ไปเปิดตารางห้องนั้นดูทีละห้อง บรรทัดนี้ตอบให้ทีเดียว: ห้องที่กันไว้มีคาบ
     # ของเจ้าของกี่คาบ ของลูกหมวดกี่คาบ และห้องไหนยังว่างทั้งสัปดาห์
-    _res_rooms = {r["id"]: r for r in ROOMS if _room_reserved_for(r)}
+    _res_rooms = {r["id"]: r for r in ROOMS if room_reserved_for(r)}
     if _res_rooms:
         _own = _other = 0
         _used: set[int] = set()
@@ -6187,7 +6243,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             if _r is None:
                 continue
             _used.add(_rid)
-            if s_.get("teacher_id") in _room_reserved_for(_r):
+            if s_.get("teacher_id") in room_reserved_for(_r):
                 _own += 1
             else:
                 _other += 1
@@ -10843,8 +10899,24 @@ def copy_elective_slot(slot_id: int, body: dict[str, Any]):
 # state they would produce — which is also what makes a swap safe to validate
 # at all.
 
-def _validate_moves(moves: list[dict[str, Any]]) -> list[str]:
-    """Problems with applying these moves together. Empty means it is fine."""
+def _validate_moves(moves: list[dict[str, Any]],
+                    allow_conflicts: bool = False) -> list[str]:
+    """Problems with applying these moves together. Empty means it is fine.
+
+    allow_conflicts = โหมดจัดเอง
+
+      "ช่วยมีโหมดในการสลับคาบโดยใช้มือเลย โดยจะมีแจ้งเตือนเฉย ๆ แต่จะไม่บังคับ
+       ใด ๆ เราสามารถเปลี่ยนห้องได้ (ยกเว้นจะไปชนกับคาบที่ล็อกเอาไว้)
+       เราสามารถวางคาบลงไปได้ ถ้าชนกันก็จะขึ้นสีแดงให้ไปเลื่อนคาบที่ชนแทน"
+
+    ในโหมดนี้ "ชนกัน" ไม่ใช่เหตุให้ปฏิเสธอีกต่อไป — คาบลงไปได้ แล้วขึ้นสีแดง
+    ให้คนตัดสินใจเอง สิ่งที่ยังปฏิเสธมีสองอย่างเท่านั้น:
+
+      · เรื่องเชิงโครงสร้าง — ไม่พบคาบ · วันไม่ถูกต้อง · ช่องนั้นไม่ใช่คาบเรียน
+        ของชั้นนั้น (เช่นเอาคาบ ม.ต้นไปวางในคาบพักกลางวันของ ม.ต้น) อันนี้ไม่ใช่
+        การชนกัน แต่เป็นช่องที่ไม่มีอยู่จริง
+      · คาบที่ล็อกไว้ — โรงเรียนกำหนดเองว่าห้ามขยับ จึงห้ามทับด้วย
+    """
     by_id = {s["id"]: s for s in SLOTS}
     shares = _shares_students_fn()
     problems: list[str] = []
@@ -10902,6 +10974,15 @@ def _validate_moves(moves: list[dict[str, Any]]) -> list[str]:
                 overlapping.setdefault(o["id"], o)
         for o in overlapping.values():
             msgs = []
+            # โหมดจัดเอง: ชนกันได้ ยกเว้นชนกับคาบที่ล็อกไว้
+            #
+            # overlapping คือทุกคาบของทั้งโรงเรียนที่อยู่ในเวลาเดียวกัน ไม่ใช่
+            # เฉพาะคาบที่ชนกันจริง ๆ การเช็ค is_locked ตรงนี้เฉย ๆ จึงเท่ากับ
+            # ห้ามวางทุกครั้งที่มีคาบล็อกอยู่ที่ไหนสักแห่งในเวลานั้น — ต้องดูก่อน
+            # ว่า "ชนกันจริงไหม" (นักเรียนกลุ่มเดียวกัน ครูคนเดียวกัน หรือห้อง
+            # เดียวกัน) แล้วค่อยตัดสินว่าปล่อยผ่านหรือปฏิเสธ
+            if allow_conflicts and not o.get("is_locked"):
+                continue
             if shares(o["group_id"], s["group_id"]):
                 a, b = g_name.get(s["group_id"], "?"), g_name.get(o["group_id"], "?")
                 msgs.append(f"{a} มีคาบอื่นอยู่แล้ว" if a == b
@@ -10913,6 +10994,13 @@ def _validate_moves(moves: list[dict[str, Any]]) -> list[str]:
                 msgs.append(f"{t_name.get(tid, '?')} สอนคาบนี้อยู่แล้ว")
             if s.get("room_id") and s["room_id"] == o.get("room_id"):
                 msgs.append(f"ห้อง {r_name.get(s['room_id'], '?')} ถูกใช้อยู่แล้ว")
+            # ถึงตรงนี้ในโหมดจัดเอง แปลว่าคู่กรณีเป็นคาบที่ล็อกไว้ — ถ้าชนกันจริง
+            # ค่อยปฏิเสธ พร้อมบอกว่าชนกับคาบล็อกตัวไหน
+            if allow_conflicts:
+                if not msgs:
+                    continue
+                who = g_name.get(o["group_id"], "?")
+                msgs = [f"{m} (คาบที่ล็อกไว้ของ {who})" for m in msgs]
             for m in msgs:
                 if m not in seen:
                     seen.add(m); problems.append(m)
@@ -10929,7 +11017,8 @@ def move_slots(body: dict[str, Any]):
     moves = body.get("moves") or []
     if not moves:
         return {"ok": True, "conflicts": [], "slots": []}
-    conflicts = [] if body.get("force") else _validate_moves(moves)
+    conflicts = ([] if body.get("force")
+                 else _validate_moves(moves, allow_conflicts=bool(body.get("manual"))))
     if conflicts:
         return {"ok": False, "conflicts": conflicts, "slots": []}
 
@@ -10960,7 +11049,13 @@ def move_slots(body: dict[str, Any]):
 
 @app.patch("/api/timetable/slots/{slot_id}")
 def patch_slot(slot_id: int, body: dict[str, Any]):
-    if ("day" in body or "period" in body or "room_id" in body) and not body.get("force"):
+    # โหมดจัดเอง — ชนกันได้ ขึ้นสีแดงให้เห็น แต่ทับคาบที่ล็อกไว้ไม่ได้
+    manual = bool(body.get("manual"))
+    force = bool(body.get("force"))
+    # ธงสองตัวนี้เป็นคำสั่ง ไม่ใช่ข้อมูลของคาบ ถ้าปล่อยไว้มันจะถูกเขียนลงไปใน
+    # คาบตอน s.update(body) แล้วติดไปกับข้อมูลที่บันทึก
+    body = {k: v for k, v in body.items() if k not in ("force", "manual")}
+    if ("day" in body or "period" in body or "room_id" in body) and not force:
         delta = {k: body[k] for k in ("day", "period", "room_id") if k in body}
         batch = [{"slot_id": slot_id, **delta}]
         # Parallel lessons travel together (they are moved below), so they are
@@ -10974,7 +11069,7 @@ def patch_slot(slot_id: int, body: dict[str, Any]):
                         and sib["day"] == cur["day"] and sib["period"] == cur["period"]):
                     batch.append({"slot_id": sib["id"],
                                   **{k: v for k, v in delta.items() if k != "room_id"}})
-        problems = _validate_moves(batch)
+        problems = _validate_moves(batch, allow_conflicts=manual)
         if problems:
             raise HTTPException(409, " · ".join(problems[:3]))
     for s in SLOTS:

@@ -116,7 +116,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     selectedGroupId, setSelectedGroupId,
     selectedTeacherId, setSelectedTeacherId,
     selectedRoomId, setSelectedRoomId,
-    preLockMode, setPreLockMode,
+    preLockMode, setPreLockMode, manualMode, setManualMode,
     yardPickMode, setYardPickMode,
     lockAll, unlockAll,
     liveSync, setLiveSync, syncState, remoteUpdates, isSolving,
@@ -316,12 +316,23 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           )}
           title="เครื่องมือ — ล็อกคาบ เลือกคาบเรียนลาน พิมพ์ และ PDF"
         >
-          {preLockMode ? "🔒 กำลังล็อก" : yardPickMode ? "📌 กำลังเลือกลาน" : "⋯ เครื่องมือ"} <span className="text-[10px]">▾</span>
+          {manualMode ? "✋ จัดเอง" : preLockMode ? "🔒 กำลังล็อก" : yardPickMode ? "📌 กำลังเลือกลาน" : "⋯ เครื่องมือ"} <span className="text-[10px]">▾</span>
         </button>
         {showTools && (
           <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-50 min-w-[230px] py-1">
             {currentPage === "timetable" && (
               <>
+                {/* โหมดจัดเอง — ลากวางได้ตามต้องการ ระบบเตือนแต่ไม่ห้าม
+                    แก้อาการ "เลื่อนแล้วเด้งกลับมาที่เดิม" ซึ่งเกิดจากเซิร์ฟเวอร์
+                    ปฏิเสธการย้ายที่ทำให้ชนกัน แล้วหน้าจอคืนคาบกลับที่เดิม */}
+                <button
+                  onClick={() => { setManualMode(!manualMode); setShowTools(false); }}
+                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors",
+                    manualMode ? "bg-indigo-600 text-white" : "text-gray-200 hover:bg-gray-700")}>
+                  ✋
+                  <span className="flex-1">โหมดจัดเอง — วางได้แม้จะชนกัน</span>
+                  {manualMode && <span className="text-[10px]">กำลังเปิด</span>}
+                </button>
                 <button
                   onClick={() => { setPreLockMode(!preLockMode); setShowTools(false); }}
                   className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors",

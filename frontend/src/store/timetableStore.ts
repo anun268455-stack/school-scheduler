@@ -128,6 +128,16 @@ interface TimetableStore {
   schoolConfig: SchoolConfig;
   setSchoolConfig: (c: Partial<SchoolConfig>) => void;
 
+  // ── โหมดจัดเอง ────────────────────────────────────────────────────────────
+  //
+  //   "ช่วยมีโหมดในการสลับคาบโดยใช้มือเลย โดยจะมีแจ้งเตือนเฉย ๆ แต่จะไม่บังคับ
+  //    ใด ๆ ... ถ้าชนกันก็จะขึ้นสีแดงให้ไปเลื่อนคาบที่ชนแทน"
+  //
+  // ปกติเซิร์ฟเวอร์ปฏิเสธการย้ายที่ทำให้ชนกัน หน้าจอจึงคืนคาบกลับที่เดิม ซึ่ง
+  // คือ "เลื่อนแล้วเด้งกลับ" ที่โรงเรียนเจอ เปิดโหมดนี้แล้วคาบลงไปได้เลย แล้ว
+  // ไปขึ้นกรอบแดงแทน เหลือข้อห้ามเดียวคือทับคาบที่ล็อกไว้ไม่ได้
+  manualMode: boolean;
+
   // ── Pre-lock mode ─────────────────────────────────────────────────────────
   preLockMode: boolean;         // when true, clicking a slot toggles is_locked
 
@@ -184,6 +194,7 @@ interface TimetableStore {
   setSelectedTeacherId: (id: number | null) => void;
   setSelectedRoomId:    (id: number | null) => void;
   setPreLockMode:       (on: boolean) => void;
+  setManualMode:        (on: boolean) => void;
   setYardPickMode:      (on: boolean) => void;
 
   loadAll:   () => Promise<void>;
@@ -259,6 +270,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   solveProgress:     null,
   solverError:       null,
   preLockMode:       false,
+  manualMode:        false,
   yardPickMode:      false,
   yardPicks:         [],
   yardList:          [],
@@ -297,6 +309,9 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   setSelectedRoomId:    (id) => set({ selectedRoomId: id,    selectedGroupId: null,   selectedTeacherId: null }),
   // Both modes take over the click on a cell, so only one can be on at a time.
   setPreLockMode:       (on) => set(on ? { preLockMode: true, yardPickMode: false } : { preLockMode: false }),
+  // โหมดจัดเองไม่ได้แย่งคลิกกับสองโหมดข้างบน — มันเปลี่ยนแค่ว่า "ลากแล้ววางได้
+  // ไหมเมื่อชนกัน" จึงเปิดพร้อมกันได้ และไม่ต้องปิดโหมดอื่น
+  setManualMode:        (on) => set({ manualMode: on }),
   setYardPickMode:      (on) => {
     set(on ? { yardPickMode: true, preLockMode: false } : { yardPickMode: false });
     // Fresh marks and ลาน on the way in: another person may have changed them.
@@ -431,7 +446,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   endDrag: () => set({ draggingSlot: null, impactMap: new Map(), tooltipText: null }),
 
   moveSlot: async (slotId, newDay, newPeriod) => {
-    const { slots } = get();
+    const { slots, manualMode } = get();
     const slot = slots.find((s) => s.id === slotId);
     if (!slot || slot.is_locked) return;
 
@@ -461,11 +476,16 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       patches: affected.map((s) => ({ slotId: s.id, day: s.day, period: s.period })),
     }].slice(-25) }));
     try {
-      await withWrite(() => api.updateSlot(slotId, { day: newDay, period: newPeriod }));
+      await withWrite(() => api.updateSlot(
+        slotId, { day: newDay, period: newPeriod }, manualMode));
     } catch (err: unknown) {
       // The backend refuses a move that would double-book a class, teacher or
       // room. Put the lesson back and say why, rather than letting it snap
       // home with no explanation.
+      //
+      // ในโหมดจัดเอง เซิร์ฟเวอร์ไม่ปฏิเสธเรื่องชนกันอีกแล้ว ที่ยังปฏิเสธได้คือ
+      // ทับคาบที่ล็อกไว้ — ซึ่งเป็นข้อเดียวที่โรงเรียนบอกให้คงไว้ การคืนคาบ
+      // กลับที่เดิมตรงนี้จึงยังถูกต้อง และข้อความจะบอกว่าชนกับคาบล็อกตัวไหน
       set({ slots, solverError: moveRefusal(err) });
     }
   },
@@ -486,7 +506,10 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       patches: [{ slotId, room_id: slot.room_id ?? null }],
     }].slice(-25) }));
     try {
-      await withWrite(() => api.updateSlot(slotId, { room_id: newRoomId }));
+      // โหมดจัดเอง: "เราสามารถเปลี่ยนห้องได้" — ย้ายเข้าห้องที่มีคนใช้อยู่ได้
+      // แล้วไปขึ้นกรอบแดง "ห้องซ้ำ" แทน
+      await withWrite(() => api.updateSlot(
+        slotId, { room_id: newRoomId }, get().manualMode));
     } catch (err: unknown) {
       // Put back THIS slot's room, not the whole timetable as it looked when
       // the call began. Restoring that snapshot would also undo any edit made
