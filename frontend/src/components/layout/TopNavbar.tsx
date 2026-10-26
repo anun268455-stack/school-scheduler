@@ -1,7 +1,7 @@
 /**
  * TopNavbar v3 — Consolidated top-toolbar with Periods + Bulk-Lock nav items.
  */
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useReactToPrint } from "react-to-print";
 
@@ -141,6 +141,15 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   useDismissOnOutside(solverRef, showSolver, useCallback(() => setShowSolver(false), []));
   useDismissOnOutside(crudRef,   showCrud,   useCallback(() => setShowCrud(false), []));
   useDismissOnOutside(toolsRef,  showTools,  useCallback(() => setShowTools(false), []));
+
+  // ห้องที่ปิดไว้ว่า "จัดเสร็จแล้ว" — นับเฉพาะห้องที่กดปิดเอง ไม่นับห้องย่อย
+  // ที่ถูกปิดตามห้องแม่ ไม่งั้นตัวเลขจะดูเยอะเกินจริงจนคนไม่เข้าใจว่ามาจากไหน
+  const lockedClassNames = useMemo(
+    () => groups.flatMap((g) => [g, ...(g.children ?? [])])
+      .filter((g) => g.schedule_locked)
+      .map((g) => g.name),
+    [groups],
+  );
 
   const entityOptions = viewMode === "group"
     ? groups.flatMap((g) => [g, ...(g.children ?? [])])
@@ -417,8 +426,23 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           it is. Different colour, different words, and the 🔧 dialog says
           what it will and will not touch before anything is pressed. */}
       <div ref={solverRef} className="relative px-2 border-r border-gray-700 shrink-0 flex flex-col items-stretch gap-0.5">
+        {/* ห้องที่ปิดไว้ว่าจัดเสร็จแล้ว — บอกตรงนี้ ก่อนกด ไม่ใช่หลังกด
+            "ถ้าฉันล็อกแล้ว ฉันให้จัดตารางใหม่ได้ไหม"
+            ได้ และปุ่มทั้งสองจะข้ามห้องพวกนี้ไป แต่เดิมไม่มีอะไรบนจอยืนยัน
+            ให้เลย คนจึงไม่กล้ากด เพราะกลัวว่างานที่ปิดไว้จะหาย */}
+        {lockedClassNames.length > 0 && (
+          <span
+            title={`จะไม่ถูกแตะ: ${lockedClassNames.join(", ")}`}
+            className="flex items-center justify-center gap-1 px-2 py-0.5 rounded bg-gray-700 border border-gray-500 text-gray-200 text-[10px] font-medium"
+          >
+            🔒 ปิดไว้ {lockedClassNames.length} ห้อง · จะไม่ถูกแตะ
+          </span>
+        )}
         <button
           onClick={() => { setShowSolver((v) => !v); setShowCrud(false); }}
+          title={lockedClassNames.length > 0
+            ? `จัดใหม่ทั้งโรงเรียน ยกเว้น ${lockedClassNames.length} ห้องที่ปิดไว้ว่าจัดเสร็จแล้ว`
+            : "จัดตารางใหม่ทั้งโรงเรียน"}
           className="flex items-center justify-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-semibold transition-colors"
         >
           ⚡ สร้างตาราง
