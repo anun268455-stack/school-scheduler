@@ -259,7 +259,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     slots, rooms, teachers, periods, groups, subjects, requirements, selectedGroupId, selectedTeacherId, selectedRoomId,
     impactMap, draggingSlot, startDrag, endDrag,
     moveSlot, swapRoom, toggleLock, deleteSlot, applySwapRoute, preLockMode,
-    undo, undoStack,
+    undo, undoStack, toggleClassLock,
     yardPickMode, yardPicks, yardList,
   } = useTimetableStore();
 
@@ -299,6 +299,19 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     }
     return combinedPeriods(periods);
   }, [periods, groups, selectedGroupId]);
+
+  // ห้องนี้ถูกปิดไว้ว่าจัดเสร็จแล้วหรือยัง — ห้องย่อยนับตามห้องแม่ด้วย
+  // เพราะเป็นนักเรียนกลุ่มเดียวกัน (ฝั่งเซิร์ฟเวอร์ก็ล็อกตามสายเดียวกัน)
+  const classLocked = useMemo(() => {
+    if (selectedGroupId == null) return false;
+    const flat = flattenGroups(groups);
+    let g = flat.find((x) => x.id === selectedGroupId);
+    while (g) {
+      if (g.schedule_locked) return true;
+      g = g.parent_id == null ? undefined : flat.find((x) => x.id === g!.parent_id);
+    }
+    return false;
+  }, [groups, selectedGroupId]);
 
   // Column widths are shares of this total rather than fixed px, so that every
   // คาบ stays exactly as wide as every other one however wide the panel is.
@@ -624,6 +637,35 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     )}
 
     <div className="w-full h-full flex flex-col overflow-hidden">
+      {/* ล็อกทั้งห้อง — "ห้องนี้จัดเสร็จแล้ว"
+          สีเทา เพื่อให้ต่างจากล็อกรายคาบซึ่งเป็นสีดำ ตามที่โรงเรียนขอ
+          ขึ้นเฉพาะตอนดูตารางของห้องเรียน เพราะล็อกนี้เป็นของห้องเรียน */}
+      {selectedGroupId != null && (
+        <div className={clsx(
+          "flex items-center gap-2 px-4 py-1.5 border-b text-xs shrink-0",
+          classLocked ? "bg-gray-200 border-gray-400 text-gray-700"
+                      : "bg-white border-gray-200 text-gray-500")}>
+          <button
+            onClick={() => void toggleClassLock(selectedGroupId)}
+            className={clsx(
+              "inline-flex items-center gap-1 px-2.5 py-1 rounded-md border font-medium transition-colors",
+              classLocked
+                ? "bg-gray-600 border-gray-700 text-white hover:bg-gray-500"
+                : "bg-white border-gray-300 text-gray-700 hover:bg-gray-100")}
+            title={classLocked
+              ? "ห้องนี้ถูกปิดไว้ว่าจัดเสร็จแล้ว — กดเพื่อเปิดให้จัดใหม่ได้"
+              : "ปิดห้องนี้ไว้ว่าจัดเสร็จแล้ว — สร้างตารางใหม่หรือล้างตารางจะไม่แตะห้องนี้"}
+          >
+            {classLocked ? "🔒 จัดเสร็จแล้ว" : "🔓 ปิดห้องนี้ว่าจัดเสร็จแล้ว"}
+          </button>
+          <span>
+            {classLocked
+              ? "ห้องนี้ถูกปิดไว้ — กดสร้างตารางใหม่หรือล้างตาราง จะไม่แตะคาบของห้องนี้เลย"
+              : "จัดห้องนี้พอใจแล้วก็ปิดไว้ได้ แล้วไปจัดห้องถัดไปโดยไม่ต้องกลัวว่าของเดิมจะถูกรื้อ"}
+          </span>
+        </div>
+      )}
+
       {/* Undo bar */}
       {undoStack.length > 0 && (
         <div className="flex items-center gap-2 px-4 py-1.5 bg-slate-50 border-b border-slate-200 text-xs shrink-0">
@@ -695,7 +737,9 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       )}
 
       {/* Grid */}
-      <div className="flex-1 overflow-auto">
+      {/* ห้องที่ปิดไว้ว่าจัดเสร็จแล้ว พื้นเป็นสีเทา เพื่อให้รู้ทันทีว่ากำลังดู
+          ห้องที่ปิดอยู่ — ต่างจากล็อกรายคาบซึ่งเป็นสีดำบนตัวคาบเอง */}
+      <div className={clsx("flex-1 overflow-auto", classLocked && "bg-gray-100")}>
         <DndContext
           sensors={sensors}
           /* Pick the cell under the POINTER.

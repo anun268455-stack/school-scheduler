@@ -2153,10 +2153,54 @@ _REPAIR_ONLY: "set[int] | None" = None  # classes this run may place lessons for
 _REPAIR_HELD_REQS: set[int] = set()     # their rows tied to a class left out (see _repair_plan)
 
 
+# ── ล็อกทั้งห้อง: "ห้องนี้จัดเสร็จแล้ว อย่ามายุ่ง" ───────────────────────────
+#
+#   "ช่วยทำระบบล็อกรอง คือล็อกปกติเป็นสีดำ แต่อยากให้ล็อกทั้งหน้า เพื่อล็อกว่า
+#    จัดห้องนี้เสร็จแล้ว อาจจะใช้เป็นสีเทาก็ได้"
+#
+# ล็อกปกติ (is_locked) เป็นของรายคาบ ใช้ตอนที่คาบนั้นต้องอยู่ตรงนั้นจริง ๆ
+# ส่วนอันนี้เป็นของทั้งห้องเรียน ใช้ตอนที่ "ห้องนี้พอใจแล้ว" ซึ่งเป็นคนละเรื่อง
+# และเป็นสิ่งที่โรงเรียนทำบ่อยกว่า — ไล่จัดทีละห้อง พอห้องไหนลงตัวก็ปิดมันไว้
+# แล้วไปจัดห้องถัดไปโดยไม่ต้องกลัวว่าของเดิมจะถูกรื้อ
+#
+# เก็บเป็นชุดระดับโมดูล ไม่ใช่แคชที่คิดจาก GROUPS ทุกครั้ง เพราะ _held ถูกเรียก
+# นับล้านครั้งต่อการจัดหนึ่งรอบ และรีเฟรชตอนเริ่มงานใหม่กับตอนข้อมูลเปลี่ยน
+_CLASS_LOCKED: set[int] = set()
+
+
+def _refresh_class_locks() -> None:
+    """อ่านธง schedule_locked ของห้องเรียนใหม่ — รวมห้องย่อยทั้งสายด้วย
+
+    ห้องแม่กับห้องย่อยเป็นนักเรียนกลุ่มเดียวกัน ล็อกห้องแม่แล้วปล่อยให้ห้องย่อย
+    ถูกย้าย จะได้ตารางที่ห้องแม่ "ไม่ขยับ" แต่เด็กกลุ่มเดียวกันย้ายไปแล้ว
+    """
+    groups = _flat_groups()
+    kids: dict[int, list[int]] = defaultdict(list)
+    for g in groups:
+        if g.get("parent_id") is not None:
+            kids[g["parent_id"]].append(g["id"])
+    out: set[int] = set()
+    stack = [g["id"] for g in groups if g.get("schedule_locked")]
+    while stack:
+        gid = stack.pop()
+        if gid in out:
+            continue
+        out.add(gid)
+        stack.extend(kids.get(gid, []))
+    _CLASS_LOCKED.clear()
+    _CLASS_LOCKED.update(out)
+
+
 def _held(s: dict[str, Any]) -> bool:
     """Is this lesson off limits to the solver — locked by the school, or frozen
-    for this run?"""
-    return bool(s.get("is_locked")) or s.get("id") in _REPAIR_FROZEN
+    for this run?
+
+    รวมคาบของห้องเรียนที่ถูก "ล็อกทั้งห้อง" ไว้ด้วย — ด่านนี้เป็นทางผ่านเดียว
+    ที่ทุกรอบของตัวจัดตารางถามก่อนจะขยับคาบ จึงพอแค่จุดเดียว
+    """
+    return (bool(s.get("is_locked"))
+            or s.get("id") in _REPAIR_FROZEN
+            or s.get("group_id") in _CLASS_LOCKED)
 
 
 def _repair_frozen(s: dict[str, Any]) -> bool:
@@ -2550,6 +2594,9 @@ def _solve_greedy(body: dict[str, Any]) -> dict[str, Any]:
     absent or empty it is the whole-school run it always was."""
     # เริ่มงานใหม่ = ล้างแคชตารางค้นหา ระหว่างการจัดผังคาบไม่เปลี่ยนอีก
     _lookup_cache_clear()
+    # ห้องที่ถูกล็อกทั้งห้องไว้ อ่านใหม่ทุกครั้งที่เริ่มจัด — ไม่งั้นห้องที่เพิ่ง
+    # ปลดล็อกจะยังถูกกันไว้ และห้องที่เพิ่งล็อกจะยังถูกรื้อ
+    _refresh_class_locks()
     ids = body.get("repair_group_ids")
     if not ids:
         return _solve_greedy_run(body)
@@ -9086,6 +9133,9 @@ def update_group(i: int, body: dict[str, Any]):
                 body = {**body, "homeroom_teacher_ids":
                         [body["homeroom_teacher_id"]] if body["homeroom_teacher_id"] else []}
             g.update(body)
+            if "schedule_locked" in body:
+                # ให้ทุกเส้นทางเห็นผลทันที ไม่ต้องรอรอบจัดตารางถัดไป
+                _refresh_class_locks()
             _sync_homeroom(g)
             # Enforced here as well as in the dialog, because the bulk import
             # and any later caller write through this same door.
@@ -11145,6 +11195,10 @@ def clear_slots(scope: str = "unlocked", group_id: int | None = None,
     before = len(SLOTS)
 
     def doomed(s: dict) -> bool:
+        # ห้องที่ล็อกทั้งห้องไว้ = "จัดเสร็จแล้ว" ต้องรอดจากปุ่มล้างตารางด้วย
+        # ไม่งั้นงานที่ปิดไว้แล้วจะหายไปพร้อมกับการกดเริ่มใหม่
+        if scope != "all" and s.get("group_id") in _CLASS_LOCKED:
+            return False
         if scope != "all" and s.get("is_locked"):
             return False
         if group_id is not None and s.get("group_id") != group_id:
@@ -11358,6 +11412,7 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
     nothing behind.
     """
     _lookup_cache_clear()   # ผังคาบอาจมาใหม่ทั้งก้อน
+    _refresh_class_locks()  # ห้องที่ล็อกทั้งห้องไว้ก็มากับไฟล์สำรองด้วย
     for key, target in (("departments", DEPARTMENTS), ("buildings", BUILDINGS),
                         ("rooms", ROOMS), ("teachers", TEACHERS),
                         ("subjects", SUBJECTS), ("requirements", REQUIREMENTS),

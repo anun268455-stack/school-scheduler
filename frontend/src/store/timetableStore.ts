@@ -6,7 +6,7 @@ import type {
 } from "../types";
 import { DEFAULT_PERIODS } from "../types";
 import { buildImpactMap } from "../utils/conflictAnalyzer";
-import { buildSharesStudents } from "../utils/groupHierarchy";
+import { buildSharesStudents, flattenGroups } from "../utils/groupHierarchy";
 import { lockClashAt } from "../utils/lockGuard";
 import * as api from "../api/client";
 import { writeGuard } from "../utils/writeGuard";
@@ -128,6 +128,14 @@ interface TimetableStore {
   // ── School config ─────────────────────────────────────────────────────────
   schoolConfig: SchoolConfig;
   setSchoolConfig: (c: Partial<SchoolConfig>) => void;
+
+  /**
+   * ล็อก/ปลดล็อกทั้งห้อง — "ห้องนี้จัดเสร็จแล้ว"
+   *
+   * คนละอย่างกับ toggleLock ซึ่งล็อกทีละคาบ อันนี้ปิดทั้งห้องไว้ไม่ให้รอบ
+   * สร้างตารางถัดไปมารื้อ และปุ่มล้างตารางก็ไม่ลบให้ด้วย
+   */
+  toggleClassLock: (groupId: number) => Promise<void>;
 
   // ── โหมดจัดเอง ────────────────────────────────────────────────────────────
   //
@@ -301,6 +309,26 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   },
   // Kept on the server so both editors see the same settings and a refresh
   // does not lose them. Applied locally first so typing stays responsive.
+  toggleClassLock: async (groupId) => {
+    const { groups } = get();
+    const flat = flattenGroups(groups);
+    const g = flat.find((x) => x.id === groupId);
+    if (!g) return;
+    const want = !g.schedule_locked;
+    // แสดงผลทันที แล้วค่อยบันทึก — การปิดห้องที่จัดเสร็จแล้วเป็นงานที่ทำรัว ๆ
+    // ทีละห้อง การรอเซิร์ฟเวอร์ทุกครั้งทำให้รู้สึกหน่วงโดยไม่จำเป็น
+    const stamp = (list: StudentGroup[]): StudentGroup[] =>
+      list.map((x) => (x.id === groupId
+        ? { ...x, schedule_locked: want }
+        : { ...x, children: x.children ? stamp(x.children) : x.children }));
+    set({ groups: stamp(groups) });
+    try {
+      await withWrite(() => api.updateGroup(groupId, { schedule_locked: want }));
+    } catch {
+      set({ groups, solverError: "บันทึกการล็อกห้องไม่สำเร็จ — ลองใหม่อีกครั้ง" });
+    }
+  },
+
   setSchoolConfig: (c) => {
     set((s) => ({ schoolConfig: { ...s.schoolConfig, ...c } }));
     api.updateSchoolConfig(c).catch(() => { /* kept locally either way */ });
