@@ -12361,12 +12361,33 @@ def get_school_config():
     return SCHOOL_CONFIG
 
 
+# การตั้งค่าแบบเปิด/ปิด ที่หน้าตั้งค่ากดได้ และตัวจัดตารางอ่าน
+#
+# หน้าตั้งค่ามีตัวเลือก "ใครเดินไปหาใคร" มาตลอด กดได้ เห็นผลบนจอทันที แต่
+# เซิร์ฟเวอร์ไม่เคยเก็บไว้เลย เพราะคีย์นี้ไม่อยู่ในรายการข้างล่าง — กดแล้ว
+# รีเฟรช ค่าก็กลับไปเป็นของเดิม และตัวจัดตารางก็ยังใช้ค่าเดิม เป็นอาการเดียวกับ
+# "ตั้งค่าแล้วทำไมไม่เห็นอัปเดตข้อมูลเลย" แต่เงียบกว่า เพราะจอโชว์ค่าที่กดไว้
+# จนกว่าจะรีเฟรช
+_CONFIG_FLAGS = ("teacher_room_over_homeroom", "lower_homeroom_first",
+                 "upper_teacher_room_first")
+
+
 @app.put("/api/school/config")
 def update_school_config(body: dict[str, Any]):
     for k in ("schoolName", "term", "year", "directorName", "deputyName", "logoUrl",
               "max_consecutive", "prefer_consecutive", "min_last_period"):
         if k in body:
             SCHOOL_CONFIG[k] = body[k]
+    for k in _CONFIG_FLAGS:
+        if k not in body:
+            continue
+        v = body[k]
+        # เก็บเป็นบูลีนจริง ไม่ใช่ตามที่ส่งมา — "false" เป็นสตริงที่ไม่ว่าง
+        # ซึ่งเป็นจริงถ้าไม่แปลง และตัวจัดตารางจะทำตรงข้ามกับที่กด
+        if isinstance(v, str):
+            SCHOOL_CONFIG[k] = v.strip().lower() not in ("", "0", "false", "no", "off")
+        else:
+            SCHOOL_CONFIG[k] = bool(v)
     return SCHOOL_CONFIG
 
 
