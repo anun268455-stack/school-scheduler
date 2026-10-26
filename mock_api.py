@@ -5518,6 +5518,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
     # going until no move is left.
     _progress("กำลังปิดคาบว่างกลางวัน", done=len(SLOTS))
     gaps_filled = 0
+    gaps_cost = 0        # ในนั้น กี่คาบที่ต้องยอมให้วิชาซ้ำวัน
 
     def holes_of(gid: int, nums: list[int]) -> list[tuple[int, int]]:
         """ช่องว่างกลางวันของห้องนี้ — นับเวลาของห้องแม่และห้องย่อยรวมกัน
@@ -5557,7 +5558,24 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                 best[x["day"]] = x
         return [x for x in best.values() if swappable(x) and can_leave(x)]
 
-    for _round in range(4):
+    # รอบท้ายๆ ผ่อนกฎ "หนึ่งวิชาวันละครั้ง" เพื่อปิดรูที่เหลือ
+    #
+    # "ตัวอย่างแบบนี้ซึ่งมีหลายห้องเลย ช่วยทำให้ลงตารางให้ได้หน่อยไม่ว่าจะยังไง"
+    #
+    # วัดการย้ายที่ถูกปฏิเสธบนผังคาบจริง: ย้ายสำเร็จ 628 คาบ แต่ถูกปฏิเสธเพราะ
+    # "วันนั้นเรียนวิชานี้ไปแล้ว" 1,115 ครั้ง และ "ครูไม่ว่าง" 1,114 ครั้ง —
+    # ข้อแรกเป็นกฎที่ผ่อนได้ ข้อหลังผ่อนไม่ได้เพราะครูอยู่สองที่พร้อมกันไม่ได้
+    #
+    # วันจันทร์ของโรงเรียนนี้จบด้วยคาบกิจกรรม (คุณธรรม ชุมนุม) ซึ่งย้ายไม่ได้
+    # ห้องที่มีคาบเรียนธรรมดาวันจันทร์แค่สามคาบ จึงเหลือรูกลางวันสองรูเสมอ
+    # ไม่ว่าจะสลับยังไง ทางเดียวที่ปิดได้คือย้ายคาบจากวันอื่นเข้ามา
+    #
+    # เรียนวิชาเดียวกันสองครั้งในวันเดียว แย่น้อยกว่านั่งว่างกลางวันสองคาบ
+    # ("ไม่อยากให้มีคาบว่างสองคาบขึ้นไปในวันเดียวกัน ถ้าจำเป็นจริงๆ ค่อยให้")
+    # แต่ไม่ผ่อนให้วิชาคาบคู่ เพราะโรงเรียนสั่งไว้ชัดว่าก้อนของวิชาคาบคู่ต้อง
+    # อยู่คนละวัน และสี่คาบรวดในวันเดียวคือสิ่งที่โรงเรียนเคยเจอมาแล้ว
+    for _round in range(6):
+        relax_one_a_day = _round >= 4
         moved_any = False
         for grp in sorted(g_map.values(), key=lambda g: g["id"]):
             gid  = grp["id"]
@@ -5581,7 +5599,16 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                         owner = x["group_id"]
                         teacher = t_map.get(x["teacher_id"])
                         home = pull(x)
-                        if (subj_day[(owner, x.get("subject_id"), d)] == 0
+                        # ลองจำกัดให้ผ่อนเฉพาะวันที่ว่างตั้งแต่สองคาบขึ้นไป
+                        # (เส้นที่โรงเรียนขีดไว้เอง) แล้ววัด — แทบไม่ได้ผลเลย
+                        # ม.ต้นกลับไปที่ 8/6/10 รูเท่าเดิม เพราะพอรอบก่อนหน้า
+                        # ปิดไปรูหนึ่ง วันนั้นก็เหลือรูเดียว เงื่อนไขจึงไม่เข้า
+                        was_dup = subj_day[(owner, x.get("subject_id"), d)] != 0
+                        once_a_day = (
+                            not was_dup
+                            or (relax_one_a_day
+                                and not is_double_subject(x.get("subject_id"))))
+                        if (once_a_day
                                 and d not in blocked_days_of(x.get("subject_id"))
                                 and not group_occupied(owner, d, p)
                                 and can_take(teacher, owner, d, p)):
@@ -5589,6 +5616,7 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
                             if rid or not home[2]:
                                 seat(x, d, p, rid)
                                 gaps_filled += 1
+                                gaps_cost += was_dup
                                 filled = moved_any = True
                                 break
                         seat(x, home[0], home[1], home[2])
@@ -5600,9 +5628,15 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             break
 
     if gaps_filled:
-        notes.append(
-            f"ย้ายคาบมาปิดคาบว่างกลางวันของนักเรียน {gaps_filled} คาบ "
-            f"— เอาคาบสุดท้ายของอีกวันมาลง วันนั้นจึงเลิกเร็วขึ้นแทน")
+        line = (f"ย้ายคาบมาปิดคาบว่างกลางวันของนักเรียน {gaps_filled} คาบ "
+                f"— เอาคาบสุดท้ายของอีกวันมาลง วันนั้นจึงเลิกเร็วขึ้นแทน")
+        if gaps_cost:
+            # ราคาที่จ่ายไป ต้องเห็น ไม่ใช่เกิดขึ้นเงียบๆ — โรงเรียนเป็นคนบอก
+            # ว่ากฎไหนยอมได้ จึงต้องรู้ว่ายอมไปกี่คาบ
+            line += (f" · ในนั้นมี {gaps_cost} คาบที่ต้องยอมให้ห้องนั้นเรียน"
+                     f"วิชาเดิมซ้ำในวันเดียวกัน เพื่อไม่ให้เหลือคาบว่างกลางวัน "
+                     f"(วิชาคาบคู่ไม่ถูกผ่อนให้)")
+        notes.append(line)
 
     _progress("กำลังหาห้องให้คาบที่ยังไม่มีห้อง", done=len(SLOTS))
     # ── คาบที่ลงแล้วแต่ไม่มีห้อง: ขยับห้องให้เหมือนกัน ────────────────────────
