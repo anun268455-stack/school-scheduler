@@ -6,6 +6,7 @@
  */
 import React, { useMemo, useState } from "react";
 import { ModalShell } from "../common/ModalShell";
+import { roomHourCount, roomHoursOf, roomsToPrint } from "../../utils/roomUsage";
 import clsx from "clsx";
 import { useTimetableStore } from "../../store/timetableStore";
 import { flattenGroups, compareNames } from "../../utils/groupHierarchy";
@@ -22,7 +23,7 @@ interface Props {
 }
 
 export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm, onClose }) => {
-  const { groups, teachers, departments } = useTimetableStore();
+  const { groups, teachers, departments, rooms, slots } = useTimetableStore();
   const [opt, setOpt]       = useState<PrintOptions>(value);
   const [search, setSearch] = useState("");
 
@@ -30,9 +31,25 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
   const deptName = (id: number | null | undefined) =>
     departments.find((d) => d.id === id)?.name ?? "ไม่ระบุกลุ่มสาระ";
 
+  /** ห้องสอนถูกใช้กี่ชั่วโมงต่อสัปดาห์ — ห้องที่ไม่เคยถูกใช้ไม่ต้องพิมพ์ */
+  const roomHours = useMemo(() => roomHoursOf(slots), [slots]);
+
   // The list of things you can tick, already in the chosen order.
   const items = useMemo(() => {
     const q = search.trim().toLowerCase();
+    if (opt.mode === "room") {
+      return [...rooms]
+        .sort((a, b) => (opt.sort === "department"
+          ? compareNames(a.building_name ?? "", b.building_name ?? "")
+          : 0) || compareNames(a.name, b.name))
+        .filter((r) => !q || r.name.toLowerCase().includes(q)
+                       || (r.building_name ?? "").toLowerCase().includes(q))
+        .map((r) => ({
+          id: r.id, label: r.name,
+          hint: `${roomHourCount(roomHours, r.id)} คาบ`,
+          group: r.building_name ?? "ไม่ระบุอาคาร",
+        }));
+    }
     if (opt.mode !== "group") {
       return [...teachers]
         .sort((a, b) => {
@@ -47,12 +64,15 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
       .sort((a, b) => compareNames(a.level ?? "", b.level ?? "") || compareNames(a.name, b.name))
       .filter((g) => !q || g.name.toLowerCase().includes(q))
       .map((g) => ({ id: g.id, label: g.name, hint: `${g.size} คน`, group: g.level ?? "ไม่ระบุระดับ" }));
-  }, [opt.mode, opt.sort, teachers, flat, search, departments]);
+  }, [opt.mode, opt.sort, teachers, flat, search, departments, rooms, roomHours]);
 
   // Every id that exists, ignoring the search box, so counts stay honest.
   const universe = useMemo(
-    () => (opt.mode !== "group" ? teachers.map((t) => t.id) : flat.map((g) => g.id)),
-    [opt.mode, teachers, flat],
+    () => (opt.mode === "room"
+      // ค่าตั้งต้นของตารางการใช้ห้องสอน = ห้องที่มีคาบจริง ไม่ใช่ทั้ง 130 ห้อง
+      ? roomsToPrint(rooms, slots, []).map((r) => r.id)
+      : opt.mode !== "group" ? teachers.map((t) => t.id) : flat.map((g) => g.id)),
+    [opt.mode, teachers, flat, rooms, slots, roomHours],
   );
   const allIds   = universe;
   const picked   = new Set(opt.selectedIds);
@@ -89,11 +109,13 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
           {/* What to print */}
           <div>
             <p className="text-xs font-semibold text-gray-700 mb-1.5">พิมพ์อะไร</p>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2">
               {([["group", "👥 ตารางเรียน (รายห้อง)"], ["teacher", "👨‍🏫 ตารางสอน (รายครู)"],
+                 ["room", "🏫 ตารางการใช้ห้องสอน"],
                  ["workload", "📋 อัตรากำลัง (ตามกลุ่มสาระ)"]] as [PrintMode, string][]).map(([k, label]) => (
                 <button key={k}
-                  onClick={() => set({ mode: k, selectedIds: [], sort: k === "group" ? "name" : "code" })}
+                  onClick={() => set({ mode: k, selectedIds: [],
+                                       sort: k === "group" || k === "room" ? "name" : "code" })}
                   className={clsx(
                     "flex-1 px-3 py-2 text-sm rounded-lg border transition-colors",
                     opt.mode === k ? "border-gray-800 bg-gray-800 text-white font-medium" : "border-gray-300 hover:border-gray-500",
@@ -113,8 +135,9 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
               <select className="w-full border border-gray-400 bg-white text-gray-900 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                 value={opt.sort} onChange={(e) => set({ sort: e.target.value as PrintSort })}>
                 <option value="name">ตามชื่อ</option>
-                {opt.mode !== "group" && <option value="code">ตามรหัสประจำตัวครู</option>}
-                {opt.mode !== "group" && <option value="department">ตามกลุ่มสาระฯ</option>}
+                {opt.mode === "teacher" && <option value="code">ตามรหัสประจำตัวครู</option>}
+                {opt.mode === "teacher" && <option value="department">ตามกลุ่มสาระฯ</option>}
+                {opt.mode === "room" && <option value="department">ตามอาคาร</option>}
               </select>
             </div>
             <div className={opt.mode === "workload" ? "opacity-40 pointer-events-none" : ""}>
@@ -151,7 +174,8 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
           <div>
             <div className="flex items-center gap-2 mb-1.5">
               <p className="text-xs font-semibold text-gray-700">
-                เลือก{opt.mode === "group" ? "ห้องเรียน" : "ครู"}
+                เลือก{opt.mode === "group" ? "ห้องเรียน"
+                  : opt.mode === "room" ? "ห้องสอน" : "ครู"}
               </p>
               <span className="text-[11px] text-gray-600">เลือกแล้ว {countSel} / {allIds.length}</span>
               <div className="ml-auto flex gap-2">
@@ -161,7 +185,9 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
             </div>
             <input
               className="w-full border border-gray-400 bg-white text-gray-900 placeholder-gray-500 rounded px-2 py-1.5 text-sm mb-2 focus:ring-1 focus:ring-blue-500 outline-none"
-              placeholder={opt.mode === "group" ? "ค้นหาห้องเรียน" : "ค้นหาชื่อครู หรือรหัสครู"}
+              placeholder={opt.mode === "group" ? "ค้นหาห้องเรียน"
+                : opt.mode === "room" ? "ค้นหาชื่อห้องสอน หรือชื่ออาคาร"
+                : "ค้นหาชื่อครู หรือรหัสครู"}
               value={search} onChange={(e) => setSearch(e.target.value)}
             />
             <div className="border border-gray-200 rounded-lg max-h-56 overflow-y-auto divide-y divide-gray-50">

@@ -37,7 +37,7 @@ export default function App() {
 
   const [page, setPage] = useState<Page>("timetable");
   const {
-    loadAll, slots, groups, teachers, departments, periods, schoolConfig,
+    loadAll, slots, groups, teachers, rooms, departments, periods, schoolConfig,
     subjects, requirements,
     startLiveSync, stopLiveSync,
   } = useTimetableStore();
@@ -118,6 +118,7 @@ export default function App() {
           slots={slots}
           groups={groups}
           teachers={teachers}
+          rooms={rooms}
           departments={departments}
           subjects={subjects}
           requirements={requirements}

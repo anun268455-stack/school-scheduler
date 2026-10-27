@@ -20,7 +20,7 @@ import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { byTeacherCode } from "../../utils/teacherOrder";
 import { stepTarget, stepPosition } from "../../utils/entityStep";
-import type { PrintOptions } from "../print/PrintView";
+import type { PrintMode, PrintOptions } from "../print/PrintView";
 import type { ViewMode } from "../../types";
 
 interface TopNavbarProps {
@@ -134,6 +134,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showTools,   setShowTools]   = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showPrintOpts, setShowPrintOpts] = useState(false);
+  /** โหมดที่ตั้งไว้ให้กล่องพิมพ์ตอนเปิด — null คือใช้ค่าที่ค้างอยู่เดิม */
+  const [printPreset, setPrintPreset] = useState<PrintMode | null>(null);
   const [showCheck,   setShowCheck]   = useState(false);
   const [showPeriods, setShowPeriods] = useState(false);
   const [showCapacity, setShowCapacity] = useState(false);
@@ -440,9 +442,19 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
               </>
             )}
             <button
-              onClick={() => { setShowPrintOpts(true); setShowTools(false); setShowSolver(false); setShowCrud(false); }}
+              onClick={() => { setPrintPreset(null); setShowPrintOpts(true);
+                               setShowTools(false); setShowSolver(false); setShowCrud(false); }}
               className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
               🖨 <span>พิมพ์…</span>
+            </button>
+            {/* ตารางการใช้ห้องสอน — "ช่วยทำปุ่มกดเพื่อปริ้น ตารางการใช้ห้องสอน
+                เพิ่มเติมด้วย" กดแล้วกล่องพิมพ์เปิดมาพร้อมโหมดนี้เลย ไม่ต้องไป
+                หาปุ่มในกล่องอีกชั้น */}
+            <button
+              onClick={() => { setPrintPreset("room"); setShowPrintOpts(true);
+                               setShowTools(false); setShowSolver(false); setShowCrud(false); }}
+              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+              🏫 <span>พิมพ์ตารางการใช้ห้องสอน…</span>
             </button>
             <button onClick={() => { setShowTools(false); handlePDF(); }} disabled={isExporting}
               className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700 disabled:text-gray-500">
@@ -612,7 +624,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       {/* Print options */}
       {showPrintOpts && (
         <PrintOptionsModal
-          value={printOptions}
+          value={printPreset
+            ? { ...printOptions, mode: printPreset, selectedIds: [], sort: "name" }
+            : printOptions}
           onChange={onPrintOptionsChange}
           onConfirm={confirmPrint}
           onClose={() => setShowPrintOpts(false)}

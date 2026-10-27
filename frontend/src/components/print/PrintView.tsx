@@ -10,15 +10,16 @@
  * or by teacher code). Teacher sheets carry the teacher's code in the header.
  */
 import React, { forwardRef } from "react";
-import type { Department, LessonRequirement, Period, SchoolConfig, StudentGroup, Subject, Teacher, TimetableSlot } from "../../types";
+import type { Department, LessonRequirement, Period, Room, SchoolConfig, StudentGroup, Subject, Teacher, TimetableSlot } from "../../types";
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { myElectiveOption, slotTeacherNames, slotsForTeacher } from "../../utils/teacherSlots";
 import { effectiveHomeroomIds } from "../../utils/homeroom";
 import { WorkloadReport } from "./WorkloadReport";
 import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
+import { roomHourCount, roomHoursOf, roomsToPrint } from "../../utils/roomUsage";
 
-export type PrintMode = "group" | "teacher" | "workload";
+export type PrintMode = "group" | "teacher" | "room" | "workload";
 export type PrintSort = "name" | "department" | "code";
 
 export interface PrintOptions {
@@ -44,6 +45,8 @@ interface PrintViewProps {
   slots:        TimetableSlot[];
   groups:       StudentGroup[];
   teachers?:    Teacher[];
+  /** ห้องสอน — ใช้เมื่อพิมพ์ "ตารางการใช้ห้องสอน" */
+  rooms?:       Room[];
   departments?: Department[];
   subjects?:    Subject[];
   requirements?: LessonRequirement[];
@@ -99,6 +102,8 @@ const borderCell = (m: Metrics): React.CSSProperties => ({
 
 // ── One timetable block (header + grid + signatures) ─────────────────────────
 interface BlockProps {
+  /** React's own, declared because this tsconfig checks FC props strictly. */
+  key?:     string;
   /** Whose day this sheet shows; omitted for a teacher, who spans both. */
   level?:   LevelKey;
   title:    string;
@@ -566,9 +571,34 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
   );
 }
 
+/**
+ * หนึ่งช่องของ "ตารางการใช้ห้องสอน" — ห้องเป็นเจ้าของกระดาษแผ่นนี้ บรรทัดที่สาม
+ * จึงเป็นชื่อครูแทนชื่อห้อง (ซึ่งจะซ้ำกับหัวกระดาษทุกช่อง)
+ *
+ *   "ช่วยทำปุ่มกดเพื่อปริ้น ตารางการใช้ห้องสอนเพิ่มเติมด้วย"
+ *
+ * ห้องหนึ่งอาจมีหลายห้องเรียนในชั่วโมงเดียวได้จริง — คาบที่สอนรวมสองห้องย่อย
+ * หรือคาบกิจกรรมที่ใช้ห้องร่วมกัน จึงรวมชื่อห้องเรียนไว้ในบรรทัดเดียว
+ */
+function RoomCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
+  if (slots.length === 0) return null;
+  const s = slots[0];
+  const classes = [...new Set(slots.map((x) => shortClass(x.group_name)).filter(Boolean))];
+  const who = [...new Set(slots.flatMap((x) => slotTeacherNames(x)))]
+    .map((n) => shortTeacher(n));
+  return (
+    <CellLines
+      m={m}
+      code={s.subject_code ?? s.subject_name ?? (s.is_elective ? "วิชาเสรี" : "")}
+      mid={classes.join(" ")}
+      room={who.join(" ")}
+    />
+  );
+}
+
 // ── Main export ──────────────────────────────────────────────────────────────
 export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
-  ({ slots, groups, teachers = [], departments = [], subjects = [],
+  ({ slots, groups, teachers = [], rooms = [], departments = [], subjects = [],
      requirements = [], periods, schoolConfig, options }, ref) => {
     const termLabel = `ภาคเรียนที่ ${schoolConfig.term}/${schoolConfig.year}  โรงเรียน${schoolConfig.schoolName}`;
     const m = METRICS[options.perPage];
@@ -603,6 +633,35 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             grid={grid} periods={periods} schoolConfig={schoolConfig}
             metrics={m} compact={compact}
             renderCell={(cs) => <TeacherCell slots={cs} m={m} teacherId={teacher.id} />}
+          />,
+        );
+      });
+    } else if (options.mode === "room") {
+      // ห้องที่ไม่มีคาบเลยไม่ต้องพิมพ์ ถ้าไม่ได้ติ๊กมาเอง — โรงเรียนนี้มี 130
+      // ห้อง และหลายห้องเป็นห้องพักครูหรือห้องที่ยังไม่ได้ใช้ การพิมพ์ทั้งหมด
+      // คือกระดาษเปล่าหลายสิบแผ่น
+      const hourMap = roomHoursOf(slots);
+      const list = roomsToPrint(rooms, slots, options.selectedIds)
+        .sort((a, b) => (options.sort === "department"
+          ? compareNames(a.building_name ?? "", b.building_name ?? "")
+          : 0) || compareNames(a.name, b.name));
+
+      list.forEach((room, idx) => {
+        const mine = slots.filter((x) => x.room_id === room.id);
+        const grid = buildGrid(mine);
+        const hours = roomHourCount(hourMap, room.id);
+        const where = [room.building_name, room.floor ? `ชั้น ${room.floor}` : ""]
+          .filter(Boolean).join(" ");
+        blocks.push(
+          <TimetableBlock
+            key={`r-${room.id}`}
+            title={`ตารางการใช้ห้อง ${String(idx + 1).padStart(3, "0")}  ${room.name}`}
+            subtitle={[where, room.capacity ? `จุ ${room.capacity} คน` : "",
+                       `ใช้ ${hours} คาบ/สัปดาห์`, termLabel]
+              .filter(Boolean).join("  ·  ")}
+            grid={grid} periods={periods} schoolConfig={schoolConfig}
+            metrics={m} compact={compact}
+            renderCell={(cs) => <RoomCell slots={cs} m={m} />}
           />,
         );
       });
