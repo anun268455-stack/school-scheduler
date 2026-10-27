@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-27.1"
+API_BUILD = "2026-10-27.2"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -835,8 +835,13 @@ def _merge_sibling_rooms() -> int:
     return fixed
 
 
-def _tie_adjacent_doubles() -> int:
+def _tie_adjacent_doubles(apply: bool = True,
+                          rows: "list[dict[str, Any]] | None" = None) -> int:
     """จับสองคาบติดกันของวิชาคาบคู่ ให้เป็นคาบคู่ก้อนเดียว
+
+    apply=False คือดูว่ามีคู่ไหนรออยู่ โดยไม่แก้ตาราง และ rows (ถ้าส่งมา) จะถูก
+    เติมรายละเอียดของแต่ละคู่ — ใช้ในหน้าตรวจความสอดคล้องของข้อมูล เพื่อซ่อมได้
+    โดยไม่ต้องจัดตารางใหม่ทั้งโรงเรียน ค่าที่คืนยังเป็นจำนวนคู่เหมือนเดิม
 
     A school with subgroups writes its doubles in a way the solver cannot see
     as one lesson. ม.4/6ข does ว30286 for two periods running while ม.4/6ก,
@@ -879,6 +884,15 @@ def _tie_adjacent_doubles() -> int:
                 continue
             if ((s_map.get(a["subject_id"], {}) or {}).get("duration", 1) or 1) != 2:
                 continue        # the school has not called this one a คาบคู่
+            if rows is not None:
+                rows.append({
+                    "group_name": (g_map.get(gid) or {}).get("name"),
+                    "subject_code": (s_map.get(a["subject_id"]) or {}).get("code"),
+                    "day": _day, "periods": [a["period"], b["period"]],
+                })
+            if not apply:
+                tied += 1
+                continue
             key = f"DBL-{_next('slot')}"
             a["double_group_key"] = b["double_group_key"] = key
             a["is_double_start"], a["is_double_cont"] = True, False
@@ -6504,6 +6518,18 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
             f"โดยใช้ครูที่สอนวิชานั้นอยู่แล้ว"
         )
 
+    # คาบคู่ต้องอยู่ห้องเดียวกันทั้งสองชั่วโมง — ตรวจทีเดียวตอนท้าย หลังจากทุก
+    # ขั้นที่เลือกห้องทำงานจบแล้ว (ปิดคาบว่าง · ทวงห้องประจำชั้น · หาลาน) แต่ละ
+    # ขั้นมองทีละคาบ ไม่เห็นว่าคาบนั้นเป็นครึ่งหนึ่งของคาบคู่
+    _dblroom = _merge_double_rooms()
+    if _dblroom["fixed"] or _dblroom["left"]:
+        _line = f"รวมห้องของคาบคู่ให้เป็นห้องเดียว {_dblroom['fixed']} คู่"
+        if _dblroom["left"]:
+            _line += (f" · อีก {len(_dblroom['left'])} คู่ยังอยู่คนละห้อง "
+                      f"เพราะไม่มีห้องว่างพร้อมกันทั้งสองชั่วโมง "
+                      f"(ดูได้ที่ ตรวจความสอดคล้องของข้อมูล)")
+        notes.append(_line)
+
     # ห้องที่อยู่ประจำชั้น: the lessons that could not stay in their room.
     # A note, not a violation — the lesson is taught, just not where the class
     # wanted it, and that is the school's to know rather than to fix by hand.
@@ -6941,6 +6967,46 @@ def _consistency_findings() -> list[dict[str, Any]]:
                         f"— แผนว่า {want} คาบ แต่ในตารางมี {got}")
     add("over_placed", "ในตารางมีคาบมากกว่าที่แผนการสอนบอกไว้",
         "มักเกิดจากการเพิ่มคาบในตารางด้วยมือ หรือแถวที่เขียนซ้ำ", rows)
+
+    # คาบคู่ที่สองครึ่งอยู่คนละห้อง — เด็กต้องเก็บของย้ายห้องกลางคาบ
+    #
+    #   "คาบคู่จะมีปัญหาคือมีการสอนคนละห้อง แทนที่จะเป็นห้องเดียวกัน"
+    #
+    # ตรวจแบบไม่แก้ก่อน เพื่อแยกให้เห็นว่าอันไหนกดซ่อมแล้วหายได้ อันไหนติด
+    # เงื่อนไข (ล็อกไว้ · โรงเรียนเลือกลานไว้เอง · ไม่มีห้องว่างพร้อมกัน)
+    _dbl = _merge_double_rooms(apply=False)
+    DAY_TH = ("จันทร์", "อังคาร", "พุธ", "พฤหัส", "ศุกร์")
+
+    def _dbl_line(r: dict[str, Any]) -> str:
+        day = DAY_TH[r["day"]] if 0 <= r.get("day", -1) < 5 else "?"
+        where = " / ".join(r["rooms"])
+        tail = f" — {r['why']}" if r.get("why") else ""
+        return (f"{r.get('group_name', '?')} {r.get('subject_code') or ''} "
+                f"{day} คาบ {'+'.join(str(p) for p in r['periods'])} "
+                f"อยู่ {where}{tail}")
+
+    # คาบคู่ที่ติดกันอยู่แล้วแต่ยังไม่ได้ผูกกัน — ลากทีละใบได้ จึงหลุดจากกัน
+    # ("คาบคู่ มีคาบที่คู่กันที่หายไป") ตัวจัดตารางผูกให้ตอนจัดใหม่อยู่แล้ว
+    # อันนี้ทำให้ผูกได้โดยไม่ต้องจัดใหม่ทั้งโรงเรียน
+    _untied: list[dict[str, Any]] = []
+    _tie_adjacent_doubles(apply=False, rows=_untied)
+    add("dbl_untied", "คาบคู่ที่ติดกันอยู่แล้ว แต่ยังไม่ได้ผูกเป็นคาบคู่",
+        "วิชาที่ตั้งไว้ว่าเรียนเป็นคาบคู่ และอยู่ติดกันสองคาบของห้องเดียวกัน "
+        "ครูคนเดียวกัน ควรเป็นคาบเดียวที่ยาวสองชั่วโมง — ถ้าไม่ผูกไว้ การลาก"
+        "คาบหนึ่งจะทำให้อีกคาบค้างอยู่ที่เดิม และห้องของสองคาบอาจไม่ตรงกัน",
+        _untied, fix=("ผูกให้เป็นคาบคู่" if _untied else None),
+        examples=[f"{r['group_name']} {r['subject_code']} "
+                  f"{DAY_TH[r['day']] if 0 <= r['day'] < 5 else '?'} "
+                  f"คาบ {'+'.join(str(p) for p in r['periods'])}"
+                  for r in _untied])
+
+    add("double_rooms", "คาบคู่ที่สองชั่วโมงอยู่คนละห้อง",
+        "คาบคู่คือคาบเดียวที่ยาวสองชั่วโมง ถ้าสองครึ่งอยู่คนละห้อง เด็กต้อง"
+        "เก็บของย้ายห้องกลางคาบ กดซ่อมแล้วระบบจะรวมให้อยู่ห้องเดียว โดยเลือก"
+        "ห้องที่ครึ่งใดครึ่งหนึ่งถืออยู่แล้วและว่างทั้งสองชั่วโมง",
+        _dbl["rows"] + _dbl["left"],
+        fix=(f"รวมห้องให้ {_dbl['fixed']} คู่ที่ทำได้" if _dbl["fixed"] else None),
+        examples=[_dbl_line(r) for r in (_dbl["rows"] + _dbl["left"])])
 
     order = {"blocking": 0, "warning": 1}
     out.sort(key=lambda f: (order.get(f["severity"], 2), -f["count"]))
@@ -7625,6 +7691,13 @@ def consistency_repair(body: dict[str, Any] | None = None):
         note("half_double", _repair_elective_doubles())
     if want("dup_rows"):
         note("dup_rows", _merge_teacherless_rows())
+    # คาบคู่ที่ติดกันอยู่แล้วแต่ยังไม่ได้ผูกกัน — ผูกก่อน แล้วค่อยรวมห้อง
+    # (ผูกแล้วคู่นั้นจะเข้าเกณฑ์ของการรวมห้องด้วย)
+    if want("dbl_untied"):
+        note("dbl_untied", _tie_adjacent_doubles())
+    # คาบคู่ที่สองครึ่งอยู่คนละห้อง — รวมให้อยู่ห้องเดียว
+    if want("double_rooms"):
+        note("double_rooms", _merge_double_rooms()["fixed"])
 
     # The revision counter is bumped by the middleware on every POST, so
     # browsers watching for each other's edits pick this up like any other.
@@ -10128,6 +10201,27 @@ def _next_class_period_for(level: str, period: int) -> int | None:
     return nxt
 
 
+def _prev_class_period_for(level: str, period: int) -> int | None:
+    """คาบเรียนที่อยู่ติดกันก่อนหน้าคาบนี้ของชั้นนี้ — ติดกันจริงเท่านั้น
+
+    กระจกของ _next_class_period_for ใช้ตอนลากครึ่งหลังของคาบคู่ไปวางที่ใหม่
+    แล้วต้องรู้ว่าครึ่งแรกจะไปอยู่ตรงไหน
+    """
+    nums = _class_periods_for_level(level)
+    if period not in nums:
+        return None
+    i = nums.index(period)
+    if i == 0:
+        return None
+    prev = nums[i - 1]
+    rows = _periods_for_level(level)
+    end = _hhmm(rows[prev].get("end_time"))
+    start = _hhmm(rows[period].get("start_time"))
+    if end is not None and start is not None and start != end:
+        return None          # มีอะไรคั่นอยู่ตรงกลาง
+    return prev
+
+
 def _class_period_nums() -> list[int]:
     return sorted({p["period_num"] for p in PERIODS if p["type"] == "class"})
 
@@ -11134,6 +11228,21 @@ def move_slots(body: dict[str, Any]):
     moves = body.get("moves") or []
     if not moves:
         return {"ok": True, "conflicts": [], "slots": []}
+    # คาบคู่ต้องไปทั้งชิ้น — เส้นทางนี้ก็เหมือนกับการลากในตาราง ถ้าคำขอส่งมา
+    # ครึ่งเดียว ให้อีกครึ่งตามไปช่องที่ติดกัน และถูกตรวจพร้อมกัน
+    by_id_pre = {s["id"]: s for s in SLOTS}
+    anchors = [(by_id_pre[mv["slot_id"]], int(mv.get("day", by_id_pre[mv["slot_id"]]["day"])),
+                int(mv.get("period", by_id_pre[mv["slot_id"]]["period"])))
+               for mv in moves
+               if mv.get("slot_id") in by_id_pre
+               and ("day" in mv or "period" in mv)]
+    if anchors:
+        grown, why = _expand_doubles(anchors)
+        if why:
+            return {"ok": False, "conflicts": [why], "slots": []}
+        asked = {mv.get("slot_id") for mv in moves}
+        moves = list(moves) + [{"slot_id": x["id"], "day": d, "period": p}
+                               for x, d, p in grown if x["id"] not in asked]
     conflicts = ([] if body.get("force")
                  else _validate_moves(moves, allow_conflicts=bool(body.get("manual"))))
     if conflicts:
@@ -11166,6 +11275,182 @@ def move_slots(body: dict[str, Any]):
         _settle_yard(slot, came_from, room_given)
         out.append(_enrich_slot(_settle_overflow(slot)))
     return {"ok": True, "conflicts": [], "slots": out}
+
+
+def _merge_double_rooms(apply: bool = True) -> dict[str, Any]:
+    """คาบคู่ต้องอยู่ห้องเดียวกันทั้งสองชั่วโมง
+
+      "คาบคู่จะมีปัญหาคือมีการสอนคนละห้อง แทนที่จะเป็นห้องเดียวกัน"
+
+    คาบคู่คือคาบเดียวที่ยาวสองชั่วโมง ถ้าสองครึ่งอยู่คนละห้อง เด็กต้องเก็บของ
+    ย้ายห้องกลางคาบ และครูต้องขนของตาม — วัดบนตารางจริง 26 ต.ค. เจอ 13 ชิ้นจาก
+    296 ชิ้น (ห้องในอาคารต่างกัน 9 · มีครึ่งที่ไปอยู่ลาน 4)
+
+    ที่เป็นอย่างนี้เพราะห้องถูกเลือก "ต่อคาบ" ในหลายขั้นตอนหลังจากวางคาบคู่ลงไป
+    แล้ว (ปิดคาบว่าง · ทวงห้องประจำชั้น · หาลานให้พละ) แต่ละขั้นมองคาบเดียว
+    ไม่เห็นว่าคาบนั้นเป็นครึ่งหนึ่งของคาบคู่ แทนที่จะไปแก้ทุกขั้น (ซึ่งต้องจำ
+    ให้ครบทุกครั้งที่เพิ่มขั้นใหม่) ตรวจทีเดียวตอนท้าย แล้วรวมห้องให้
+
+    เลือกห้องแบบอนุรักษ์นิยม: เอาห้องที่ครึ่งใดครึ่งหนึ่งถืออยู่แล้วก่อน (ห้อง
+    ที่ตรงกับห้องประจำวิชามาก่อน) แล้วห้องประจำชั้น แล้วห้องประจำวิชา — ไม่คิด
+    ห้องใหม่ที่ไม่มีใครเลือกไว้ เพราะการ "หาห้องให้" เป็นงานของตัวจัดตาราง
+    ที่รู้เงื่อนไขครบกว่านี้
+
+    ไม่แตะ: ชั่วโมงที่โรงเรียนเลือกลานไว้เอง · คาบที่ล็อกไว้
+    """
+    g_map = {g["id"]: g for g in _flat_groups()}
+    r_map = {r["id"]: r for r in ROOMS}
+    s_map = {x["id"]: x for x in SUBJECTS}
+    units: dict[tuple, list[dict[str, Any]]] = {}
+    for s in SLOTS:
+        key = s.get("double_group_key")
+        if key:
+            units.setdefault((key, s["group_id"]), []).append(s)
+
+    busy: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
+    for s in SLOTS:
+        if s.get("room_id"):
+            for b in _slot_buckets(g_map.get(s["group_id"]), s["period"]):
+                busy[(s["room_id"], s["day"], b)].append(s)
+
+    def row(u: list[dict[str, Any]], why: str | None = None) -> dict[str, Any]:
+        out = {
+            "group_name": (g_map.get(u[0]["group_id"]) or {}).get("name"),
+            "subject_code": (s_map.get(u[0].get("subject_id")) or {}).get("code"),
+            "teacher_name": u[0].get("teacher_name"),
+            "day": u[0]["day"],
+            "periods": [x["period"] for x in u],
+            "rooms": [(r_map.get(x.get("room_id")) or {}).get("name") or "ไม่มีห้อง"
+                      for x in u],
+        }
+        if why:
+            out["why"] = why
+        return out
+
+    fixed: list[dict[str, Any]] = []
+    left: list[dict[str, Any]] = []
+    for _key, u in sorted(units.items(), key=lambda kv: str(kv[0])):
+        u.sort(key=lambda x: (x["day"], x["period"]))
+        if len({x.get("room_id") for x in u}) <= 1:
+            continue
+        gid = u[0]["group_id"]
+        grp = g_map.get(gid)
+        subj = s_map.get(u[0].get("subject_id"))
+        if any(_yard_pick_for(x["group_id"], x["day"], x["period"]) is not None
+               for x in u):
+            left.append(row(u, "โรงเรียนเลือกลานไว้ให้ชั่วโมงนี้เอง")); continue
+        if any(x.get("is_locked") for x in u):
+            left.append(row(u, "ล็อกคาบไว้ — ปลดล็อกก่อนถึงจะรวมห้องได้")); continue
+        fam = _group_family(gid, grp)
+        mine_ids = {x["id"] for x in u}
+        want_rooms = _subject_rooms(subj)
+        dept = (subj or {}).get("department_id")
+
+        def ok_room(rid: int | None) -> bool:
+            r = r_map.get(rid) if rid else None
+            if not r or not _room_usable(r):
+                return False
+            if not _room_allows_group(r, gid, fam):
+                return False
+            if want_rooms and rid not in want_rooms:
+                return False
+            if _subject_outdoor(subj) is False and r.get("type") == "outdoor":
+                return False
+            if (r.get("specialized_dept_id") and dept
+                    and r["specialized_dept_id"] != dept):
+                return False
+            for x in u:
+                for b in _slot_buckets(grp, x["period"]):
+                    for o in busy.get((rid, x["day"], b), ()):
+                        if o["id"] in mine_ids:
+                            continue
+                        mine_key = _shared_lesson_key(x)
+                        if mine_key and _shared_lesson_key(o) == mine_key:
+                            continue        # คาบเดียวกันของหลายห้อง ใช้ห้องร่วมกันได้
+                        return False
+            return True
+
+        ranked: list[tuple[int, int]] = []
+        for x in u:
+            rid = x.get("room_id")
+            if rid:
+                ranked.append((0 if (want_rooms and rid in want_rooms) else 1, rid))
+        home = (grp or {}).get("homeroom_room_id")
+        if home:
+            ranked.append((2, home))
+        for rid in want_rooms:
+            ranked.append((3, rid))
+        # ทางสุดท้าย: ห้องอื่นที่ว่างทั้งสองชั่วโมง — อยู่ห้องเดียวกันสำคัญกว่า
+        # อยู่ห้องเดิม เพราะเด็กไม่ต้องเก็บของย้ายกลางคาบ แต่ยังไม่แย่งห้อง
+        # ประจำชั้นของห้องอื่น และไม่เข้าห้องที่กันไว้ให้ครูคนอื่น
+        if not want_rooms:
+            others_home = {g.get("homeroom_room_id") for g in g_map.values()
+                           if g.get("homeroom_room_id")
+                           and g.get("homeroom_room_id") != home}
+            mine_teachers = _slot_teachers(u[0])
+            same_bldg = (r_map.get(u[0].get("room_id")) or {}).get("building_id")
+            # วิชาในห้องต้องไม่ถูกย้ายออกไปเรียนกลางแจ้งเพื่อให้ห้องตรงกัน —
+            # ลานใช้ได้เฉพาะวิชาที่ตั้งไว้ว่าเรียนกลางแจ้ง หรือคาบที่ครึ่งหนึ่ง
+            # อยู่ลานอยู่แล้ว (เช่นพละที่ลานหนึ่งกับสนามหนึ่ง)
+            yard_ok = (_subject_outdoor(subj) is True
+                       or any((r_map.get(x.get("room_id")) or {}).get("type")
+                              == "outdoor" for x in u))
+            spare = [r for r in ROOMS
+                     if r["id"] not in others_home
+                     and (yard_ok or r.get("type") != "outdoor")
+                     # ห้องที่ไม่ได้อยู่ในอาคารไหนเลยคือลานหรือสวนที่ถูกบันทึก
+                     # เป็นห้องธรรมดา (เช่น "ลานแนะแนว" ที่ตั้ง type เป็น
+                     # physical) — เอาวิชาในห้องไปไว้ที่นั่นเองไม่ได้ แต่จะบอก
+                     # ไว้ข้างล่างว่ามีที่นั่นว่างอยู่ ถ้าโรงเรียนรับได้
+                     and (yard_ok or r.get("building_id"))
+                     and not (r.get("reserved_teacher_id")
+                              and r["reserved_teacher_id"] not in mine_teachers)]
+            # ห้องเรียนธรรมดามาก่อนห้องเฉพาะทาง — ไม่เอาวิชาวิทย์ไปนั่งห้อง
+            # ดนตรีถ้ายังมีห้องเรียนธรรมดาว่างอยู่
+            def plainness(r: dict[str, Any]) -> int:
+                if (r.get("type") == "physical" and not r.get("specialized_dept_id")
+                        and not r.get("reserved_teacher_id")):
+                    return 0
+                return 1 if r.get("type") == "physical" else 2
+            # ห้องที่ไม่ได้อยู่ในอาคารไหนเลยคือลานหรือสวนที่ถูกบันทึกเป็นห้อง
+            # ธรรมดา (เช่น "ลานแนะแนว" ที่ตั้ง type ไว้ว่า physical) จึงไว้ท้าย
+            spare.sort(key=lambda r: (plainness(r),
+                                      0 if r.get("building_id") else 1,
+                                      0 if r.get("building_id") == same_bldg else 1,
+                                      r["id"]))
+            for r in spare:
+                ranked.append((4 + plainness(r), r["id"]))
+        pick = next((rid for _rank, rid in sorted(dict.fromkeys(ranked))
+                     if ok_room(rid)), None)
+        if pick is None:
+            # มีแต่ลาน/สวนที่ถูกบันทึกเป็นห้องธรรมดาว่างอยู่ — ไม่ย้ายให้เอง
+            # แต่บอกชื่อไว้ เพื่อให้ตัดสินใจได้โดยไม่ต้องไปไล่หา
+            spare_odd = next((r["name"] for r in ROOMS
+                              if not r.get("building_id")
+                              and r.get("type") != "outdoor"
+                              and ok_room(r["id"])), None)
+            left.append(row(u, (f"ว่างแต่มีเฉพาะ {spare_odd} ซึ่งไม่ได้อยู่ใน"
+                                f"อาคารไหน — ถ้ารับได้ให้ย้ายด้วยมือ")
+                            if spare_odd
+                            else "ไม่มีห้องไหนว่างพร้อมกันทั้งสองชั่วโมง"))
+            continue
+        was = row(u)                     # ห้องเดิมของทั้งสองครึ่ง ก่อนรวม
+        was["to"] = (r_map.get(pick) or {}).get("name")
+        if apply:
+            r = r_map.get(pick) or {}
+            for x in u:
+                if x.get("room_id") == pick:
+                    continue
+                for b in _slot_buckets(grp, x["period"]):
+                    old = busy.get((x.get("room_id"), x["day"], b))
+                    if old and x in old:
+                        old.remove(x)
+                    busy[(pick, x["day"], b)].append(x)
+                x["room_id"] = pick
+                x["room_name"] = r.get("name")
+                x["room_type"] = r.get("type")
+        fixed.append(was)
+    return {"fixed": len(fixed), "rows": fixed, "left": left}
 
 
 def _sync_double_room(s: dict[str, Any]) -> list[dict[str, Any]]:
@@ -11204,6 +11489,68 @@ def _sync_double_room(s: dict[str, Any]) -> list[dict[str, Any]]:
     return moved
 
 
+def _expand_doubles(
+    anchors: list[tuple[dict[str, Any], int, int]],
+) -> tuple[list[tuple[dict[str, Any], int, int]], str | None]:
+    """เติมอีกครึ่งของคาบคู่เข้าไปในชุดที่จะย้าย
+
+      "คาบคู่ มีคาบที่คู่กันที่หายไป"
+
+    คาบคู่คือคาบเดียวที่ยาวสองชั่วโมง เก็บไว้เป็นสองแถวผูกกันด้วย
+    double_group_key — ลากครึ่งเดียวไปวันอื่น อีกครึ่งเคยอยู่ที่เดิมเงียบ ๆ
+    ตารางจึงมีคาบคู่ที่ "คู่กันหายไป" โดยไม่มีใครรู้ว่าตอนไหน
+
+    ที่นี่จึงพาไปทั้งชิ้นเสมอ โดยรักษาลำดับเดิม: ครึ่งแรกอยู่ก่อนครึ่งหลัง และ
+    ต้องเป็นคาบที่ติดกันจริง ถ้าปลายทางไม่มีคาบติดกันพอ (ติดพักเที่ยง หรือเป็น
+    คาบท้ายวัน) ก็บอกไปว่าทำไมไม่ได้ ดีกว่าแยกคาบคู่ออกจากกันแบบไม่มีใครเห็น
+    """
+    out = list(anchors)
+    seen = {id(s) for s, _d, _p in anchors}
+    for s, day, period in anchors:
+        key = s.get("double_group_key")
+        if not key:
+            continue
+        unit = [x for x in SLOTS if x.get("double_group_key") == key
+                and x.get("group_id") == s.get("group_id")]
+        if len(unit) < 2:
+            continue
+        lvl = _level_key(_find_group(s.get("group_id")))
+        nums = _class_periods_for_level(lvl)
+        order = sorted(unit, key=lambda x: (x["day"],
+                                            nums.index(x["period"]) if x["period"] in nums
+                                            else 99))
+        if not any(x is s for x in order):
+            continue
+        me = next(i for i, x in enumerate(order) if x is s)
+        # ไล่ช่องของทั้งชิ้นจากช่องที่ลากมาวาง ทั้งขึ้นและลง
+        seq: list[int] = [period]
+        for _ in range(me):
+            prev = _prev_class_period_for(lvl, seq[0])
+            if prev is None:
+                return [], ("ย้ายคาบคู่ไปลงที่นั่นไม่ได้ — คาบคู่ต้องอยู่สองคาบ"
+                            "ติดกัน แต่ก่อนคาบนั้นไม่มีคาบเรียนที่ติดกันจริง "
+                            "(ติดพักเที่ยง หรือเป็นคาบแรกของวัน)")
+            seq.insert(0, prev)
+        for _ in range(len(order) - me - 1):
+            nxt = _next_class_period_for(lvl, seq[-1])
+            if nxt is None:
+                return [], ("ย้ายคาบคู่ไปลงที่นั่นไม่ได้ — คาบคู่ต้องอยู่สองคาบ"
+                            "ติดกัน แต่หลังคาบนั้นไม่มีคาบเรียนที่ติดกันจริง "
+                            "(ติดพักเที่ยง หรือเป็นคาบสุดท้ายของวัน)")
+            seq.append(nxt)
+        for x, p in zip(order, seq):
+            if id(x) in seen:
+                continue
+            # อีกครึ่งถูกล็อกไว้ — ลากครึ่งนี้ไปก็เท่ากับย้ายคาบที่ล็อกไว้ ซึ่ง
+            # ไม่ใช่สิ่งที่คนกดคิดว่ากำลังทำ
+            if x.get("is_locked"):
+                return [], ("ย้ายไม่ได้ — อีกครึ่งของคาบคู่นี้ล็อกไว้ "
+                            "ปลดล็อกครึ่งนั้นก่อนแล้วลองใหม่")
+            seen.add(id(x))
+            out.append((x, day, p))
+    return out, None
+
+
 @app.patch("/api/timetable/slots/{slot_id}")
 def patch_slot(slot_id: int, body: dict[str, Any]):
     # โหมดจัดเอง — ชนกันได้ ขึ้นสีแดงให้เห็น แต่ทับคาบที่ล็อกไว้ไม่ได้
@@ -11212,13 +11559,22 @@ def patch_slot(slot_id: int, body: dict[str, Any]):
     # ธงสองตัวนี้เป็นคำสั่ง ไม่ใช่ข้อมูลของคาบ ถ้าปล่อยไว้มันจะถูกเขียนลงไปใน
     # คาบตอน s.update(body) แล้วติดไปกับข้อมูลที่บันทึก
     body = {k: v for k, v in body.items() if k not in ("force", "manual")}
+    cur = next((x for x in SLOTS if x["id"] == slot_id), None)
+    # คาบคู่ต้องไปทั้งชิ้น — คิดว่าอีกครึ่งจะไปอยู่ช่องไหน ก่อนตรวจและก่อนย้าย
+    dbl_follow: list[tuple[dict[str, Any], int, int]] = []
+    if cur is not None and ("day" in body or "period" in body):
+        anchors = [(cur, int(body.get("day", cur["day"])),
+                    int(body.get("period", cur["period"])))]
+        grown, why = _expand_doubles(anchors)
+        if why:
+            raise HTTPException(409, why)
+        dbl_follow = [(x, d, p) for x, d, p in grown if x is not cur]
     if ("day" in body or "period" in body or "room_id" in body) and not force:
         delta = {k: body[k] for k in ("day", "period", "room_id") if k in body}
         batch = [{"slot_id": slot_id, **delta}]
         # Parallel lessons travel together (they are moved below), so they are
         # judged together too — otherwise a sibling lands on an occupied cell
         # that nothing checked.
-        cur = next((x for x in SLOTS if x["id"] == slot_id), None)
         pgk = cur.get("parallel_group_key") if cur else None
         if pgk and ("day" in body or "period" in body):
             for sib in SLOTS:
@@ -11226,6 +11582,10 @@ def patch_slot(slot_id: int, body: dict[str, Any]):
                         and sib["day"] == cur["day"] and sib["period"] == cur["period"]):
                     batch.append({"slot_id": sib["id"],
                                   **{k: v for k, v in delta.items() if k != "room_id"}})
+        # อีกครึ่งของคาบคู่ก็ต้องถูกตรวจพร้อมกัน ไม่ใช่ย้ายไปเงียบ ๆ แล้วไปทับ
+        # คาบของคนอื่นที่ปลายทาง
+        for x, d, p in dbl_follow:
+            batch.append({"slot_id": x["id"], "day": d, "period": p})
         problems = _validate_moves(batch, allow_conflicts=manual)
         if problems:
             raise HTTPException(409, " · ".join(problems[:3]))
@@ -11234,6 +11594,12 @@ def patch_slot(slot_id: int, body: dict[str, Any]):
             old_day, old_period = s["day"], s["period"]
             pgk = s.get("parallel_group_key")
             travelled = []
+            # อีกครึ่งของคาบคู่ย้ายที่นี่ และเข้า/ออกลานด้วยช่องเดิมของตัวเอง
+            # ไม่ใช่ช่องเดิมของครึ่งที่ถูกลาก จึงไม่เอาไปรวมใน travelled
+            for x, d, p in dbl_follow:
+                x_from = (x["day"], x["period"])
+                x["day"], x["period"] = d, p
+                _settle_yard(x, x_from)
             if ("day" in body or "period" in body) and pgk:
                 for sib in SLOTS:
                     if (sib.get("parallel_group_key") == pgk and sib["id"] != slot_id
@@ -11386,6 +11752,20 @@ def _runs_over(spans, limit: int) -> tuple[int, int]:
     return total, count
 
 
+def _pain_of(spans_by_day: dict[int, set], cap: int, lim: int) -> tuple[int, int]:
+    """(คาบที่ล้นเพดานรายวัน, คาบที่ติดกันเกินเพดาน) ของครูคนหนึ่ง
+
+    สูตรเดียวที่ทั้งปุ่มเกลี่ยและหน้า "ย้ายคาบนี้ไปไหนได้" ใช้ร่วมกัน — ถ้าแยก
+    กันคิด สองที่จะเริ่มไม่ตรงกันโดยไม่มีใครรู้ แล้วหน้าหนึ่งบอกว่าดีขึ้นอีก
+    หน้าบอกว่าแย่ลง
+    """
+    over_day = over_run = 0
+    for _d, spans in spans_by_day.items():
+        over_day += max(0, len(spans) - cap)
+        over_run += _runs_over(spans, lim)[0]
+    return over_day, over_run
+
+
 def _teacher_max_per_day(teacher: dict[str, Any] | None, cap: int) -> int:
     """เพดานของครูคนนี้ ซึ่งอาจตั้งไว้เองเป็นรายคน"""
     adv = (teacher or {}).get("advanced_settings") or {}
@@ -11458,12 +11838,8 @@ def balance_teachers(body: dict[str, Any] = {}):
 
     def pain(tid: int) -> tuple[int, int]:
         """(คาบที่ล้นเพดานรายวัน, คาบที่ติดกันเกินเพดาน) ของครูคนนี้"""
-        over_day = over_run = 0
-        cap, lim = cap_of.get(tid, cap_def), lim_of.get(tid, hard)
-        for _d, spans in spans_by_day(tid).items():
-            over_day += max(0, len(spans) - cap)
-            over_run += _runs_over(spans, lim)[0]
-        return over_day, over_run
+        return _pain_of(spans_by_day(tid), cap_of.get(tid, cap_def),
+                        lim_of.get(tid, hard))
 
     def late_days(tid: int) -> int:
         """กี่วันในสัปดาห์ที่ครูคนนี้ต้องอยู่คาบสุดท้าย"""
@@ -11813,6 +12189,286 @@ def balance_teachers(body: dict[str, Any] = {}):
             "locked_classes": skipped, "touched_locked": with_locked,
             "seconds": round(_time.perf_counter() - t0, 1),
             "notes": notes, "stuck": stuck, "slots": out_slots}
+
+# ── ย้ายคาบนี้ไปไหนได้ ────────────────────────────────────────────────────────
+# "คาบครูบางท่านมีเยอะมากใน 1 วัน คุณช่วยมีระบบว่าถ้าจะย้ายคาบนี้จะต้องทำยังไง
+#  คือเราเลือกคาบมา ... ช่วยคิดระบบที่ตรวจว่าจะจัดคาบครูคนนี้ (สามารถเลือกได้ว่า
+#  จะเอาเฉพาะคาบเดี่ยวหรือทั้งหมดหรือสามารถเลือกทีละหลาย ๆ คาบได้)"
+#
+# ปุ่มเกลี่ยคาบครูตัดสินใจแทนทั้งโรงเรียนในครั้งเดียว อันนี้ตรงกันข้าม: เลือกครู
+# เลือกคาบ แล้วระบบบอกว่าคาบนั้นไปลงที่ไหนได้บ้าง แต่ละที่ต้องทำอะไร (ว่างอยู่
+# เลย หรือต้องสลับกับคาบไหน) ได้อะไรกลับมา และมีผลข้างเคียงกับใคร — คนตัดสินใจ
+#
+# ไม่ย้ายอะไรเอง คืนรายการ moves ที่ส่งต่อไป /api/timetable/slots/move ได้ตรง ๆ
+# การย้ายจริงจึงเดินผ่านทางเดิมที่ตรวจทุกอย่างอยู่แล้ว ไม่มีทางลัดเส้นใหม่
+@app.post("/api/timetable/teacher-plan")
+def teacher_plan(body: dict[str, Any] = {}):
+    """คาบของครูคนนี้แต่ละคาบ ย้ายไปไหนได้ และต้องทำอะไร
+
+    body: { teacher_id, scope: "all"|"singles"|"ids", slot_ids?, day?,
+            max_per_day?, max_consecutive?, max_options? }
+    """
+    body = body or {}
+    tid = int(body.get("teacher_id") or 0)
+    teacher = next((t for t in TEACHERS if t["id"] == tid), None)
+    if teacher is None:
+        raise HTTPException(404, "ไม่พบครูคนนี้")
+    scope = str(body.get("scope") or "all")
+    want_ids = {int(x) for x in (body.get("slot_ids") or [])}
+    only_day = body.get("day")
+    only_day = None if only_day in (None, "") else int(only_day)
+    max_options = max(1, min(12, int(body.get("max_options") or 6)))
+
+    cfg = SCHOOL_CONFIG if isinstance(SCHOOL_CONFIG, dict) else {}
+    cap_def = BAL_MAX_PER_DAY
+    for src in (body, cfg):
+        v = src.get("max_per_day")
+        if v not in (None, ""):
+            try:
+                cap_def = max(1, int(v)); break
+            except (TypeError, ValueError):
+                pass
+    hard, _soft = _consec_settings(body)
+    _refresh_class_locks()
+
+    g_of = {g["id"]: g for g in _flat_groups()}
+    s_map = {x["id"]: x for x in SUBJECTS}
+    t_map = {t["id"]: t for t in TEACHERS}
+    lvl_of = {gid: _level_key(g) for gid, g in g_of.items()}
+
+    def cap_lim(who: int) -> tuple[int, int]:
+        t = t_map.get(who)
+        return _teacher_max_per_day(t, cap_def), _consec_limit(t, hard)
+
+    # ใครสอนคาบไหน และห้องเรียนไหนมีคาบอะไร — คิดครั้งเดียว ไม่ไล่ทั้งตาราง
+    # ใหม่ทุกครั้งที่ลองหนึ่งทางเลือก (ตารางจริงมี 2,735 คาบ และหนึ่งครูมีได้
+    # ถึงสี่สิบทางเลือกต่อคาบ)
+    t_slots: dict[int, list[dict]] = defaultdict(list)
+    g_slots: dict[int, list[dict]] = defaultdict(list)
+    for s in SLOTS:
+        for who in _slot_teachers(s):
+            t_slots[who].append(s)
+        g_slots[s["group_id"]].append(s)
+
+    def spans(who: int, pos: dict[int, tuple[int, int]] | None = None) -> dict[int, set]:
+        out: dict[int, set] = {}
+        for s in t_slots.get(who, ()):
+            d, p = (pos or {}).get(s["id"], (s["day"], s["period"]))
+            sp = _span_at(lvl_of.get(s["group_id"], "all"), p)
+            if sp:
+                out.setdefault(d, set()).add(sp)
+        return out
+
+    def pain(who: int, pos=None) -> int:
+        cap, lim = cap_lim(who)
+        od, orun = _pain_of(spans(who, pos), cap, lim)
+        return od + orun
+
+    def holes(gid: int, pos=None) -> int:
+        nums = _class_periods_for_level(lvl_of.get(gid, "all"))
+        where: dict[int, set] = {}
+        for s in g_slots.get(gid, ()):
+            d, p = (pos or {}).get(s["id"], (s["day"], s["period"]))
+            if p in nums:
+                where.setdefault(d, set()).add(nums.index(p))
+        n = 0
+        for _d, idx in where.items():
+            if idx:
+                n += (max(idx) - min(idx) + 1) - len(idx)
+        return n
+
+    # คาบของครูคนนี้ จัดเป็นชิ้น (คาบคู่นับเป็นชิ้นเดียว)
+    mine = [s for s in SLOTS if tid in _slot_teachers(s)]
+    units: list[list[dict]] = []
+    taken: set[int] = set()
+    for s in sorted(mine, key=lambda x: (x["day"], x["period"])):
+        if s["id"] in taken:
+            continue
+        # คาบกิจกรรมของทั้งระดับ และคาบวิชาเสรี เป็น "คาบเดียว" ของครูคนนี้
+        # แม้จะเขียนไว้ทีละห้อง — ชุมนุมของ ม.4-6 คือ 45 แถวที่เป็นคาบเดียวกัน
+        # ถ้าไม่รวม หน้าจอจะมีบรรทัดซ้ำกัน 45 บรรทัด
+        shared = _shared_lesson_key(s)
+        key = s.get("double_group_key")
+        if shared:
+            u = [x for x in SLOTS if _shared_lesson_key(x) == shared
+                 and x["day"] == s["day"] and x["period"] == s["period"]]
+        elif key:
+            u = [x for x in SLOTS if x.get("double_group_key") == key
+                 and x.get("group_id") == s.get("group_id")]
+        else:
+            u = [s]
+        u.sort(key=lambda x: (x["day"], x["period"]))
+        for x in u:
+            taken.add(x["id"])
+        units.append(u)
+
+    cap_me, lim_me = cap_lim(tid)
+    by_day = spans(tid)
+    days = [{"day": d,
+             "periods": len(by_day.get(d, ())),
+             "over": len(by_day.get(d, ())) > cap_me,
+             "runs_over": _runs_over(by_day.get(d, set()), lim_me)[1]}
+            for d in range(5)]
+
+    def why_stuck(u: list[dict]) -> str | None:
+        """เหตุที่ย้ายคาบนี้ไม่ได้เลย — None คือย้ายได้ (อาจมีข้อควรรู้ ดู warn)
+
+        ห้องที่ "ปิดไว้ว่าจัดเสร็จแล้ว" ไม่นับเป็นเหตุห้ามที่นี่ เพราะหน้านี้
+        ไม่ย้ายอะไรเอง แค่บอกว่าย้ายได้ที่ไหน — ถ้าปิดไว้แล้วบอกว่าย้ายไม่ได้
+        หน้านี้จะว่างเปล่าทั้งหน้าในโรงเรียนที่ปิดไว้ 88 ห้องอย่างที่นี่ แต่
+        จะมีป้ายเตือนไว้ว่าห้องนั้นปิดอยู่
+        """
+        if any(x.get("is_locked") for x in u):
+            return "ล็อกคาบนี้ไว้ — ปลดล็อกก่อนถึงจะย้ายได้"
+        if any(x.get("activity_teacher_ids") for x in u):
+            return "คาบกิจกรรมของทั้งระดับ — ย้ายทีละห้องไม่ได้"
+        if any(x.get("is_elective") or x.get("elective_pool_id") for x in u):
+            return "คาบวิชาเสรี — เป็นคาบของหลายห้องพร้อมกัน ย้ายทีละห้องไม่ได้"
+        if any(x.get("parallel_group_key") for x in u):
+            return "คาบที่เรียนร่วมหลายห้อง — ต้องย้ายพร้อมกันทุกห้อง"
+        if any(_yard_pick_for(x["group_id"], x["day"], x["period"]) is not None
+               for x in u):
+            return "ชั่วโมงนี้โรงเรียนเลือกลานไว้ให้เอง"
+        return None
+
+    def warn_of(u: list[dict]) -> str | None:
+        """ข้อควรรู้ก่อนย้าย — ไม่ใช่ข้อห้าม"""
+        if u[0].get("group_id") in _CLASS_LOCKED:
+            return "ห้องนี้ปิดไว้ว่าจัดเสร็จแล้ว"
+        return None
+
+    out: list[dict[str, Any]] = []
+    for u in units:
+        first = u[0]
+        gid = first["group_id"]
+        subj = s_map.get(first.get("subject_id")) or {}
+        picked = (scope == "all"
+                  or (scope == "singles" and len(u) == 1)
+                  or (scope == "ids" and any(x["id"] in want_ids for x in u)))
+        if only_day is not None and first["day"] != only_day:
+            picked = False
+        row: dict[str, Any] = {
+            "slot_id": first["id"],
+            "slot_ids": [x["id"] for x in u],
+            "day": first["day"],
+            "periods": [x["period"] for x in u],
+            "group_name": (g_of.get(gid) or {}).get("name"),
+            # คาบเดียวที่กินหลายห้อง (ชุมนุม ลูกเสือ วิชาเสรี) — บอกจำนวนห้อง
+            "group_count": len({x["group_id"] for x in u}),
+            "subject_code": subj.get("code") or first.get("subject_name"),
+            "subject_name": subj.get("name") or first.get("activity_name"),
+            "room_name": first.get("room_name"),
+            "is_double": len({x["period"] for x in u}) > 1,
+            "selected": picked,
+            "stuck": why_stuck(u),
+            "warn": warn_of(u),
+            "options": [],
+            "blocked": [],
+        }
+        if not picked or row["stuck"]:
+            out.append(row)
+            continue
+
+        lvl = lvl_of.get(gid, "all")
+        nums = _class_periods_for_level(lvl)
+        here = {(x["day"], x["period"]) for x in u}
+        used: dict[tuple[int, int], dict] = {}
+        for s in g_slots.get(gid, ()):
+            used[(s["day"], s["period"])] = s
+        allowed: list[dict[str, Any]] = []
+        blocked: list[dict[str, Any]] = []
+        for d in range(5):
+            for p0 in nums:
+                # ช่องปลายทางของทั้งชิ้น — คาบคู่ต้องติดกันจริง
+                cells = [p0]
+                bad = False
+                for _ in range(len(u) - 1):
+                    nxt = _next_class_period_for(lvl, cells[-1])
+                    if nxt is None:
+                        bad = True; break
+                    cells.append(nxt)
+                if bad or {(d, p) for p in cells} == here:
+                    continue
+                sitting = [used[(d, p)] for p in cells if (d, p) in used
+                           and used[(d, p)]["id"] not in {x["id"] for x in u}]
+                swap_with: list[dict] | None = None
+                if sitting:
+                    keys = {x.get("double_group_key") or ("solo", x["id"])
+                            for x in sitting}
+                    if len(keys) > 1 or len(sitting) != len(u):
+                        continue        # ปลายทางเป็นของหลายคาบ สลับตรง ๆ ไม่ได้
+                    swap_with = sorted(sitting, key=lambda x: x["period"])
+                    stop = why_stuck(swap_with)
+                    if stop:
+                        blocked.append({"day": d, "period": p0,
+                                        "why": f"คาบที่ต้องสลับด้วยติดเงื่อนไข: {stop}"})
+                        continue
+                    swap_warn = warn_of(swap_with)
+                moves = [{"slot_id": x["id"], "day": d, "period": p}
+                         for x, p in zip(u, cells)]
+                if swap_with:
+                    moves += [{"slot_id": x["id"], "day": first["day"],
+                               "period": p}
+                              for x, p in zip(swap_with,
+                                              [y["period"] for y in u])]
+                problems = _validate_moves(moves)
+                if problems:
+                    blocked.append({"day": d, "period": p0, "why": problems[0]})
+                    continue
+                pos = {m["slot_id"]: (m["day"], m["period"]) for m in moves}
+                gain = pain(tid) - pain(tid, pos)
+                side: list[str] = []
+                others = set()
+                for x in u + (swap_with or []):
+                    others |= _slot_teachers(x)
+                others.discard(tid)
+                for who in sorted(others):
+                    worse = pain(who, pos) - pain(who)
+                    if worse > 0:
+                        side.append(f"{(t_map.get(who) or {}).get('name', '?')}"
+                                    f" แน่นขึ้น")
+                dh = holes(gid, pos) - holes(gid)
+                if dh > 0:
+                    side.append(f"{row['group_name']} มีคาบว่างกลางวันเพิ่ม {dh} คาบ")
+                if swap_with and swap_warn:
+                    side.append(f"{(g_of.get(swap_with[0]['group_id']) or {}).get('name')}"
+                                f" {swap_warn}")
+                allowed.append({
+                    "day": d, "period": p0, "periods": cells,
+                    "kind": "ว่าง" if not swap_with else "สลับ",
+                    "with": ({"slot_id": swap_with[0]["id"],
+                              "subject_code": (s_map.get(swap_with[0]
+                                               .get("subject_id")) or {}).get("code"),
+                              "group_name": (g_of.get(swap_with[0]["group_id"]) or {}).get("name"),
+                              "periods": [x["period"] for x in swap_with]}
+                             if swap_with else None),
+                    "gain": gain, "side": side, "moves": moves,
+                })
+        allowed.sort(key=lambda o: (-o["gain"], len(o["side"]),
+                                    0 if o["kind"] == "ว่าง" else 1,
+                                    o["day"], o["period"]))
+        keep = allowed[:max_options]
+        # ถ้าตัดจนไม่เหลือ "ต้องสลับกับคาบไหน" เลย ให้ใส่ตัวที่ดีที่สุดกลับมา
+        # หนึ่งตัว — ช่องว่างกับการสลับเป็นคำตอบคนละแบบของคำถามเดียวกัน และบาง
+        # ครั้งการสลับคือทางเดียวที่ทำให้ภาระดีขึ้นจริง
+        if not any(o["kind"] == "สลับ" for o in keep):
+            swap_best = next((o for o in allowed if o["kind"] == "สลับ"), None)
+            if swap_best is not None:
+                keep = keep[:max(1, max_options - 1)] + [swap_best]
+        row["options"] = keep
+        row["better"] = sum(1 for o in allowed if o["gain"] > 0)
+        row["blocked"] = blocked[:6]
+        row["blocked_total"] = len(blocked)
+        out.append(row)
+
+    _nothing_changed()      # อ่านอย่างเดียว ไม่ใช่การแก้ตาราง
+    return {"teacher": {"id": tid, "name": teacher.get("name"),
+                        "code": teacher.get("code"),
+                        # ชั่วโมงที่ต้องยืนสอนจริง — คาบที่กินหลายห้องนับครั้งเดียว
+                        "total": sum(len(v) for v in by_day.values())},
+            "max_per_day": cap_me, "max_consecutive": lim_me,
+            "days": days, "lessons": out}
+
 
 # ── Conflict analysis ─────────────────────────────────────────────────────────
 @app.get("/api/timetable/conflict")

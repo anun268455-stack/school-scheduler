@@ -544,6 +544,11 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
           await api.updateSlot(slotId, { day: newDay, period: newPeriod });
         }
       });
+      // คาบคู่: เซิร์ฟเวอร์พาอีกครึ่งไปวางในคาบที่ติดกันให้แล้ว ("คาบคู่ มีคาบ
+      // ที่คู่กันที่หายไป") แต่จอยังไม่รู้ว่าครึ่งนั้นไปอยู่ไหน — คาบติดกันจริง
+      // หรือไม่เป็นเรื่องของผังคาบของชั้นนั้น ซึ่งเซิร์ฟเวอร์เป็นคนรู้ จึงโหลด
+      // ตารางใหม่ทีเดียวแทนที่จะคิดกฎนั้นซ้ำที่ฝั่งนี้แล้วเสี่ยงคิดไม่ตรงกัน
+      if (slot.double_group_key) await get().loadSlots();
     } catch (err: unknown) {
       // The backend refuses a move that would double-book a class, teacher or
       // room. Put the lesson back and say why, rather than letting it snap

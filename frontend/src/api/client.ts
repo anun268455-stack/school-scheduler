@@ -477,6 +477,77 @@ export const balanceTeachers = (p: {
 }) => api.post<BalanceResult>("/timetable/balance-teachers", p,
   { timeout: SOLVE_TIMEOUT_MS }).then((r) => r.data);
 
+// ── ย้ายคาบนี้ไปไหนได้ ───────────────────────────────────────────────────────
+/** ที่หนึ่งที่คาบนี้ไปลงได้ พร้อมของที่ต้องทำและผลที่ตามมา */
+export interface PlanOption {
+  day:     number;
+  period:  number;
+  periods: number[];
+  /** "ว่าง" = ช่องนั้นว่างอยู่ · "สลับ" = ต้องสลับกับคาบอื่นของห้องเดียวกัน */
+  kind:    "ว่าง" | "สลับ";
+  with:    { slot_id: number; subject_code: string | null;
+             group_name: string | null; periods: number[] } | null;
+  /** ภาระของครูคนนี้ลดลงกี่หน่วย — 0 คือย้ายได้แต่ไม่ได้ช่วยเรื่องภาระ */
+  gain:    number;
+  /** ผลข้างเคียง เช่น ครูคนอื่นแน่นขึ้น หรือห้องเรียนมีคาบว่างเพิ่ม */
+  side:    string[];
+  /** ส่งต่อให้ moveSlots ได้ตรง ๆ */
+  moves:   { slot_id: number; day: number; period: number }[];
+}
+
+export interface PlanLesson {
+  slot_id:       number;
+  slot_ids:      number[];
+  day:           number;
+  periods:       number[];
+  group_name:    string | null;
+  /** คาบเดียวที่กินหลายห้อง (ชุมนุม ลูกเสือ วิชาเสรี) */
+  group_count:   number;
+  subject_code:  string | null;
+  subject_name:  string | null;
+  room_name:     string | null;
+  is_double:     boolean;
+  selected:      boolean;
+  /** ย้ายไม่ได้เลย พร้อมเหตุผล */
+  stuck:         string | null;
+  /** ย้ายได้ แต่มีข้อควรรู้ เช่น ห้องนี้ปิดไว้ว่าจัดเสร็จแล้ว */
+  warn:          string | null;
+  options:       PlanOption[];
+  /** กี่ที่ที่ย้ายแล้วภาระดีขึ้นจริง */
+  better?:       number;
+  blocked:       { day: number; period: number; why: string }[];
+  blocked_total?: number;
+}
+
+export interface TeacherPlan {
+  teacher: { id: number; name: string | null; code: string | null; total: number };
+  max_per_day: number;
+  max_consecutive: number;
+  days: { day: number; periods: number; over: boolean; runs_over: number }[];
+  lessons: PlanLesson[];
+}
+
+/**
+ * คาบของครูคนนี้แต่ละคาบ ย้ายไปไหนได้ และต้องทำอะไร
+ *
+ * "คาบครูบางท่านมีเยอะมากใน 1 วัน คุณช่วยมีระบบว่าถ้าจะย้ายคาบนี้จะต้องทำ
+ *  ยังไง คือเราเลือกคาบมา ... เลือกได้ว่าจะเอาเฉพาะคาบเดี่ยวหรือทั้งหมด
+ *  หรือเลือกทีละหลาย ๆ คาบได้"
+ *
+ * อ่านอย่างเดียว ไม่ย้ายอะไรให้ — การย้ายจริงส่ง option.moves ไปที่ moveSlots
+ */
+export const fetchTeacherPlan = (p: {
+  teacher_id: number;
+  scope?: "all" | "singles" | "ids";
+  slot_ids?: number[];
+  /** ดูเฉพาะวันนี้ (0 = จันทร์) */
+  day?: number | null;
+  max_per_day?: number;
+  max_consecutive?: number;
+  max_options?: number;
+}) => api.post<TeacherPlan>("/timetable/teacher-plan", p,
+  { timeout: 180_000 }).then((r) => r.data);
+
 // ── ส่งต่อครู ────────────────────────────────────────────────────────────────
 /** ห้องหนึ่งห้องที่ครูคนนี้สอนวิชานั้นอยู่ */
 export interface HoldingClass {
@@ -712,7 +783,7 @@ export const fetchStateInfo = () =>
  * ต้องตรงกับ API_BUILD ใน mock_api.py และขยับพร้อมกันเสมอ — มีเทสต์
  * (scratchpad/apibuild.py) คอยจับไว้ว่าสองที่นี้ตรงกัน
  */
-export const EXPECTED_API_BUILD = "2026-10-27.1";
+export const EXPECTED_API_BUILD = "2026-10-27.2";
 
 export interface ApiBuildCheck {
   /** รุ่นที่เซิร์ฟเวอร์ตอบมา — null เมื่อเก่าจนไม่มีช่องนี้เลย */

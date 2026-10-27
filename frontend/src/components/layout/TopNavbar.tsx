@@ -9,6 +9,7 @@ import { useTimetableStore } from "../../store/timetableStore";
 import { SolverWidget } from "../solver/SolverWidget";
 import { RepairClassesModal } from "../solver/RepairClassesModal";
 import { BalanceTeachersModal } from "../solver/BalanceTeachersModal";
+import { TeacherPlanModal } from "../teachers/TeacherPlanModal";
 import { ConsistencyModal } from "../solver/ConsistencyModal";
 import { PeriodCheckModal } from "../solver/PeriodCheckModal";
 import { CapacityModal } from "../solver/CapacityModal";
@@ -128,6 +129,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showSolver,  setShowSolver]  = useState(false);
   const [showRepair,  setShowRepair]  = useState(false);
   const [showBalance, setShowBalance] = useState(false);
+  const [showPlan,    setShowPlan]    = useState(false);
   const [showCrud,    setShowCrud]    = useState(false);
   const [showTools,   setShowTools]   = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -505,6 +507,18 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         >
           🔧 แก้เฉพาะห้องที่เลือก
         </button>
+        {/* จัดคาบของครูคนนี้ — โผล่เฉพาะตอนเปิดตารางของครูอยู่ เพราะมันทำงาน
+            กับครูคนนั้นคนเดียว ("เราเลือกคาบมา" แล้วบอกว่าย้ายไปไหนได้) */}
+        {viewMode === "teacher" && selectedTeacherId != null && currentPage === "timetable" && (
+          <button
+            onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false);
+                             setShowPlan(true); }}
+            title="ดูว่าคาบของครูคนนี้แต่ละคาบย้ายไปไหนได้ ต้องสลับกับคาบไหน และย้ายแล้วภาระดีขึ้นเท่าไร"
+            className="flex items-center justify-center gap-1 px-2 py-0.5 rounded border border-violet-500/70 bg-violet-900/30 text-[11px] font-semibold text-violet-200 hover:bg-violet-800/50 transition-colors"
+          >
+            🧭 จัดคาบครูคนนี้
+          </button>
+        )}
         {/* เกลี่ยคาบครู — ไม่ใช่การจัดใหม่ จึงอยู่คนละปุ่มกับสามอันข้างบน
             สลับคาบของห้องเดียวกันข้ามวัน ตารางนักเรียนมีคาบเท่าเดิมในช่องเดิม
             วัดบนตารางจริง: ช่วงที่สอนติดกันเกิน 3 คาบ 60 -> 26 ช่วง */}
@@ -563,6 +577,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       {showCurric && <CurriculumAuditModal onClose={() => setShowCurric(false)} />}
       {showRepair && <RepairClassesModal onClose={() => setShowRepair(false)} />}
       {showBalance && <BalanceTeachersModal onClose={() => setShowBalance(false)} />}
+      {showPlan && selectedTeacherId != null && (
+        <TeacherPlanModal teacherId={selectedTeacherId} onClose={() => setShowPlan(false)} />
+      )}
       {/* Print options */}
       {showPrintOpts && (
         <PrintOptionsModal
