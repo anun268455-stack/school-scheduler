@@ -32,6 +32,7 @@ import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../
 import {
   cellKey, hoursOfCell, mergedDoubles, periodsOfCell, picksOfGroup, yardsInCell,
 } from "../../utils/yardPicks";
+import { CELL_SCALE_DEFAULT, cellScaleStyle, clampCellScale } from "../../utils/cellScale";
 import { DAYS, type Period, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
@@ -287,7 +288,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     impactMap, draggingSlot, startDrag, endDrag,
     moveSlot, swapRoom, toggleLock, deleteSlot, applySwapRoute, preLockMode,
     undo, undoStack, toggleClassLock, manualMode,
-    yardPickMode, yardPicks, yardList, removeYardPicks,
+    yardPickMode, yardPicks, yardList, removeYardPicks, schoolConfig,
   } = useTimetableStore();
 
   const [validAlert,   setValidAlert]   = useState<string | null>(null);
@@ -691,7 +692,11 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       />
     )}
 
-    <div className="w-full h-full flex flex-col overflow-hidden">
+    {/* ขนาดตัวอักษรในช่องตาราง ตั้งไว้ที่นี่ชั้นเดียว ทุกช่องอ่านผ่าน calc()
+        — "แถบสเกลเลื่อนย่อขยายตัวอักษรในช่องตาราง" (หน้าตั้งค่าเครื่องมือ) */}
+    <div className="w-full h-full flex flex-col overflow-hidden"
+         style={cellScaleStyle(clampCellScale(schoolConfig.cell_font_scale
+                                              ?? CELL_SCALE_DEFAULT))}>
       {/* ล็อกทั้งห้อง — "ห้องนี้จัดเสร็จแล้ว"
           สีเทา เพื่อให้ต่างจากล็อกรายคาบซึ่งเป็นสีดำ ตามที่โรงเรียนขอ
           ขึ้นเฉพาะตอนดูตารางของห้องเรียน เพราะล็อกนี้เป็นของห้องเรียน */}

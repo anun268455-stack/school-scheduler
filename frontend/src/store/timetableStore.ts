@@ -13,6 +13,7 @@ import * as api from "../api/client";
 import { writeGuard } from "../utils/writeGuard";
 import { putSavePoint, storageAvailable } from "../utils/savePoints";
 import { applyPickResult } from "../utils/yardPicks";
+import { clampCellScale } from "../utils/cellScale";
 
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
@@ -129,6 +130,13 @@ interface TimetableStore {
   // ── School config ─────────────────────────────────────────────────────────
   schoolConfig: SchoolConfig;
   setSchoolConfig: (c: Partial<SchoolConfig>) => void;
+  /**
+   * ขนาดตัวอักษรในช่องตาราง — เห็นผลทันทีบนจอ ส่งขึ้นเซิร์ฟเวอร์แบบหน่วง
+   *
+   * แถบเลื่อนยิง onChange ทุกขั้นที่ลาก ถ้าเขียนขึ้นเซิร์ฟเวอร์ทุกขั้นก็จะยิง
+   * คำขอหลายสิบครั้งต่อการลากครั้งเดียว
+   */
+  setCellFontScale: (scale: number) => void;
 
   /**
    * ล็อก/ปลดล็อกทั้งห้อง — "ห้องนี้จัดเสร็จแล้ว"
@@ -273,6 +281,9 @@ function moveRefusal(err: unknown): string {
   return typeof detail === "string" ? `ย้ายไม่ได้: ${detail}` : "ย้ายไม่ได้ — ช่องนั้นไม่ว่าง";
 }
 
+/** ตัวหน่วงการบันทึกขนาดตัวอักษร — ระดับโมดูลเหมือน pollTimer */
+let scaleSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
 export const useTimetableStore = create<TimetableStore>((set, get) => ({
   departments:       [],
   buildings:         [],
@@ -343,6 +354,16 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   setSchoolConfig: (c) => {
     set((s) => ({ schoolConfig: { ...s.schoolConfig, ...c } }));
     api.updateSchoolConfig(c).catch(() => { /* kept locally either way */ });
+  },
+
+  setCellFontScale: (scale) => {
+    const v = clampCellScale(scale);
+    set((s) => ({ schoolConfig: { ...s.schoolConfig, cell_font_scale: v } }));
+    if (scaleSaveTimer !== null) clearTimeout(scaleSaveTimer);
+    scaleSaveTimer = setTimeout(() => {
+      scaleSaveTimer = null;
+      api.updateSchoolConfig({ cell_font_scale: v }).catch(() => { /* อยู่ในจอนี้ก็ยังใช้ได้ */ });
+    }, 600);
   },
 
   setViewMode: (viewMode) => set({ viewMode, selectedGroupId: null, selectedTeacherId: null, selectedRoomId: null }),

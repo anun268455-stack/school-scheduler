@@ -783,7 +783,7 @@ export const fetchStateInfo = () =>
  * ต้องตรงกับ API_BUILD ใน mock_api.py และขยับพร้อมกันเสมอ — มีเทสต์
  * (scratchpad/apibuild.py) คอยจับไว้ว่าสองที่นี้ตรงกัน
  */
-export const EXPECTED_API_BUILD = "2026-10-27.2";
+export const EXPECTED_API_BUILD = "2026-10-27.3";
 
 export interface ApiBuildCheck {
   /** รุ่นที่เซิร์ฟเวอร์ตอบมา — null เมื่อเก่าจนไม่มีช่องนี้เลย */

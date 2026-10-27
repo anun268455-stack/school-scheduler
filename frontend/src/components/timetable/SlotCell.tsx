@@ -4,6 +4,7 @@ import type { TimetableSlot } from "../../types";
 import { slotTeacherNames, teachingTogether, myElectiveOption, slotLabel } from "../../utils/teacherSlots";
 import { problemOf, parentMap, type ProblemKind, type SlotProblem } from "../../utils/slotProblems";
 import { useTimetableStore } from "../../store/timetableStore";
+import { cellFont } from "../../utils/cellScale";
 
 interface SlotCellProps {
   slots:       TimetableSlot[];
@@ -142,7 +143,8 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
       <div className="relative flex h-full items-center justify-center p-1
                       bg-gray-50 border border-dashed border-gray-300"
            title="คาบว่างที่จองไว้ให้ว่างตรงกันทั้งกลุ่ม — ไม่มีวิชา ไม่มีครู">
-        <span className="text-[9px] text-gray-400 leading-tight text-center">
+        <span className="text-gray-400 leading-tight text-center"
+              style={{ fontSize: cellFont(9) }}>
           คาบว่าง
         </span>
       </div>
@@ -199,7 +201,7 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
     {/* ── Subject code (single truncated line) ──────────────────── */}
     <div
       className="font-bold leading-tight overflow-hidden whitespace-nowrap text-ellipsis"
-      style={{ fontSize: compact ? "9px" : "11px" }}
+      style={{ fontSize: cellFont(compact ? 9 : 11) }}
       title={slot.subject_name ?? undefined}
     >
       {myOption?.label ?? slot.subject_code ?? slot.subject_name
@@ -210,7 +212,7 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
     <div className="flex-1 overflow-hidden mt-0.5 space-y-px">
       <div
         className="overflow-hidden whitespace-nowrap text-ellipsis opacity-80"
-        style={{ fontSize: "9px" }}
+        style={{ fontSize: cellFont(9) }}
         title={names.length ? names.join(" · ") : undefined}
       >
         {/* A shared elective the class hasn't settled on has no single teacher —
@@ -236,7 +238,7 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
       {slot.is_activity_block && slot.activity_scope && (
         <div
           className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"
-          style={{ fontSize: "8px" }}
+          style={{ fontSize: cellFont(8) }}
           title={slot.activity_scope}
         >
           {slot.activity_scope}
@@ -245,7 +247,7 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
       {compact && slot.group_name && (
         <div
           className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"
-          style={{ fontSize: "8px" }}
+          style={{ fontSize: cellFont(8) }}
           title={slot.group_name ?? undefined}
         >
           {slot.group_name}
@@ -258,14 +260,14 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
               sitting at the same faded size as the class name below it. */}
           <div
             className="overflow-hidden whitespace-nowrap text-ellipsis font-semibold opacity-90"
-            style={{ fontSize: "11px" }}
+            style={{ fontSize: cellFont(11) }}
             title={slot.room_name ?? undefined}
           >
             {slot.room_name}
           </div>
           <div
             className="overflow-hidden whitespace-nowrap text-ellipsis opacity-60"
-            style={{ fontSize: "9px" }}
+            style={{ fontSize: cellFont(9) }}
             title={slot.group_name ?? undefined}
           >
             {slot.group_name}
@@ -358,13 +360,16 @@ const MiniLayer: React.FC<{
     <div className={clsx("flex-1 min-h-0 flex items-center gap-1 px-1 overflow-hidden",
       slotColors(slot, !!problem))}
       title={problem ? `${title} — ${problem.text}` : title}>
-      <span className="shrink-0 font-bold text-[9px] bg-white/70 rounded px-0.5 leading-tight">
+      <span className="shrink-0 font-bold bg-white/70 rounded px-0.5 leading-tight"
+            style={{ fontSize: cellFont(9) }}>
         {problem ? `⚠${label}` : label}
       </span>
-      <span className="flex-1 min-w-0 truncate font-semibold text-[9px] leading-tight">
+      <span className="flex-1 min-w-0 truncate font-semibold leading-tight"
+            style={{ fontSize: cellFont(9) }}>
         {slotLabel(slot)}
       </span>
-      <span className="shrink-0 max-w-[42%] truncate text-[8px] text-gray-600 leading-tight">
+      <span className="shrink-0 max-w-[42%] truncate text-gray-600 leading-tight"
+            style={{ fontSize: cellFont(8) }}>
         {slot.room_name ?? names[0] ?? ""}
       </span>
     </div>

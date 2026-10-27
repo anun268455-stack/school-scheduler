@@ -4,6 +4,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useTimetableStore } from "../store/timetableStore";
+import {
+  CELL_SCALE_DEFAULT, CELL_SCALE_MAX, CELL_SCALE_MIN, CELL_SCALE_STEP,
+  cellFont, cellScaleLabel, cellScaleStyle, clampCellScale,
+} from "../utils/cellScale";
 import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject, LessonRequirement, ElectivePool } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
@@ -65,7 +69,7 @@ export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
     activities:   <LevelActivityPanel />,
     periods:      <PeriodsPanel />,
     locks:        <BulkLockPanel />,
-    settings:     <SettingsPanel />,
+    settings:     <><SettingsPanel /><ToolSettingsPanel /></>,
     departments:  <DepartmentsPanel />,
     analytics:    <AnalyticsPanel />,
     help:         <HelpPanel />,
@@ -3638,6 +3642,79 @@ const SettingsPanel: React.FC = () => {
               await loadAll();
               setInfo(await api.fetchStateInfo().catch(() => info));
             }} />
+          </div>
+        </div>
+      </div>
+    </Section>
+  );
+};
+
+/**
+ * ตั้งค่าเครื่องมือ — ของที่ปรับหน้าจอ ไม่ใช่ข้อมูลของโรงเรียน
+ *
+ *   "ช่วยมีปุ่มกดในแถบตั้งค่าในหัวข้อตั้งค่าเครื่องมือ(เป็นหัวข้อใหม่) เป็นแถบ
+ *    สเกลเลื่อนย่อขยายตัวอักษรในช่องตาราง โดยมีช่องตัวอย่างให้เห็นข้างๆ"
+ *
+ * ช่องตัวอย่างอยู่ข้างแถบเลื่อน และใช้ตัวเลขชุดเดียวกับช่องจริงในตาราง
+ * (utils/cellScale.ts) จึงเลื่อนแล้วเห็นผลทันทีโดยไม่ต้องกลับไปหน้าตาราง
+ */
+const ToolSettingsPanel: React.FC = () => {
+  const { schoolConfig, setCellFontScale } = useTimetableStore();
+  const scale = clampCellScale(schoolConfig.cell_font_scale ?? CELL_SCALE_DEFAULT);
+
+  return (
+    <Section title="ตั้งค่าเครื่องมือ 🧰">
+      <div className="bg-white border border-gray-200 rounded-lg p-5">
+        <p className="text-sm font-semibold text-gray-800 mb-1">ขนาดตัวอักษรในช่องตาราง</p>
+        <p className="text-[11px] text-gray-500 mb-3">
+          ปรับเฉพาะตัวอักษรในช่องของตารางบนหน้าจอ — ขนาดช่องและตารางที่พิมพ์ออก
+          กระดาษไม่เปลี่ยน · ตั้งไว้ที่เดียวแล้วเหมือนกันทุกเครื่อง
+        </p>
+
+        <div className="flex flex-col sm:flex-row gap-5 items-start">
+          {/* แถบเลื่อน */}
+          <div className="flex-1 min-w-0 w-full">
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] text-gray-400 shrink-0">เล็ก</span>
+              <input
+                type="range"
+                min={CELL_SCALE_MIN} max={CELL_SCALE_MAX} step={CELL_SCALE_STEP}
+                value={scale}
+                onChange={(e) => setCellFontScale(Number(e.target.value))}
+                className="flex-1 accent-blue-600"
+                aria-label="ขนาดตัวอักษรในช่องตาราง"
+              />
+              <span className="text-[11px] text-gray-400 shrink-0">ใหญ่</span>
+            </div>
+            <div className="flex items-center gap-2 mt-2">
+              <span className="px-2 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-800 text-xs font-semibold tabular-nums">
+                {Math.round(scale * 100)}%
+              </span>
+              <span className="text-xs text-gray-600">{cellScaleLabel(scale)}</span>
+              {scale !== CELL_SCALE_DEFAULT && (
+                <button
+                  onClick={() => setCellFontScale(CELL_SCALE_DEFAULT)}
+                  className="ml-auto text-[11px] text-blue-600 hover:underline"
+                >คืนค่าปกติ</button>
+              )}
+            </div>
+          </div>
+
+          {/* ช่องตัวอย่าง — หน้าตาเดียวกับช่องจริงในตาราง */}
+          <div className="shrink-0">
+            <p className="text-[10px] text-gray-400 mb-1 text-center">ตัวอย่างช่องในตาราง</p>
+            <div style={cellScaleStyle(scale)}
+                 className="w-40 h-24 rounded border border-gray-300 bg-blue-50 p-1.5
+                            flex flex-col overflow-hidden">
+              <div className="font-bold leading-tight truncate text-gray-900"
+                   style={{ fontSize: cellFont(11) }}>ค21101</div>
+              <div className="leading-tight truncate opacity-80 text-gray-800"
+                   style={{ fontSize: cellFont(9) }}>ครูสมชาย ใจดี</div>
+              <div className="leading-tight truncate font-semibold opacity-90 text-gray-900 mt-0.5"
+                   style={{ fontSize: cellFont(11) }}>247</div>
+              <div className="leading-tight truncate opacity-60 text-gray-800"
+                   style={{ fontSize: cellFont(9) }}>ม.1/5</div>
+            </div>
           </div>
         </div>
       </div>

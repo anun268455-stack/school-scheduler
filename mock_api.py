@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-27.2"
+API_BUILD = "2026-10-27.3"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -14233,6 +14233,16 @@ def update_school_config(body: dict[str, Any]):
               "max_consecutive", "prefer_consecutive", "min_last_period"):
         if k in body:
             SCHOOL_CONFIG[k] = body[k]
+    # ขนาดตัวอักษรในช่องตาราง — เก็บไว้กับการตั้งค่าโรงเรียนเพื่อให้ทุกเครื่อง
+    # เห็นเหมือนกันและติดไปกับไฟล์สำรอง ค่าที่อ่านไม่ได้หรือเกินช่วงถูกหนีบไว้
+    # ที่นี่ด้วย ไม่ใช่เชื่อหน้าเว็บ — ค่าเพี้ยนค่าเดียวทำให้ทุกเครื่องอ่าน
+    # ตารางไม่ได้
+    if "cell_font_scale" in body:
+        try:
+            v = float(body["cell_font_scale"])
+        except (TypeError, ValueError):
+            v = 1.0
+        SCHOOL_CONFIG["cell_font_scale"] = min(1.8, max(0.7, round(v, 2)))
     for k in _CONFIG_FLAGS:
         if k not in body:
             continue
