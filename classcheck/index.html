@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClassCheck — เครื่องมือกล้อง</title>
+<style>
+:root{--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--brand:#2563eb}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Sarabun',Tahoma,sans-serif;background:#f1f5f9;color:var(--ink);line-height:1.7}
+.wrap{max-width:620px;margin:0 auto;padding:0 16px 60px}
+header{background:linear-gradient(135deg,#1e40af,#2563eb);color:#fff;padding:30px 16px 26px}
+header .wrap{padding-bottom:0}
+h1{margin:0;font-size:24px;font-weight:800}
+.sub{color:#bfdbfe;font-size:14px;margin-top:5px}
+.card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px;margin-top:16px}
+h2{font-size:17px;margin:0 0 10px}
+a.go{display:block;text-align:center;background:var(--brand);color:#fff;text-decoration:none;
+  padding:16px;border-radius:13px;font-weight:700;font-size:17px}
+ol{padding-left:22px;margin:0}
+ol li{margin-bottom:9px}
+code{background:#f1f5f9;padding:2px 7px;border-radius:5px;font-size:13px;
+  font-family:ui-monospace,Menlo,monospace;word-break:break-all}
+.note{background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:13px;
+  font-size:14px;color:#1e40af;margin-top:12px}
+.warn{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:13px;
+  font-size:14px;color:#92400e;margin-top:12px}
+dt{font-weight:700;margin-top:12px}
+dd{margin:3px 0 0;color:var(--muted);font-size:14px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>📷 ClassCheck — เครื่องมือกล้อง</h1>
+    <div class="sub">ข้อมูลทั้งหมดยังอยู่ใน Google Sheet เดิมของคุณ หน้านี้แค่ยืมกล้องให้ใช้ได้</div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="card">
+    <a class="go" href="scan.html">เปิดหน้าสแกนบัตรส่งงาน →</a>
+    <div class="note">
+      บุ๊กมาร์กหน้านี้ไว้ที่หน้าจอหลักของมือถือจะเปิดได้เร็วที่สุด ไม่ต้องตั้งค่าใหม่ทุกครั้ง
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>ทำไมต้องมีหน้านี้</h2>
+    <p style="margin:0">
+      แอป ClassCheck เดิมถูก Apps Script วางไว้ในกรอบ iframe ที่ <b>ไม่เปิดสิทธิ์กล้อง</b>
+      เบราว์เซอร์จึงบล็อกการเปิดกล้องทุกครั้ง ไม่ว่าจะเขียนโค้ดอย่างไรก็ตาม
+      หน้านี้วางอยู่บน GitHub Pages ที่ไม่มีกรอบครอบ กล้องจึงทำงานได้จริง
+      แล้วส่งผลการสแกนกลับไปเขียนลงชีตเดิมผ่าน API
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>ตั้งค่าครั้งแรก (ทำครั้งเดียว)</h2>
+    <ol>
+      <li>เปิด Apps Script ของ ClassCheck → กดปุ่ม <b>+</b> ข้างคำว่า "ไฟล์" → <b>Script</b> → ตั้งชื่อ <code>API</code></li>
+      <li>วางเนื้อหาไฟล์ <code>API.gs</code> ลงไป → <b>Ctrl+S</b></li>
+      <li><b>Deploy</b> → <b>Manage deployments</b> → ไอคอนดินสอ → <b>Version: New version</b></li>
+      <li>ตั้ง <b>Who has access = Anyone</b> ★ ข้อนี้สำคัญที่สุด ถ้าเป็น Only myself หน้านี้จะเรียกไม่ได้</li>
+      <li>กด <b>Deploy</b> แล้วคัดลอกลิงก์ที่ลงท้ายด้วย <code>/exec</code></li>
+      <li>เปิดหน้าสแกน วางลิงก์นั้นลงช่องแรก → <b>เชื่อมต่อ</b></li>
+    </ol>
+    <div class="warn">
+      แก้โค้ดใน Apps Script ทุกครั้งต้องกด Deploy → <b>New version</b> ใหม่
+      ไม่งั้นลิงก์ <code>/exec</code> จะยังวิ่งโค้ดเวอร์ชันเก่าอยู่
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>เปิดกล้องไม่ได้ ทำยังไง</h2>
+    <dl style="margin:0">
+      <dt>ขึ้นว่า "เปิดกล้องไม่ได้: กดอนุญาต..."</dt>
+      <dd>แตะไอคอนรูปกุญแจ/กล้องที่แถบที่อยู่เว็บ → อนุญาตกล้อง → รีเฟรช</dd>
+
+      <dt>ไม่ขึ้นอะไรเลย ปุ่มกดแล้วเงียบ</dt>
+      <dd>ที่อยู่เว็บต้องเป็น <code>https://</code> กล้องจะไม่ทำงานบน http</dd>
+
+      <dt>เชื่อมต่อไม่สำเร็จ / ตอบกลับมาเป็นหน้าเว็บ</dt>
+      <dd>ยังไม่ได้ตั้ง Who has access = Anyone หรือยังไม่ได้ Deploy เวอร์ชันใหม่หลังวาง API.gs</dd>
+
+      <dt>บาร์โค้ดอ่านไม่ติด</dt>
+      <dd>ใช้ QR บนบัตรแทน อ่านง่ายกว่าในที่แสงน้อย หรือพิมพ์รหัส 5 หลักในช่องล่างสุด</dd>
+    </dl>
+  </div>
+
+</div>
+</body>
+</html>
