@@ -2,13 +2,14 @@
  * RoomSwapModal — pick a different room for an existing slot.
  * Shows only rooms that are free at the slot's day+period.
  */
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import { DAYS, periodLabel } from "../../types";
 import type { Room, TimetableSlot } from "../../types";
 import { slotLabel } from "../../utils/teacherSlots";
 import { roomFreeFor } from "../../utils/levels";
+import { useTimetableStore } from "../../store/timetableStore";
 
 const ROOM_TYPE_TH: Record<string, string> = {
   physical: "ห้องเรียนทั่วไป", special: "ห้องพิเศษ", outdoor: "กลางแจ้ง", floating: "ห้องเวียน",
@@ -24,6 +25,20 @@ interface RoomSwapModalProps {
 
 export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots, onSelect, onClose }) => {
   const dayName = DAYS[slot.day] ?? `วัน ${slot.day}`;
+  const yardPicks       = useTimetableStore((s) => s.yardPicks);
+  const yardList        = useTimetableStore((s) => s.yardList);
+  const removeYardPicks = useTimetableStore((s) => s.removeYardPicks);
+  const [unpinning, setUnpinning] = useState(false);
+
+  // หมุดลานของชั่วโมงนี้ — แรงกว่าการเลือกห้องที่นี่ ถ้าไม่เอาออกก่อน เลือกห้อง
+  // ใหม่แล้วเซิร์ฟเวอร์จะดึงกลับไปที่ลานที่ปักไว้ ("ย้ายห้องแล้วกลับไปที่เดิม")
+  const pin = useMemo(
+    () => yardPicks.find((r) => r.group_id === slot.group_id
+                                && r.day === slot.day && r.period === slot.period),
+    [yardPicks, slot.group_id, slot.day, slot.period]);
+  const pinName = pin
+    ? yardList.find((y) => y.id === pin.room_id)?.name ?? "ลานที่ปักไว้"
+    : null;
 
   const availableRooms = useMemo(() => {
     const occupiedRoomIds = new Set(
@@ -65,6 +80,27 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
         <div className="px-5 py-3 bg-gray-50 border-b border-gray-100 text-xs text-gray-500">
           ห้องปัจจุบัน: <strong className="text-gray-700">{slot.room_name ?? "– ไม่มี –"}</strong>
         </div>
+
+        {/* หมุดลาน — ต้องเอาออกก่อน ไม่งั้นเลือกห้องใหม่แล้วเด้งกลับ */}
+        {pinName && (
+          <div className="px-5 py-3 bg-teal-50 border-b border-teal-100 flex items-start gap-2">
+            <span className="text-base leading-none">📌</span>
+            <div className="flex-1 min-w-0 text-[11px] text-teal-900">
+              ชั่วโมงนี้ปักหมุดไว้ที่ <strong>{pinName}</strong> — ถ้าไม่เอาหมุดออก
+              เลือกห้องใหม่แล้วระบบจะดึงกลับมาที่ลานนี้
+            </div>
+            <button
+              type="button"
+              disabled={unpinning}
+              onClick={async () => {
+                setUnpinning(true);
+                await removeYardPicks(slot.group_id, slot.day, [slot.period]);
+                setUnpinning(false);
+              }}
+              className="shrink-0 px-2 py-1 rounded bg-teal-600 text-white text-[11px] font-semibold hover:bg-teal-700 disabled:bg-teal-300"
+            >{unpinning ? "กำลังเอาออก…" : "เอาหมุดออก"}</button>
+          </div>
+        )}
 
         {/* Room list */}
         <div className="px-5 py-4 max-h-80 overflow-y-auto">

@@ -29,7 +29,9 @@ import { problemsIn, parentMap, type SlotProblem } from "../../utils/slotProblem
 import { countProblems, describeCounts } from "../../utils/repairClasses";
 import { TableSearch, matches } from "../common/TableSearch";
 import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../utils/levels";
-import { mergedDoubles, periodsOfCell, picksOfGroup, yardsInCell } from "../../utils/yardPicks";
+import {
+  cellKey, hoursOfCell, mergedDoubles, periodsOfCell, picksOfGroup, yardsInCell,
+} from "../../utils/yardPicks";
 import { DAYS, type Period, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
@@ -69,11 +71,14 @@ interface DroppableCellProps {
   /** The ลาน picked for this cell, as text — null when none is. */
   yardLabel: string | null;
   onYardClick: (day: number, period: number) => void;
+  /** เอาหมุดลานของชั่วโมงนี้ออก — null เมื่อยังไม่มีหมุด */
+  onYardRemove: (day: number, period: number) => void;
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
   periodDef, day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective, onRescue,
   preLockMode, onPreLockClick, isDragging, onAddLesson, yardMode, yardLabel, onYardClick,
+  onYardRemove,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: `cell-${day}-${period}`,
@@ -149,7 +154,7 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
       </button>
     );
   } else if (yardLabel) {
-    body = <YardReserved label={yardLabel} />;
+    body = <YardReserved label={yardLabel} onRemove={() => onYardRemove(day, period)} />;
   }
 
   return (
@@ -184,15 +189,21 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
       {yardLabel && slots.length > 0 ? (
         <div className="flex flex-col h-full">
           <div className="flex-1 min-h-0">{body}</div>
-          <YardTag label={yardLabel} />
+          <YardTag label={yardLabel} onRemove={() => onYardRemove(day, period)} />
         </div>
       ) : body}
     </div>
   );
 };
 
-/** The strip under a lesson that says which ลาน its hour was picked for. */
-const YardTag: React.FC<{ label: string }> = ({ label }) => (
+/** The strip under a lesson that says which ลาน its hour was picked for.
+ *
+ *   "ช่วยมีปุ่มปักหมุดออกให้หน่อย เพราะย้ายห้องแล้วกลับไปที่เดิม"
+ *
+ * หมุดคือคำสั่งว่า "ชั่วโมงนี้เรียนที่ลานนี้" ซึ่งแรงกว่าการย้ายห้องด้วยมือ
+ * (ย้ายแล้วเซิร์ฟเวอร์ดึงกลับมาที่ลานเดิมทุกครั้ง) จึงต้องเอาออกได้จากที่ที่
+ * เห็นมันอยู่ ไม่ใช่ต้องเข้าโหมดเลือกลานก่อนแล้วค่อยกดอีกสองที */
+const YardTag: React.FC<{ label: string; onRemove?: () => void }> = ({ label, onRemove }) => (
   <div
     className="shrink-0 flex items-center gap-0.5 px-1 bg-teal-600 text-white text-[9px] font-bold leading-none"
     style={{ height: "14px" }}
@@ -200,15 +211,31 @@ const YardTag: React.FC<{ label: string }> = ({ label }) => (
   >
     <span className="shrink-0">📌</span>
     <span className="truncate">{label}</span>
+    {onRemove && (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onRemove(); }}
+        title="เอาหมุดออก — ชั่วโมงนี้จะไม่ถูกบังคับให้อยู่ลานนี้อีก แล้วย้ายห้องได้"
+        className="ml-auto shrink-0 px-0.5 rounded hover:bg-white/30 cursor-pointer"
+      >✕</button>
+    )}
   </div>
 );
 
 /** An hour with no lesson yet that is already spoken for on a ลาน. */
-const YardReserved: React.FC<{ label: string }> = ({ label }) => (
-  <div className="w-full h-full flex flex-col items-center justify-center gap-0.5 px-1 bg-teal-50 text-teal-800">
+const YardReserved: React.FC<{ label: string; onRemove?: () => void }> = ({ label, onRemove }) => (
+  <div className="relative w-full h-full flex flex-col items-center justify-center gap-0.5 px-1 bg-teal-50 text-teal-800">
     <span className="text-base leading-none">📌</span>
     <span className="w-full text-center text-[11px] font-bold leading-tight truncate" title={label}>{label}</span>
     <span className="text-[8px] leading-none opacity-70">จองลานไว้</span>
+    {onRemove && (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onRemove(); }}
+        title="เอาหมุดออก"
+        className="absolute top-0 right-0 px-1 text-teal-700/70 hover:text-teal-900 hover:bg-teal-100 rounded cursor-pointer text-[10px]"
+      >✕</button>
+    )}
   </div>
 );
 
@@ -260,10 +287,12 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     impactMap, draggingSlot, startDrag, endDrag,
     moveSlot, swapRoom, toggleLock, deleteSlot, applySwapRoute, preLockMode,
     undo, undoStack, toggleClassLock, manualMode,
-    yardPickMode, yardPicks, yardList,
+    yardPickMode, yardPicks, yardList, removeYardPicks,
   } = useTimetableStore();
 
   const [validAlert,   setValidAlert]   = useState<string | null>(null);
+  /** บอกผลของการเอาหมุดออก — ไม่ใช่ข้อผิดพลาด จึงไม่ใช้แถบแดง */
+  const [pinNote,      setPinNote]      = useState<string | null>(null);
   const [routePlan,    setRoutePlan]    = useState<
     { moving: TimetableSlot; target: { day: number; period: number }; routes: SwapRoute[] } | null
   >(null);
@@ -493,6 +522,21 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     });
   }, [gridPeriods, periodNums, merged]);
 
+  /** เอาหมุดลานของชั่วโมงนี้ออก — ทั้งคาบคู่ถ้าช่องนี้เป็นคาบคู่ */
+  const handleYardRemove = useCallback((d: number, p: number) => {
+    if (selectedGroupId == null || !periodNums.includes(p)) return;
+    const cellHours = periodsOfCell(merged, d, periodNums, p);
+    const hours = hoursOfCell(slots, selectedGroupId, d, cellHours)
+      .filter((h) => groupYards.has(cellKey(d, h)));
+    if (!hours.length) return;
+    const names = [...new Set(hours.map((h) => yardNameOf(groupYards.get(cellKey(d, h))!)))];
+    void removeYardPicks(selectedGroupId, d, hours).then(() => {
+      setPinNote(`เอาหมุด 📌 ${names.join(" / ")} ออกแล้ว — ย้ายห้องชั่วโมงนี้ได้`
+        + " · ปักกลับได้ที่ ⋯ เครื่องมือ → 📌 โหมดเลือกคาบเรียนลาน");
+    });
+  }, [selectedGroupId, periodNums, merged, slots, groupYards, removeYardPicks,
+      yardNameOf]);
+
   const handleApplyRoute = useCallback((route: SwapRoute) => {
     applySwapRoute(route);
     setRoutePlan(null);
@@ -690,6 +734,16 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
           <span className="text-slate-400">
             {undoStack[undoStack.length - 1].label} · ย้อนได้ {undoStack.length} ขั้น (Ctrl+Z)
           </span>
+        </div>
+      )}
+
+      {/* เอาหมุดออกแล้ว — ข่าวดี ไม่ใช่ข้อผิดพลาด */}
+      {pinNote && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-teal-50 border-b border-teal-200 text-teal-800 text-sm shrink-0">
+          <span>📌</span>
+          <span className="flex-1">{pinNote}</span>
+          <button className="text-teal-500 hover:text-teal-800 font-bold"
+                  onClick={() => setPinNote(null)}>✕</button>
         </div>
       )}
 
@@ -893,6 +947,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                             yardMode={yardMode}
                             yardLabel={yardIds.length ? yardIds.map(yardNameOf).join(" · ") : null}
                             onYardClick={handleYardClick}
+                            onYardRemove={handleYardRemove}
                           />
                         </div>
                       </td>

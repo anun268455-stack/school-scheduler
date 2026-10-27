@@ -212,6 +212,16 @@ interface TimetableStore {
   /** Never throws: a server that cannot answer leaves yardPicksError set. */
   loadYardPicks: () => Promise<void>;
   /** Saves at once. `room_id: null` removes the mark. Throws on a refusal, for the caller to show. */
+  /**
+   * เอาหมุดลานออกจากชั่วโมงที่ระบุ (ทีละหลายชั่วโมงได้ สำหรับคาบคู่)
+   *
+   *   "ช่วยมีปุ่มปักหมุดออกให้หน่อย เพราะย้ายห้องแล้วกลับไปที่เดิม"
+   *
+   * หมุดแรงกว่าการย้ายห้องด้วยมือ — เซิร์ฟเวอร์ดึงคาบกลับมาที่ลานที่ปักไว้ทุก
+   * ครั้ง เอาหมุดออกแล้วจึงย้ายห้องได้
+   */
+  removeYardPicks: (groupId: number, day: number, periods: number[]) => Promise<void>;
+
   saveYardPick: (p: {
     group_id: number; day: number; period: number; room_id: number | null;
   }) => Promise<void>;
@@ -399,6 +409,22 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     const saved = await api.setYardPick(p);
     yardLoadSeq++;   // any load still in flight began before this save
     set((st) => ({ yardPicks: applyPickResult(st.yardPicks, p, saved) }));
+  },
+
+  removeYardPicks: async (groupId, day, periods) => {
+    for (const period of periods) {
+      const asked = { group_id: groupId, day, period, room_id: null };
+      try {
+        await api.setYardPick(asked);
+        yardLoadSeq++;
+        set((st) => ({ yardPicks: applyPickResult(st.yardPicks, asked, null) }));
+      } catch {
+        set({ yardPicksError: "เอาหมุดออกไม่สำเร็จ — ลองใหม่อีกครั้ง" });
+        return;
+      }
+    }
+    // คาบที่เคยถูกหมุดดึงไว้ อาจเพิ่งถูกปล่อยให้ไม่มีห้อง — ดึงตารางมาดูของจริง
+    await get().loadSlots();
   },
 
   // ── Live collaboration ────────────────────────────────────────────────────
@@ -593,13 +619,35 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     try {
       // โหมดจัดเอง: "เราสามารถเปลี่ยนห้องได้" — ย้ายเข้าห้องที่มีคนใช้อยู่ได้
       // แล้วไปขึ้นกรอบแดง "ห้องซ้ำ" แทน (force ใช้ได้กับเซิร์ฟเวอร์รุ่นปัจจุบัน)
-      await withWrite(async () => {
+      const saved = await withWrite(async () => {
         if (get().manualMode) {
-          await api.moveSlots([{ slot_id: slotId, room_id: newRoomId }], true);
-        } else {
-          await api.updateSlot(slotId, { room_id: newRoomId });
+          const r = await api.moveSlots([{ slot_id: slotId, room_id: newRoomId }], true);
+          return r.slots.find((x) => x.id === slotId) ?? null;
         }
+        return await api.updateSlot(slotId, { room_id: newRoomId });
       });
+      // หมุดลานแรงกว่าการย้ายห้องด้วยมือ: ถ้าชั่วโมงนี้ปักหมุดไว้ เซิร์ฟเวอร์จะ
+      // คืนห้องเป็นลานที่ปักไว้ ไม่ใช่ห้องที่กดเลือก เดิมหน้าจอเก็บห้องใหม่ไว้
+      // เงียบ ๆ แล้วเด้งกลับตอนโหลดครั้งถัดไป — "ย้ายห้องแล้วกลับไปที่เดิม"
+      // โดยไม่มีใครรู้ว่าเพราะอะไร
+      if (saved && saved.room_id !== newRoomId) {
+        const pinned = get().yardPicks.find(
+          (r) => r.group_id === slot.group_id && r.day === slot.day
+                 && r.period === slot.period);
+        const yard = pinned
+          ? get().yardList.find((y) => y.id === pinned.room_id)?.name ?? "ลานที่ปักไว้"
+          : null;
+        set((st) => ({
+          slots: st.slots.map((x) => (together(x)
+            ? { ...x, room_id: saved.room_id ?? null,
+                room_name: saved.room_name ?? null, room_type: saved.room_type ?? null }
+            : x)),
+          solverError: yard
+            ? `ชั่วโมงนี้ปักหมุดไว้ที่ ${yard} จึงกลับไปที่เดิม — กด ✕ ที่แถบ `
+              + `📌 ${yard} ในช่องนั้นเพื่อเอาหมุดออกก่อน แล้วค่อยย้ายห้อง`
+            : "เซิร์ฟเวอร์เปลี่ยนห้องให้เป็นห้องอื่น — ดูห้องที่ขึ้นในช่องนั้น",
+        }));
+      }
     } catch (err: unknown) {
       // Put back THIS slot's room, not the whole timetable as it looked when
       // the call began. Restoring that snapshot would also undo any edit made
