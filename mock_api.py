@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-27.4"
+API_BUILD = "2026-10-27.5"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -9774,6 +9774,176 @@ def purge_orphan_reqs():
     before = len(REQUIREMENTS)
     REQUIREMENTS = [r for r in REQUIREMENTS if r.get("group_id") in gids]
     return {"deleted": before - len(REQUIREMENTS)}
+
+# ── สอนร่วมที่ใส่ทีหลัง ──────────────────────────────────────────────────────
+#
+#   "เวลาเลือกครูสอนร่วมทีหลัง คาบจะรวมกันเลย โดยจะมีหน้าต่างขึ้นมาให้เลือกว่า
+#    คาบไหนจะไปอยู่กับใคร เพราะตอนนี้คือมาใส่ทีหลังแล้วคาบไม่ขึ้น"
+#
+# co_teacher_id ถูกอ่านตอน "สร้างตาราง" เท่านั้น — _solve_greedy เอาไปแปะในคาบ
+# ตอนวาง และจองครูทั้งสองคน พอมาใส่ทีหลัง update_req เขียนแค่แถวกำหนดการสอน
+# คาบที่ลงไปแล้วจึงไม่รู้เรื่องด้วย ชื่อครูสอนร่วมไม่ขึ้นในช่อง และถ้าครูอีกคน
+# มีแถวของตัวเองอยู่ด้วย ชั้นนั้นก็ยังเรียนวิชาเดิมสองรอบ
+#
+# ตรงนี้ทำให้ "ใส่ทีหลัง" ได้ผลเท่ากับ "ใส่ก่อนแล้วสร้างตาราง" โดยไม่ต้องรื้อ
+# ตารางทั้งโรงเรียน
+
+
+def _coteach_sides(req: dict[str, Any], co_id: int) -> tuple[list, list, dict | None]:
+    """คาบของฝั่งเจ้าของแถว · คาบของฝั่งครูสอนร่วม · แถวของครูสอนร่วม (ถ้ามี)"""
+    gid, sid = req.get("group_id"), req.get("subject_id")
+    mine = [s for s in SLOTS if s.get("group_id") == gid
+            and s.get("subject_id") == sid
+            and s.get("teacher_id") == req.get("teacher_id")]
+    theirs = [s for s in SLOTS if s.get("group_id") == gid
+              and s.get("subject_id") == sid
+              and s.get("teacher_id") == co_id]
+    partner = next((r for r in REQUIREMENTS
+                    if r is not req and r.get("group_id") == gid
+                    and r.get("subject_id") == sid
+                    and r.get("teacher_id") == co_id), None)
+    return mine, theirs, partner
+
+
+def _free_except(teacher_id: int, day: int, period: int,
+                 ignore_ids: set[int]) -> dict | None:
+    """คาบที่ครูคนนี้ติดอยู่ในช่องนั้น — None คือว่าง
+
+    ไม่นับคาบที่กำลังจะถูกรวมหรือลบไปในชุดเดียวกัน ไม่งั้นคาบของอีกฝั่งเองจะถูก
+    นับว่า "ครูไม่ว่าง" ทุกช่อง และจะรวมอะไรไม่ได้เลย
+    """
+    for s in SLOTS:
+        if s["id"] in ignore_ids:
+            continue
+        if s.get("day") != day or s.get("period") != period:
+            continue
+        if teacher_id in _slot_teachers(s):
+            return s
+    return None
+
+
+@app.post("/api/timetable/coteach")
+def coteach(body: dict[str, Any]):
+    """รวมคาบของครูสองคนให้เป็นคาบเดียวกัน
+
+    ไม่ส่ง keep มา = ขอดูแผนก่อน (ไม่แตะอะไรทั้งนั้น)
+    ส่ง keep มา   = ลงมือ: คาบที่เก็บไว้ได้ชื่อครูทั้งสองคน คาบที่เหลือถูกลบ
+    """
+    global SLOTS
+    req_id = body.get("req_id")
+    req = next((r for r in REQUIREMENTS if r["id"] == req_id), None)
+    if req is None:
+        raise HTTPException(404, "ไม่พบแถวกำหนดการสอนนี้")
+    co_id = body.get("co_teacher_id")
+    if co_id is not None and not any(t["id"] == co_id for t in TEACHERS):
+        raise HTTPException(400, "ไม่พบครูที่เลือกเป็นครูสอนร่วม")
+    if co_id == req.get("teacher_id"):
+        raise HTTPException(400, "ครูสอนร่วมต้องเป็นคนละคนกับครูผู้สอน")
+
+    t_map = {t["id"]: t for t in TEACHERS}
+
+    def who(tid: int | None) -> str:
+        return (t_map.get(tid) or {}).get("name") or "—"
+
+    # ── เอาสอนร่วมออก ────────────────────────────────────────────────────
+    if co_id is None:
+        old = req.get("co_teacher_id")
+        req["co_teacher_id"] = None
+        n = 0
+        if old:
+            for s in SLOTS:
+                if (s.get("group_id") == req.get("group_id")
+                        and s.get("subject_id") == req.get("subject_id")
+                        and s.get("teacher_id") == req.get("teacher_id")
+                        and s.get("co_teacher_id") == old):
+                    s.pop("co_teacher_id", None)
+                    s.pop("co_teacher_name", None)
+                    n += 1
+        return {"applied": True, "removed_from": n,
+                "message": f"เอาครูสอนร่วมออกจาก {n} คาบแล้ว"}
+
+    mine, theirs, partner = _coteach_sides(req, co_id)
+    merging = {s["id"] for s in mine} | {s["id"] for s in theirs}
+    want = req.get("weekly_count") or 0
+    if partner:
+        want = max(want, partner.get("weekly_count") or 0)
+
+    def cell(s: dict, side: str) -> dict:
+        other = co_id if side == "mine" else req.get("teacher_id")
+        clash = _free_except(other, s["day"], s["period"], merging)
+        return {
+            "slot_id": s["id"], "day": s["day"], "period": s["period"],
+            "room_id": s.get("room_id"), "room_name": s.get("room_name"),
+            "side": side,
+            "teacher_name": s.get("teacher_name"),
+            "is_locked": bool(s.get("is_locked")),
+            "double": bool(s.get("double_group_key")),
+            "ok": clash is None,
+            "why": None if clash is None else
+                   (f"{who(other)} ติดสอน {clash.get('group_name')} "
+                    f"{clash.get('subject_code')} อยู่ชั่วโมงนี้"),
+        }
+
+    cells = [cell(s, "mine") for s in mine] + [cell(s, "theirs") for s in theirs]
+    cells.sort(key=lambda c: (c["day"], c["period"]))
+
+    # ── ขอดูแผน ──────────────────────────────────────────────────────────
+    if "keep" not in body:
+        free = [c for c in cells if c["ok"]]
+        return {
+            "applied": False,
+            "req_id": req["id"],
+            "group_name": next((g.get("name") for g in _flat_groups()
+                                if g["id"] == req.get("group_id")), None),
+            "subject_code": next((x.get("code") for x in SUBJECTS
+                                  if x["id"] == req.get("subject_id")), None),
+            "teacher_name": who(req.get("teacher_id")),
+            "co_teacher_name": who(co_id),
+            "partner_req_id": partner["id"] if partner else None,
+            "want": want,
+            "mine": len(mine), "theirs": len(theirs),
+            "cells": cells,
+            # เลือกให้ล่วงหน้าเท่าที่ควรเรียน เอาคาบที่ครูทั้งสองว่างก่อน
+            "suggest": ([c["slot_id"] for c in free[:want]] if want
+                        else [c["slot_id"] for c in free]),
+        }
+
+    # ── ลงมือ ────────────────────────────────────────────────────────────
+    keep = {int(x) for x in (body.get("keep") or [])}
+    known = {c["slot_id"] for c in cells}
+    if not keep <= known:
+        raise HTTPException(400, "มีคาบที่เลือกไว้ไม่ได้อยู่ในชุดนี้")
+    locked_gone = [c for c in cells
+                   if c["is_locked"] and c["slot_id"] not in keep]
+    if locked_gone:
+        raise HTTPException(
+            400,
+            "มีคาบที่ล็อกไว้อยู่ในคาบที่จะถูกลบ — ปลดล็อกก่อน หรือเลือกเก็บคาบนั้นไว้")
+
+    kept, dropped = [], []
+    for s in SLOTS:
+        if s["id"] not in known:
+            continue
+        if s["id"] in keep:
+            s["teacher_id"] = req.get("teacher_id")
+            s["teacher_name"] = who(req.get("teacher_id"))
+            s["co_teacher_id"] = co_id
+            s["co_teacher_name"] = who(co_id)
+            kept.append(s["id"])
+        else:
+            dropped.append(s["id"])
+    if dropped:
+        gone = set(dropped)
+        SLOTS = [s for s in SLOTS if s["id"] not in gone]
+
+    # แถวกำหนดการสอนต้องชี้ถึงกัน ไม่งั้นรอบสร้างตารางถัดไปจะแยกกลับเป็นสองคาบ
+    # (_fold_coteaching ดูว่าสองแถวเรียกชื่อกันไหม)
+    req["co_teacher_id"] = co_id
+    return {"applied": True, "kept": kept, "dropped": dropped,
+            "message": (f"รวมเป็น {len(kept)} คาบ ที่มี {who(req.get('teacher_id'))}"
+                        f" กับ {who(co_id)} อยู่ด้วยกัน"
+                        + (f" · ลบคาบที่ซ้ำออก {len(dropped)} คาบ" if dropped else ""))}
+
 
 @app.put("/api/timetable/requirements/{i}")
 def update_req(i: int, body: dict[str, Any]):

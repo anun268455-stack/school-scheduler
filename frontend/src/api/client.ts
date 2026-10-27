@@ -150,6 +150,71 @@ export const bulkCreateRequirements = async (rows: Partial<LessonRequirement>[])
 };
 export const deleteRequirement = (id: number) => api.delete(`/timetable/requirements/${id}`);
 
+// ── สอนร่วมที่ใส่ทีหลัง ─────────────────────────────────────────────────────
+//
+//   "เวลาเลือกครูสอนร่วมทีหลัง คาบจะรวมกันเลย โดยจะมีหน้าต่างขึ้นมาให้เลือกว่า
+//    คาบไหนจะไปอยู่กับใคร เพราะตอนนี้คือมาใส่ทีหลังแล้วคาบไม่ขึ้น"
+//
+// co_teacher_id ถูกอ่านตอนสร้างตารางเท่านั้น การแก้แถวกำหนดการสอนจึงไม่ไปถึง
+// คาบที่ลงไปแล้ว ตัวนี้ทำให้ไปถึง
+
+export interface CoteachCell {
+  slot_id: number;
+  day:     number;
+  period:  number;
+  room_id:   number | null;
+  room_name: string | null;
+  /** คาบของฝั่งไหน — เจ้าของแถว หรือครูสอนร่วม */
+  side:   "mine" | "theirs";
+  teacher_name: string | null;
+  is_locked: boolean;
+  double:    boolean;
+  /** ครูอีกคนว่างชั่วโมงนี้ไหม */
+  ok:   boolean;
+  why:  string | null;
+}
+
+export interface CoteachPlan {
+  applied: false;
+  req_id:  number;
+  group_name:   string | null;
+  subject_code: string | null;
+  teacher_name:    string;
+  co_teacher_name: string;
+  /** แถวของครูสอนร่วม ถ้าเขามีแถวของตัวเอง */
+  partner_req_id: number | null;
+  /** ชั้นนี้ควรเรียนวิชานี้กี่คาบต่อสัปดาห์ */
+  want:   number;
+  mine:   number;
+  theirs: number;
+  cells:  CoteachCell[];
+  /** คาบที่ควรเก็บไว้ เลือกมาให้ล่วงหน้า */
+  suggest: number[];
+}
+
+export interface CoteachResult {
+  applied: true;
+  kept?:    number[];
+  dropped?: number[];
+  removed_from?: number;
+  message:  string;
+}
+
+/** ขอดูแผนก่อน — ไม่แตะอะไรทั้งนั้น */
+export const coteachPlan = (reqId: number, coTeacherId: number) =>
+  api.post<CoteachPlan>("/timetable/coteach",
+    { req_id: reqId, co_teacher_id: coTeacherId }).then((r) => r.data);
+
+/** ลงมือ — คาบที่เลือกไว้ได้ชื่อครูทั้งสองคน คาบที่เหลือถูกลบ */
+export const coteachApply = (reqId: number, coTeacherId: number, keep: number[]) =>
+  api.post<CoteachResult>("/timetable/coteach",
+    { req_id: reqId, co_teacher_id: coTeacherId, keep }).then((r) => r.data);
+
+/** เอาครูสอนร่วมออกจากแถวนี้ และจากคาบที่ลงไปแล้ว */
+export const coteachRemove = (reqId: number) =>
+  api.post<CoteachResult>("/timetable/coteach",
+    { req_id: reqId, co_teacher_id: null }).then((r) => r.data);
+
 // ── Timetable Slots ──────────────────────────────────────────────────────────
 export const fetchSlots = (params?: { group_id?: number; teacher_id?: number; day?: number; room_id?: number }) =>
   api.get<TimetableSlot[]>("/timetable/slots", { params }).then((r) => r.data);
@@ -783,7 +848,7 @@ export const fetchStateInfo = () =>
  * ต้องตรงกับ API_BUILD ใน mock_api.py และขยับพร้อมกันเสมอ — มีเทสต์
  * (scratchpad/apibuild.py) คอยจับไว้ว่าสองที่นี้ตรงกัน
  */
-export const EXPECTED_API_BUILD = "2026-10-27.4";
+export const EXPECTED_API_BUILD = "2026-10-27.5";
 
 export interface ApiBuildCheck {
   /** รุ่นที่เซิร์ฟเวอร์ตอบมา — null เมื่อเก่าจนไม่มีช่องนี้เลย */

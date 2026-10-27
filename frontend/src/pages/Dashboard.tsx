@@ -38,6 +38,7 @@ import { indexRequirements, partnerOf, mismatchedPairs, autoPairable, coTeaching
 import { SubjectAssignModal } from "../components/timetable/SubjectAssignModal";
 import { SubjectRoomsModal } from "../components/timetable/SubjectRoomsModal";
 import { SubgroupSetModal } from "../components/timetable/SubgroupSetModal";
+import { CoteachMergeModal } from "../components/teachers/CoteachMergeModal";
 import { auditAll } from "../utils/subgroupAudit";
 import { groupElectiveSlots } from "../utils/electiveGroups";
 import { electiveSubjectIds, teacherLoads, groupLoads } from "../utils/teachingLoad";
@@ -1598,6 +1599,9 @@ const RequirementsPanel: React.FC = () => {
    * is on screen, so it goes.
    */
   const [reqErr, setReqErr] = useState<{ at: "add" | number; key: string; text: string } | null>(null);
+  /** แถวที่เพิ่งตั้งครูสอนร่วม — เปิดหน้าต่างให้เลือกว่าจะเก็บคาบไหนไว้ */
+  const [coteach, setCoteach] = useState<{ reqId: number; coTeacherId: number } | null>(null);
+  const [coteachDone, setCoteachDone] = useState<string | null>(null);
 
   /**
    * The สอนร่วม partner, or null.
@@ -1632,6 +1636,13 @@ const RequirementsPanel: React.FC = () => {
     await mirrorPairing(created);
     setForm({ group_id: "", subject_id: "", teacher_id: "", weekly_count: 1,
               parallel_group_key: "", co_teacher_id: "" });
+    // เพิ่มแถวสอนร่วมทั้งที่ชั้นนี้มีคาบวิชานี้ลงไปแล้ว — คาบของครูอีกคนที่ลง
+    // ไว้ก่อนต้องถูกรวม ไม่งั้นชั้นนั้นจะเรียนวิชาเดิมสองรอบ ถ้ายังไม่มีคาบ
+    // ไหนลงเลยก็ไม่ต้องถาม รอบสร้างตารางถัดไปจัดให้เอง
+    const co = created.co_teacher_id ?? null;
+    const already = co != null && slots.some(
+      (x) => x.group_id === created.group_id && x.subject_id === created.subject_id);
+    if (co != null && already) setCoteach({ reqId: created.id, coTeacherId: co });
   };
 
   /**
@@ -1659,6 +1670,7 @@ const RequirementsPanel: React.FC = () => {
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
     setReqErr(null);
+    const before = requirements.find((r) => r.id === id);
     let updated: LessonRequirement;
     try {
       updated = await api.updateRequirement(id, {
@@ -1679,6 +1691,17 @@ const RequirementsPanel: React.FC = () => {
     useTimetableStore.setState((s) => ({ requirements: s.requirements.map((r) => r.id === id ? { ...r, ...updated } : r) }));
     await mirrorPairing(updated);
     setEditing(null); setEditForm(null);
+    // ── สอนร่วมที่เพิ่งใส่ทีหลัง ────────────────────────────────────────
+    //
+    //   "เวลาเลือกครูสอนร่วมทีหลัง คาบจะรวมกันเลย โดยจะมีหน้าต่างขึ้นมาให้
+    //    เลือกว่าคาบไหนจะไปอยู่กับใคร เพราะตอนนี้คือมาใส่ทีหลังแล้วคาบไม่ขึ้น"
+    //
+    // แถวถูกบันทึกแล้ว แต่คาบที่ลงไปในตารางแล้วยังไม่รู้เรื่องด้วย — เปิด
+    // หน้าต่างให้เลือกว่าจะเก็บคาบไหนไว้เป็นคาบที่ครูสองคนอยู่ด้วยกัน
+    const coNow = updated.co_teacher_id ?? null;
+    if (coNow != null && coNow !== (before?.co_teacher_id ?? null)) {
+      setCoteach({ reqId: id, coTeacherId: coNow });
+    }
   };
 
   const gName = (id: number) => groups.flatMap((g) => [g,...(g.children??[])]).find((g) => g.id === id)?.name ?? String(id);
@@ -1764,6 +1787,23 @@ const RequirementsPanel: React.FC = () => {
   return (
     <Section title="ข้อกำหนดคาบเรียน — ครูสอนวิชาอะไร ในห้องใด">
       {showSets && <SubgroupSetModal onClose={() => setShowSets(false)} />}
+      {/* ใส่ครูสอนร่วมทีหลัง — คาบที่ลงไปแล้วต้องรวมกัน ไม่ใช่เงียบ */}
+      {coteach && (
+        <CoteachMergeModal
+          reqId={coteach.reqId}
+          coTeacherId={coteach.coTeacherId}
+          onClose={() => setCoteach(null)}
+          onDone={(m) => setCoteachDone(m)}
+        />
+      )}
+      {coteachDone && (
+        <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-2 mb-3 text-xs text-emerald-900">
+          <span>✓</span>
+          <span className="flex-1">{coteachDone}</span>
+          <button onClick={() => setCoteachDone(null)}
+            className="text-emerald-700 hover:underline text-[11px]">ปิด</button>
+        </div>
+      )}
       {hasSubgroups && (
         <div className="flex items-center gap-3 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2.5 mb-3">
           <span className="text-lg">🧩</span>
