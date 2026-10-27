@@ -29,7 +29,7 @@ import { slotsForTeacher } from "../../utils/teacherSlots";
 import { problemsIn, parentMap, type SlotProblem } from "../../utils/slotProblems";
 import { countProblems, describeCounts } from "../../utils/repairClasses";
 import { TableSearch, matches } from "../common/TableSearch";
-import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel } from "../../utils/levels";
+import { levelKeyOf, periodsForLevel, combinedPeriods, levelLabel, roomReservedFor } from "../../utils/levels";
 import {
   cellKey, hoursOfCell, mergedDoubles, periodsOfCell, picksOfGroup, yardsInCell,
 } from "../../utils/yardPicks";
@@ -181,17 +181,26 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
     );
   } else if (onFillRoom && !isDragging && !preLockMode) {
     /* ตารางห้องสอน ช่องว่าง — กดเพื่อดึงคาบที่มีอยู่เข้ามาใช้ห้องนี้
-       ＋ เพิ่มคาบใหม่ยังอยู่ แต่ถอยไปเป็นปุ่มเล็กที่มุม */
+       ＋ เพิ่มคาบใหม่ยังอยู่ แต่ถอยไปเป็นปุ่มเล็กที่มุม
+
+       เขียน "ว่าง · เอาคาบมาลง" ไว้ให้เห็นตลอด ไม่ใช่โผล่ตอนเอาเมาส์ไปชี้
+       ("ไม่เห็นมีเลย") — ช่องว่างในตารางห้องสอนคือสิ่งที่คนเปิดหน้านี้มาหา
+       จึงต้องมองเห็นทั้งตารางว่ากดตรงไหนได้บ้าง โดยไม่ต้องกวาดเมาส์ทีละช่อง */
     body = (
       <div className="group/fill w-full h-full relative">
         <button
           onClick={() => onFillRoom(day, period)}
-          className="w-full h-full flex items-center justify-center text-gray-300 hover:text-indigo-600 hover:bg-indigo-50/60 transition-colors"
+          className="w-full h-full flex flex-col items-center justify-center gap-0.5 rounded bg-indigo-50/40 hover:bg-indigo-100/70 transition-colors"
           title="ห้องนี้ว่างชั่วโมงนี้ — กดเพื่อเลือกคาบมาลง"
         >
-          {yardLabel
-            ? <YardReserved label={yardLabel} />
-            : <span className="text-sm opacity-0 group-hover/fill:opacity-100 transition-opacity">🎯</span>}
+          {yardLabel ? <YardReserved label={yardLabel} /> : (
+            <>
+              <span className="text-sm leading-none">🎯</span>
+              <span className="text-[9px] leading-none text-indigo-500 font-medium">
+                เอาคาบมาลง
+              </span>
+            </>
+          )}
         </button>
         {onAddLesson && (
           <button
@@ -577,6 +586,36 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   const handleAddLesson = useCallback((d: number, p: number) => setAddCell({ day: d, period: p }), []);
   const handleFillRoom = useCallback((d: number, p: number) => setFillCell({ day: d, period: p }), []);
 
+  /**
+   * ป้ายบนหัวตารางห้องสอน — ว่างกี่ช่อง และมีอะไรกั้นอยู่ไหม
+   *
+   * ห้องที่โรงเรียนปิดไว้ หรือกันไว้ให้ครูเฉพาะกลุ่ม คือเหตุผลที่กดช่องว่าง
+   * แล้วไม่มีคาบให้เลือก — บอกตั้งแต่ตรงนี้ ดีกว่าให้ไปเจอตอนเปิดหน้าต่าง
+   */
+  const roomHint = useMemo(() => {
+    if (selectedRoomId == null) return null;
+    const room = rooms.find((r) => r.id === selectedRoomId);
+    if (!room) return null;
+    if (room.usable === false || (room.capacity ?? 1) <= 0) {
+      return { tone: "warn" as const,
+               text: "โรงเรียนตั้งไว้ว่าห้องนี้ใช้สอนไม่ได้ ระบบจึงไม่เคยจัดคาบลงห้องนี้เลย"
+                 + " — ถ้าใช้สอนได้จริง ติ๊ก “ใช้สอนได้” ที่ ⚙ จัดการ › ห้องเรียน" };
+    }
+    // นับเฉพาะคาบเรียนจริง — ช่วงพักกับโฮมรูมไม่ใช่ช่องที่เอาคาบมาลงได้
+    const classNums = gridPeriods.filter((p) => p.type === "class").map((p) => p.period_num);
+    const used = new Set(viewSlots
+      .filter((s) => classNums.includes(s.period))
+      .map((s) => `${s.day}-${s.period}`)).size;
+    const free = DAY_INDEXES.length * classNums.length - used;
+    if (free <= 0) return null;
+    const kept = roomReservedFor(room)
+      .map((id) => teachers.find((t) => t.id === id)?.name)
+      .filter((n): n is string => !!n);
+    return { tone: "info" as const,
+             text: `ห้องนี้ยังว่างอยู่ ${free} ช่อง — กดช่องว่างเพื่อเลือกคาบมาลง`
+               + (kept.length ? ` · ห้องนี้กันไว้ให้ ${kept.join(" · ")} เท่านั้น` : "") };
+  }, [selectedRoomId, rooms, teachers, viewSlots, gridPeriods]);
+
   // ── ลานที่เลือกไว้ล่วงหน้า ────────────────────────────────────────────────
   // A mark belongs to one class's hour, so the mode only means something on a
   // class's own timetable. A teacher's or a room's cell can hold several
@@ -862,6 +901,20 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
            เลื่อนหลายๆแยกให้ฉันเลือก"
           บอกสามอย่าง: ตอนนี้กำลังหาที่ให้ใคร · ทางเลือกมีอะไร · เส้นทางที่
           เลือกไว้แล้วจะทำอะไรบ้าง (ยังไม่แตะตารางจนกดลงมือ) */}
+      {/* ตารางห้องสอน — ป้ายบอกว่าช่องว่างกดได้ และห้องนี้ติดอะไรอยู่หรือเปล่า
+          ("ไม่เห็นมีเลย") คนที่เปิดตารางห้องมาดูว่าห้องว่างเท่าไร ควรเห็น
+          ตั้งแต่บรรทัดแรกว่าทำอะไรกับช่องว่างได้ ไม่ต้องไปค้นในเมนู */}
+      {selectedRoomId != null && roomHint && (
+        <div className={clsx(
+          "flex items-center gap-2 px-4 py-1.5 border-b text-[11px] shrink-0",
+          roomHint.tone === "warn"
+            ? "bg-amber-50 border-amber-200 text-amber-900"
+            : "bg-indigo-50 border-indigo-200 text-indigo-900")}>
+          <span>{roomHint.tone === "warn" ? "⚠️" : "🎯"}</span>
+          <span>{roomHint.text}</span>
+        </div>
+      )}
+
       {guideMode && (
         <div className="px-4 py-2 bg-indigo-50 border-b border-indigo-200 text-xs shrink-0">
           <div className="flex items-center gap-2 flex-wrap">
