@@ -210,6 +210,79 @@ export const coteachApply = (reqId: number, coTeacherId: number, keep: number[])
   api.post<CoteachResult>("/timetable/coteach",
     { req_id: reqId, co_teacher_id: coTeacherId, keep }).then((r) => r.data);
 
+// ── ปุ่มตรวจคาบ — เครื่องจัดตารางตัวใหม่ ─────────────────────────────────
+//
+// จัดตารางใหม่ทั้งโรงเรียนแล้วคืนเป็น "ข้อเสนอ" ไม่เขียนลงตารางที่ใช้อยู่
+// งานกินเวลาเป็นนาที จึงเริ่มงานแล้วถามความคืบหน้าเป็นระยะ
+
+/** ตัวเลขวัดตารางชุดหนึ่ง — ใช้ไม้บรรทัดเดียวกันทั้งตารางจริงและข้อเสนอ */
+export interface ScheduleQuality {
+  periods:       number;
+  lessons:       number;
+  /** คาบว่างที่คั่นกลางวันของห้องหนึ่ง หัวท้ายว่างไม่นับ */
+  gaps:          number;
+  teacher_busy:  number;
+  /** ครู-วัน ที่สอนเกินเพดานต่อวัน */
+  heavy_days:    number;
+  /** คาบที่ทำให้ครูสอนติดกันเกินเพดาน */
+  long_runs:     number;
+  clash_group:   number;
+  clash_teacher: number;
+  clash_room:    number;
+  no_room:       number;
+}
+
+/** ห้องที่หลักสูตรขอคาบไว้เกินช่องที่มีจริง — ไม่มีเครื่องไหนแก้ได้ */
+export interface OverCapacity {
+  group_id:   number;
+  group_name: string | null;
+  want:       number;
+  cap:        number;
+  over:       number;
+}
+
+export interface ProposeSummary {
+  units:    number;
+  placed:   number;
+  unplaced: number;
+  unplaced_labels: string[];
+  restarts: number;
+  seconds:  number;
+  /** รูก่อนและหลังรอบขยับให้สวย */
+  gaps_before:   number;
+  gaps_after:    number;
+  polish_moves:  number;
+  now:      ScheduleQuality;
+  proposed: ScheduleQuality;
+  over_capacity: OverCapacity[];
+  activity_windows:   number;
+  kept_activity_time: boolean;
+}
+
+export interface ProposeJob {
+  state:   "running" | "done" | "error";
+  message: string;
+  started: string;
+  budget_s: number;
+  polish_s: number;
+  summary?: ProposeSummary;
+}
+
+/** เริ่มจัดใหม่ — คืนรหัสงานไปใช้ถามความคืบหน้า */
+export const proposeNewStart = (opts?: {
+  budget_s?: number; polish_s?: number; keep_activity_time?: boolean;
+}) =>
+  api.post<{ job: string; budget_s: number; polish_s: number; eta_s: number }>(
+    "/timetable/propose-new", opts ?? {}).then((r) => r.data);
+
+export const proposeNewStatus = (job: string) =>
+  api.get<ProposeJob>(`/timetable/propose-new/${job}`).then((r) => r.data);
+
+/** คาบที่เสนอทั้งหมด — อ่านดูได้ ยังไม่มีใครเอาไปเขียนลงตาราง */
+export const proposeNewSlots = (job: string) =>
+  api.get<{ job: string; slots: TimetableSlot[] }>(
+    `/timetable/propose-new/${job}/slots`).then((r) => r.data.slots);
+
 /** เอาครูสอนร่วมออกจากแถวนี้ และจากคาบที่ลงไปแล้ว */
 export const coteachRemove = (reqId: number) =>
   api.post<CoteachResult>("/timetable/coteach",
@@ -848,7 +921,7 @@ export const fetchStateInfo = () =>
  * ต้องตรงกับ API_BUILD ใน mock_api.py และขยับพร้อมกันเสมอ — มีเทสต์
  * (scratchpad/apibuild.py) คอยจับไว้ว่าสองที่นี้ตรงกัน
  */
-export const EXPECTED_API_BUILD = "2026-10-27.6";
+export const EXPECTED_API_BUILD = "2026-10-28.1";
 
 export interface ApiBuildCheck {
   /** รุ่นที่เซิร์ฟเวอร์ตอบมา — null เมื่อเก่าจนไม่มีช่องนี้เลย */

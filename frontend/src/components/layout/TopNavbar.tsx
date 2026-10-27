@@ -10,6 +10,7 @@ import { SolverWidget } from "../solver/SolverWidget";
 import { RepairClassesModal } from "../solver/RepairClassesModal";
 import { BalanceTeachersModal } from "../solver/BalanceTeachersModal";
 import { TeacherPlanModal } from "../teachers/TeacherPlanModal";
+import { ProposeNewModal } from "../timetable/ProposeNewModal";
 import { RoomAuditModal } from "../rooms/RoomAuditModal";
 import { ConsistencyModal } from "../solver/ConsistencyModal";
 import { PeriodCheckModal } from "../solver/PeriodCheckModal";
@@ -154,6 +155,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showSolver,  setShowSolver]  = useState(false);
   const [showRepair,  setShowRepair]  = useState(false);
   const [showRoomAudit, setShowRoomAudit] = useState(false);
+  const [showPropose, setShowPropose] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [showBalance, setShowBalance] = useState(false);
   const [showPlan,    setShowPlan]    = useState(false);
@@ -607,6 +609,14 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
               hint="คาบไหนเรียนลานหรือไม่มีห้อง ทั้งที่ห้องว่างอยู่ในชั่วโมงนั้น"
               onClick={() => { setShowActions(false); setShowRoomAudit(true); }}
             />
+            {/* ปุ่มตรวจคาบ — "ทั้งหมดนี้อาจจะทำเป็นปุ่มตรวจคาบ นานก็ได้"
+                เครื่องตัวใหม่ จัดใหม่ทั้งโรงเรียนแล้วคืนเป็นข้อเสนอ ไม่เขียน
+                ลงตารางที่ใช้อยู่ */}
+            <ActionItem
+              icon="🧪" label="ลองจัดใหม่ด้วยเครื่องตัวใหม่" tone="text-fuchsia-300"
+              hint="จัดตารางใหม่ทั้งโรงเรียนตั้งแต่ต้น แล้วบอกว่าได้ดีกว่าที่ใช้อยู่ตรงไหน — ตารางที่ใช้อยู่ไม่ถูกแตะ"
+              onClick={() => { setShowActions(false); setShowPropose(true); }}
+            />
             {/* จัดคาบของครูคนนี้ — เฉพาะตอนเปิดตารางของครูอยู่ เพราะทำงานกับ
                 ครูคนนั้นคนเดียว */}
             {viewMode === "teacher" && selectedTeacherId != null && currentPage === "timetable" && (
@@ -661,6 +671,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       {showCurric && <CurriculumAuditModal onClose={() => setShowCurric(false)} />}
       {showRepair && <RepairClassesModal onClose={() => setShowRepair(false)} />}
       {showBalance && <BalanceTeachersModal onClose={() => setShowBalance(false)} />}
+      {showPropose && <ProposeNewModal onClose={() => setShowPropose(false)} />}
       {showRoomAudit && <RoomAuditModal onClose={() => setShowRoomAudit(false)} />}
       {showPlan && selectedTeacherId != null && (
         <TeacherPlanModal teacherId={selectedTeacherId} onClose={() => setShowPlan(false)} />
