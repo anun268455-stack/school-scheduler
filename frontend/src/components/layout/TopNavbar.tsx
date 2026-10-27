@@ -114,6 +114,29 @@ const CRUD_ITEMS = [
   { id: "help",       icon: "📖", label: "คู่มือการใช้งาน", divider: true  },
 ];
 
+/**
+ * หนึ่งบรรทัดในเมนูสั่งงาน — ไอคอน ชื่อ และคำอธิบายสั้น ๆ ว่าปุ่มนี้ทำอะไร
+ *
+ * คำอธิบายอยู่ในเมนูเลย ไม่ใช่ซ่อนใน title ที่ต้องเอาเมาส์ไปค้าง เพราะพอยุบ
+ * ปุ่มเข้ามาแล้ว ชื่อปุ่มอย่างเดียวไม่พอให้แยก "สร้างตาราง" กับ "จัดให้เสร็จ"
+ */
+const ActionItem: React.FC<{
+  icon: string; label: string; hint: string; tone: string;
+  disabled?: boolean; onClick: () => void;
+}> = ({ icon, label, hint, tone, disabled, onClick }) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    className="w-full flex items-start gap-2 px-3 py-1.5 text-left hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+  >
+    <span className="text-sm leading-tight shrink-0">{icon}</span>
+    <span className="min-w-0">
+      <span className={clsx("block text-xs font-semibold leading-tight", tone)}>{label}</span>
+      <span className="block text-[10px] text-gray-400 leading-snug">{hint}</span>
+    </span>
+  </button>
+);
+
 export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, currentPage, printOptions, onPrintOptionsChange }) => {
   const {
     viewMode, setViewMode,
@@ -131,6 +154,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const [showSolver,  setShowSolver]  = useState(false);
   const [showRepair,  setShowRepair]  = useState(false);
   const [showRoomAudit, setShowRoomAudit] = useState(false);
+  const [showActions, setShowActions] = useState(false);
   const [showBalance, setShowBalance] = useState(false);
   const [showPlan,    setShowPlan]    = useState(false);
   const [showCrud,    setShowCrud]    = useState(false);
@@ -149,6 +173,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   const crudRef   = useRef<HTMLDivElement>(null);
   const toolsRef  = useRef<HTMLDivElement>(null);
   useDismissOnOutside(solverRef, showSolver, useCallback(() => setShowSolver(false), []));
+  useDismissOnOutside(solverRef, showActions, useCallback(() => setShowActions(false), []));
   useDismissOnOutside(crudRef,   showCrud,   useCallback(() => setShowCrud(false), []));
   useDismissOnOutside(toolsRef,  showTools,  useCallback(() => setShowTools(false), []));
 
@@ -512,98 +537,88 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         )}
       </div>
 
-      {/* Solver — two buttons, one above the other, and they must never be
-          mistaken for each other: ⚡ rebuilds the whole school, 🔧 re-places
-          only the classes ticked and leaves every other class exactly where
-          it is. Different colour, different words, and the 🔧 dialog says
-          what it will and will not touch before anything is pressed. */}
-      <div ref={solverRef} className="relative px-2 border-r border-gray-700 shrink-0 flex flex-col items-stretch gap-0.5">
-        {/* ห้องที่ปิดไว้ว่าจัดเสร็จแล้ว — บอกตรงนี้ ก่อนกด ไม่ใช่หลังกด
-            "ถ้าฉันล็อกแล้ว ฉันให้จัดตารางใหม่ได้ไหม"
-            ได้ และปุ่มทั้งสองจะข้ามห้องพวกนี้ไป แต่เดิมไม่มีอะไรบนจอยืนยัน
-            ให้เลย คนจึงไม่กล้ากด เพราะกลัวว่างานที่ปิดไว้จะหาย */}
-        {lockedClassNames.length > 0 && (
-          <span
-            title={`จะไม่ถูกแตะ: ${lockedClassNames.join(", ")}`}
-            className="flex items-center justify-center gap-1 px-2 py-0.5 rounded bg-gray-700 border border-gray-500 text-gray-200 text-[10px] font-medium"
-          >
-            🔒 ปิดไว้ {lockedClassNames.length} ห้อง · จะไม่ถูกแตะ
-          </span>
+      {/* ── ปุ่มสั่งงาน รวมอยู่ปุ่มเดียว ────────────────────────────────
+          "ตรงตัวเลือกหลายๆตัวช่วยทำให้อยู่ในตัวเลือกเดี่ยวได้ไหม เพราะมันทำให้
+           เส้นสีดำหนามามองจอไม่ถนัด"
+
+          เดิมหกปุ่มเรียงซ้อนกันเป็นหกแถว แถบดำจึงสูงเกือบ 150 px กินพื้นที่
+          ตารางไปฟรี ๆ ทั้งที่กดกันวันละไม่กี่ครั้ง ยุบเป็นปุ่มเดียวที่กดแล้ว
+          มีเมนูลงมา แถบเหลือแถวเดียวเท่ากับปุ่มอื่น
+
+          ชื่อและสีของแต่ละอันยังอยู่ครบในเมนู เพราะ ⚡ กับ 🔧 ต่างกันคนละเรื่อง
+          (จัดใหม่ทั้งโรงเรียน vs เฉพาะห้องที่ติ๊ก) และต้องไม่ถูกกดสลับกัน */}
+      <div ref={solverRef} className="relative px-2 border-r border-gray-700 shrink-0">
+        <button
+          onClick={() => { setShowActions((v) => !v); setShowCrud(false); setShowTools(false); }}
+          title="สร้างตาราง จัดให้เสร็จ เกลี่ยคาบครู วิเคราะห์ห้อง"
+          className={clsx(
+            "flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold transition-colors border",
+            // กำลังจัดอยู่ก็ยังกดเปิดเมนูได้ จะได้เข้าไปดูความคืบหน้าในแผง
+            // ⚡ สร้างตาราง — ปุ่มที่สั่งงานใหม่ต่างหากที่ถูกปิดทีละอัน
+            isSolving
+              ? "bg-gray-700 border-gray-600 text-gray-300 animate-pulse"
+              : "bg-indigo-600 border-indigo-500 text-white hover:bg-indigo-500",
+          )}
+        >
+          {isSolving ? "⏳ กำลังจัด…" : "⚡ จัดตาราง"} <span className="text-[10px]">▾</span>
+        </button>
+
+        {showActions && (
+          <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-50 min-w-[260px] py-1">
+            {/* ห้องที่ปิดไว้ว่าจัดเสร็จแล้ว — บอกก่อนกด ไม่ใช่หลังกด
+                "ถ้าฉันล็อกแล้ว ฉันให้จัดตารางใหม่ได้ไหม" ได้ และทุกปุ่มข้ามไป */}
+            {lockedClassNames.length > 0 && (
+              <div
+                title={`จะไม่ถูกแตะ: ${lockedClassNames.join(", ")}`}
+                className="mx-2 mb-1 px-2 py-1 rounded bg-gray-700/70 border border-gray-600 text-gray-300 text-[10px]"
+              >
+                🔒 ปิดไว้ {lockedClassNames.length} ห้อง · ทุกปุ่มข้างล่างจะไม่แตะ
+              </div>
+            )}
+
+            <ActionItem
+              icon="⚡" label="สร้างตาราง" tone="text-indigo-300"
+              hint={isSolving ? "กำลังจัดอยู่ — เปิดดูความคืบหน้า" : "จัดใหม่ทั้งโรงเรียน"}
+              onClick={() => { setShowActions(false); setShowSolver(true); }}
+            />
+            <ActionItem
+              icon="✅" label="จัดให้เสร็จ" tone="text-emerald-300"
+              hint="จัดใหม่ทั้งโรงเรียน แล้วไล่ปิดคาบว่างกลางวันให้หมดเท่าที่ทำได้ — คาบที่หาห้องไม่ได้จะขึ้นกรอบแดงให้หาห้องเอง"
+              disabled={isSolving}
+              onClick={() => { setShowActions(false); void runSolver({ closeGapsHard: true }); }}
+            />
+            <ActionItem
+              icon="🔧" label="แก้เฉพาะห้องที่เลือก" tone="text-amber-300"
+              hint="จัดใหม่เฉพาะห้องที่ติ๊ก ห้องอื่นอยู่ที่เดิมทุกคาบ"
+              disabled={isSolving}
+              onClick={() => { setShowActions(false); setShowRepair(true); }}
+            />
+
+            <div className="border-t border-gray-700 my-1" />
+
+            <ActionItem
+              icon="⚖️" label="เกลี่ยคาบครู" tone="text-sky-300"
+              hint="ครูไม่มีคาบมากเกินไปในวันเดียว และไม่สอนติดกันยาวเกินจำเป็น — ตารางนักเรียนมีคาบเท่าเดิมในช่องเดิม"
+              disabled={isSolving}
+              onClick={() => { setShowActions(false); setShowBalance(true); }}
+            />
+            <ActionItem
+              icon="🏫" label="วิเคราะห์ห้อง" tone="text-teal-300"
+              hint="คาบไหนเรียนลานหรือไม่มีห้อง ทั้งที่ห้องว่างอยู่ในชั่วโมงนั้น"
+              onClick={() => { setShowActions(false); setShowRoomAudit(true); }}
+            />
+            {/* จัดคาบของครูคนนี้ — เฉพาะตอนเปิดตารางของครูอยู่ เพราะทำงานกับ
+                ครูคนนั้นคนเดียว */}
+            {viewMode === "teacher" && selectedTeacherId != null && currentPage === "timetable" && (
+              <ActionItem
+                icon="🧭" label="จัดคาบครูคนนี้" tone="text-violet-300"
+                hint="คาบของครูคนนี้แต่ละคาบย้ายไปไหนได้ ต้องสลับกับคาบไหน"
+                onClick={() => { setShowActions(false); setShowPlan(true); }}
+              />
+            )}
+          </div>
         )}
-        <button
-          onClick={() => { setShowSolver((v) => !v); setShowCrud(false); }}
-          title={lockedClassNames.length > 0
-            ? `จัดใหม่ทั้งโรงเรียน ยกเว้น ${lockedClassNames.length} ห้องที่ปิดไว้ว่าจัดเสร็จแล้ว`
-            : "จัดตารางใหม่ทั้งโรงเรียน"}
-          className="flex items-center justify-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-semibold transition-colors"
-        >
-          ⚡ สร้างตาราง
-        </button>
-        {/* จัดให้เสร็จ — ปิดคาบว่างกลางวันให้หมด แม้ชั่วโมงนั้นจะไม่มีห้องว่าง
-            วัดบนข้อมูลจริง: รูกลางวัน ม.ต้น 17→10 · ม.ปลาย 74→25
-            แลกกับคาบที่ยังไม่มีห้องเพิ่มขึ้น ซึ่งขึ้นกรอบแดงให้หาห้องเองทีหลัง */}
-        <button
-          onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false);
-                           void runSolver({ closeGapsHard: true }); }}
-          disabled={isSolving}
-          title={isSolving
-            ? "ระบบกำลังจัดตารางอยู่ — รอให้เสร็จก่อน"
-            : "จัดใหม่ทั้งโรงเรียน แล้วไล่ปิดคาบว่างกลางวันให้หมดเท่าที่ทำได้ "
-              + "คาบที่หาห้องไม่ได้จะลงไปก่อนแล้วขึ้นกรอบแดงให้หาห้องเอง "
-              + "— คาบที่ล็อกไว้ไม่ถูกแตะ"}
-          className="flex items-center justify-center gap-1.5 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 rounded text-xs font-semibold transition-colors"
-        >
-          ✅ จัดให้เสร็จ
-        </button>
-        <button
-          onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false); setShowRepair(true); }}
-          disabled={isSolving}
-          title={isSolving
-            ? "ระบบกำลังจัดตารางอยู่ — รอให้เสร็จก่อน"
-            : "จัดใหม่เฉพาะห้องที่ติ๊ก ห้องอื่นอยู่ที่เดิมทุกคาบ — ต่างจาก ⚡ สร้างตาราง ที่จัดใหม่ทั้งโรงเรียน"}
-          className="flex items-center justify-center gap-1 px-2 py-0.5 rounded border border-amber-500/70 bg-amber-900/30 text-[11px] font-semibold text-amber-200 hover:bg-amber-800/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          🔧 แก้เฉพาะห้องที่เลือก
-        </button>
-        {/* จัดคาบของครูคนนี้ — โผล่เฉพาะตอนเปิดตารางของครูอยู่ เพราะมันทำงาน
-            กับครูคนนั้นคนเดียว ("เราเลือกคาบมา" แล้วบอกว่าย้ายไปไหนได้) */}
-        {viewMode === "teacher" && selectedTeacherId != null && currentPage === "timetable" && (
-          <button
-            onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false);
-                             setShowPlan(true); }}
-            title="ดูว่าคาบของครูคนนี้แต่ละคาบย้ายไปไหนได้ ต้องสลับกับคาบไหน และย้ายแล้วภาระดีขึ้นเท่าไร"
-            className="flex items-center justify-center gap-1 px-2 py-0.5 rounded border border-violet-500/70 bg-violet-900/30 text-[11px] font-semibold text-violet-200 hover:bg-violet-800/50 transition-colors"
-          >
-            🧭 จัดคาบครูคนนี้
-          </button>
-        )}
-        {/* เกลี่ยคาบครู — ไม่ใช่การจัดใหม่ จึงอยู่คนละปุ่มกับสามอันข้างบน
-            สลับคาบของห้องเดียวกันข้ามวัน ตารางนักเรียนมีคาบเท่าเดิมในช่องเดิม
-            วัดบนตารางจริง: ช่วงที่สอนติดกันเกิน 3 คาบ 60 -> 26 ช่วง */}
-        {/* วิเคราะห์ห้อง — "ถ้าคาบว่างตรงกับห้องก็แจ้งเตือนมา"
-            กวาดทั้งตารางหาคาบที่เรียนลานหรือไม่มีห้อง ทั้งที่มีห้องว่างใน
-            ชั่วโมงนั้นพอดี แล้วย้ายให้ได้เลย — เปลี่ยนแค่ห้อง ไม่ขยับเวลา */}
-        <button
-          onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false);
-                           setShowRoomAudit(true); }}
-          title="ตรวจทั้งตารางว่ามีคาบไหนเรียนลานหรือไม่มีห้อง ทั้งที่ห้องว่างอยู่ในชั่วโมงนั้น"
-          className="flex items-center justify-center gap-1 px-2 py-0.5 rounded border border-teal-500/70 bg-teal-900/30 text-[11px] font-semibold text-teal-200 hover:bg-teal-800/50 transition-colors"
-        >
-          🏫 วิเคราะห์ห้อง
-        </button>
-        <button
-          onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false);
-                           setShowBalance(true); }}
-          disabled={isSolving}
-          title={isSolving
-            ? "ระบบกำลังจัดตารางอยู่ — รอให้เสร็จก่อน"
-            : "ทำให้ครูไม่มีคาบมากเกินไปในวันเดียว และไม่สอนติดกันยาวเกิน"
-              + "จำเป็น โดยสลับคาบของห้องเดียวกันข้ามวัน — ตารางนักเรียนมีคาบ"
-              + "เท่าเดิมในช่องเดิม คาบที่ล็อกไว้ไม่ถูกแตะ"}
-          className="flex items-center justify-center gap-1 px-2 py-0.5 rounded border border-sky-500/70 bg-sky-900/30 text-[11px] font-semibold text-sky-200 hover:bg-sky-800/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          ⚖️ เกลี่ยคาบครู
-        </button>
+
         {showSolver && (
           <div className="absolute right-0 top-full mt-1 z-50">
             <SolverWidget onClose={() => setShowSolver(false)} />
