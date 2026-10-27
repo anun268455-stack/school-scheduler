@@ -14,6 +14,7 @@ import type { Department, LessonRequirement, Period, Room, SchoolConfig, Student
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { myElectiveOption, slotTeacherNames, slotsForTeacher } from "../../utils/teacherSlots";
+import { normalizePrintLayout, type CellLayout, type CellPartKey } from "../../utils/cellLayout";
 import { effectiveHomeroomIds } from "../../utils/homeroom";
 import { WorkloadReport } from "./WorkloadReport";
 import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
@@ -84,6 +85,13 @@ interface Metrics {
   /** Fixed height per line, so every cell's three lines sit at the same place. */
   lineH: string;
   rowH: string; pad: string; titleFont: string; subtitleFont: string; logo: number;
+  /**
+   * ลำดับและขนาดของสามบรรทัดในช่อง — ตั้งได้ที่หน้าตั้งค่าเครื่องมือ
+   *
+   * ติดมากับ Metrics เพราะ Metrics ถูกส่งถึงทุกช่องอยู่แล้ว ไม่ต้องร้อย prop
+   * ใหม่ลงไปทุกชั้นของใบพิมพ์
+   */
+  layout?: CellLayout;
 }
 
 const METRICS: Record<1 | 2, Metrics> = {
@@ -488,6 +496,25 @@ function fitFont(text: string, basePt: string, maxChars: number): string {
 function CellLines(
   { m, code, mid, room }: { m: Metrics; code: string; mid: string; room: string },
 ) {
+  // สามบรรทัดนี้คือ "ตำแหน่ง" ไม่ใช่ความหมายตายตัว — ใบของชั้นคือ รหัสวิชา /
+  // ครู / ห้อง · ใบของครูบรรทัดกลางเป็นชั้นเรียน · ใบของห้องบรรทัดล่างเป็นครู
+  // ลำดับและขนาดที่ตั้งไว้จึงใช้ร่วมกันทั้งสามแบบ
+  const layout = normalizePrintLayout(m.layout);
+  const content: Record<CellPartKey, string> = {
+    subject: code, teacher: mid, room, group: "",
+  };
+  const baseFont: Record<CellPartKey, string> = {
+    subject: m.cellFont, teacher: m.subFont, room: m.roomFont, group: m.subFont,
+  };
+  const maxChars: Record<CellPartKey, number> = {
+    subject: 9, teacher: 11, room: 10, group: 11,
+  };
+  const weight: Record<CellPartKey, number> = {
+    subject: 600, teacher: 400, room: 500, group: 400,
+  };
+  const colour: Record<CellPartKey, string> = {
+    subject: "#111827", teacher: "#4b5563", room: "#1f2937", group: "#4b5563",
+  };
   // Each line takes a third of the cell. Equal shares keep the codes across a
   // row on one line and the rooms on another, and because they are shares
   // rather than fixed heights they grow with the cell when the grid stretches
@@ -508,17 +535,28 @@ function CellLines(
   // line is the largest type, so it fits the fewest.
   return (
     <div style={{ ...cellText(m), display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ ...line, fontWeight: 600, color: "#111827" }}>
-        <span style={{ ...text, fontSize: fitFont(code, m.cellFont, 9) }}>{code}</span>
-      </div>
-      <div style={{ ...line, color: "#4b5563" }}>
-        <span style={{ ...text, fontSize: fitFont(mid, m.subFont, 11) }}>{mid}</span>
-      </div>
-      <div style={{ ...line, fontWeight: 500, color: "#1f2937" }}>
-        <span style={{ ...text, fontSize: fitFont(room, m.roomFont, 10) }}>{room}</span>
-      </div>
+      {layout.map((part) => {
+        if (!part.show) return null;
+        const base = scalePt(baseFont[part.key], part.scale);
+        return (
+          <div key={part.key}
+               style={{ ...line, fontWeight: weight[part.key], color: colour[part.key] }}>
+            <span style={{ ...text,
+                           fontSize: fitFont(content[part.key], base, maxChars[part.key]) }}>
+              {content[part.key]}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
+}
+
+/** "11pt" × 1.25 → "13.8pt" — ขนาดในใบพิมพ์เป็น pt ไม่ใช่ px */
+function scalePt(pt: string, scale: number): string {
+  const n = parseFloat(pt);
+  if (!Number.isFinite(n)) return pt;
+  return `${(n * scale).toFixed(1)}pt`;
 }
 
 function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
@@ -601,7 +639,11 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
   ({ slots, groups, teachers = [], rooms = [], departments = [], subjects = [],
      requirements = [], periods, schoolConfig, options }, ref) => {
     const termLabel = `ภาคเรียนที่ ${schoolConfig.term}/${schoolConfig.year}  โรงเรียน${schoolConfig.schoolName}`;
-    const m = METRICS[options.perPage];
+    // ผังบรรทัดของใบพิมพ์ — เก็บไว้กับการตั้งค่าโรงเรียน เหมือนผังบนจอ
+    const m: Metrics = {
+      ...METRICS[options.perPage],
+      layout: normalizePrintLayout(schoolConfig.print_layout),
+    };
     const compact = options.perPage === 2;
     const pick = new Set(options.selectedIds);
 

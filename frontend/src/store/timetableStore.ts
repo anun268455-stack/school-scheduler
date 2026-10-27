@@ -14,6 +14,7 @@ import { writeGuard } from "../utils/writeGuard";
 import { putSavePoint, storageAvailable } from "../utils/savePoints";
 import { applyPickResult } from "../utils/yardPicks";
 import { clampCellScale } from "../utils/cellScale";
+import { normalizeScreenLayout, normalizePrintLayout, type CellLayout } from "../utils/cellLayout";
 import {
   chooseOption, previewSlots, verdictAt, type GuidedStep,
 } from "../utils/guidedMove";
@@ -140,6 +141,17 @@ interface TimetableStore {
    * คำขอหลายสิบครั้งต่อการลากครั้งเดียว
    */
   setCellFontScale: (scale: number) => void;
+  /**
+   * ผังบรรทัดในช่องตาราง — ลำดับ ขนาด และเปิด/ปิด ของแต่ละบรรทัด
+   *
+   *   "อยากให้เราสามารถควบคุมได้เลยว่าแต่ละส่วนจะให้อยู่บนล่าง และสามารถเลือก
+   *    ขนาดได้ด้วย · อีกส่วนคือมีตัวอย่างการพิมพ์ด้วย"
+   *
+   * เห็นผลบนจอทันที แล้วค่อยส่งขึ้นเซิร์ฟเวอร์หลังหยุดลาก — ลากแถบเลื่อนหนึ่งครั้ง
+   * ยิงไปสามสิบรอบไม่ไหว (รูปแบบเดียวกับ setCellFontScale)
+   */
+  setCellLayout:  (layout: CellLayout) => void;
+  setPrintLayout: (layout: CellLayout) => void;
 
   /**
    * ล็อก/ปลดล็อกทั้งห้อง — "ห้องนี้จัดเสร็จแล้ว"
@@ -323,6 +335,8 @@ function moveRefusal(err: unknown): string {
 
 /** ตัวหน่วงการบันทึกขนาดตัวอักษร — ระดับโมดูลเหมือน pollTimer */
 let scaleSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let cellLayoutTimer: ReturnType<typeof setTimeout> | null = null;
+let printLayoutTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useTimetableStore = create<TimetableStore>((set, get) => ({
   departments:       [],
@@ -406,6 +420,26 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     scaleSaveTimer = setTimeout(() => {
       scaleSaveTimer = null;
       api.updateSchoolConfig({ cell_font_scale: v }).catch(() => { /* อยู่ในจอนี้ก็ยังใช้ได้ */ });
+    }, 600);
+  },
+
+  setCellLayout: (layout) => {
+    const v = normalizeScreenLayout(layout);
+    set((s) => ({ schoolConfig: { ...s.schoolConfig, cell_layout: v } }));
+    if (cellLayoutTimer !== null) clearTimeout(cellLayoutTimer);
+    cellLayoutTimer = setTimeout(() => {
+      cellLayoutTimer = null;
+      api.updateSchoolConfig({ cell_layout: v }).catch(() => { /* อยู่ในจอนี้ก็ยังใช้ได้ */ });
+    }, 600);
+  },
+
+  setPrintLayout: (layout) => {
+    const v = normalizePrintLayout(layout);
+    set((s) => ({ schoolConfig: { ...s.schoolConfig, print_layout: v } }));
+    if (printLayoutTimer !== null) clearTimeout(printLayoutTimer);
+    printLayoutTimer = setTimeout(() => {
+      printLayoutTimer = null;
+      api.updateSchoolConfig({ print_layout: v }).catch(() => { /* อยู่ในจอนี้ก็ยังใช้ได้ */ });
     }, 600);
   },
 

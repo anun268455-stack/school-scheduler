@@ -8,6 +8,13 @@ import {
   CELL_SCALE_DEFAULT, CELL_SCALE_MAX, CELL_SCALE_MIN, CELL_SCALE_STEP,
   cellFont, cellScaleLabel, cellScaleStyle, clampCellScale,
 } from "../utils/cellScale";
+import {
+  normalizeScreenLayout, normalizePrintLayout, movePart, setPartScale, setPartShown,
+  isDefaultLayout, partScaleLabel, PART_LABEL, PART_HINT, SAMPLE,
+  SCREEN_BASE_PX, PRINT_BASE_PT, SCREEN_PARTS, PRINT_PARTS,
+  PART_SCALE_MIN, PART_SCALE_MAX, PART_SCALE_STEP,
+  type CellLayout, type CellPartKey,
+} from "../utils/cellLayout";
 import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject, LessonRequirement, ElectivePool } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
@@ -3659,20 +3666,25 @@ const SettingsPanel: React.FC = () => {
  * (utils/cellScale.ts) จึงเลื่อนแล้วเห็นผลทันทีโดยไม่ต้องกลับไปหน้าตาราง
  */
 const ToolSettingsPanel: React.FC = () => {
-  const { schoolConfig, setCellFontScale } = useTimetableStore();
+  const { schoolConfig, setCellFontScale, setCellLayout, setPrintLayout } = useTimetableStore();
   const scale = clampCellScale(schoolConfig.cell_font_scale ?? CELL_SCALE_DEFAULT);
+  const screen = useMemo(() => normalizeScreenLayout(schoolConfig.cell_layout),
+                         [schoolConfig.cell_layout]);
+  const print  = useMemo(() => normalizePrintLayout(schoolConfig.print_layout),
+                         [schoolConfig.print_layout]);
+  const [tab, setTab] = useState<"screen" | "print">("screen");
 
   return (
     <Section title="ตั้งค่าเครื่องมือ 🧰">
-      <div className="bg-white border border-gray-200 rounded-lg p-5">
+      {/* ── ขนาดตัวอักษรรวมทั้งช่อง ──────────────────────────────────── */}
+      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-4">
         <p className="text-sm font-semibold text-gray-800 mb-1">ขนาดตัวอักษรในช่องตาราง</p>
         <p className="text-[11px] text-gray-500 mb-3">
-          ปรับเฉพาะตัวอักษรในช่องของตารางบนหน้าจอ — ขนาดช่องและตารางที่พิมพ์ออก
-          กระดาษไม่เปลี่ยน · ตั้งไว้ที่เดียวแล้วเหมือนกันทุกเครื่อง
+          ย่อขยาย<b>ทั้งช่อง</b>พร้อมกันบนหน้าจอ — ถ้าอยากปรับทีละบรรทัดว่าอะไร
+          เด่นกว่าอะไร ใช้หัวข้อข้างล่าง · ตั้งไว้ที่เดียวแล้วเหมือนกันทุกเครื่อง
         </p>
 
         <div className="flex flex-col sm:flex-row gap-5 items-start">
-          {/* แถบเลื่อน */}
           <div className="flex-1 min-w-0 w-full">
             <div className="flex items-center gap-3">
               <span className="text-[11px] text-gray-400 shrink-0">เล็ก</span>
@@ -3700,27 +3712,211 @@ const ToolSettingsPanel: React.FC = () => {
             </div>
           </div>
 
-          {/* ช่องตัวอย่าง — หน้าตาเดียวกับช่องจริงในตาราง */}
           <div className="shrink-0">
             <p className="text-[10px] text-gray-400 mb-1 text-center">ตัวอย่างช่องในตาราง</p>
-            <div style={cellScaleStyle(scale)}
-                 className="w-40 h-24 rounded border border-gray-300 bg-blue-50 p-1.5
-                            flex flex-col overflow-hidden">
-              <div className="font-bold leading-tight truncate text-gray-900"
-                   style={{ fontSize: cellFont(11) }}>ค21101</div>
-              <div className="leading-tight truncate opacity-80 text-gray-800"
-                   style={{ fontSize: cellFont(9) }}>ครูสมชาย ใจดี</div>
-              <div className="leading-tight truncate font-semibold opacity-90 text-gray-900 mt-0.5"
-                   style={{ fontSize: cellFont(11) }}>247</div>
-              <div className="leading-tight truncate opacity-60 text-gray-800"
-                   style={{ fontSize: cellFont(9) }}>ม.1/5</div>
-            </div>
+            <ScreenCellPreview layout={screen} scale={scale} />
           </div>
         </div>
+      </div>
+
+      {/* ── ลำดับและขนาดของแต่ละบรรทัด ───────────────────────────────── */}
+      {/* "อยากให้เราสามารถควบคุมได้เลยว่าแต่ละส่วนจะให้อยู่บนล่าง และสามารถ
+           เลือกขนาดได้ด้วย · อีกส่วนคือมีตัวอย่างการพิมพ์ด้วย"
+          แยกแท็บ เพราะจอกับกระดาษคนละเรื่อง — บนจอมีชื่อชั้น ส่วนใบพิมพ์ของ
+          ชั้นไหนก็ของชั้นนั้นอยู่แล้ว */}
+      <div className="bg-white border border-gray-200 rounded-lg p-5">
+        <p className="text-sm font-semibold text-gray-800 mb-1">
+          ลำดับและขนาดของแต่ละบรรทัดในช่อง
+        </p>
+        <p className="text-[11px] text-gray-500 mb-3">
+          เลื่อนขึ้นลงเพื่อเลือกว่าอะไรอยู่บน อะไรอยู่ล่าง และปรับขนาดทีละบรรทัด
+          · ตัวอย่างข้างๆ เปลี่ยนตามทันที
+        </p>
+
+        <div className="flex gap-1.5 mb-4">
+          <button onClick={() => setTab("screen")}
+            className={clsx("px-3 py-1 rounded text-xs font-semibold border transition-colors",
+              tab === "screen" ? "bg-blue-600 border-blue-600 text-white"
+                               : "bg-white border-gray-300 text-gray-600 hover:bg-gray-50")}>
+            🖥️ บนหน้าจอ
+          </button>
+          <button onClick={() => setTab("print")}
+            className={clsx("px-3 py-1 rounded text-xs font-semibold border transition-colors",
+              tab === "print" ? "bg-blue-600 border-blue-600 text-white"
+                              : "bg-white border-gray-300 text-gray-600 hover:bg-gray-50")}>
+            🖨️ ตอนพิมพ์
+          </button>
+        </div>
+
+        {tab === "screen" ? (
+          <div className="flex flex-col lg:flex-row gap-5 items-start">
+            <LayoutEditor
+              layout={screen}
+              allowed={SCREEN_PARTS}
+              onChange={setCellLayout}
+            />
+            <div className="shrink-0">
+              <p className="text-[10px] text-gray-400 mb-1 text-center">ตัวอย่างช่องบนหน้าจอ</p>
+              <ScreenCellPreview layout={screen} scale={scale} />
+              <p className="text-[10px] text-gray-400 mt-1.5 text-center max-w-[10rem]">
+                รวมการย่อขยายทั้งช่อง {Math.round(scale * 100)}% แล้ว
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col lg:flex-row gap-5 items-start">
+            <LayoutEditor
+              layout={print}
+              allowed={PRINT_PARTS}
+              onChange={setPrintLayout}
+              note={"ใบของครูและใบของห้องสอนใช้ลำดับและขนาดชุดเดียวกันนี้ แต่"
+                + "บรรทัด “ชื่อครู” จะเป็นชื่อชั้นเรียนแทน และใบของห้องสอน"
+                + "บรรทัด “ห้องที่สอน” จะเป็นชื่อครู"}
+            />
+            <div className="shrink-0">
+              <p className="text-[10px] text-gray-400 mb-1 text-center">ตัวอย่างช่องบนกระดาษ</p>
+              <PrintCellPreview layout={print} />
+              <p className="text-[10px] text-gray-400 mt-1.5 text-center max-w-[10rem]">
+                ขนาดจริงตอนพิมพ์ 1 ใบต่อแผ่น
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </Section>
   );
 };
+
+/** ตัวแก้ผัง — เลื่อนขึ้นลง ปรับขนาด เปิด/ปิด ทีละบรรทัด */
+function LayoutEditor({ layout, allowed, onChange, note }: {
+  layout: CellLayout;
+  allowed: CellPartKey[];
+  onChange: (l: CellLayout) => void;
+  note?: string;
+}) {
+  return (
+    <div className="flex-1 min-w-0 w-full">
+      <div className="space-y-1.5">
+        {layout.map((part, i) => (
+          <div key={part.key}
+               className={clsx("flex items-center gap-2 rounded border px-2 py-1.5",
+                 part.show ? "border-gray-200 bg-gray-50" : "border-gray-200 bg-gray-100 opacity-60")}>
+            {/* ลำดับ */}
+            <div className="flex flex-col gap-px shrink-0">
+              <button onClick={() => onChange(movePart(layout, part.key, -1))}
+                disabled={i === 0} title="เลื่อนขึ้น"
+                className="w-5 h-4 leading-none text-[10px] rounded bg-white border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:opacity-30">
+                ▲
+              </button>
+              <button onClick={() => onChange(movePart(layout, part.key, 1))}
+                disabled={i === layout.length - 1} title="เลื่อนลง"
+                className="w-5 h-4 leading-none text-[10px] rounded bg-white border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:opacity-30">
+                ▼
+              </button>
+            </div>
+            <span className="w-4 text-[10px] text-gray-400 shrink-0 tabular-nums">{i + 1}.</span>
+            <div className="w-28 shrink-0">
+              <div className="text-xs font-semibold text-gray-800">{PART_LABEL[part.key]}</div>
+              <div className="text-[10px] text-gray-400">{PART_HINT[part.key]}</div>
+            </div>
+            {/* ขนาด */}
+            <input
+              type="range"
+              min={PART_SCALE_MIN} max={PART_SCALE_MAX} step={PART_SCALE_STEP}
+              value={part.scale}
+              disabled={!part.show}
+              onChange={(e) => onChange(setPartScale(layout, part.key, Number(e.target.value)))}
+              className="flex-1 min-w-0 accent-blue-600 disabled:opacity-40"
+              aria-label={`ขนาดของ ${PART_LABEL[part.key]}`}
+            />
+            <span className="w-12 text-right text-[11px] text-gray-600 tabular-nums shrink-0">
+              {partScaleLabel(part.scale)}
+            </span>
+            {/* เปิด/ปิด */}
+            <button
+              onClick={() => onChange(setPartShown(layout, part.key, !part.show))}
+              title={part.show ? "ซ่อนบรรทัดนี้" : "แสดงบรรทัดนี้"}
+              className="w-6 h-6 shrink-0 rounded border border-gray-300 bg-white text-xs hover:bg-gray-100">
+              {part.show ? "👁" : "🚫"}
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 mt-2">
+        {!isDefaultLayout(layout, allowed) && (
+          <button
+            onClick={() => onChange(allowed.map((key) => ({ key, scale: 1, show: true })))}
+            className="text-[11px] text-blue-600 hover:underline">
+            คืนค่าปกติ
+          </button>
+        )}
+      </div>
+      {note && <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">{note}</p>}
+    </div>
+  );
+}
+
+/** ตัวอย่างช่องบนหน้าจอ — ใช้ขนาดและลำดับชุดเดียวกับช่องจริง */
+function ScreenCellPreview({ layout, scale }: { layout: CellLayout; scale: number }) {
+  const style: Record<CellPartKey, string> = {
+    subject: "font-bold text-gray-900",
+    teacher: "opacity-80 text-gray-800",
+    room:    "font-semibold opacity-90 text-gray-900",
+    group:   "opacity-60 text-gray-800",
+  };
+  return (
+    <div style={cellScaleStyle(scale)}
+         className="w-40 h-24 rounded border border-gray-300 bg-blue-50 p-1.5
+                    flex flex-col overflow-hidden space-y-px">
+      {layout.filter((p) => p.show).map((p) => (
+        <div key={p.key}
+             className={clsx("leading-tight truncate", style[p.key])}
+             style={{ fontSize: cellFont(SCREEN_BASE_PX[p.key] * p.scale) }}>
+          {SAMPLE[p.key]}
+        </div>
+      ))}
+      {layout.every((p) => !p.show) && (
+        <div className="flex-1 flex items-center justify-center text-[10px] text-gray-400">
+          ซ่อนไว้ทุกบรรทัด
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ตัวอย่างช่องบนกระดาษ — ขนาดเป็น pt อย่างที่ใบพิมพ์ใช้จริง
+ *
+ * "มีตัวอย่างการพิมพ์ด้วยว่าจะให้อะไรอยู่บนล่างและขนาดเท่าใด"
+ * พื้นขาว กรอบดำ สามบรรทัดกลางช่อง — หน้าตาเดียวกับที่ออกกระดาษ
+ */
+function PrintCellPreview({ layout }: { layout: CellLayout }) {
+  const base = PRINT_BASE_PT;
+  const style: Record<CellPartKey, string> = {
+    subject: "font-semibold text-gray-900",
+    teacher: "text-gray-600",
+    room:    "font-medium text-gray-800",
+    group:   "text-gray-600",
+  };
+  return (
+    <div className="w-40 h-24 border border-gray-800 bg-white
+                    flex flex-col overflow-hidden">
+      {layout.filter((p) => p.show).map((p) => (
+        <div key={p.key}
+             className={clsx("flex-1 flex items-center justify-center truncate px-1",
+               style[p.key])}
+             style={{ fontSize: `${(base[p.key] * p.scale).toFixed(1)}pt`, lineHeight: 1.1 }}>
+          {SAMPLE[p.key]}
+        </div>
+      ))}
+      {layout.every((p) => !p.show) && (
+        <div className="flex-1 flex items-center justify-center text-[10px] text-gray-400">
+          ซ่อนไว้ทุกบรรทัด
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Help / User Manual Panel ────────────────────────────────────────────────
 const HELP_TOPICS = [

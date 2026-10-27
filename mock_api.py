@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-27.3"
+API_BUILD = "2026-10-27.4"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -14226,6 +14226,37 @@ def get_school_config():
 _CONFIG_FLAGS = ("teacher_room_over_homeroom", "lower_homeroom_first",
                  "upper_teacher_room_first", "lower_home_guard")
 
+# บรรทัดในช่องตาราง — บนจอมีชั้นเรียนด้วย ส่วนใบพิมพ์ของชั้นไหนก็ของชั้นนั้น
+_SCREEN_PARTS = ("subject", "teacher", "room", "group")
+_PRINT_PARTS = ("subject", "teacher", "room")
+
+
+def _clean_cell_layout(raw: Any, allowed: tuple[str, ...]) -> list[dict[str, Any]]:
+    """เก็บเฉพาะส่วนที่รู้จัก ไม่ซ้ำ และขนาดอยู่ในช่วงที่ใช้ได้
+
+    ส่วนที่ขาดไม่เติมที่นี่ — หน้าเว็บเติมเองตอนอ่าน (normalizeLayout) การเติม
+    สองที่แปลว่ามีกฎสองชุดที่ต้องตรงกันตลอดไป ซึ่งไม่ช้าก็เร็วจะไม่ตรง
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        key = item.get("key") if isinstance(item, dict) else item
+        if not isinstance(key, str) or key not in allowed or key in seen:
+            continue
+        seen.add(key)
+        try:
+            scale = float(item.get("scale", 1)) if isinstance(item, dict) else 1.0
+        except (TypeError, ValueError):
+            scale = 1.0
+        if scale != scale or scale in (float("inf"), float("-inf")) or scale <= 0:
+            scale = 1.0
+        show = bool(item.get("show", True)) if isinstance(item, dict) else True
+        out.append({"key": key, "scale": min(2.0, max(0.6, round(scale, 2))),
+                    "show": show})
+    return out
+
 
 @app.put("/api/school/config")
 def update_school_config(body: dict[str, Any]):
@@ -14243,6 +14274,18 @@ def update_school_config(body: dict[str, Any]):
         except (TypeError, ValueError):
             v = 1.0
         SCHOOL_CONFIG["cell_font_scale"] = min(1.8, max(0.7, round(v, 2)))
+    # ผังบรรทัดในช่องตาราง — ลำดับและขนาดของแต่ละบรรทัด แยกชุดจอกับกระดาษ
+    #
+    #   "อยากให้เราสามารถควบคุมได้เลยว่าแต่ละส่วนจะให้อยู่บนล่าง และสามารถ
+    #    เลือกขนาดได้ด้วย"
+    #
+    # ตรวจที่นี่ด้วย ไม่ใช่เชื่อหน้าเว็บ — ค่าเพี้ยนค่าเดียวทำให้ทุกเครื่องอ่าน
+    # ตารางไม่ได้ ส่วนที่ไม่รู้จักถูกทิ้ง ส่วนที่ขาดหน้าเว็บเติมเองตอนอ่าน
+    for key, allowed in (("cell_layout", _SCREEN_PARTS),
+                         ("print_layout", _PRINT_PARTS)):
+        if key not in body:
+            continue
+        SCHOOL_CONFIG[key] = _clean_cell_layout(body[key], allowed)
     for k in _CONFIG_FLAGS:
         if k not in body:
             continue

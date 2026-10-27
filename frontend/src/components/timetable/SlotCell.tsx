@@ -5,6 +5,7 @@ import { slotTeacherNames, teachingTogether, myElectiveOption, slotLabel } from 
 import { problemOf, parentMap, type ProblemKind, type SlotProblem } from "../../utils/slotProblems";
 import { useTimetableStore } from "../../store/timetableStore";
 import { cellFont } from "../../utils/cellScale";
+import { normalizeScreenLayout, type CellPartKey } from "../../utils/cellLayout";
 
 interface SlotCellProps {
   slots:       TimetableSlot[];
@@ -129,6 +130,9 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
   const viewingTeacher = useTimetableStore((st) => st.selectedTeacherId);
   const myOption = viewingTeacher != null ? myElectiveOption(slot, viewingTeacher) : null;
   const extra = names.length - 1;
+  // ผังบรรทัดในช่อง — เก็บไว้กับการตั้งค่าโรงเรียน ทุกเครื่องจึงเห็นเหมือนกัน
+  const layoutRaw = useTimetableStore((st) => st.schoolConfig.cell_layout);
+  const layout = useMemo(() => normalizeScreenLayout(layoutRaw), [layoutRaw]);
 
   // ── คาบว่างที่จองไว้ให้ว่างตรงกันทั้งกลุ่ม ────────────────────────────────
   //
@@ -150,6 +154,96 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
       </div>
     );
   }
+
+  // แต่ละบรรทัดของช่อง เขียนเป็นก้อนเดียว แล้วค่อยเรียงตามผังที่ตั้งไว้
+  // ขนาดคือ "ขนาดเดิม × ตัวคูณของบรรทัดนั้น" แล้ว cellFont ไปคูณสเกลรวมอีกชั้น
+  const partNode = (key: CellPartKey, scale: number): React.ReactNode => {
+    const px = (base: number) => cellFont(base * scale);
+    switch (key) {
+      case "subject":
+        return (
+          <div
+            className="font-bold leading-tight overflow-hidden whitespace-nowrap text-ellipsis"
+            style={{ fontSize: px(compact ? 9 : 11) }}
+            title={slot.subject_name ?? undefined}
+          >
+            {myOption?.label ?? slot.subject_code ?? slot.subject_name
+              ?? (slot.is_elective ? "วิชาเสรี" : "")}
+          </div>
+        );
+      case "teacher":
+        return (
+          <>
+            <div
+              className="overflow-hidden whitespace-nowrap text-ellipsis opacity-80"
+              style={{ fontSize: px(9) }}
+              title={names.length ? names.join(" · ") : undefined}
+            >
+              {/* A shared elective the class hasn't settled on has no single
+                  teacher — its students split across every option at once. */}
+              {myOption
+                ? `วิชาเสรี · ${slot.elective_options?.length ?? 0} วิชาในคาบนี้`
+                : names.length
+                ? (slot.is_activity_block && names.length > 2
+                     ? `ครูผู้ดูแล ${names.length} คน`
+                     : names.join(" + "))
+                : (slot.is_elective && slot.elective_options?.length
+                      ? `${slot.elective_options.length} ตัวเลือก`
+                      /* A เซ็ตห้องย่อย may be written down before anyone knows
+                         who will teach it — the hour is the point. */
+                      : (!slot.is_activity_block
+                           ? <span className="text-amber-700">ยังไม่ได้เลือกครู</span>
+                           : null))}
+            </div>
+            {/* On a teacher's own timetable a คาบกิจกรรม belongs to many
+                classrooms at once, so the cell says the scope. ติดอยู่กับ
+                บรรทัดครูเสมอ เพราะเป็นเรื่องเดียวกัน ไม่ใช่บรรทัดที่จัดลำดับได้ */}
+            {slot.is_activity_block && slot.activity_scope && (
+              <div
+                className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"
+                style={{ fontSize: px(8) }}
+                title={slot.activity_scope}
+              >
+                {slot.activity_scope}
+              </div>
+            )}
+          </>
+        );
+      case "room":
+        // ตารางของห้องสอนเองไม่ต้องเขียนชื่อห้องซ้ำทุกช่อง (compact)
+        if (compact) return null;
+        return (
+          <div
+            className="overflow-hidden whitespace-nowrap text-ellipsis font-semibold opacity-90"
+            style={{ fontSize: px(11) }}
+            title={slot.room_name ?? undefined}
+          >
+            {slot.room_name}
+          </div>
+        );
+      case "group":
+        if (compact) {
+          return slot.group_name ? (
+            <div
+              className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"
+              style={{ fontSize: px(8) }}
+              title={slot.group_name ?? undefined}
+            >
+              {slot.group_name}
+            </div>
+          ) : null;
+        }
+        return (
+          <div
+            className="overflow-hidden whitespace-nowrap text-ellipsis opacity-60"
+            style={{ fontSize: px(9) }}
+            title={slot.group_name ?? undefined}
+          >
+            {slot.group_name}
+          </div>
+        );
+    }
+  };
 
   return (
   <div
@@ -198,82 +292,17 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
       )}
     </div>
 
-    {/* ── Subject code (single truncated line) ──────────────────── */}
-    <div
-      className="font-bold leading-tight overflow-hidden whitespace-nowrap text-ellipsis"
-      style={{ fontSize: cellFont(compact ? 9 : 11) }}
-      title={slot.subject_name ?? undefined}
-    >
-      {myOption?.label ?? slot.subject_code ?? slot.subject_name
-        ?? (slot.is_elective ? "วิชาเสรี" : "")}
-    </div>
-
-    {/* ── Details ───────────────────────────────────────────────── */}
-    <div className="flex-1 overflow-hidden mt-0.5 space-y-px">
-      <div
-        className="overflow-hidden whitespace-nowrap text-ellipsis opacity-80"
-        style={{ fontSize: cellFont(9) }}
-        title={names.length ? names.join(" · ") : undefined}
-      >
-        {/* A shared elective the class hasn't settled on has no single teacher —
-            its students split across every option at once. Say how many. */}
-        {myOption
-          ? `วิชาเสรี · ${slot.elective_options?.length ?? 0} วิชาในคาบนี้`
-          : names.length
-          ? (slot.is_activity_block && names.length > 2
-               ? `ครูผู้ดูแล ${names.length} คน`
-               : names.join(" + "))
-          : (slot.is_elective && slot.elective_options?.length
-                ? `${slot.elective_options.length} ตัวเลือก`
-                /* A เซ็ตห้องย่อย may be written down before anyone knows who
-                   will teach it — the hour is the point. The lesson is placed
-                   and the cell says what is still missing, rather than showing
-                   a blank line that reads like a bug. */
-                : (!slot.is_activity_block
-                     ? <span className="text-amber-700">ยังไม่ได้เลือกครู</span>
-                     : null))}
-      </div>
-      {/* On a teacher's own timetable a คาบกิจกรรม belongs to many classrooms
-          at once, so the cell says the scope rather than one of them. */}
-      {slot.is_activity_block && slot.activity_scope && (
-        <div
-          className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"
-          style={{ fontSize: cellFont(8) }}
-          title={slot.activity_scope}
-        >
-          {slot.activity_scope}
-        </div>
-      )}
-      {compact && slot.group_name && (
-        <div
-          className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"
-          style={{ fontSize: cellFont(8) }}
-          title={slot.group_name ?? undefined}
-        >
-          {slot.group_name}
-        </div>
-      )}
-      {!compact && (
-        <>
-          {/* ห้องที่สอน — read as often as the subject code when you are
-              walking the building, so it gets its own weight instead of
-              sitting at the same faded size as the class name below it. */}
-          <div
-            className="overflow-hidden whitespace-nowrap text-ellipsis font-semibold opacity-90"
-            style={{ fontSize: cellFont(11) }}
-            title={slot.room_name ?? undefined}
-          >
-            {slot.room_name}
-          </div>
-          <div
-            className="overflow-hidden whitespace-nowrap text-ellipsis opacity-60"
-            style={{ fontSize: cellFont(9) }}
-            title={slot.group_name ?? undefined}
-          >
-            {slot.group_name}
-          </div>
-        </>
-      )}
+    {/* ── บรรทัดในช่อง — ลำดับและขนาดตามที่ตั้งไว้ที่หน้าตั้งค่าเครื่องมือ ──
+        "อยากให้เราสามารถควบคุมได้เลยว่าแต่ละส่วนจะให้อยู่บนล่าง และสามารถ
+         เลือกขนาดได้ด้วย"
+        ค่าเริ่มต้นคือลำดับเดิม (รหัสวิชา · ครู · ห้อง · ชั้น) ตัวคูณ 1 ทุกบรรทัด
+        หน้าตาจึงไม่เปลี่ยนจนกว่าจะมีใครไปแก้ */}
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden space-y-px">
+      {layout.map((part) => {
+        if (!part.show) return null;
+        const node = partNode(part.key, part.scale);
+        return node ? <React.Fragment key={part.key}>{node}</React.Fragment> : null;
+      })}
     </div>
 
     {/* ── Hover action buttons ───────────────────────────────────── */}
