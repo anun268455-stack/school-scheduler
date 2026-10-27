@@ -165,7 +165,11 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
           <div
             className="font-bold leading-tight overflow-hidden whitespace-nowrap text-ellipsis"
             style={{ fontSize: px(compact ? 9 : 11) }}
-            title={slot.subject_name ?? undefined}
+            // ระดับชั้นของคาบกิจกรรมไม่ได้วาดในช่องแล้ว แต่ยังต้องหาเจอได้
+            // จึงมาอยู่ในคำอธิบายเมื่อเอาเมาส์ไปชี้
+            title={[slot.subject_name,
+                    slot.is_activity_block ? slot.activity_scope : null]
+                   .filter(Boolean).join(" · ") || undefined}
           >
             {myOption?.label ?? slot.subject_code ?? slot.subject_name
               ?? (slot.is_elective ? "วิชาเสรี" : "")}
@@ -195,18 +199,13 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
                            ? <span className="text-amber-700">ยังไม่ได้เลือกครู</span>
                            : null))}
             </div>
-            {/* On a teacher's own timetable a คาบกิจกรรม belongs to many
-                classrooms at once, so the cell says the scope. ติดอยู่กับ
-                บรรทัดครูเสมอ เพราะเป็นเรื่องเดียวกัน ไม่ใช่บรรทัดที่จัดลำดับได้ */}
-            {slot.is_activity_block && slot.activity_scope && (
-              <div
-                className="overflow-hidden whitespace-nowrap text-ellipsis opacity-70 text-teal-700 font-medium"
-                style={{ fontSize: px(8) }}
-                title={slot.activity_scope}
-              >
-                {slot.activity_scope}
-              </div>
-            )}
+            {/* คาบกิจกรรมครอบหลายสิบห้องพร้อมกัน ("M1/M2/M3/M4…" ยาวจนเต็ม
+                ช่อง) — "ในคาบกิจกรรม ไม่อยากให้ขึ้นระดับชั้นที่จะเรียน
+                มันดูเต็มไปหมดเลย"
+
+                เอาบรรทัดนั้นออกจากช่อง เหลือชื่อกิจกรรมกับห้อง ซึ่งเป็นสิ่งที่
+                คนอ่านตารางต้องใช้จริง ส่วนระดับชั้นยังอยู่ในคำอธิบายเมื่อเอา
+                เมาส์ไปชี้ (title ของช่อง) จึงไม่ได้หายไปไหน */}
           </>
         );
       case "room":
