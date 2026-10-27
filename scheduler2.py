@@ -75,6 +75,14 @@ class Unit:
     is_elective: bool = False
     double_key:  str | None = None
     shared_key:  str | None = None
+    # ช่องที่หน่วยนี้ลงได้จริง และลำดับของคาบในนั้น
+    #
+    # กิจกรรมอย่างชุมนุมครอบ ม.1 ถึง ม.6 พร้อมกัน แต่ ม.ต้นกับ ม.ปลายพัก
+    # กลางวันคนละคาบ ผังคาบจึงไม่เหมือนกัน การเอาระดับของห้องแรกมาใช้ทั้งหน่วย
+    # (ซึ่งรอบแรกทำแบบนั้น) ทำให้ชุมนุมไปลงคาบที่ ม.ปลายไม่มีเรียน แล้วลงไม่ได้
+    # เลยสักรอบ — ต้องใช้ช่องที่ทุกระดับในหน่วยเรียนได้ร่วมกัน
+    cells:       tuple[tuple[int, int], ...] = ()
+    pindex:      dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -258,6 +266,17 @@ def build_world(
                 and units):
             fixed[units[-1].uid] = (int(r["pinned_day"]), int(r["pinned_period"]))
 
+    # ช่องของแต่ละหน่วย = ช่องที่ทุกระดับชั้นในหน่วยนั้นเรียนได้ร่วมกัน
+    for u in units:
+        levels = {_level_of(g_map.get(gid, {})) for gid in u.group_ids} or {u.level}
+        nums = None
+        for lv in levels:
+            got = set(period_index[lv])
+            nums = got if nums is None else (nums & got)
+        nums = sorted(nums or ())
+        u.pindex = {n: i for i, n in enumerate(nums)}
+        u.cells = tuple((d, n) for d in range(DAYS) for n in nums)
+
     return World(units=units, cells_for=cells_for, period_index=period_index,
                  teacher_off=teacher_off, subject_off=subject_off, fixed=fixed)
 
@@ -275,7 +294,7 @@ class Board:
         self.placed: dict[int, tuple[int, int]] = {}            # uid -> (วัน,คาบ)
 
     def fits(self, u: Unit, day: int, period: int, world: World) -> bool:
-        idx = world.period_index[u.level]
+        idx = u.pindex
         i = idx.get(period)
         if i is None:
             return False
@@ -316,7 +335,7 @@ class Board:
 
     @staticmethod
     def _nums(u: Unit, period: int, world: World) -> list[int]:
-        idx = world.period_index[u.level]
+        idx = u.pindex
         i = idx[period]
         out = [period]
         if u.length == 2:
@@ -369,13 +388,21 @@ class Search:
         fixed = self.world.fixed.get(u.uid)
         if fixed is not None:
             return [fixed] if board.fits(u, fixed[0], fixed[1], self.world) else []
-        return [c for c in self.world.cells_for[u.level]
-                if board.fits(u, c[0], c[1], self.world)]
+        return [c for c in u.cells if board.fits(u, c[0], c[1], self.world)]
 
     def _order(self, units: list[Unit], board: Board) -> list[Unit]:
-        """ลำดับที่โรงเรียนสั่งก่อน แล้วที่คับที่สุดก่อนภายในลำดับเดียวกัน"""
+        """ลำดับที่โรงเรียนสั่งก่อน แล้วที่คับที่สุดก่อนภายในลำดับเดียวกัน
+
+        "คับที่สุด" วัดด้วยตัวเลือกที่เหลือ *เทียบกับความกว้าง* ของหน่วย ไม่ใช่
+        จำนวนตัวเลือกเปล่า ๆ — ชุมนุมครอบ 78 ห้องพร้อมกัน จึงมีช่องให้เลือก 35
+        ช่องซึ่งนับว่า "เยอะ" แล้วไปอยู่ท้ายแถว กว่าจะถึงคิวมัน วิชาเสรีที่แคบ
+        กว่าก็แย่งช่องไปหมด และหน้าต่างที่ต้องว่างพร้อมกันทั้ง 78 ห้องก็ไม่เหลือ
+        ที่ลงเลย (รอบก่อนชุมนุมกับคุณธรรมลงไม่ได้สักรอบ) หารด้วยความกว้าง
+        ทำให้หน้าต่างกว้างได้ลงก่อน แล้วค่อยเกลี่ยคาบเดี่ยวลงรอบ ๆ มัน
+        """
         def key(u: Unit) -> tuple:
-            return (u.phase, len(self.options(u, board)),
+            width = len(u.group_ids) + len(u.teacher_ids)
+            return (u.phase, len(self.options(u, board)) / max(1, width),
                     -u.length, self.rng.random())
         return sorted(units, key=key)
 
@@ -469,7 +496,7 @@ class Search:
         """
         world = self.world
         blockers: set[int] = set()
-        for day, period in world.cells_for[stuck.level]:
+        for day, period in stuck.cells:
             for g in stuck.group_ids:
                 uid = board.group_at.get((g, day, period))
                 if uid is not None:
@@ -483,8 +510,199 @@ class Search:
                    and uid not in world.fixed]
         if not movable:
             return None
-        victim_uid = self.rng.choice(movable)
+        # ถอยคนที่หาที่ใหม่ง่ายที่สุด ไม่ใช่สุ่ม
+        #
+        # กิจกรรมอย่างชุมนุมครอบ 78 ห้องพร้อมกัน มันจึงขวางเกือบทุกคน และถ้า
+        # สุ่มถอย มันจะโดนถอยตลอดเวลาแล้วกลับเข้าไม่ได้เลย (รอบแรกเป็นแบบนั้น:
+        # ชุมนุมกับคุณธรรมลงไม่ได้สักรอบ) ยิ่งครอบหลายห้องหลายครู ยิ่งหาที่ใหม่
+        # ยาก จึงควรถอยเป็นคนท้าย ๆ
+        def ease(uid: int) -> tuple:
+            v = by_uid[uid]
+            return (len(v.group_ids) + len(v.teacher_ids), v.length,
+                    self.rng.random())
+        victim_uid = min(movable, key=ease)
         victim = by_uid[victim_uid]
         self._remember((victim_uid, board.placed[victim_uid]))
         board.take(victim, world)
         return victim
+
+
+# ── แจกห้อง ────────────────────────────────────────────────────────────────
+#
+# ของเดิมไล่หยิบห้องว่างที่ "ดูดีที่สุด" ให้ทีละคาบ ซึ่งเป็นการตัดสินใจที่ย้อน
+# กลับไม่ได้: คาบแรกหยิบห้องที่คาบหลังต้องใช้ไป คาบหลังจึงไม่มีห้อง ทั้งที่ถ้า
+# สลับกันแล้วได้ห้องทั้งคู่
+#
+# ตรงนี้ทำคนละอย่าง — ในแต่ละชั่วโมง ถามว่า "จับคู่คาบกับห้องให้ได้มากที่สุด
+# เท่าไร" แล้วตอบด้วยการจับคู่สองฝั่ง (bipartite matching) ซึ่งได้คำตอบที่
+# มากที่สุดจริง ไม่ใช่เดาแล้วหวัง ชั่วโมงหนึ่งมีคาบไม่กี่สิบคาบ จึงเร็วพอ
+
+
+def _augment(u: int, adj: dict[int, list[int]], taken: dict[int, int],
+             seen: set[int]) -> bool:
+    """หาทางให้คาบ u ได้ห้อง โดยยอมให้คาบอื่นขยับไปห้องอื่นที่ว่างสำหรับมัน"""
+    for r in adj.get(u, ()):
+        if r in seen:
+            continue
+        seen.add(r)
+        if r not in taken or _augment(taken[r], adj, taken, seen):
+            taken[r] = u
+            return True
+    return False
+
+
+def assign_rooms(
+    cell_units: list[tuple[int, list[int]]],
+    eligible: dict[int, list[int]],
+) -> dict[int, int]:
+    """แจกห้องในชั่วโมงเดียว — คืน {uid: room_id}
+
+    cell_units  [(uid, ห้องที่คาบนี้ใช้ได้)] เรียงตามลำดับความสำคัญ
+    eligible    uid -> รายการห้องที่ใช้ได้ (เรียงจากเหมาะที่สุด)
+    """
+    taken: dict[int, int] = {}
+    for uid, _ in cell_units:
+        _augment(uid, eligible, taken, set())
+    return {uid: rid for rid, uid in taken.items()}
+
+
+def room_options(
+    u: Unit,
+    rooms: list[dict[str, Any]],
+    groups: dict[int, dict[str, Any]],
+    subjects: dict[int, dict[str, Any]],
+    teachers: dict[int, dict[str, Any]],
+) -> list[int]:
+    """ห้องที่คาบนี้ใช้ได้ เรียงจากเหมาะที่สุด — ยังไม่ดูว่าใครจองไว้
+
+    กฎเดียวกับที่หน้าจอใช้ (utils/swapPlanner roomTakes) จะได้ไม่มีทางที่
+    เครื่องจัดให้ห้องที่หน้าจอบอกว่าใช้ไม่ได้
+    """
+    if not u.needs_room:
+        return []
+    sub = subjects.get(u.subject_id or -1) or {}
+    dept = sub.get("department_id")
+    home = None
+    if len(u.group_ids) == 1:
+        home = (groups.get(u.group_ids[0]) or {}).get("homeroom_room_id")
+    fixed_rooms = set(sub.get("fixed_room_ids") or ())
+    if sub.get("fixed_room_id"):
+        fixed_rooms.add(sub["fixed_room_id"])
+    teacher_rooms = {t for tid in u.teacher_ids
+                     for t in ((teachers.get(tid) or {}).get("fixed_room_id"),)
+                     if t}
+    homerooms = {g.get("homeroom_room_id") for g in groups.values()
+                 if g.get("homeroom_room_id")}
+
+    out: list[tuple[int, int]] = []
+    for r in rooms:
+        if r.get("usable") is False or (r.get("capacity") or 1) <= 0:
+            continue
+        keep = r.get("reserved_teacher_ids") or []
+        if keep and not any(t in keep for t in u.teacher_ids):
+            continue
+        if r.get("specialized_dept_id") and dept and r["specialized_dept_id"] != dept:
+            continue
+        rid = r["id"]
+        # ห้องเฉพาะของวิชานี้ > ห้องประจำของชั้นนี้ > ห้องของครู >
+        # ห้องธรรมดาในอาคาร > ห้องที่ไม่ได้ผูกอาคาร (ลาน ฯลฯ) > ห้องประจำคนอื่น
+        if rid in fixed_rooms:          rank = 0
+        elif home is not None and rid == home: rank = 1
+        elif rid in teacher_rooms:      rank = 2
+        elif rid in homerooms:          rank = 5
+        elif r.get("building_id"):      rank = 3
+        else:                           rank = 4
+        out.append((rank, rid))
+    out.sort()
+    return [rid for _, rid in out]
+
+
+def solve(
+    requirements: list[dict[str, Any]],
+    groups: list[dict[str, Any]],
+    subjects: list[dict[str, Any]],
+    teachers: list[dict[str, Any]],
+    periods: list[dict[str, Any]],
+    rooms: list[dict[str, Any]],
+    elective_pools: list[dict[str, Any]] | None = None,
+    activities: list[dict[str, Any]] | None = None,
+    budget_s: float = 60.0,
+    seed: int = 1,
+) -> dict[str, Any]:
+    """จัดตารางทั้งโรงเรียน แล้วคืน "ข้อเสนอ" ออกไป
+
+    **ไม่แตะข้อมูลจริงเลย** — รับสำเนาเข้ามา คืนรายการคาบที่เสนอออกไป ใครจะ
+    เอาไปใช้ค่อยสั่งอีกที ("ตอนนี้คาบโอเคแล้ว ห้ามยุ่ง")
+    """
+    t0 = time.time()
+    g_map = {g["id"]: g for g in groups}
+    s_map = {s["id"]: s for s in subjects}
+    t_map = {t["id"]: t for t in teachers}
+
+    world = build_world(requirements, groups, subjects, teachers, periods,
+                        elective_pools, activities)
+    search = Search(world, seed=seed)
+    found = search.run(time.time() + budget_s)
+
+    by_uid = {u.uid: u for u in world.units}
+    # ห้องที่แต่ละหน่วยใช้ได้ คิดครั้งเดียว ไม่ใช่ทุกชั่วโมง
+    opts = {u.uid: room_options(u, rooms, g_map, s_map, t_map) for u in world.units}
+
+    # แจกห้องทีละชั่วโมง — ในชั่วโมงเดียวกันแย่งห้องกัน คนละชั่วโมงไม่เกี่ยวกัน
+    #
+    # คาบคู่กินสองชั่วโมงแต่ต้องอยู่ห้องเดียวกันทั้งคู่ จึงต้อง "จอง" ห้องไว้ทุก
+    # ชั่วโมงของมันตั้งแต่ตอนแจก ไม่ใช่แจกทีละชั่วโมงแล้วทับกันเอง — รอบก่อน
+    # คาบคู่ได้ห้องตอนชั่วโมงที่สองก่อน แล้วถูกแจกใหม่ทับตอนชั่วโมงแรก
+    # ชั่วโมงที่สองจึงเหลือห้องซ้ำกับคนอื่น (353 ฟิสิกส์ ศุกร์ คาบ 5)
+    at_cell: dict[tuple[int, int], list[int]] = defaultdict(list)
+    cells_of: dict[int, list[tuple[int, int]]] = {}
+    for uid, (day, period) in found.placed.items():
+        cells_of[uid] = [(day, n)
+                         for n in Board._nums(by_uid[uid], period, world)]
+        for c in cells_of[uid]:
+            at_cell[c].append(uid)
+
+    room_of: dict[int, int] = {}
+    taken: dict[tuple[int, int], set[int]] = defaultdict(set)
+    for cell in sorted(at_cell):
+        elig = {uid: [r for r in opts[uid]
+                      if all(r not in taken[c] for c in cells_of[uid])]
+                for uid in at_cell[cell]
+                if by_uid[uid].needs_room and uid not in room_of}
+        if not elig:
+            continue
+        for uid, rid in assign_rooms([(uid, []) for uid in elig], elig).items():
+            room_of[uid] = rid
+            for c in cells_of[uid]:
+                taken[c].add(rid)
+
+    # สรุปเป็นคาบที่เสนอ
+    proposed: list[dict[str, Any]] = []
+    for uid, (day, period) in sorted(found.placed.items()):
+        u = by_uid[uid]
+        for n in Board._nums(u, period, world):
+            for gid in u.group_ids:
+                proposed.append({
+                    "group_id": gid, "subject_id": u.subject_id,
+                    "teacher_id": u.teacher_ids[0] if u.teacher_ids else 0,
+                    "co_teacher_id": u.teacher_ids[1] if len(u.teacher_ids) > 1 else None,
+                    "day": day, "period": n,
+                    "room_id": room_of.get(uid),
+                    "unit": uid, "length": u.length,
+                    "is_elective": u.is_elective,
+                    "double_group_key": u.double_key,
+                })
+    missing = [by_uid[uid].label for uid in found.unplaced]
+    no_room = sum(1 for uid in found.placed
+                  if by_uid[uid].needs_room and uid not in room_of)
+    return {
+        "proposed": proposed,
+        "units": len(world.units),
+        "placed": len(found.placed),
+        "unplaced": len(found.unplaced),
+        "unplaced_labels": missing[:40],
+        "no_room": no_room,
+        "restarts": found.restarts,
+        "seconds": round(time.time() - t0, 1),
+        "note": found.note,
+    }
