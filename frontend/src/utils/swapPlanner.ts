@@ -57,7 +57,7 @@ export interface SwapRoute {
 }
 
 // ── Context passed once, reused across helpers ───────────────────────────────
-interface Ctx {
+export interface Ctx {
   slots:    TimetableSlot[];
   rooms:    Room[];
   teachers: Teacher[];
@@ -66,6 +66,14 @@ interface Ctx {
   classPeriodNums: number[];
   numDays:  number;
   shares:   SharesStudents;
+  /**
+   * คาบที่อยู่ในช่อง "วัน-คาบ" — ไว้ตอบว่าใครขวางอยู่โดยไม่ต้องกวาดทั้งตาราง
+   *
+   * โหมดนำทางถามคำถามนี้หลายพันครั้งต่อการคลิกหนึ่งครั้ง (ทุกช่อง × ทุกคาบ
+   * ที่ถูกเบียด) ตารางจริงมีคาบ 2,700 กว่าคาบ การกวาดทั้งตารางทุกครั้งทำให้
+   * กดแล้วค้างเป็นวินาที
+   */
+  atCell:   Map<string, TimetableSlot[]>;
 }
 
 /** How many lessons a single route may shuffle. Beyond this nobody can follow it. */
@@ -85,7 +93,7 @@ function roomName(ctx: Ctx, id: number | null): string | null {
  *   4. any free room at all
  * Returns null only if literally no room is free.
  */
-function pickRoom(
+export function pickRoom(
   ctx: Ctx,
   slot: TimetableSlot,
   day: number,
@@ -134,6 +142,28 @@ function pickRoom(
   return any.length ? any[0].id : null;
 }
 
+/**
+ * คาบที่ขวางอยู่ ถ้าเอา `slot` ไปวางที่ (day, period) — ครูคนเดียวกัน หรือ
+ * นักเรียนกลุ่มเดียวกัน
+ *
+ * จุดเดียวที่ตอบคำถามนี้ ทั้งตัววางเส้นทางอัตโนมัติและโหมดนำทางที่คนเลือกเอง
+ * ใช้ตัวนี้ร่วมกัน — ถ้าแยกกันคิด สองหน้าจะบอกคนละอย่างในสถานการณ์เดียวกัน
+ */
+export function blockersAt(
+  ctx: Ctx,
+  slot: TimetableSlot,
+  day: number,
+  period: number,
+  ignoreIds: Set<number>,
+): TimetableSlot[] {
+  return (ctx.atCell.get(`${day}-${period}`) ?? []).filter(
+    (s) =>
+      !ignoreIds.has(s.id) &&
+      s.id !== slot.id &&
+      (sameTeacher(s.teacher_id, slot.teacher_id) || ctx.shares(s.group_id, slot.group_id)),
+  );
+}
+
 /** Does placing `slot` at (day, period) hit a hard conflict (teacher/group busy)? */
 function hardConflictAt(
   ctx: Ctx,
@@ -142,14 +172,7 @@ function hardConflictAt(
   period: number,
   ignoreIds: Set<number>,
 ): boolean {
-  return ctx.slots.some(
-    (s) =>
-      s.day === day &&
-      s.period === period &&
-      !ignoreIds.has(s.id) &&
-      s.id !== slot.id &&
-      (sameTeacher(s.teacher_id, slot.teacher_id) || ctx.shares(s.group_id, slot.group_id)),
-  );
+  return blockersAt(ctx, slot, day, period, ignoreIds).length > 0;
 }
 
 /** Two lessons clash on teacher only when both name the same real teacher. */
@@ -260,6 +283,27 @@ function findChain(
   return null;
 }
 
+/** ชุดข้อมูลที่ตัววางเส้นทางต้องใช้ — โหมดนำทางก็สร้างด้วยตัวนี้ */
+export function buildCtx(
+  slots: TimetableSlot[], rooms: Room[], teachers: Teacher[], periods: Period[],
+  groups: StudentGroup[] = [], numDays = 5,
+  subjects: { id: number; department_id?: number | null }[] = [],
+): Ctx {
+  const classPeriodNums = [
+    ...new Set(periods.filter((p) => p.type === "class").map((p) => p.period_num)),
+  ].sort((a, b) => a - b);
+  const atCell = new Map<string, TimetableSlot[]>();
+  for (const s of slots) {
+    const k = `${s.day}-${s.period}`;
+    const list = atCell.get(k);
+    if (list) list.push(s); else atCell.set(k, [s]);
+  }
+  return {
+    slots, rooms, teachers, periods, subjects, classPeriodNums, numDays,
+    shares: buildSharesStudents(groups), atCell,
+  };
+}
+
 export function planRoutes(
   moving:   TimetableSlot,
   targetDay:    number,
@@ -272,11 +316,10 @@ export function planRoutes(
   numDays = 5,
   subjects: { id: number; department_id?: number | null }[] = [],
 ): SwapRoute[] {
-  const classPeriodNums = [
-    ...new Set(periods.filter((p) => p.type === "class").map((p) => p.period_num)),
-  ].sort((a, b) => a - b);
-  const shares = buildSharesStudents(groups);
-  const ctx: Ctx = { slots, rooms, teachers, periods, subjects, classPeriodNums, numDays, shares };
+  // ประกอบด้วยตัวเดียวกับที่อื่น ไม่ประกอบมือ — ไม่งั้นพออะไรเพิ่มใน Ctx
+  // ทางนี้จะได้ของไม่ครบ
+  const ctx: Ctx = buildCtx(slots, rooms, teachers, periods, groups, numDays, subjects);
+  const { classPeriodNums, shares } = ctx;
 
   const atTarget = slots.filter(
     (s) => s.day === targetDay && s.period === targetPeriod && s.id !== moving.id,

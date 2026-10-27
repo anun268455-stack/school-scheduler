@@ -33,6 +33,7 @@ import {
   cellKey, hoursOfCell, mergedDoubles, periodsOfCell, picksOfGroup, yardsInCell,
 } from "../../utils/yardPicks";
 import { CELL_SCALE_DEFAULT, cellScaleStyle, clampCellScale } from "../../utils/cellScale";
+import { optionsAll, previewSlots, trimOptions } from "../../utils/guidedMove";
 import { DAYS, type Period, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
@@ -74,12 +75,19 @@ interface DroppableCellProps {
   onYardClick: (day: number, period: number) => void;
   /** เอาหมุดลานของชั่วโมงนี้ออก — null เมื่อยังไม่มีหมุด */
   onYardRemove: (day: number, period: number) => void;
+  /** โหมดนำทาง: ช่องนี้เป็นทางเลือกแบบไหน — null คือไม่ใช่ทางเลือก */
+  guideKind?: "ว่าง" | "สลับ" | "เบียด" | null;
+  guideNote?: string;
+  /** โหมดนำทางเปิดอยู่ (ทั้งตารางเปลี่ยนวิธีคลิก) */
+  guideMode?: boolean;
+  onGuidePick?:   (slot: TimetableSlot) => void;
+  onGuideChoose?: (day: number, period: number) => void;
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
   periodDef, day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective, onRescue,
   preLockMode, onPreLockClick, isDragging, onAddLesson, yardMode, yardLabel, onYardClick,
-  onYardRemove,
+  onYardRemove, guideKind, guideNote, guideMode, onGuidePick, onGuideChoose,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: `cell-${day}-${period}`,
@@ -108,7 +116,20 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
 
   let body: React.ReactNode = null;
   if (slots.length > 0) {
-    if (yardMode) {
+    if (guideMode) {
+      // คลิกคาบ = "หาที่ให้คาบนี้" · คลิกช่องที่เป็นทางเลือก = เลือกทางนั้น
+      body = (
+        <div
+          className="w-full h-full cursor-pointer"
+          title={guideNote ?? "กดเพื่อหาที่ให้คาบนี้"}
+          onClick={() => (guideKind && onGuideChoose
+            ? onGuideChoose(day, period)
+            : onGuidePick?.(slots[0]))}
+        >
+          <SlotCell slots={slots} />
+        </div>
+      );
+    } else if (yardMode) {
       // Picking, not editing: no dragging and no hover buttons, so a click that
       // lands on a lesson can only choose its ลาน, never delete or lock it.
       body = (
@@ -127,6 +148,14 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
         <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} onRescue={onRescue} />
       );
     }
+  } else if (guideMode && guideKind && onGuideChoose) {
+    body = (
+      <button type="button" onClick={() => onGuideChoose(day, period)}
+        title={guideNote}
+        className="w-full h-full flex items-center justify-center text-[10px] font-semibold">
+        {guideKind === "ว่าง" ? "ว่าง — วางที่นี่" : guideKind}
+      </button>
+    );
   } else if (yardMode) {
     /* Empty cell, picking — reserve this hour on a ลาน, or change the reservation. */
     body = (
@@ -165,6 +194,10 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
         "w-full h-full rounded border transition-all duration-150 relative overflow-hidden",
         isDragging && impact ? impactBorderClass(impact.level) : "border-dashed border-gray-200 hover:border-blue-300",
         isOver && "ring-2 ring-blue-500 ring-inset",
+        // โหมดนำทาง: ช่องที่เลือกได้ขึ้นสีตามผลที่จะเกิด
+        guideKind === "ว่าง"  && "ring-2 ring-emerald-500 ring-inset bg-emerald-50/60",
+        guideKind === "สลับ"  && "ring-2 ring-sky-500 ring-inset bg-sky-50/60",
+        guideKind === "เบียด" && "ring-2 ring-amber-500 ring-inset bg-amber-50/50",
       )}
     >
       {/* Impact dot (during drag) */}
@@ -289,6 +322,8 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     moveSlot, swapRoom, toggleLock, deleteSlot, applySwapRoute, preLockMode,
     undo, undoStack, toggleClassLock, manualMode,
     yardPickMode, yardPicks, yardList, removeYardPicks, schoolConfig,
+    guideMode, guideMovingId, guideSteps, guidePick, guideChoose, guideBack,
+    guideClear, guideApply,
   } = useTimetableStore();
 
   const [validAlert,   setValidAlert]   = useState<string | null>(null);
@@ -426,6 +461,12 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
    * a ลาน must agree with what is drawn here about which hours go together.
    */
   const periodNums = useMemo(() => gridPeriods.map((p) => p.period_num), [gridPeriods]);
+
+  /** ชื่อคาบอย่างที่หัวตารางเขียน — ถ้าไม่เจอก็บอกเลขคาบไปตรงๆ */
+  const periodLabel = useCallback(
+    (p: number) => gridPeriods.find((pm) => pm.period_num === p)?.label ?? `คาบ ${p}`,
+    [gridPeriods],
+  );
   const merged = useMemo(
     () => mergedDoubles(slotGrid, DAY_INDEXES, periodNums),
     [slotGrid, periodNums],
@@ -537,6 +578,32 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     });
   }, [selectedGroupId, periodNums, merged, slots, groupYards, removeYardPicks,
       yardNameOf]);
+
+  /** โหมดนำทาง: คาบที่กำลังหาที่ให้ (ตำแหน่งตามเส้นทางที่เลือกไว้แล้ว) */
+  const guideMoving = useMemo(() => {
+    if (!guideMode || guideMovingId == null) return null;
+    return previewSlots(slots, guideSteps, rooms).find((s) => s.id === guideMovingId) ?? null;
+  }, [guideMode, guideMovingId, guideSteps, slots, rooms]);
+
+  /** คิดทางเลือกครั้งเดียวต่อการคลิก — ทั้งการระบายสีและรายการใช้ชุดนี้ */
+  const guideAll = useMemo(() => {
+    if (!guideMoving) return [];
+    return optionsAll({ slots, rooms, teachers, periods, groups, subjects },
+                      guideMoving, guideSteps);
+  }, [guideMoving, guideSteps, slots, rooms, teachers, periods, groups, subjects]);
+
+  /** ทางเลือกของทุกช่อง — ใช้ระบายสีช่องในตาราง */
+  const guideMap = useMemo(() => {
+    const m = new Map<string, { kind: "ว่าง" | "สลับ" | "เบียด"; note: string }>();
+    for (const o of guideAll) m.set(`${o.day}-${o.period}`, { kind: o.kind, note: o.note });
+    return m;
+  }, [guideAll]);
+
+  /** ทางเลือกที่จะโชว์เป็นรายการในแถบนำทาง — ตัดจากชุดเดียวกัน ไม่คิดซ้ำ */
+  const guideOptions = useMemo(() => trimOptions(guideAll, 6), [guideAll]);
+
+  const handleGuidePick = useCallback((slot: TimetableSlot) => guidePick(slot.id),
+                                      [guidePick]);
 
   const handleApplyRoute = useCallback((route: SwapRoute) => {
     applySwapRoute(route);
@@ -739,6 +806,88 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
           <span className="text-slate-400">
             {undoStack[undoStack.length - 1].label} · ย้อนได้ {undoStack.length} ขั้น (Ctrl+Z)
           </span>
+        </div>
+      )}
+
+      {/* ── แถบโหมดนำทางการจัดคาบ ─────────────────────────────────────────
+          "เข้าโหมดนี้แล้วเลือกคาบนี้จะไปยังคาบนี้พอ แล้วก็จะมีทางเลือกในการ
+           เลื่อนหลายๆแยกให้ฉันเลือก"
+          บอกสามอย่าง: ตอนนี้กำลังหาที่ให้ใคร · ทางเลือกมีอะไร · เส้นทางที่
+          เลือกไว้แล้วจะทำอะไรบ้าง (ยังไม่แตะตารางจนกดลงมือ) */}
+      {guideMode && (
+        <div className="px-4 py-2 bg-indigo-50 border-b border-indigo-200 text-xs shrink-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-bold text-indigo-900">🧩 โหมดนำทางการจัดคาบ</span>
+            {guideMoving ? (
+              <span className="text-indigo-900">
+                กำลังหาที่ให้ <b>{guideMoving.group_name} {guideMoving.subject_code}</b>
+                {" "}(เดิม {DAYS[guideMoving.day]} {periodLabel(guideMoving.period)})
+                — กดช่องที่มีสีในตาราง หรือเลือกจากรายการข้างล่าง
+              </span>
+            ) : guideSteps.length ? (
+              <span className="text-emerald-800 font-semibold">
+                เส้นทางครบแล้ว — กด “ลงมือทำทั้งชุด” เพื่อย้ายจริง
+              </span>
+            ) : (
+              <span className="text-indigo-900">กดคาบที่อยากย้ายในตาราง เพื่อเริ่มหาที่ให้มัน</span>
+            )}
+            <span className="ml-auto flex items-center gap-1.5">
+              {guideSteps.length > 0 && (
+                <>
+                  <button onClick={guideBack}
+                    className="px-2 py-1 rounded border border-indigo-300 bg-white text-indigo-800 font-medium hover:bg-indigo-100">
+                    ↩ ย้อนขั้น
+                  </button>
+                  <button onClick={guideClear}
+                    className="px-2 py-1 rounded border border-gray-300 bg-white text-gray-600 hover:bg-gray-100">
+                    ✕ ล้างเส้นทาง
+                  </button>
+                  <button onClick={() => void guideApply()} disabled={guideMovingId != null}
+                    title={guideMovingId != null
+                      ? "ยังมีคาบที่ต้องหาที่ให้ — เลือกให้ครบก่อน"
+                      : "ย้ายทั้งเส้นทางทีเดียว"}
+                    className="px-2.5 py-1 rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-emerald-300">
+                    ✓ ลงมือทำทั้งชุด ({guideSteps.length})
+                  </button>
+                </>
+              )}
+            </span>
+          </div>
+
+          {/* ทางเลือกของขั้นนี้ */}
+          {guideOptions.length > 0 && (
+            <div className="flex gap-1.5 flex-wrap mt-1.5">
+              {guideOptions.map((o) => (
+                <button
+                  key={`${o.day}-${o.period}`}
+                  onClick={() => guideChoose(o.day, o.period)}
+                  title={`${o.note}${o.roomName ? ` · ห้อง ${o.roomName}` : " · ยังไม่มีห้องว่าง"}`}
+                  className={clsx("px-2 py-1 rounded border text-left leading-tight",
+                    o.kind === "ว่าง" ? "border-emerald-400 bg-emerald-50 hover:bg-emerald-100"
+                    : o.kind === "สลับ" ? "border-sky-400 bg-sky-50 hover:bg-sky-100"
+                    : "border-amber-400 bg-amber-50 hover:bg-amber-100")}
+                >
+                  <span className="font-semibold">
+                    {DAYS[o.day]} {periodLabel(o.period)}
+                  </span>
+                  <span className="block text-[10px] text-gray-600">{o.note}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* เส้นทางที่เลือกไว้แล้ว */}
+          {guideSteps.length > 0 && (
+            <ol className="mt-1.5 space-y-0.5">
+              {guideSteps.map((st, i) => (
+                <li key={i} className="text-[11px] text-indigo-900">
+                  {i + 1}. <b>{st.label}</b> {DAYS[st.fromDay]} {periodLabel(st.fromPeriod)}
+                  {" → "}{DAYS[st.day]} {periodLabel(st.period)}
+                  {st.roomName ? ` · ห้อง ${st.roomName}` : " · ยังไม่มีห้อง"}
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       )}
 
@@ -953,6 +1102,11 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                             yardLabel={yardIds.length ? yardIds.map(yardNameOf).join(" · ") : null}
                             onYardClick={handleYardClick}
                             onYardRemove={handleYardRemove}
+                            guideMode={guideMode}
+                            guideKind={guideMap.get(key)?.kind ?? null}
+                            guideNote={guideMap.get(key)?.note}
+                            onGuidePick={handleGuidePick}
+                            onGuideChoose={guideChoose}
                           />
                         </div>
                       </td>

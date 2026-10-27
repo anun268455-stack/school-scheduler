@@ -14,6 +14,9 @@ import { writeGuard } from "../utils/writeGuard";
 import { putSavePoint, storageAvailable } from "../utils/savePoints";
 import { applyPickResult } from "../utils/yardPicks";
 import { clampCellScale } from "../utils/cellScale";
+import {
+  chooseOption, previewSlots, verdictAt, type GuidedStep,
+} from "../utils/guidedMove";
 
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
@@ -157,6 +160,19 @@ interface TimetableStore {
   manualMode: boolean;
 
   // ── Pre-lock mode ─────────────────────────────────────────────────────────
+  /**
+   * โหมดนำทางการจัดคาบ — เลือกเองทีละขั้นว่าคาบนี้ไปไหน แล้วใครไปไหนต่อ
+   *
+   *   "ฉันย้ายคาบครูคนนี้แต่ก็จะติดไปเรื่อยๆ ... เข้าโหมดนี้แล้วเลือกคาบนี้จะไป
+   *    ยังคาบนี้พอ แล้วก็จะมีทางเลือกในการเลื่อนหลายๆแยกให้ฉันเลือก"
+   *
+   * ยังไม่แตะตารางจริงจนกดลงมือ — ทั้งเส้นทางถูกส่งไปทีเดียว
+   */
+  guideMode:     boolean;
+  /** คาบที่กำลังหาที่ให้ในขั้นนี้ */
+  guideMovingId: number | null;
+  /** ขั้นที่เลือกไว้แล้ว ยังไม่ลงมือ */
+  guideSteps:    GuidedStep[];
   preLockMode: boolean;         // when true, clicking a slot toggles is_locked
 
   // ── โหมดเลือกคาบเรียนลาน ────────────────────────────────────────────────────
@@ -211,6 +227,16 @@ interface TimetableStore {
   setSelectedGroupId:   (id: number | null) => void;
   setSelectedTeacherId: (id: number | null) => void;
   setSelectedRoomId:    (id: number | null) => void;
+  setGuideMode:   (on: boolean) => void;
+  /** เริ่มหาที่ให้คาบนี้ (กดคาบในตารางตอนอยู่ในโหมดนำทาง) */
+  guidePick:      (slotId: number) => void;
+  /** เลือกช่องนี้ให้คาบที่กำลังหาที่อยู่ */
+  guideChoose:    (day: number, period: number) => void;
+  /** ย้อนขั้นล่าสุด */
+  guideBack:      () => void;
+  guideClear:     () => void;
+  /** ลงมือทำทั้งเส้นทางทีเดียว */
+  guideApply:     () => Promise<void>;
   setPreLockMode:       (on: boolean) => void;
   setManualMode:        (on: boolean) => void;
   setYardPickMode:      (on: boolean) => void;
@@ -302,6 +328,9 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   isSolving:         false,
   solveProgress:     null,
   solverError:       null,
+  guideMode:         false,
+  guideMovingId:     null,
+  guideSteps:        [],
   preLockMode:       false,
   manualMode:        false,
   yardPickMode:      false,
@@ -371,12 +400,111 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   setSelectedTeacherId: (id) => set({ selectedTeacherId: id, selectedGroupId: null,   selectedRoomId: null }),
   setSelectedRoomId:    (id) => set({ selectedRoomId: id,    selectedGroupId: null,   selectedTeacherId: null }),
   // Both modes take over the click on a cell, so only one can be on at a time.
-  setPreLockMode:       (on) => set(on ? { preLockMode: true, yardPickMode: false } : { preLockMode: false }),
+  setPreLockMode:       (on) => set(on
+    ? { preLockMode: true, yardPickMode: false,
+        guideMode: false, guideMovingId: null, guideSteps: [] }
+    : { preLockMode: false }),
+
+  // ── โหมดนำทางการจัดคาบ ──────────────────────────────────────────────────
+  setGuideMode: (on) => set(on
+    ? { guideMode: true, preLockMode: false, yardPickMode: false,
+        guideMovingId: null, guideSteps: [] }
+    : { guideMode: false, guideMovingId: null, guideSteps: [] }),
+
+  guidePick: (slotId) => {
+    const { slots, guideSteps } = get();
+    const s = slots.find((x) => x.id === slotId);
+    if (!s) return;
+    if (s.is_locked) {
+      set({ solverError: "คาบนี้ล็อกไว้ — ปลดล็อกก่อนถึงจะย้ายได้" });
+      return;
+    }
+    // กดคาบใหม่ขณะที่ยังมีเส้นทางค้างอยู่ = เริ่มเส้นทางใหม่ ของเดิมยังไม่ลงมือ
+    // จึงหายไปได้โดยไม่กระทบตาราง แต่บอกให้รู้ว่าเกิดอะไรขึ้น
+    set({
+      guideMovingId: slotId,
+      guideSteps: [],
+      solverError: guideSteps.length
+        ? "เริ่มเส้นทางใหม่ — เส้นทางที่เลือกไว้ก่อนหน้านี้ถูกยกเลิก (ยังไม่ได้ลงมือ)"
+        : null,
+    });
+  },
+
+  guideChoose: (day, period) => {
+    const { slots, rooms, teachers, periods, groups, subjects,
+            guideMovingId, guideSteps } = get();
+    if (guideMovingId == null) return;
+    const world = { slots, rooms, teachers, periods, groups, subjects };
+    const live = previewSlots(slots, guideSteps, rooms)
+      .find((x) => x.id === guideMovingId);
+    if (!live) return;
+    const v = verdictAt(world, live, guideSteps, day, period);
+    if (!v) {
+      set({ solverError: "ช่องนี้ลงไม่ได้ — มีคาบที่ล็อกไว้ขวางอยู่ หรือไม่ใช่คาบเรียนของชั้นนี้" });
+      return;
+    }
+    const r = chooseOption(world, live, guideSteps, v);
+    set({ guideSteps: r.steps, guideMovingId: r.next ? r.next.id : null,
+          solverError: null });
+  },
+
+  guideBack: () => {
+    const { guideSteps } = get();
+    if (!guideSteps.length) return;
+    const last = guideSteps[guideSteps.length - 1];
+    set({ guideSteps: guideSteps.slice(0, -1), guideMovingId: last.slotId,
+          solverError: null });
+  },
+
+  guideClear: () => set({ guideSteps: [], guideMovingId: null, solverError: null }),
+
+  guideApply: async () => {
+    const { guideSteps, slots, groups } = get();
+    if (!guideSteps.length) return;
+    // ด่านคาบล็อก — เส้นทางนี้ส่งแบบข้ามการตรวจของเซิร์ฟเวอร์เหมือนทางอื่น
+    const shares = buildSharesStudents(groups);
+    const moving = new Set(guideSteps.map((s) => s.slotId));
+    for (const st of guideSteps) {
+      const s = slots.find((x) => x.id === st.slotId);
+      if (!s) continue;
+      const clash = lockClashAt(s, st.day, st.period, st.roomId,
+                                slots.filter((x) => !moving.has(x.id)), shares);
+      if (clash) {
+        set({ solverError: `เส้นทางนี้ใช้ไม่ได้ — ${clash.reason} 🔒 ปลดล็อกคาบนั้นก่อน` });
+        return;
+      }
+    }
+    set((st) => ({ undoStack: [...st.undoStack, {
+      label: "นำทางจัดคาบ",
+      patches: guideSteps.map((g) => {
+        const cur = slots.find((x) => x.id === g.slotId);
+        return { slotId: g.slotId, day: cur?.day, period: cur?.period,
+                 room_id: cur?.room_id ?? null };
+      }),
+    }].slice(-25) }));
+    let refused: string | null = null;
+    try {
+      await withWrite(() => api.moveSlots(guideSteps.map((g) => ({
+        slot_id: g.slotId, day: g.day, period: g.period, room_id: g.roomId,
+      })), true));
+    } catch (err: unknown) {
+      // อย่าให้ตารางเด้งกลับเฉยๆ โดยไม่บอกเหตุ — เส้นทางนี้ส่งแบบข้ามการตรวจ
+      // เรื่องชนกันแล้ว ที่ยังถูกปฏิเสธได้คือทับคาบที่ล็อกไว้ หรือเซิร์ฟเวอร์
+      // ไม่ตอบ จึงเก็บเส้นทางไว้ให้แก้ต่อ ไม่ล้างทิ้ง
+      refused = moveRefusal(err);
+    }
+    await get().loadSlots();
+    if (refused) set({ solverError: refused });
+    else set({ guideSteps: [], guideMovingId: null });
+  },
   // โหมดจัดเองไม่ได้แย่งคลิกกับสองโหมดข้างบน — มันเปลี่ยนแค่ว่า "ลากแล้ววางได้
   // ไหมเมื่อชนกัน" จึงเปิดพร้อมกันได้ และไม่ต้องปิดโหมดอื่น
   setManualMode:        (on) => set({ manualMode: on }),
   setYardPickMode:      (on) => {
-    set(on ? { yardPickMode: true, preLockMode: false } : { yardPickMode: false });
+    set(on
+      ? { yardPickMode: true, preLockMode: false,
+          guideMode: false, guideMovingId: null, guideSteps: [] }
+      : { yardPickMode: false });
     // Fresh marks and ลาน on the way in: another person may have changed them.
     if (on) void get().loadYardPicks();
   },

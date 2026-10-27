@@ -122,6 +122,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     selectedRoomId, setSelectedRoomId,
     preLockMode, setPreLockMode, manualMode, setManualMode,
     yardPickMode, setYardPickMode,
+    guideMode, setGuideMode,
     lockAll, unlockAll,
     liveSync, setLiveSync, syncState, remoteUpdates, isSolving, runSolver,
   } = useTimetableStore();
@@ -391,11 +392,14 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
               ? "bg-amber-500 border-amber-400 text-white shadow-amber-500/30 shadow-md"
               : yardPickMode
               ? "bg-teal-600 border-teal-400 text-white shadow-teal-500/30 shadow-md"
+              : guideMode
+              ? "bg-indigo-700 border-indigo-400 text-white shadow-indigo-500/30 shadow-md"
               : "bg-gray-700 border-gray-600 text-gray-200 hover:bg-gray-600",
           )}
-          title="เครื่องมือ — ล็อกคาบ เลือกคาบเรียนลาน พิมพ์ และ PDF"
+          title="เครื่องมือ — ล็อกคาบ เลือกคาบเรียนลาน นำทางการจัดคาบ พิมพ์ และ PDF"
         >
-          {manualMode ? "✋ จัดเอง" : preLockMode ? "🔒 กำลังล็อก" : yardPickMode ? "📌 กำลังเลือกลาน" : "⋯ เครื่องมือ"} <span className="text-[10px]">▾</span>
+          {manualMode ? "✋ จัดเอง" : preLockMode ? "🔒 กำลังล็อก" : yardPickMode ? "📌 กำลังเลือกลาน"
+            : guideMode ? "🧩 นำทางจัดคาบ" : "⋯ เครื่องมือ"} <span className="text-[10px]">▾</span>
         </button>
         {showTools && (
           <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-50 min-w-[230px] py-1">
@@ -411,6 +415,17 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
                   ✋
                   <span className="flex-1">โหมดจัดเอง — วางได้แม้จะชนกัน</span>
                   {manualMode && <span className="text-[10px]">กำลังเปิด</span>}
+                </button>
+                {/* โหมดนำทางการจัดคาบ — "ย้ายคาบครูคนนี้แต่ก็จะติดไปเรื่อยๆ"
+                    เลือกคาบ แล้วหน้าจอเสนอทางเลือกหลายทางให้เลือกเอง
+                    ทีละขั้น ยังไม่แตะตารางจนกดลงมือทำทั้งชุด */}
+                <button
+                  onClick={() => { setGuideMode(!guideMode); setShowTools(false); }}
+                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors",
+                    guideMode ? "bg-indigo-700 text-white" : "text-gray-200 hover:bg-gray-700")}>
+                  🧩
+                  <span className="flex-1">โหมดนำทางการจัดคาบ — เลือกทางเองทีละขั้น</span>
+                  {guideMode && <span className="text-[10px]">กำลังเปิด</span>}
                 </button>
                 <button
                   onClick={() => { setPreLockMode(!preLockMode); setShowTools(false); }}
