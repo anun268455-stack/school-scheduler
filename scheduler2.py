@@ -734,6 +734,105 @@ class Polisher:
         return dict(self.board.placed), moves, passes
 
 
+# ── ไม้บรรทัดวัดคุณภาพ ─────────────────────────────────────────────────────
+
+
+def _lesson_key(row: dict[str, Any]) -> Any:
+    """คาบเดียวกันคืออะไร — ข้อเสนอบอกมาเป็น unit ตารางจริงต้องเดาจากคีย์ร่วม"""
+    if row.get("unit") is not None:
+        return ("U", row["unit"])
+    for field_ in ("activity_key", "elective_pool_id", "parallel_group_key"):
+        if row.get(field_):
+            return (field_, row[field_], row.get("day"), row.get("period"))
+    return ("row", row.get("id", id(row)))
+
+
+def quality(world: World, rows: list[dict[str, Any]]) -> dict[str, int]:
+    """วัดตารางชุดหนึ่ง — ใช้ไม้บรรทัดอันเดียวกับตารางที่ใช้อยู่และข้อเสนอ
+
+    ครูคนหนึ่งใน วัน·คาบ เดียวต้องนับครั้งเดียว ไม่ใช่นับตามจำนวนแถว กิจกรรม
+    หนึ่งคาบมีแถวละห้องถึง 78 แถว และแต่ละแถวพ่วงรายชื่อครูทั้งคณะ ถ้านับตาม
+    แถวจะได้ครูคนเดียวสอน 216 คาบ/สัปดาห์ ทั้งที่สัปดาห์มีแค่ 40 ช่อง
+    """
+    seen_g: dict[tuple, Any] = {}
+    seen_t: dict[tuple, Any] = {}
+    seen_r: dict[tuple, Any] = {}
+    byg: dict[tuple[int, int], set[int]] = defaultdict(set)
+    byt: dict[tuple[int, int], set[int]] = defaultdict(set)
+    clash_g = clash_t = clash_r = no_room = 0
+
+    for row in rows:
+        gid, day, num = row.get("group_id"), row.get("day"), row.get("period")
+        if gid is None or day is None or num is None:
+            continue
+        shared = row.get("teacher_ids") or []
+        tl = [t for t in (list(shared) if shared else
+                          [row.get("teacher_id"), row.get("co_teacher_id")]
+                          + list(row.get("activity_teacher_ids") or [])) if t]
+        lv = world.glevel.get(gid, "lower")
+
+        # แถวไหนเป็น "คาบเดียวกัน" — กิจกรรมหนึ่งคาบมีแถวละห้องถึง 78 แถว
+        # ครูคนเดียวกันในเวลาเดียวกันจากคาบเดียวกันไม่ใช่การชน
+        lesson = _lesson_key(row)
+
+        key = (gid, day, num)
+        if seen_g.setdefault(key, lesson) != lesson:
+            clash_g += 1
+        i = world.gindex.get(gid, {}).get(num)
+        if i is not None:
+            byg[(gid, day)].add(i)
+
+        r = world.tindex.get((lv, num))
+        if r is not None:
+            for t in set(tl):
+                if seen_t.setdefault((t, day, r), lesson) != lesson:
+                    clash_t += 1
+                byt[(t, day)].add(r)
+
+            rid = row.get("room_id")
+            if rid:
+                if seen_r.setdefault((rid, day, r), lesson) != lesson:
+                    clash_r += 1
+            elif not row.get("is_elective") and not row.get("is_activity_block"):
+                no_room += 1
+
+    runs = 0
+    for v in byt.values():
+        run = 0
+        prev = None
+        for r in sorted(v):
+            run = run + 1 if prev is not None and r == prev + 1 else 1
+            prev = r
+            if run > RUN_CAP:
+                runs += 1
+    return {
+        "periods":      len(seen_g),
+        "lessons":      len({v for v in seen_g.values()}),
+        "gaps":         sum(_gap_count(v) for v in byg.values()),
+        "teacher_busy": len(seen_t),
+        "heavy_days":   sum(1 for v in byt.values() if len(v) > TEACH_CAP),
+        "long_runs":    runs,
+        "clash_group":  clash_g,
+        "clash_teacher": clash_t,
+        "clash_room":   clash_r,
+        "no_room":      no_room,
+    }
+
+
+def demand_vs_capacity(world: World) -> list[dict[str, Any]]:
+    """ห้องที่หลักสูตรขอคาบไว้เกินช่องที่มีจริง — ไม่มีเครื่องไหนแก้ได้"""
+    need: dict[int, int] = defaultdict(int)
+    for u in world.units:
+        for gid in u.group_ids:
+            need[gid] += u.length
+    out = []
+    for gid, n in need.items():
+        cap = len(world.cells_for[world.glevel.get(gid, "lower")])
+        if n > cap:
+            out.append({"group_id": gid, "want": n, "cap": cap, "over": n - cap})
+    return sorted(out, key=lambda x: -x["over"])
+
+
 def assign_rooms(
     cell_units: list[tuple[int, list[int]]],
     eligible: dict[int, list[int]],

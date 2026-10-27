@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-27.6"
+API_BUILD = "2026-10-28.1"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -14576,6 +14576,167 @@ def state_info():
             "elective_pools": len(ELECTIVE_POOLS),
         },
     }
+
+
+# ── เครื่องจัดตารางตัวใหม่ — "ปุ่มตรวจคาบ" ────────────────────────────────
+#
+#   "ทั้งหมดนี้อาจจะทำเป็นปุ่มตรวจคาบ นานก็ได้"
+#
+# จัดตารางใหม่ทั้งโรงเรียนด้วยเครื่องตัวใหม่ (scheduler2) แล้วคืนออกมาเป็น
+# "ข้อเสนอ" พร้อมตัวเลขเทียบกับตารางที่ใช้อยู่ — ไม่เขียนลง SLOTS แม้แต่คาบ
+# เดียว ("ตอนนี้คาบโอเคแล้ว ห้ามยุ่ง")
+#
+# งานนี้กินเวลาเป็นนาที ถ้าทำในคำขอตรง ๆ แอปจะค้างทั้งตัวเพราะเซิร์ฟเวอร์นี้
+# รับทีละคำขอ จึงแยกไปทำในเธรดแล้วให้หน้าจอถามความคืบหน้าเป็นระยะ
+
+_PROPOSE_JOBS: dict[str, dict[str, Any]] = {}
+_PROPOSE_KEEP = 3          # เก็บผลย้อนหลังเท่านี้ ที่เหลือทิ้งเพื่อไม่กินแรม
+_PROPOSE_LOCK = _threading.Lock()
+
+
+def _activity_windows() -> list[dict[str, Any]]:
+    """หน้าต่างกิจกรรมที่อ่านย้อนออกมาจากตารางที่ใช้อยู่
+
+    กิจกรรมไม่ได้อยู่ในแผนการสอนเลย มันมีอยู่บนคาบในตารางเท่านั้น จึงต้องอ่าน
+    ย้อนออกมาว่าห้องไหนเรียนร่วมกันและครูใครคุม และต้องแยกตาม (คีย์, วัน, คาบ)
+    ไม่ใช่ตามคีย์เพียว ๆ เพราะ ลส.นน.ยว. มีหลายหน้าต่างในสัปดาห์เดียว ถ้ารวม
+    เป็นอันเดียวจะกลายเป็นบังคับให้ 12 ห้องเรียนพร้อมกันหมด ซึ่งไม่ใช่ของจริง
+    """
+    windows: dict[tuple, dict[str, Any]] = {}
+    for s in SLOTS:
+        if not (s.get("is_activity_block") or s.get("activity_teacher_ids")):
+            continue
+        if s.get("day") is None or s.get("period") is None:
+            continue
+        key = s.get("activity_key") or s.get("subject_code") or "กิจกรรม"
+        k = (key, s["day"], s["period"])
+        w = windows.setdefault(k, {
+            "key": f"{key}@{s['day']}-{s['period']}",
+            "name": s.get("subject_code") or str(key),
+            "subject_id": s.get("subject_id"),
+            "day": s["day"], "period": s["period"], "length": 1,
+            "group_ids": set(), "teacher_ids": set(),
+        })
+        w["group_ids"].add(s["group_id"])
+        w["teacher_ids"].update(t for t in (s.get("activity_teacher_ids") or []) if t)
+        for t in (s.get("teacher_id"), s.get("co_teacher_id")):
+            if t:
+                w["teacher_ids"].add(t)
+    return [{**w, "group_ids": sorted(w["group_ids"]),
+             "teacher_ids": sorted(w["teacher_ids"])} for w in windows.values()]
+
+
+def _propose_worker(job: str, snap: dict[str, Any],
+                    budget_s: float, polish_s: float, keep_act: bool) -> None:
+    import scheduler2 as _S2
+
+    def note(msg: str) -> None:
+        with _PROPOSE_LOCK:
+            _PROPOSE_JOBS[job]["message"] = msg
+
+    try:
+        acts = snap["activities"]
+        if not keep_act:
+            acts = [{k: v for k, v in a.items() if k not in ("day", "period")}
+                    for a in acts]
+        note("กำลังอ่านแผนการสอน")
+        world = _S2.build_world(snap["requirements"], snap["groups"],
+                               snap["subjects"], snap["teachers"],
+                               snap["periods"], snap["elective_pools"], acts)
+        gname = {g["id"]: g.get("name") for g in snap["groups"]}
+        over = [{**row, "group_name": gname.get(row["group_id"])}
+                for row in _S2.demand_vs_capacity(world)]
+        note("กำลังหาทางลงคาบ")
+        res = _S2.solve(snap["requirements"], snap["groups"], snap["subjects"],
+                       snap["teachers"], snap["periods"], snap["rooms"],
+                       snap["elective_pools"], acts,
+                       budget_s=budget_s, polish_s=polish_s, seed=1)
+        note("กำลังวัดผล")
+        now = _S2.quality(world, snap["slots"])
+        new = _S2.quality(world, res["proposed"])
+        with _PROPOSE_LOCK:
+            _PROPOSE_JOBS[job].update(
+                state="done", message="เสร็จแล้ว",
+                summary={
+                    "units": res["units"], "placed": res["placed"],
+                    "unplaced": res["unplaced"],
+                    "unplaced_labels": res["unplaced_labels"],
+                    "restarts": res["restarts"], "seconds": res["seconds"],
+                    "gaps_before": res["gaps_before"],
+                    "gaps_after": res["gaps_after"],
+                    "polish_moves": res["polish_moves"],
+                    "now": now, "proposed": new,
+                    "over_capacity": over,
+                    "activity_windows": len(acts),
+                    "kept_activity_time": keep_act,
+                },
+                slots=res["proposed"])
+    except Exception as exc:                       # noqa: BLE001
+        with _PROPOSE_LOCK:
+            _PROPOSE_JOBS[job].update(state="error", message=f"{type(exc).__name__}: {exc}")
+
+
+@app.post("/api/timetable/propose-new")
+def propose_new(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """เริ่มจัดตารางใหม่ทั้งโรงเรียน — คืนรหัสงานไปให้ถามความคืบหน้า"""
+    p = body or {}
+
+    def num(key: str, lo: float, hi: float, default: float) -> float:
+        try:
+            return max(lo, min(hi, float(p.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    budget_s = num("budget_s", 5, 600, 90)
+    polish_s = num("polish_s", 0, 300, 45)
+    keep_act = bool(p.get("keep_activity_time", True))
+
+    # สำเนาข้อมูลทั้งหมดตอนนี้ แล้วปล่อยให้เธรดทำกับสำเนา — ของจริงไม่ถูกแตะ
+    snap = {
+        "requirements": _copy.deepcopy(REQUIREMENTS),
+        "groups": _copy.deepcopy(GROUPS),
+        "subjects": _copy.deepcopy(SUBJECTS),
+        "teachers": _copy.deepcopy(TEACHERS),
+        "periods": _copy.deepcopy(PERIODS),
+        "rooms": _copy.deepcopy(ROOMS),
+        "elective_pools": _copy.deepcopy(ELECTIVE_POOLS),
+        "slots": _copy.deepcopy(SLOTS),
+        "activities": _activity_windows(),
+    }
+    job = f"{int(_time.time())}-{random.randint(1000, 9999)}"
+    with _PROPOSE_LOCK:
+        while len(_PROPOSE_JOBS) >= _PROPOSE_KEEP:
+            _PROPOSE_JOBS.pop(next(iter(_PROPOSE_JOBS)), None)
+        _PROPOSE_JOBS[job] = {
+            "state": "running", "message": "กำลังเริ่ม",
+            "started": _dt.datetime.now().isoformat(timespec="seconds"),
+            "budget_s": budget_s, "polish_s": polish_s,
+        }
+    _threading.Thread(target=_propose_worker, name=f"propose-{job}",
+                      args=(job, snap, budget_s, polish_s, keep_act),
+                      daemon=True).start()
+    return {"job": job, "budget_s": budget_s, "polish_s": polish_s,
+            "eta_s": round(budget_s + polish_s + 5)}
+
+
+@app.get("/api/timetable/propose-new/{job}")
+def propose_new_status(job: str) -> dict[str, Any]:
+    """ถามความคืบหน้า — ตัวคาบที่เสนอต้องขอแยกอีกทีเพราะยาวหลายพันแถว"""
+    with _PROPOSE_LOCK:
+        row = _PROPOSE_JOBS.get(job)
+        if row is None:
+            raise HTTPException(404, "ไม่พบงานนี้ — อาจเก่าเกินไปหรือเซิร์ฟเวอร์เริ่มใหม่")
+        return {k: v for k, v in row.items() if k != "slots"}
+
+
+@app.get("/api/timetable/propose-new/{job}/slots")
+def propose_new_slots(job: str) -> dict[str, Any]:
+    """คาบที่เสนอทั้งหมด — อ่านดูได้ แต่ยังไม่มีใครเอาไปเขียนลงตาราง"""
+    with _PROPOSE_LOCK:
+        row = _PROPOSE_JOBS.get(job)
+        if row is None or row.get("state") != "done":
+            raise HTTPException(404, "ยังไม่มีผล")
+        return {"job": job, "slots": row.get("slots") or []}
 
 
 # Prefer what the school actually edited over the seed file.
