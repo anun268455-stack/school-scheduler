@@ -1,7 +1,7 @@
 /**
  * TopNavbar v3 — Consolidated top-toolbar with Periods + Bulk-Lock nav items.
  */
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useReactToPrint } from "react-to-print";
 
@@ -172,6 +172,33 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
   );
   const entityPos = stepPosition(entityIds, selectedId);
 
+  // ── แป้นพิมพ์: ← → เลื่อนดูคนก่อนหน้า/คนต่อไป ─────────────────────────
+  // "ตรงปุ่มที่เลื่อนห้องสามารถกดปุ่มที่แป้นพิมพ์ได้"
+  //
+  // ทำงานเฉพาะเมื่อยังไม่ได้คลิกอะไรเลย (โฟกัสอยู่ที่ตัวหน้าเว็บ) — ถ้ากำลัง
+  // พิมพ์ในช่องค้นหา หรือเปิดกล่องอยู่ ลูกศรต้องเป็นของที่นั่น ไม่ใช่ของแถบนี้
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (currentPage !== "timetable") return;
+      // ห้ามแย่งลูกศรตอนกำลังพิมพ์ (ช่องค้นหา ช่องกรอก) และตอนมีกล่องเปิดอยู่
+      // ที่เหลือ — คลิกคาบไว้ คลิกปุ่มไว้ หรือยังไม่ได้คลิกอะไร — กดได้
+      const at = document.activeElement as HTMLElement | null;
+      const tag = at?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT"
+          || at?.isContentEditable) return;
+      if (document.querySelector(".fixed.inset-0")) return;   // มีกล่องเปิดอยู่
+      const dir = e.key === "ArrowRight" ? 1 : -1;
+      const next = stepTarget(entityIds, selectedId, dir);
+      if (next == null) return;
+      e.preventDefault();
+      handleEntityChange(next);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   /** null clears the selection and shows the "pick one" screen again. */
   const handleEntityChange = (id: number | null) => {
     if (viewMode === "group")   setSelectedGroupId(id);
@@ -259,8 +286,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           <button
             onClick={() => handleEntityChange(stepTarget(entityIds, selectedId, -1))}
             disabled={stepTarget(entityIds, selectedId, -1) === null}
-            title={viewMode === "teacher" ? "ครูคนก่อนหน้า"
-              : viewMode === "group" ? "ห้องก่อนหน้า" : "ห้องสอนก่อนหน้า"}
+            title={(viewMode === "teacher" ? "ครูคนก่อนหน้า"
+              : viewMode === "group" ? "ห้องก่อนหน้า" : "ห้องสอนก่อนหน้า")
+              + " — กดปุ่มลูกศรซ้ายบนแป้นพิมพ์ก็ได้"}
             className="px-1.5 py-1 rounded text-sm text-gray-300 hover:bg-gray-700 disabled:text-gray-600 disabled:hover:bg-transparent shrink-0"
           >◀</button>
           <div className="w-[252px]">
@@ -291,8 +319,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           <button
             onClick={() => handleEntityChange(stepTarget(entityIds, selectedId, 1))}
             disabled={stepTarget(entityIds, selectedId, 1) === null}
-            title={viewMode === "teacher" ? "ครูคนต่อไป"
-              : viewMode === "group" ? "ห้องต่อไป" : "ห้องสอนต่อไป"}
+            title={(viewMode === "teacher" ? "ครูคนต่อไป"
+              : viewMode === "group" ? "ห้องต่อไป" : "ห้องสอนต่อไป")
+              + " — กดปุ่มลูกศรขวาบนแป้นพิมพ์ก็ได้"}
             className="px-1.5 py-1 rounded text-sm text-gray-300 hover:bg-gray-700 disabled:text-gray-600 disabled:hover:bg-transparent shrink-0"
           >▶</button>
           {/* ดูถึงคนที่เท่าไรจากทั้งหมดกี่คน — ไม่ต้องเดาว่าเหลืออีกเยอะไหม */}

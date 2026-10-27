@@ -1,8 +1,15 @@
 /**
  * RoomSwapModal — pick a different room for an existing slot.
  * Shows only rooms that are free at the slot's day+period.
+ *
+ * ใช้แป้นพิมพ์ได้ทั้งหมด — "ตรงปุ่มที่เลื่อนห้องสามารถกดปุ่มที่แป้นพิมพ์ได้"
+ *
+ * โรงเรียนนี้มี 130 ห้อง การหาห้องด้วยการเลื่อนลิสต์แล้วเล็งเมาส์คือการทำงาน
+ * ที่ช้าที่สุดของหน้านี้ พิมพ์ชื่อห้องเร็วกว่ามาก (รูปแบบเดียวกับช่องเลือกครู
+ * ที่หน้าแรก): ช่องค้นหาโฟกัสให้ตั้งแต่เปิด · ↑ ↓ เลื่อน · Enter เลือก ·
+ * Esc ปิด · กด P เอาหมุดออกเมื่อชั่วโมงนั้นปักหมุดไว้
  */
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ModalShell } from "../common/ModalShell";
 import clsx from "clsx";
 import { DAYS, periodLabel } from "../../types";
@@ -29,6 +36,10 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
   const yardList        = useTimetableStore((s) => s.yardList);
   const removeYardPicks = useTimetableStore((s) => s.removeYardPicks);
   const [unpinning, setUnpinning] = useState(false);
+  const [q, setQ] = useState("");
+  const [cursor, setCursor] = useState(0);
+  const boxRef  = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   // หมุดลานของชั่วโมงนี้ — แรงกว่าการเลือกห้องที่นี่ ถ้าไม่เอาออกก่อน เลือกห้อง
   // ใหม่แล้วเซิร์ฟเวอร์จะดึงกลับไปที่ลานที่ปักไว้ ("ย้ายห้องแล้วกลับไปที่เดิม")
@@ -39,6 +50,9 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
   const pinName = pin
     ? yardList.find((y) => y.id === pin.room_id)?.name ?? "ลานที่ปักไว้"
     : null;
+
+  // เปิดกล่องแล้วพิมพ์ได้ทันที ไม่ต้องเล็งเมาส์ไปที่ช่องค้นหาก่อน
+  useEffect(() => { boxRef.current?.focus(); }, []);
 
   const availableRooms = useMemo(() => {
     const occupiedRoomIds = new Set(
@@ -60,6 +74,47 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
       return aMatch - bMatch || a.name.localeCompare(b.name);
     });
   }, [rooms, slots, slot]);
+
+  /** ห้องที่ตรงกับที่พิมพ์ — ชื่อห้อง ชื่ออาคาร หรือประเภท */
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return availableRooms;
+    return availableRooms.filter((r) =>
+      r.name.toLowerCase().includes(needle)
+      || (r.building_name ?? "").toLowerCase().includes(needle)
+      || (ROOM_TYPE_TH[r.type] ?? r.type).toLowerCase().includes(needle));
+  }, [availableRooms, q]);
+
+  // พิมพ์ใหม่แล้วตัวชี้กลับไปบนสุด ไม่ค้างอยู่บรรทัดที่หายไปแล้ว
+  useEffect(() => { setCursor(0); }, [q]);
+
+  // เลื่อนด้วยแป้นแล้วบรรทัดที่ชี้อยู่ต้องอยู่ในสายตา
+  useEffect(() => {
+    const el = listRef.current?.querySelector<HTMLElement>(`[data-at="${cursor}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [cursor]);
+
+  const unpin = async () => {
+    setUnpinning(true);
+    await removeYardPicks(slot.group_id, slot.day, [slot.period]);
+    setUnpinning(false);
+    boxRef.current?.focus();
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault(); setCursor((c) => Math.min(c + 1, shown.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault(); setCursor((c) => Math.max(c - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const r = shown[cursor];
+      if (r && r.id !== slot.room_id) onSelect(r.id);
+    } else if ((e.key === "p" || e.key === "P") && pinName && !unpinning) {
+      // หมุดเป็นด่านแรกของกล่องนี้ จึงมีปุ่มลัดของตัวเอง
+      e.preventDefault(); void unpin();
+    }
+  };
 
   return (
     <ModalShell onClose={onClose} maxWidth="max-w-md">
@@ -92,31 +147,53 @@ export const RoomSwapModal: React.FC<RoomSwapModalProps> = ({ slot, rooms, slots
             <button
               type="button"
               disabled={unpinning}
-              onClick={async () => {
-                setUnpinning(true);
-                await removeYardPicks(slot.group_id, slot.day, [slot.period]);
-                setUnpinning(false);
-              }}
+              onClick={() => void unpin()}
+              title="ปุ่มลัด: P"
               className="shrink-0 px-2 py-1 rounded bg-teal-600 text-white text-[11px] font-semibold hover:bg-teal-700 disabled:bg-teal-300"
-            >{unpinning ? "กำลังเอาออก…" : "เอาหมุดออก"}</button>
+            >{unpinning ? "กำลังเอาออก…" : "เอาหมุดออก (P)"}</button>
           </div>
         )}
 
+        {/* ช่องค้นหา — พิมพ์ชื่อห้องเร็วกว่าเลื่อนหา 130 ห้อง */}
+        <div className="px-5 pt-3">
+          <input
+            ref={boxRef}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="พิมพ์ชื่อห้อง / อาคาร / ประเภท — ↑ ↓ เลื่อน · Enter เลือก"
+            className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm
+                       focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+          />
+          <p className="mt-1 text-[10px] text-gray-400">
+            ว่างในคาบนี้ {shown.length} ห้อง{q ? ` จากทั้งหมด ${availableRooms.length} ห้อง` : ""}
+            {" · "}Esc ปิด
+          </p>
+        </div>
+
         {/* Room list */}
-        <div className="px-5 py-4 max-h-80 overflow-y-auto">
+        <div ref={listRef} className="px-5 py-3 max-h-80 overflow-y-auto">
           {availableRooms.length === 0 ? (
             <p className="text-sm text-gray-400 text-center py-6">ไม่มีห้องว่างในคาบนี้</p>
+          ) : shown.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-6">
+              ไม่มีห้องว่างที่ชื่อตรงกับ "{q}"
+            </p>
           ) : (
             <div className="space-y-1.5">
-              {availableRooms.map((r) => (
+              {shown.map((r, i) => (
                 <button
                   key={r.id}
+                  data-at={i}
                   onClick={() => onSelect(r.id)}
+                  onMouseEnter={() => setCursor(i)}
                   disabled={r.id === slot.room_id}
                   className={clsx(
                     "w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg border text-left transition-colors",
                     r.id === slot.room_id
                       ? "bg-blue-50 border-blue-200 cursor-default"
+                      : i === cursor
+                      ? "bg-blue-50 border-blue-400 ring-1 ring-blue-300"
                       : "bg-white border-gray-200 hover:border-blue-400 hover:bg-blue-50",
                   )}
                 >
