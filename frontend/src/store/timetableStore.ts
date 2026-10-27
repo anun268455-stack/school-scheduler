@@ -237,6 +237,13 @@ interface TimetableStore {
   guideClear:     () => void;
   /** ลงมือทำทั้งเส้นทางทีเดียว */
   guideApply:     () => Promise<void>;
+  /**
+   * ลงมือย้ายทั้งเส้นทางที่หน้าต่าง "เอาคาบมาลงห้องนี้" ตกลงไว้
+   *
+   * คืนเหตุผลเป็นข้อความถ้าไม่สำเร็จ (null = สำเร็จ) เพราะหน้าต่างนั้นต้องโชว์
+   * เหตุไว้ในตัวเอง ไม่ใช่ปิดตัวเองแล้วให้ไปหาข้อความที่อื่น
+   */
+  fillApply:      (steps: GuidedStep[]) => Promise<string | null>;
   setPreLockMode:       (on: boolean) => void;
   setManualMode:        (on: boolean) => void;
   setYardPickMode:      (on: boolean) => void;
@@ -496,6 +503,39 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     await get().loadSlots();
     if (refused) set({ solverError: refused });
     else set({ guideSteps: [], guideMovingId: null });
+  },
+
+  fillApply: async (steps) => {
+    if (!steps.length) return null;
+    const { slots, groups } = get();
+    // ด่านคาบล็อกเหมือนโหมดนำทาง — ส่งแบบ force จึงต้องตรวจเองที่ฝั่งนี้
+    const shares = buildSharesStudents(groups);
+    const moving = new Set(steps.map((s) => s.slotId));
+    for (const st of steps) {
+      const s = slots.find((x) => x.id === st.slotId);
+      if (!s) continue;
+      const clash = lockClashAt(s, st.day, st.period, st.roomId,
+                                slots.filter((x) => !moving.has(x.id)), shares);
+      if (clash) return `เส้นทางนี้ใช้ไม่ได้ — ${clash.reason} 🔒 ปลดล็อกคาบนั้นก่อน`;
+    }
+    set((st) => ({ undoStack: [...st.undoStack, {
+      label: "เอาคาบมาลงห้อง",
+      patches: steps.map((g) => {
+        const cur = slots.find((x) => x.id === g.slotId);
+        return { slotId: g.slotId, day: cur?.day, period: cur?.period,
+                 room_id: cur?.room_id ?? null };
+      }),
+    }].slice(-25) }));
+    let refused: string | null = null;
+    try {
+      await withWrite(() => api.moveSlots(steps.map((g) => ({
+        slot_id: g.slotId, day: g.day, period: g.period, room_id: g.roomId,
+      })), true));
+    } catch (err: unknown) {
+      refused = moveRefusal(err);
+    }
+    await get().loadSlots();
+    return refused;
   },
   // โหมดจัดเองไม่ได้แย่งคลิกกับสองโหมดข้างบน — มันเปลี่ยนแค่ว่า "ลากแล้ววางได้
   // ไหมเมื่อชนกัน" จึงเปิดพร้อมกันได้ และไม่ต้องปิดโหมดอื่น

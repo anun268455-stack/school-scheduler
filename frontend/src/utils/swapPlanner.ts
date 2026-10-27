@@ -93,6 +93,30 @@ function roomName(ctx: Ctx, id: number | null): string | null {
  *   4. any free room at all
  * Returns null only if literally no room is free.
  */
+/**
+ * ห้องนี้รับคาบนี้ได้ไหม — ไม่นับว่าใครใช้อยู่ตอนนั้น
+ *
+ * จุดเดียวที่ตอบคำถามนี้ ตัวเลือกห้องอัตโนมัติกับหน้าจอที่ให้คนเลือกเองใช้ตัวนี้
+ * ร่วมกัน ถ้าแยกกันคิด หน้าจอจะเสนอห้องที่ตัววางเส้นทางไม่ยอมใช้
+ */
+export function roomTakes(
+  room: Room,
+  slot: TimetableSlot,
+  subjects?: { id: number; department_id?: number | null }[],
+): boolean {
+  // ห้ามใช้ — a staff room or office. The planner was offering these as
+  // destinations despite the school having said they are not classrooms.
+  if (room.usable === false || (room.capacity ?? 1) <= 0) return false;
+  // A room reserved for other teachers is off-limits.
+  if (!roomFreeFor(room, slot.teacher_id)) return false;
+  // A lab belongs to its own department.
+  const subject = subjects?.find((x) => x.id === slot.subject_id);
+  if (room.specialized_dept_id
+      && subject?.department_id
+      && room.specialized_dept_id !== subject.department_id) return false;
+  return true;
+}
+
 export function pickRoom(
   ctx: Ctx,
   slot: TimetableSlot,
@@ -106,21 +130,9 @@ export function pickRoom(
       .map((s) => s.room_id as number),
   );
   const teacher = ctx.teachers.find((t) => t.id === slot.teacher_id);
-  const subject = ctx.subjects?.find((x) => x.id === slot.subject_id);
 
-  const allowed = (r: Room): boolean => {
-    if (busy.has(r.id)) return false;
-    // ห้ามใช้ — a staff room or office. The planner was offering these as
-    // destinations despite the school having said they are not classrooms.
-    if (r.usable === false || (r.capacity ?? 1) <= 0) return false;
-    // A room reserved for other teachers is off-limits.
-    if (!roomFreeFor(r, slot.teacher_id)) return false;
-    // A lab belongs to its own department.
-    if (r.specialized_dept_id
-        && subject?.department_id
-        && r.specialized_dept_id !== subject.department_id) return false;
-    return true;
-  };
+  const allowed = (r: Room): boolean =>
+    !busy.has(r.id) && roomTakes(r, slot, ctx.subjects);
 
   // 1. home room
   if (teacher?.fixed_room_id != null) {

@@ -15,6 +15,7 @@ import clsx from "clsx";
 import { SlotCell } from "./SlotCell";
 import { SwapRouteModal } from "./SwapRouteModal";
 import { RoomSwapModal } from "./RoomSwapModal";
+import { FillRoomModal } from "./FillRoomModal";
 import { ElectiveOptionModal } from "./ElectiveOptionModal";
 import { AddLessonModal } from "./AddLessonModal";
 import { YardPickModal, type YardCol } from "./YardPickModal";
@@ -82,12 +83,20 @@ interface DroppableCellProps {
   guideMode?: boolean;
   onGuidePick?:   (slot: TimetableSlot) => void;
   onGuideChoose?: (day: number, period: number) => void;
+  /**
+   * ตารางห้องสอน: กดช่องว่างเพื่อ "เอาคาบมาลงห้องนี้"
+   *
+   * ในตารางห้องสอน ช่องว่างแทบไม่เคยหมายถึง "อยากสร้างคาบใหม่" — หลักสูตรลง
+   * ครบแล้วทุกวิชา ที่อยากทำคือดึงคาบที่มีอยู่เข้ามาใช้ห้องนี้ จึงให้การกดช่อง
+   * เปิดหน้าต่างนั้น แล้วเก็บ ＋ (เพิ่มคาบใหม่) ไว้เป็นปุ่มเล็กที่มุม
+   */
+  onFillRoom?: (day: number, period: number) => void;
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
   periodDef, day, period, slots, impact, onLock, onDelete, onSwapRoom, onOpenElective, onRescue,
   preLockMode, onPreLockClick, isDragging, onAddLesson, yardMode, yardLabel, onYardClick,
-  onYardRemove, guideKind, guideNote, guideMode, onGuidePick, onGuideChoose,
+  onYardRemove, guideKind, guideNote, guideMode, onGuidePick, onGuideChoose, onFillRoom,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: `cell-${day}-${period}`,
@@ -169,6 +178,31 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
           ? <YardReserved label={yardLabel} />
           : <span className="text-base text-teal-500 opacity-0 group-hover/yard:opacity-100 transition-opacity">📌</span>}
       </button>
+    );
+  } else if (onFillRoom && !isDragging && !preLockMode) {
+    /* ตารางห้องสอน ช่องว่าง — กดเพื่อดึงคาบที่มีอยู่เข้ามาใช้ห้องนี้
+       ＋ เพิ่มคาบใหม่ยังอยู่ แต่ถอยไปเป็นปุ่มเล็กที่มุม */
+    body = (
+      <div className="group/fill w-full h-full relative">
+        <button
+          onClick={() => onFillRoom(day, period)}
+          className="w-full h-full flex items-center justify-center text-gray-300 hover:text-indigo-600 hover:bg-indigo-50/60 transition-colors"
+          title="ห้องนี้ว่างชั่วโมงนี้ — กดเพื่อเลือกคาบมาลง"
+        >
+          {yardLabel
+            ? <YardReserved label={yardLabel} />
+            : <span className="text-sm opacity-0 group-hover/fill:opacity-100 transition-opacity">🎯</span>}
+        </button>
+        {onAddLesson && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onAddLesson(day, period); }}
+            title="เพิ่มคาบเรียนใหม่ (สร้างคาบที่ยังไม่มีในตาราง)"
+            className="absolute top-0 right-0 w-4 h-4 flex items-center justify-center text-[9px] text-gray-400 opacity-0 group-hover/fill:opacity-100 hover:text-emerald-600 hover:bg-emerald-50 rounded-bl transition-opacity"
+          >
+            ＋
+          </button>
+        )}
+      </div>
     );
   } else if (onAddLesson && !isDragging && !preLockMode) {
     /* Empty cell — click to add a lesson here */
@@ -334,6 +368,8 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   >(null);
   const [roomSwapSlot, setRoomSwapSlot] = useState<TimetableSlot | null>(null);
   const [addCell, setAddCell] = useState<{ day: number; period: number } | null>(null);
+  /** ช่องว่างของตารางห้องสอนที่กดไว้ — "เอาคาบมาลงห้องนี้" */
+  const [fillCell, setFillCell] = useState<{ day: number; period: number } | null>(null);
   const [electiveSlotId, setElectiveSlotId] = useState<number | null>(null);
   const [showProblems, setShowProblems] = useState(false);
   // The red lesson whose ลาน is being looked for. A slot, not a cell: the class
@@ -539,6 +575,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   // a teacher's free Tuesday is filled from the teacher's own sheet, which is
   // where anyone noticing the gap is actually standing.
   const handleAddLesson = useCallback((d: number, p: number) => setAddCell({ day: d, period: p }), []);
+  const handleFillRoom = useCallback((d: number, p: number) => setFillCell({ day: d, period: p }), []);
 
   // ── ลานที่เลือกไว้ล่วงหน้า ────────────────────────────────────────────────
   // A mark belongs to one class's hour, so the mode only means something on a
@@ -737,6 +774,17 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         day={addCell.day}
         period={addCell.period}
         onClose={() => setAddCell(null)}
+      />
+    )}
+
+    {/* เอาคาบมาลงห้องนี้ (กดช่องว่างในตารางห้องสอน) */}
+    {fillCell && selectedRoomId != null && (
+      <FillRoomModal
+        roomId={selectedRoomId}
+        day={fillCell.day}
+        period={fillCell.period}
+        periodName={periodLabel(fillCell.period)}
+        onClose={() => setFillCell(null)}
       />
     )}
 
@@ -1098,6 +1146,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                             onPreLockClick={handlePreLockClick}
                             isDragging={isDragActive}
                             onAddLesson={handleAddLesson}
+                            onFillRoom={selectedRoomId != null ? handleFillRoom : undefined}
                             yardMode={yardMode}
                             yardLabel={yardIds.length ? yardIds.map(yardNameOf).join(" · ") : null}
                             onYardClick={handleYardClick}
