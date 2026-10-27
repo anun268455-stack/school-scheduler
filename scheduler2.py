@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import random
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -94,6 +94,11 @@ class World:
     teacher_off:  dict[int, set[int]]                # ครู -> วันที่ไม่มาสอน
     subject_off:  dict[int, set[int]]                # วิชา -> วันที่ห้ามเรียน
     fixed:        dict[int, tuple[int, int]]         # uid -> ช่องที่ตรึงไว้
+    gindex:       dict[int, dict[int, int]] = field(default_factory=dict)
+    """ชั้น -> {คาบ: ลำดับที่} — ใช้วัดว่าวันนั้นของห้องนี้มีรูตรงไหน"""
+    glevel:       dict[int, str] = field(default_factory=dict)
+    tindex:       dict[tuple[str, int], int] = field(default_factory=dict)
+    """(ระดับ, คาบ) -> ลำดับตามเวลานาฬิกา — ใช้นับคาบติดกันของครู"""
 
 
 # ── สร้างหน่วยจากแผนการสอน ─────────────────────────────────────────────────
@@ -135,6 +140,20 @@ def build_world(
                        and (p.get("applies_to") or "all") in ("all", level)})
         period_index[level] = {n: i for i, n in enumerate(nums)}
         cells_for[level] = [(d, n) for d in range(DAYS) for n in nums]
+
+    # ลำดับตามเวลานาฬิกาจริง — ใช้นับคาบติดกันของครู ซึ่งสอนข้ามระดับได้
+    # ม.ต้นคาบ 7 กับ ม.ปลายคาบ 7 เป็นเลขเดียวกันแต่คนละเวลา จะนับว่าติดกันไม่ได้
+    # ถ้าดูแต่ตัวเลข
+    clock: dict[tuple[str, int], str] = {}
+    for p_ in periods:
+        if p_.get("type") != "class":
+            continue
+        ap = p_.get("applies_to") or "all"
+        for lv in ("lower", "upper"):
+            if ap in ("all", lv):
+                clock[(lv, p_["period_num"])] = p_.get("start_time") or ""
+    tindex = {k: i for i, k in
+              enumerate(sorted(clock, key=lambda k: (clock[k], k[1])))}
 
     teacher_off: dict[int, set[int]] = {}
     for t in teachers:
@@ -277,8 +296,12 @@ def build_world(
         u.pindex = {n: i for i, n in enumerate(nums)}
         u.cells = tuple((d, n) for d in range(DAYS) for n in nums)
 
+    gindex = {gid: period_index[_level_of(gr)] for gid, gr in g_map.items()}
+
     return World(units=units, cells_for=cells_for, period_index=period_index,
-                 teacher_off=teacher_off, subject_off=subject_off, fixed=fixed)
+                 teacher_off=teacher_off, subject_off=subject_off, fixed=fixed,
+                 gindex=gindex, tindex=tindex,
+                 glevel={gid: _level_of(gr) for gid, gr in g_map.items()})
 
 
 # ── ตารางระหว่างค้นหา ──────────────────────────────────────────────────────
@@ -551,6 +574,166 @@ def _augment(u: int, adj: dict[int, list[int]], taken: dict[int, int],
     return False
 
 
+# ── จัดให้สวย ──────────────────────────────────────────────────────────────
+#
+# ตัวเดินหาข้างบนตอบแค่ว่า "ลงได้ไหม" ไม่ได้สนว่าสวยหรือเปล่า ผลที่ได้จึงไม่ชน
+# เลยแต่วันหนึ่งของเด็กอาจเป็น เรียน-ว่าง-ว่าง-เรียน ซึ่งใช้ไม่ได้จริง
+# (วัดครั้งแรกได้ 401 รู เทียบกับตารางที่ครูจัดมือไว้ 83 รู)
+#
+# รอบนี้จึงไม่รื้ออะไร แค่ "ขยับ" คาบที่ลงแล้วไปช่องอื่นที่ยังลงได้เหมือนกัน
+# แล้วเลือกช่องที่ทำให้วันนั้นของห้องต่อเนื่องกว่าเดิม ขยับทีละคาบ วนไปจนไม่มี
+# อะไรดีขึ้นแล้วหรือหมดเวลา — ทุกการขยับผ่าน Board.fits เสมอ จึงไม่มีทางทำให้
+# ชนเพิ่มแม้แต่คาบเดียว และเลิกกลางทางได้ตลอดเพราะทุกขั้นเป็นตารางที่ใช้ได้จริง
+
+
+# น้ำหนักของ "ความสวย" — รูของเด็กแพงที่สุด เพราะเด็กต้องอยู่โรงเรียนอยู่แล้ว
+# ส่วนของครูเป็นภาระที่เกลี่ยได้ จึงถ่วงให้เบากว่าแต่ไม่ใช่ศูนย์ ถ้าไม่นับเลย
+# ตารางจะแน่นสวยสำหรับเด็กแต่ครูสอนติดกันยาวขึ้นทันที (วัดได้ 120 ครั้ง
+# เทียบกับตารางมือ 65 ครั้ง)
+GAP_W    = 10   # รูหนึ่งรูในวันของห้องหนึ่ง
+LOAD_W   = 4    # คาบที่เกินเพดานต่อวันของครูหนึ่งคน
+RUN_W    = 2    # คาบที่ทำให้ครูสอนติดกันเกินเพดาน
+TEACH_CAP = 6   # คาบต่อวันที่ถือว่าพอดีสำหรับครูหนึ่งคน
+RUN_CAP   = 3   # คาบติดกันที่ถือว่ายังพอรับได้
+
+
+def _gap_count(idxs: set[int]) -> int:
+    """ช่องว่างที่คาบคั่นกลางวันของห้องหนึ่ง — หัวท้ายว่างไม่นับเป็นรู"""
+    if len(idxs) < 2:
+        return 0
+    return (max(idxs) - min(idxs) + 1) - len(idxs)
+
+
+def _teacher_day_cost(load: Counter) -> int:
+    """ภาระวันหนึ่งของครูคนหนึ่ง — สอนเยอะเกินไป และสอนติดกันยาวเกินไป"""
+    total = sum(load.values())
+    cost = max(0, total - TEACH_CAP) * LOAD_W
+    run = 0
+    prev = None
+    for r in sorted(load):
+        run = run + 1 if prev is not None and r == prev + 1 else 1
+        prev = r
+        if run > RUN_CAP:
+            cost += RUN_W
+    return cost
+
+
+class Polisher:
+    """ขยับคาบที่ลงแล้วให้วันของแต่ละห้องต่อเนื่องขึ้น โดยไม่ทำให้ชนเพิ่ม"""
+
+    def __init__(self, world: World, placed: dict[int, tuple[int, int]],
+                 seed: int = 0) -> None:
+        self.world = world
+        self.by_uid = {u.uid: u for u in world.units}
+        self.rng = random.Random(seed)
+        self.board = Board()
+        self.occ:  dict[tuple[int, int], set[int]] = defaultdict(set)
+        self.tocc: dict[tuple[int, int], Counter] = defaultdict(Counter)
+        for uid, (day, period) in placed.items():
+            u = self.by_uid[uid]
+            self.board.put(u, day, period, world)
+            self._mark(u, day, period, +1)
+
+    # -- จดว่าใครเรียน/สอนลำดับที่เท่าไรของวัน --------------------------
+    def _ranks(self, u: Unit, period: int) -> list[int]:
+        """ลำดับตามเวลานาฬิกาที่หน่วยนี้กินไป — นับครั้งเดียวต่อเวลา"""
+        w = self.world
+        out: set[int] = set()
+        for n in Board._nums(u, period, w):
+            for gid in u.group_ids:
+                r = w.tindex.get((w.glevel.get(gid, u.level), n))
+                if r is not None:
+                    out.add(r)
+        return sorted(out)
+
+    def _mark(self, u: Unit, day: int, period: int, sign: int) -> None:
+        for n in Board._nums(u, period, self.world):
+            for gid in u.group_ids:
+                i = self.world.gindex.get(gid, {}).get(n)
+                if i is None:
+                    continue
+                if sign > 0:
+                    self.occ[(gid, day)].add(i)
+                else:
+                    self.occ[(gid, day)].discard(i)
+        ranks = self._ranks(u, period)
+        for tid in u.teacher_ids:
+            load = self.tocc[(tid, day)]
+            for r in ranks:
+                if sign > 0:
+                    load[r] += 1
+                elif load[r] <= 1:
+                    del load[r]
+                else:
+                    load[r] -= 1
+
+    def cost(self) -> int:
+        return (GAP_W * sum(_gap_count(v) for v in self.occ.values())
+                + sum(_teacher_day_cost(v) for v in self.tocc.values()))
+
+    def gaps(self) -> int:
+        """จำนวนรูเปล่า ๆ — ตัวเลขที่ครูดูรู้เรื่อง ไม่ใช่คะแนนรวม"""
+        return sum(_gap_count(v) for v in self.occ.values())
+
+    def _delta(self, u: Unit, day: int, period: int) -> int:
+        """ค่าความไม่สวยที่จะเพิ่มถ้าเอา u (ที่ยกออกแล้ว) ไปวางที่ช่องนี้"""
+        nums = Board._nums(u, period, self.world)
+        out = 0
+        for gid in u.group_ids:
+            gi = self.world.gindex.get(gid)
+            if gi is None:
+                continue
+            add = {gi[n] for n in nums if n in gi}
+            if not add:
+                continue
+            here = self.occ[(gid, day)]
+            out += GAP_W * (_gap_count(here | add) - _gap_count(here))
+        ranks = self._ranks(u, period)
+        if ranks:
+            for tid in u.teacher_ids:
+                load = self.tocc[(tid, day)]
+                after = load.copy()
+                for r in ranks:
+                    after[r] += 1
+                out += _teacher_day_cost(after) - _teacher_day_cost(load)
+        return out
+
+    # -- วน --------------------------------------------------------------
+    def run(self, deadline: float) -> tuple[dict[int, tuple[int, int]], int, int]:
+        world = self.world
+        uids = [u.uid for u in world.units
+                if u.uid in self.board.placed and u.uid not in world.fixed]
+        moves = 0
+        passes = 0
+        while time.time() < deadline:
+            passes += 1
+            gained = 0
+            self.rng.shuffle(uids)
+            for uid in uids:
+                if time.time() >= deadline:
+                    break
+                u = self.by_uid[uid]
+                cur = self.board.placed[uid]
+                self.board.take(u, world)
+                self._mark(u, cur[0], cur[1], -1)
+                keep = self._delta(u, cur[0], cur[1])
+                best, best_d = cur, keep
+                for cell in u.cells:
+                    if cell == cur or not self.board.fits(u, cell[0], cell[1], world):
+                        continue
+                    d = self._delta(u, cell[0], cell[1])
+                    if d < best_d:
+                        best, best_d = cell, d
+                self.board.put(u, best[0], best[1], world)
+                self._mark(u, best[0], best[1], +1)
+                if best != cur:
+                    moves += 1
+                    gained += keep - best_d
+            if gained == 0:
+                break
+        return dict(self.board.placed), moves, passes
+
+
 def assign_rooms(
     cell_units: list[tuple[int, list[int]]],
     eligible: dict[int, list[int]],
@@ -627,6 +810,7 @@ def solve(
     elective_pools: list[dict[str, Any]] | None = None,
     activities: list[dict[str, Any]] | None = None,
     budget_s: float = 60.0,
+    polish_s: float = 30.0,
     seed: int = 1,
 ) -> dict[str, Any]:
     """จัดตารางทั้งโรงเรียน แล้วคืน "ข้อเสนอ" ออกไป
@@ -643,6 +827,16 @@ def solve(
                         elective_pools, activities)
     search = Search(world, seed=seed)
     found = search.run(time.time() + budget_s)
+
+    # ได้ตารางที่ลงได้แล้ว ค่อยขยับให้สวย — ไม่รื้อ ไม่ทำให้ชนเพิ่ม
+    polish_moves = polish_passes = 0
+    if polish_s > 0 and found.placed:
+        pol = Polisher(world, found.placed, seed=seed)
+        before_gaps = pol.gaps()
+        found.placed, polish_moves, polish_passes = pol.run(time.time() + polish_s)
+        after_gaps = pol.gaps()
+    else:
+        before_gaps = after_gaps = -1
 
     by_uid = {u.uid: u for u in world.units}
     # ห้องที่แต่ละหน่วยใช้ได้ คิดครั้งเดียว ไม่ใช่ทุกชั่วโมง
@@ -686,6 +880,8 @@ def solve(
                     "group_id": gid, "subject_id": u.subject_id,
                     "teacher_id": u.teacher_ids[0] if u.teacher_ids else 0,
                     "co_teacher_id": u.teacher_ids[1] if len(u.teacher_ids) > 1 else None,
+                    # หน้าต่างกิจกรรมกับวิชาเสรีมีครูทั้งคณะ ไม่ใช่สองคน
+                    "teacher_ids": list(u.teacher_ids),
                     "day": day, "period": n,
                     "room_id": room_of.get(uid),
                     "unit": uid, "length": u.length,
@@ -703,6 +899,10 @@ def solve(
         "unplaced_labels": missing[:40],
         "no_room": no_room,
         "restarts": found.restarts,
+        "gaps_before": before_gaps,
+        "gaps_after": after_gaps,
+        "polish_moves": polish_moves,
+        "polish_passes": polish_passes,
         "seconds": round(time.time() - t0, 1),
         "note": found.note,
     }
