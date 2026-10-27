@@ -10,6 +10,7 @@ import { SolverWidget } from "../solver/SolverWidget";
 import { RepairClassesModal } from "../solver/RepairClassesModal";
 import { BalanceTeachersModal } from "../solver/BalanceTeachersModal";
 import { TeacherPlanModal } from "../teachers/TeacherPlanModal";
+import { RoomAuditModal } from "../rooms/RoomAuditModal";
 import { ConsistencyModal } from "../solver/ConsistencyModal";
 import { PeriodCheckModal } from "../solver/PeriodCheckModal";
 import { CapacityModal } from "../solver/CapacityModal";
@@ -129,6 +130,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
 
   const [showSolver,  setShowSolver]  = useState(false);
   const [showRepair,  setShowRepair]  = useState(false);
+  const [showRoomAudit, setShowRoomAudit] = useState(false);
   const [showBalance, setShowBalance] = useState(false);
   const [showPlan,    setShowPlan]    = useState(false);
   const [showCrud,    setShowCrud]    = useState(false);
@@ -578,6 +580,17 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
         {/* เกลี่ยคาบครู — ไม่ใช่การจัดใหม่ จึงอยู่คนละปุ่มกับสามอันข้างบน
             สลับคาบของห้องเดียวกันข้ามวัน ตารางนักเรียนมีคาบเท่าเดิมในช่องเดิม
             วัดบนตารางจริง: ช่วงที่สอนติดกันเกิน 3 คาบ 60 -> 26 ช่วง */}
+        {/* วิเคราะห์ห้อง — "ถ้าคาบว่างตรงกับห้องก็แจ้งเตือนมา"
+            กวาดทั้งตารางหาคาบที่เรียนลานหรือไม่มีห้อง ทั้งที่มีห้องว่างใน
+            ชั่วโมงนั้นพอดี แล้วย้ายให้ได้เลย — เปลี่ยนแค่ห้อง ไม่ขยับเวลา */}
+        <button
+          onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false);
+                           setShowRoomAudit(true); }}
+          title="ตรวจทั้งตารางว่ามีคาบไหนเรียนลานหรือไม่มีห้อง ทั้งที่ห้องว่างอยู่ในชั่วโมงนั้น"
+          className="flex items-center justify-center gap-1 px-2 py-0.5 rounded border border-teal-500/70 bg-teal-900/30 text-[11px] font-semibold text-teal-200 hover:bg-teal-800/50 transition-colors"
+        >
+          🏫 วิเคราะห์ห้อง
+        </button>
         <button
           onClick={() => { setShowSolver(false); setShowCrud(false); setShowTools(false);
                            setShowBalance(true); }}
@@ -633,6 +646,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       {showCurric && <CurriculumAuditModal onClose={() => setShowCurric(false)} />}
       {showRepair && <RepairClassesModal onClose={() => setShowRepair(false)} />}
       {showBalance && <BalanceTeachersModal onClose={() => setShowBalance(false)} />}
+      {showRoomAudit && <RoomAuditModal onClose={() => setShowRoomAudit(false)} />}
       {showPlan && selectedTeacherId != null && (
         <TeacherPlanModal teacherId={selectedTeacherId} onClose={() => setShowPlan(false)} />
       )}

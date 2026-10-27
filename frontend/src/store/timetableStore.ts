@@ -244,6 +244,13 @@ interface TimetableStore {
    * เหตุไว้ในตัวเอง ไม่ใช่ปิดตัวเองแล้วให้ไปหาข้อความที่อื่น
    */
   fillApply:      (steps: GuidedStep[]) => Promise<string | null>;
+  /**
+   * เปลี่ยนห้องให้หลายคาบในครั้งเดียว ไม่ขยับวันหรือคาบ
+   *
+   * ใช้โดยปุ่มวิเคราะห์ห้อง คืนเหตุผลเป็นข้อความถ้าไม่สำเร็จ (null = สำเร็จ)
+   */
+  setManyRooms:   (picks: { slotId: number; roomId: number }[],
+                   label: string) => Promise<string | null>;
   setPreLockMode:       (on: boolean) => void;
   setManualMode:        (on: boolean) => void;
   setYardPickMode:      (on: boolean) => void;
@@ -503,6 +510,29 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     await get().loadSlots();
     if (refused) set({ solverError: refused });
     else set({ guideSteps: [], guideMovingId: null });
+  },
+
+  setManyRooms: async (picks, label) => {
+    if (!picks.length) return null;
+    const { slots } = get();
+    set((st) => ({ undoStack: [...st.undoStack, {
+      label,
+      patches: picks.map((p) => ({
+        slotId: p.slotId,
+        room_id: slots.find((x) => x.id === p.slotId)?.room_id ?? null,
+      })),
+    }].slice(-25) }));
+    let refused: string | null = null;
+    try {
+      // เปลี่ยนแค่ห้อง ไม่ส่ง day/period — เซิร์ฟเวอร์พาอีกครึ่งของคาบคู่ไป
+      // ห้องเดียวกันให้เอง จึงส่งแค่แถวแรกของแต่ละคาบคู่
+      await withWrite(() => api.moveSlots(
+        picks.map((p) => ({ slot_id: p.slotId, room_id: p.roomId })), true));
+    } catch (err: unknown) {
+      refused = moveRefusal(err);
+    }
+    await get().loadSlots();
+    return refused;
   },
 
   fillApply: async (steps) => {
