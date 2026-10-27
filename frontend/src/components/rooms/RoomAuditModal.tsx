@@ -15,13 +15,14 @@ import clsx from "clsx";
 import { ModalShell } from "../common/ModalShell";
 import { DAYS } from "../../types";
 import { useTimetableStore } from "../../store/timetableStore";
-import { auditRooms, allocateRooms, type AuditRow } from "../../utils/roomAudit";
+import { auditRooms, allocateRooms, type AuditRow, type DupKind } from "../../utils/roomAudit";
 
 export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const slots     = useTimetableStore((s) => s.slots);
   const rooms     = useTimetableStore((s) => s.rooms);
   const groups    = useTimetableStore((s) => s.groups);
   const subjects  = useTimetableStore((s) => s.subjects);
+  const periods   = useTimetableStore((s) => s.periods);
   const yardPicks = useTimetableStore((s) => s.yardPicks);
   const loadYardPicks = useTimetableStore((s) => s.loadYardPicks);
   const swapRoom  = useTimetableStore((s) => s.swapRoom);
@@ -36,16 +37,20 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
-  const [kind, setKind] = useState<"all" | "เรียนลาน" | "ไม่มีห้อง">("all");
+  const [kind, setKind] = useState<"all" | "เรียนลาน" | "ไม่มีห้อง" | "ซ้ำในวัน">("all");
 
   const audit = useMemo(
-    () => auditRooms({ slots, rooms, groups, subjects }, yardPicks),
-    [slots, rooms, groups, subjects, yardPicks],
+    () => auditRooms({ slots, rooms, groups, subjects, periods }, yardPicks),
+    [slots, rooms, groups, subjects, periods, yardPicks],
   );
   const shown = useMemo(
-    () => (kind === "all" ? audit.rows : audit.rows.filter((r) => r.kind === kind)),
+    () => (kind === "all" || kind === "ซ้ำในวัน"
+      ? audit.rows : audit.rows.filter((r) => r.kind === kind)),
     [audit, kind],
   );
+  // เรื่องซ้ำในวันเดียวเป็นคนละเรื่องกับห้อง จึงดูทั้งโรงเรียน ไม่ใช่เฉพาะแถว
+  // ที่มีปัญหาเรื่องห้อง — ในตารางจริงมีแค่ 13 จาก 115 แถวที่บังเอิญซ้ำด้วย
+  const needFix = useMemo(() => audit.dups.filter((d) => d.kind !== "คาบคู่"), [audit]);
   const plan = useMemo(() => allocateRooms(audit), [audit]);
   const movable = audit.rows.length - audit.stuck.length;
 
@@ -97,25 +102,38 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
                 label={`เรียนลาน ${audit.rows.filter((r) => r.kind === "เรียนลาน").length}`} tone="amber" />
               <Chip on={kind === "ไม่มีห้อง"} onClick={() => setKind("ไม่มีห้อง")}
                 label={`ไม่มีห้อง ${audit.rows.filter((r) => r.kind === "ไม่มีห้อง").length}`} tone="rose" />
+              <Chip on={kind === "ซ้ำในวัน"} onClick={() => setKind("ซ้ำในวัน")}
+                label={`ซ้ำในวันเดียว ${needFix.length}`} tone="violet" />
               {audit.stuck.length > 0 && (
                 <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
                   หาห้องให้ไม่ได้ {audit.stuck.length}
                 </span>
               )}
-              <button onClick={() => void moveAll()} disabled={busy || !plan.length}
-                title="ย้ายทุกคาบที่หาห้องว่างให้ได้ เข้าห้องในครั้งเดียว — เปลี่ยนแค่ห้อง ไม่ขยับเวลา"
-                className="ml-auto px-2.5 py-1 rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-emerald-300">
-                {busy ? "กำลังย้าย…" : `✓ ย้ายให้ทั้งหมด (${plan.length})`}
-              </button>
+              {/* ปุ่มย้ายห้องหมู่ไม่ได้แก้เรื่องซ้ำในวัน จึงซ่อนตอนดูรายการนั้น
+                  ไม่งั้นจะอ่านเหมือนว่ากดแล้วรายการข้างล่างจะหาย */}
+              {kind !== "ซ้ำในวัน" && (
+                <button onClick={() => void moveAll()} disabled={busy || !plan.length}
+                  title="ย้ายทุกคาบที่หาห้องว่างให้ได้ เข้าห้องในครั้งเดียว — เปลี่ยนแค่ห้อง ไม่ขยับเวลา"
+                  className="ml-auto px-2.5 py-1 rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-emerald-300">
+                  {busy ? "กำลังย้าย…" : `✓ ย้ายให้ทั้งหมด (${plan.length})`}
+                </button>
+              )}
             </div>
 
             {/* สิ่งที่ตั้งใจไว้แล้ว ไม่ได้นับเป็นปัญหา */}
-            <div className="text-[10px] text-gray-400 leading-relaxed">
-              ไม่นับเป็นปัญหา: วิชาพละที่อยู่ลาน {audit.peOnYard} คาบ ·
-              คาบที่ปักหมุด 📌 ให้เรียนลานไว้เอง {audit.pinnedOnYard} คาบ ·
-              กิจกรรมที่ไม่ต้องมีห้อง (ลูกเสือ ชุมนุม ฯลฯ) {audit.activityNoRoom} คาบ
-            </div>
-            {plan.length < movable && (
+            {kind === "ซ้ำในวัน" ? (
+              <div className="text-[10px] text-gray-400 leading-relaxed">
+                ไม่นับเป็นปัญหา: คาบคู่ที่ผูกกันไว้แล้ว {audit.dups.length - needFix.length} ชุด
+                — ติดกันอยู่แล้วตามตั้งใจ · เรื่องนี้แก้ด้วยการย้ายเวลา ไม่ใช่ย้ายห้อง
+              </div>
+            ) : (
+              <div className="text-[10px] text-gray-400 leading-relaxed">
+                ไม่นับเป็นปัญหา: วิชาพละที่อยู่ลาน {audit.peOnYard} คาบ ·
+                คาบที่ปักหมุด 📌 ให้เรียนลานไว้เอง {audit.pinnedOnYard} คาบ ·
+                กิจกรรมที่ไม่ต้องมีห้อง (ลูกเสือ ชุมนุม ฯลฯ) {audit.activityNoRoom} คาบ
+              </div>
+            )}
+            {kind !== "ซ้ำในวัน" && plan.length < movable && (
               <div className="text-[10px] text-amber-700">
                 ย้ายทีเดียวได้ {plan.length} จาก {movable} คาบ — ที่เหลืออยู่วันและชั่วโมง
                 เดียวกัน แย่งห้องว่างชุดเดียวกัน ต้องย้ายเวลาถึงจะลงห้องได้
@@ -130,7 +148,48 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
           {/* รายการ */}
           <div className="flex-1 min-h-0 overflow-y-auto">
-            {shown.length === 0 ? (
+            {kind === "ซ้ำในวัน" ? (
+              needFix.length === 0 ? (
+                <div className="px-4 py-10 text-center space-y-2">
+                  <div className="text-2xl">✅</div>
+                  <div className="text-xs text-gray-600">
+                    ไม่มีวิชาไหนลงซ้ำในวันเดียว — คาบคู่ {audit.dups.length - needFix.length} ชุด
+                    ผูกกันไว้เรียบร้อย
+                  </div>
+                </div>
+              ) : (
+                <table className="w-full text-[11px]">
+                  <thead className="sticky top-0 bg-gray-50 border-b border-gray-200">
+                    <tr className="text-gray-500 text-[10px]">
+                      <th className="px-3 py-1.5 text-left font-semibold">ชั้น / วิชา</th>
+                      <th className="px-2 py-1.5 text-left font-semibold">วัน</th>
+                      <th className="px-2 py-1.5 text-left font-semibold">คาบที่ลงไว้</th>
+                      <th className="px-2 py-1.5 text-left font-semibold">เป็นอะไร</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {needFix.map((d) => (
+                      <tr key={`${d.groupId}-${d.day}-${d.subjectCode}`}
+                          className="border-b border-gray-100 hover:bg-violet-50/40">
+                        <td className="px-3 py-1.5">
+                          <b className="text-gray-800">{d.groupName}</b>{" "}
+                          <span className="text-gray-700">{d.subjectCode}</span>
+                          <div className="text-[10px] text-gray-500 truncate">{d.teacherName}</div>
+                        </td>
+                        <td className="px-2 py-1.5 text-gray-600 whitespace-nowrap">{DAYS[d.day]}</td>
+                        <td className="px-2 py-1.5 text-gray-700 whitespace-nowrap tabular-nums">
+                          คาบ {d.periods.join(" · ")}
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <DupTag kind={d.kind} />
+                          <div className="text-[10px] text-gray-500 leading-snug">{d.note}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            ) : shown.length === 0 ? (
               <div className="px-4 py-10 text-center space-y-2">
                 <div className="text-2xl">✅</div>
                 <div className="text-xs text-gray-600">
@@ -144,6 +203,8 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
                     <th className="px-3 py-1.5 text-left font-semibold">ชั้น / วิชา</th>
                     <th className="px-2 py-1.5 text-left font-semibold">เวลา</th>
                     <th className="px-2 py-1.5 text-left font-semibold">ตอนนี้อยู่</th>
+                    {/* "มีคาบที่ซ้ำกันใน 1 วันไหม รวมถึงคาบคู่ด้วย" */}
+                    <th className="px-2 py-1.5 text-left font-semibold">ซ้ำในวัน</th>
                     <th className="px-2 py-1.5 text-left font-semibold">ย้ายเข้า</th>
                     <th className="px-2 py-1.5" />
                   </tr>
@@ -170,6 +231,9 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
                                                 : "bg-rose-100 text-rose-800")}>
                           {r.nowName}
                         </span>
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <DupTag kind={audit.dupOf.get(r.slotIds[0]) ?? null} />
                       </td>
                       <td className="px-2 py-1.5 text-gray-700">
                         {r.free.length ? (
@@ -219,15 +283,39 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
   );
 };
 
+/**
+ * ป้ายบอกว่าวิชานี้ซ้ำในวันนั้นแบบไหน
+ *
+ * คาบคู่ไม่ใช่ปัญหา จึงเป็นสีจาง ๆ ส่วนสองอย่างที่ต้องไปทำอะไรต่อถึงจะเด่น
+ */
+const DupTag: React.FC<{ kind: DupKind | null }> = ({ kind }) => {
+  if (!kind) return <span className="text-[10px] text-gray-300">—</span>;
+  const look = kind === "คาบคู่"
+    ? "bg-violet-50 text-violet-600 border-violet-200"
+    : kind === "ติดกันแต่ไม่ผูกคู่"
+    ? "bg-amber-100 text-amber-800 border-amber-300"
+    : "bg-rose-100 text-rose-800 border-rose-300";
+  return (
+    <span className={clsx("inline-block px-1.5 py-0.5 rounded border text-[10px] whitespace-nowrap", look)}>
+      {kind}
+    </span>
+  );
+};
+
+const CHIP_ON: Record<string, string> = {
+  sky:    "bg-sky-600 border-sky-600 text-white",
+  amber:  "bg-amber-600 border-amber-600 text-white",
+  rose:   "bg-rose-600 border-rose-600 text-white",
+  violet: "bg-violet-600 border-violet-600 text-white",
+};
+
 const Chip: React.FC<{
-  on: boolean; onClick: () => void; label: string; tone: "sky" | "amber" | "rose";
+  on: boolean; onClick: () => void; label: string;
+  tone: "sky" | "amber" | "rose" | "violet";
 }> = ({ on, onClick, label, tone }) => (
   <button onClick={onClick}
     className={clsx("px-2 py-0.5 rounded border font-medium transition-colors",
-      on ? (tone === "sky"   ? "bg-sky-600 border-sky-600 text-white"
-          : tone === "amber" ? "bg-amber-600 border-amber-600 text-white"
-          :                    "bg-rose-600 border-rose-600 text-white")
-         : "bg-white border-gray-300 text-gray-600 hover:bg-gray-100")}>
+      on ? CHIP_ON[tone] : "bg-white border-gray-300 text-gray-600 hover:bg-gray-100")}>
     {label}
   </button>
 );

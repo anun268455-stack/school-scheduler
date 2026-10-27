@@ -17,8 +17,9 @@
  * การย้ายที่เสนอตรงนี้ **เปลี่ยนแค่ห้อง** ไม่ขยับวันหรือคาบ และไม่เบียดใคร
  * ตารางนักเรียนจึงเหมือนเดิมทุกช่อง
  */
-import type { Room, StudentGroup, Subject, TimetableSlot } from "../types";
+import type { Period, Room, StudentGroup, Subject, TimetableSlot } from "../types";
 import { roomTakes } from "./swapPlanner";
+import { levelKeyOf, periodsForLevel } from "./levels";
 
 export interface YardPick { group_id: number; day: number; period: number; room_id: number }
 
@@ -27,6 +28,33 @@ export interface AuditWorld {
   rooms:    Room[];
   groups:   StudentGroup[];
   subjects: Subject[];
+  /** ผังคาบ — ใช้ดูว่าสองคาบ "ติดกัน" ไหม (ม.ต้น/ม.ปลาย คนละผัง) */
+  periods?: Period[];
+}
+
+/**
+ * วิชาเดียวกัน ชั้นเดียวกัน วันเดียวกัน — เป็นอะไรกันแน่
+ *
+ *   "ช่วยเพิ่มคอลัมน์ให้หน่อยว่ามีคาบที่ซ้ำกันใน 1 วันไหม รวมถึงคาบคู่ด้วย"
+ *
+ * สามอย่างนี้หน้าตาเหมือนกันในข้อมูลดิบ แต่คนละเรื่องกันสิ้นเชิง
+ *   คาบคู่             — ผูกกันไว้แล้ว ติดกัน ตั้งใจ ไม่ต้องแก้
+ *   ติดกันแต่ไม่ผูกคู่ — อยู่ติดกันแต่ระบบไม่รู้ว่าเป็นคาบคู่ ควรผูกให้
+ *   ซ้ำคนละช่วง        — เช้าทีบ่ายที เด็กเรียนวิชาเดิมสองรอบในวันเดียว
+ */
+export type DupKind = "คาบคู่" | "ติดกันแต่ไม่ผูกคู่" | "ซ้ำคนละช่วง";
+
+export interface SameDayDup {
+  groupId:   number;
+  groupName: string;
+  day:       number;
+  subjectCode: string;
+  teacherName: string;
+  /** คาบที่วิชานี้ลงไว้ในวันนั้น เรียงจากน้อยไปมาก */
+  periods:   number[];
+  slotIds:   number[];
+  kind:      DupKind;
+  note:      string;
 }
 
 export type AuditKind = "เรียนลาน" | "ไม่มีห้อง";
@@ -47,6 +75,10 @@ export interface AuditRow {
 
 export interface RoomAudit {
   rows: AuditRow[];
+  /** วิชาเดียวกันลงซ้ำในวันเดียว — ทั้งโรงเรียน ไม่ใช่เฉพาะแถวเรื่องห้อง */
+  dups: SameDayDup[];
+  /** คาบไหนอยู่ในชุดซ้ำแบบไหน — ไว้เติมคอลัมน์ในตารางเรื่องห้อง */
+  dupOf: Map<number, DupKind>;
   /** แถวที่หาห้องให้ไม่ได้เลย */
   stuck: AuditRow[];
   /** ห้องที่ใช้สอนได้แต่ไม่มีคาบไหนใช้เลยทั้งสัปดาห์ */
@@ -131,6 +163,78 @@ export function freeRoomsFor(
   };
   return ok.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
+
+/**
+ * วิชาเดียวกัน ชั้นเดียวกัน วันเดียวกัน — ทั้งโรงเรียน
+ *
+ * "ติดกัน" วัดด้วยตำแหน่งในผังคาบของชั้นนั้น ไม่ใช่เลขคาบลบกัน — ม.ต้นกับ
+ * ม.ปลายพักกลางวันคนละคาบ เลขคาบจึงกระโดด (ม.ต้นมีคาบ 1,2,4,6,7… ส่วน
+ * ม.ปลาย 1,2,4,5,7…) คาบ 2 กับคาบ 4 ของ ม.ต้นคือคาบที่ติดกันจริง ทั้งที่
+ * เลขห่างกันสอง
+ */
+export function sameDayDuplicates(world: AuditWorld): SameDayDup[] {
+  const groups = flat(world.groups);
+  const byGroup = new Map(groups.map((g) => [g.id, g]));
+  const numsFor = new Map<number, number[]>();
+  const classNums = (groupId: number): number[] => {
+    const hit = numsFor.get(groupId);
+    if (hit) return hit;
+    const nums = periodsForLevel(world.periods ?? [], levelKeyOf(byGroup.get(groupId)))
+      .filter((p) => p.type === "class")
+      .map((p) => p.period_num)
+      .sort((a, b) => a - b);
+    numsFor.set(groupId, nums);
+    return nums;
+  };
+
+  const bucket = new Map<string, TimetableSlot[]>();
+  for (const s of world.slots) {
+    if (s.group_id == null || s.subject_id == null) continue;
+    const k = `${s.group_id}-${s.day}-${s.subject_id}`;
+    const list = bucket.get(k);
+    if (list) list.push(s); else bucket.set(k, [s]);
+  }
+
+  const out: SameDayDup[] = [];
+  for (const rows of bucket.values()) {
+    if (rows.length < 2) continue;
+    const first = rows[0];
+    const periods = [...rows.map((r) => r.period)].sort((a, b) => a - b);
+    // คาบคู่นับเป็นชุดเดียว — สองแถวที่ผูกกันไว้ไม่ใช่การซ้ำ
+    const units = new Set(rows.map((r) => r.double_group_key || `s${r.id}`));
+    const tied = rows.some((r) => r.double_group_key);
+    let kind: DupKind;
+    if (units.size === 1 && tied) {
+      kind = "คาบคู่";
+    } else {
+      const nums = classNums(first.group_id as number);
+      const pos = new Map(nums.map((n, i) => [n, i]));
+      const ix = periods.map((x) => pos.get(x)).filter((x): x is number => x != null);
+      const adjacent = ix.length === periods.length && periods.length === 2
+        && Math.abs(ix[1] - ix[0]) === 1;
+      kind = adjacent ? "ติดกันแต่ไม่ผูกคู่" : "ซ้ำคนละช่วง";
+    }
+    out.push({
+      groupId: first.group_id as number,
+      groupName: first.group_name ?? "?",
+      day: first.day,
+      subjectCode: first.subject_code ?? first.subject_name ?? "?",
+      teacherName: first.teacher_name ?? "",
+      periods, slotIds: rows.map((r) => r.id), kind,
+      note: kind === "คาบคู่"
+        ? "คาบคู่ที่ผูกกันไว้แล้ว — ติดกัน ไม่ต้องแก้"
+        : kind === "ติดกันแต่ไม่ผูกคู่"
+        ? "อยู่ติดกันแต่ยังไม่ได้ผูกเป็นคาบคู่ — ผูกได้ที่ ⋯ เครื่องมือ › ตรวจความสอดคล้องของข้อมูล"
+        : "วิชาเดียวกันสองรอบในวันเดียว คนละช่วง — ย้ายคาบหนึ่งไปวันอื่นถ้าไม่ได้ตั้งใจ",
+    });
+  }
+  out.sort((a, b) => rank(a.kind) - rank(b.kind)
+    || a.groupName.localeCompare(b.groupName) || a.day - b.day);
+  return out;
+}
+
+const rank = (k: DupKind): number =>
+  k === "ซ้ำคนละช่วง" ? 0 : k === "ติดกันแต่ไม่ผูกคู่" ? 1 : 2;
 
 export function auditRooms(world: AuditWorld, yardPicks: YardPick[]): RoomAudit {
   const byId = new Map(world.rooms.map((r) => [r.id, r]));
@@ -234,9 +338,14 @@ export function auditRooms(world: AuditWorld, yardPicks: YardPick[]): RoomAudit 
   const neverUsed = world.rooms.filter(
     (r) => r.usable !== false && (r.capacity ?? 1) > 0 && !used.has(r.id));
 
+  const dups = sameDayDuplicates(world);
+  const dupOf = new Map<number, DupKind>();
+  for (const d of dups) for (const id of d.slotIds) dupOf.set(id, d.kind);
+
   return {
     rows, stuck: rows.filter((r) => !r.free.length),
     neverUsed, closed, peOnYard, pinnedOnYard, activityNoRoom,
+    dups, dupOf,
   };
 }
 
