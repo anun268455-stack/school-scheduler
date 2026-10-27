@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-27.5"
+API_BUILD = "2026-10-27.6"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -6588,6 +6588,55 @@ def _solve_greedy_run(body: dict[str, Any]) -> dict[str, Any]:
 # Each finding says how many, shows a few, and whether ซ่อมอัตโนมัติ can put
 # it right — which it only claims when the answer is not a judgement call.
 
+def _apply_missing_coteachers(apply: bool = True,
+                              rows: "list | None" = None) -> int:
+    """คาบที่แถวกำหนดการสอนบอกว่ามีครูสอนร่วม แต่ในคาบยังไม่มีชื่อเขา
+
+    co_teacher_id ถูกอ่านตอนสร้างตารางเท่านั้น ใครตั้งครูสอนร่วมทีหลัง —
+    จากหน้ากำหนดการสอน หรือหน้า "วิชาที่สอน" ของครูคนนั้น — คาบที่ลงไปแล้ว
+    จะไม่รู้เรื่องด้วย ("มาใส่ทีหลังแล้วคาบไม่ขึ้น")
+
+    ใส่ให้เฉพาะคาบที่ครูสอนร่วม**ว่างจริง**ในชั่วโมงนั้น คาบที่เขาติดสอนอยู่
+    ที่อื่นถูกข้ามและรายงานไว้ เพราะการใส่ชื่อลงไปเฉย ๆ จะทำให้ครูคนเดียว
+    อยู่สองห้องพร้อมกัน ซึ่งแย่กว่าชื่อที่ยังไม่ขึ้น
+
+    คืนจำนวนคาบที่ใส่ชื่อให้ได้ · rows รับรายการของที่ยังค้าง (ทั้งที่ทำได้
+    และที่ติด) ไว้โชว์
+    """
+    t_map = {t["id"]: t for t in TEACHERS}
+    done = 0
+    for req in REQUIREMENTS:
+        co = req.get("co_teacher_id")
+        if not co or co == req.get("teacher_id") or co not in t_map:
+            continue
+        mine = [s for s in SLOTS
+                if s.get("group_id") == req.get("group_id")
+                and s.get("subject_id") == req.get("subject_id")
+                and s.get("teacher_id") == req.get("teacher_id")
+                and s.get("co_teacher_id") != co]
+        for s in mine:
+            clash = _free_except(co, s["day"], s["period"], {s["id"]})
+            if rows is not None:
+                rows.append({
+                    "group_name": s.get("group_name"),
+                    "subject_code": s.get("subject_code"),
+                    "teacher_name": s.get("teacher_name"),
+                    "co_teacher_name": t_map[co].get("name"),
+                    "day": s.get("day"), "period": s.get("period"),
+                    "ok": clash is None,
+                    "why": None if clash is None else
+                           (f"ติดสอน {clash.get('group_name')} "
+                            f"{clash.get('subject_code')} อยู่"),
+                })
+            if clash is not None:
+                continue
+            if apply:
+                s["co_teacher_id"] = co
+                s["co_teacher_name"] = t_map[co].get("name")
+            done += 1
+    return done
+
+
 def _consistency_findings() -> list[dict[str, Any]]:
     g_map = {g["id"]: g for g in _flat_groups()}
     t_map = {t["id"]: t for t in TEACHERS}
@@ -7007,6 +7056,29 @@ def _consistency_findings() -> list[dict[str, Any]]:
         _dbl["rows"] + _dbl["left"],
         fix=(f"รวมห้องให้ {_dbl['fixed']} คู่ที่ทำได้" if _dbl["fixed"] else None),
         examples=[_dbl_line(r) for r in (_dbl["rows"] + _dbl["left"])])
+
+    # ครูสอนร่วมที่ตั้งไว้ทีหลัง แต่ชื่อยังไม่ขึ้นในคาบ
+    #
+    #   "อันนี้เป็นวิชาที่เพิ่มเข้าไปก่อนจะแก้ไข ช่วยทำให้มันขึ้นไปกับครูที่
+    #    สอนร่วมไปเลย"
+    #
+    # ตั้งได้จากหลายหน้า (กำหนดการสอน · วิชาที่สอนของครูคนนั้น) และทุกหน้าเขียน
+    # แค่แถว ไม่ได้แตะคาบ อันนี้จึงกวาดเก็บให้ทีเดียวทั้งโรงเรียน
+    _coadd: list[dict[str, Any]] = []
+    _co_can = _apply_missing_coteachers(apply=False, rows=_coadd)
+    add("coteach_missing", "คาบที่ยังไม่มีชื่อครูสอนร่วม ทั้งที่ตั้งไว้แล้ว",
+        "แถวกำหนดการสอนบอกว่าวิชานี้มีครูสอนร่วม แต่คาบที่ลงในตารางไปแล้วยัง"
+        "ขึ้นชื่อครูคนเดียว — เพราะชื่อครูสอนร่วมถูกอ่านตอนสร้างตารางเท่านั้น "
+        "ใครตั้งทีหลังคาบจึงไม่รู้เรื่องด้วย กดซ่อมแล้วระบบจะใส่ชื่อให้ทุกคาบ"
+        "ที่ครูสอนร่วมว่างจริง ส่วนคาบที่เขาติดสอนอยู่ที่อื่นจะข้ามไว้ และบอก"
+        "ว่าติดอะไร",
+        _coadd,
+        fix=(f"ใส่ชื่อครูสอนร่วมให้ {_co_can} คาบที่ทำได้" if _co_can else None),
+        examples=[f"{r['group_name']} {r['subject_code']} "
+                  f"{DAY_TH[r['day']] if 0 <= r['day'] < 5 else '?'} "
+                  f"คาบ {r['period']} → + {r['co_teacher_name']}"
+                  + ("" if r["ok"] else f" (ยังไม่ได้ — {r['why']})")
+                  for r in _coadd])
 
     order = {"blocking": 0, "warning": 1}
     out.sort(key=lambda f: (order.get(f["severity"], 2), -f["count"]))
@@ -7693,6 +7765,9 @@ def consistency_repair(body: dict[str, Any] | None = None):
         note("dup_rows", _merge_teacherless_rows())
     # คาบคู่ที่ติดกันอยู่แล้วแต่ยังไม่ได้ผูกกัน — ผูกก่อน แล้วค่อยรวมห้อง
     # (ผูกแล้วคู่นั้นจะเข้าเกณฑ์ของการรวมห้องด้วย)
+    if want("coteach_missing"):
+        note("coteach_missing", _apply_missing_coteachers())
+
     if want("dbl_untied"):
         note("dbl_untied", _tie_adjacent_doubles())
     # คาบคู่ที่สองครึ่งอยู่คนละห้อง — รวมให้อยู่ห้องเดียว
