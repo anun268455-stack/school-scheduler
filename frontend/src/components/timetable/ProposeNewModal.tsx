@@ -213,6 +213,7 @@ export const ProposeNewModal: React.FC<Props> = ({ onClose }) => {
               <div className="text-[10px] text-gray-500">
                 รอบขยับให้สวยย้าย {s.polish_moves} คาบ ทำให้คาบว่างคั่นกลางวันลดจาก{" "}
                 {s.gaps_before} เหลือ {s.gaps_after}
+                {s.rescued > 0 && <> · ทำให้ลงเพิ่มได้อีก {s.rescued} คาบ</>}
                 {" "}· หน้าต่างกิจกรรม {s.activity_windows} หน้าต่าง
                 {s.kept_activity_time ? " (อยู่วันเดิมเวลาเดิม)" : " (ให้เครื่องเลือกเวลาเอง)"}
               </div>

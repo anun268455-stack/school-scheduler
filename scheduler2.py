@@ -698,6 +698,33 @@ class Polisher:
                 out += _teacher_day_cost(after) - _teacher_day_cost(load)
         return out
 
+    # -- ลองลงของที่เคยลงไม่ได้ ------------------------------------------
+    def place_more(self, unplaced: list[int]) -> list[int]:
+        """ขยับเสร็จแล้วอาจมีช่องเปิดขึ้นมาให้คาบที่เคยลงไม่ได้
+
+        เลือกช่องที่ทำให้ตารางสวยที่สุดในบรรดาช่องที่ลงได้จริง เพราะคาบที่
+        เพิ่งแทรกลงไปไม่ควรไปเจาะรูใหม่ให้ห้องนั้น
+        """
+        left: list[int] = []
+        for uid in unplaced:
+            u = self.by_uid[uid]
+            pin = self.world.fixed.get(uid)
+            cells = [pin] if pin is not None else list(u.cells)
+            best: tuple[int, int] | None = None
+            best_d: int | None = None
+            for cell in cells:
+                if not self.board.fits(u, cell[0], cell[1], self.world):
+                    continue
+                d = self._delta(u, cell[0], cell[1])
+                if best_d is None or d < best_d:
+                    best, best_d = cell, d
+            if best is None:
+                left.append(uid)
+                continue
+            self.board.put(u, best[0], best[1], self.world)
+            self._mark(u, best[0], best[1], +1)
+        return left
+
     # -- วน --------------------------------------------------------------
     def run(self, deadline: float) -> tuple[dict[int, tuple[int, int]], int, int]:
         world = self.world
@@ -928,11 +955,19 @@ def solve(
     found = search.run(time.time() + budget_s)
 
     # ได้ตารางที่ลงได้แล้ว ค่อยขยับให้สวย — ไม่รื้อ ไม่ทำให้ชนเพิ่ม
-    polish_moves = polish_passes = 0
+    polish_moves = polish_passes = rescued = 0
     if polish_s > 0 and found.placed:
         pol = Polisher(world, found.placed, seed=seed)
         before_gaps = pol.gaps()
         found.placed, polish_moves, polish_passes = pol.run(time.time() + polish_s)
+        # ขยับเสร็จแล้วช่องว่างย้ายที่ ของที่เคยลงไม่ได้อาจลงได้แล้ว
+        if found.unplaced:
+            left = pol.place_more(found.unplaced)
+            rescued = len(found.unplaced) - len(left)
+            found.unplaced = left
+            if rescued:
+                pol.run(time.time() + min(10.0, polish_s / 4))
+            found.placed = dict(pol.board.placed)
         after_gaps = pol.gaps()
     else:
         before_gaps = after_gaps = -1
@@ -1002,6 +1037,7 @@ def solve(
         "gaps_after": after_gaps,
         "polish_moves": polish_moves,
         "polish_passes": polish_passes,
+        "rescued": rescued,
         "seconds": round(time.time() - t0, 1),
         "note": found.note,
     }

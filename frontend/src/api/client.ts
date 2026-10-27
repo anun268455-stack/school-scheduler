@@ -252,6 +252,8 @@ export interface ProposeSummary {
   gaps_before:   number;
   gaps_after:    number;
   polish_moves:  number;
+  /** คาบที่เคยลงไม่ได้ แล้วลงได้หลังขยับ */
+  rescued:       number;
   now:      ScheduleQuality;
   proposed: ScheduleQuality;
   over_capacity: OverCapacity[];
