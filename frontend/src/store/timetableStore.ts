@@ -534,13 +534,19 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   endDrag: () => set({ draggingSlot: null, impactMap: new Map(), tooltipText: null }),
 
   moveSlot: async (slotId, newDay, newPeriod) => {
-    const { slots, manualMode, groups } = get();
+    const { slots, groups } = get();
     const slot = slots.find((s) => s.id === slotId);
     if (!slot || slot.is_locked) return;
 
-    // โหมดจัดเอง: วางทับกันได้ ยกเว้นคาบที่ล็อกไว้ ซึ่งหน้าเว็บเป็นคนยืนด่าน
-    // เพราะคำสั่งที่ส่งไปคือ "ข้ามการตรวจทั้งหมด" (ดู utils/lockGuard.ts)
-    if (manualMode) {
+    // วางลงไปก่อน แล้วขึ้นสีแดงถ้ามีปัญหา — ไม่เด้งกลับที่เดิม
+    //
+    //   "ตอนสลับคาบกันมันเด้งกลับไปที่เดิม ช่วยทำให้ไม่เด้งกลับให้หน่อย
+    //    ถ้าเกิดปัญหาค่อยขึ้นสีแดง"
+    //
+    // คำสั่งที่ส่งไปคือ "ข้ามการตรวจทั้งหมด" หน้าเว็บจึงต้องยืนด่านคาบที่ล็อก
+    // ไว้เอง (ดู utils/lockGuard.ts) ซึ่งเป็นกฎข้อเดียวที่โรงเรียนบอกให้คงไว้
+    // ที่เหลือ — ครูชน ห้องชน นักเรียนมีสองคาบ — ขึ้นกรอบแดงในช่องให้เห็น
+    {
       const clash = lockClashAt(slot, newDay, newPeriod, slot.room_id,
                                 slots, buildSharesStudents(groups));
       if (clash) {
@@ -582,15 +588,11 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       // เส้นทาง force ย้ายทีละคาบตามที่สั่ง ไม่ได้พาห้องย่อยที่เรียนพร้อมกัน
       // ไปด้วยเหมือนเส้นทางปกติ จึงต้องใส่พี่น้องของเซ็ตลงไปในชุดเดียวกันเอง
       // ไม่งั้นเซ็ตห้องแม่ลูกจะขาดครึ่ง
-      await withWrite(async () => {
-        if (manualMode) {
-          await api.moveSlots(
-            affected.map((s) => ({ slot_id: s.id, day: newDay, period: newPeriod })),
-            true);
-        } else {
-          await api.updateSlot(slotId, { day: newDay, period: newPeriod });
-        }
-      });
+      // ส่งพี่น้องของเซ็ตห้องย่อยไปในชุดเดียวกัน เพราะเส้นทาง "ข้ามการตรวจ"
+      // ย้ายเฉพาะที่สั่ง ไม่ได้พาไปให้เองเหมือนเส้นทางที่ตรวจ
+      await withWrite(() => api.moveSlots(
+        affected.map((s) => ({ slot_id: s.id, day: newDay, period: newPeriod })),
+        true));
       // คาบคู่: เซิร์ฟเวอร์พาอีกครึ่งไปวางในคาบที่ติดกันให้แล้ว ("คาบคู่ มีคาบ
       // ที่คู่กันที่หายไป") แต่จอยังไม่รู้ว่าครึ่งนั้นไปอยู่ไหน — คาบติดกันจริง
       // หรือไม่เป็นเรื่องของผังคาบของชั้นนั้น ซึ่งเซิร์ฟเวอร์เป็นคนรู้ จึงโหลด
@@ -641,11 +643,8 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       // โหมดจัดเอง: "เราสามารถเปลี่ยนห้องได้" — ย้ายเข้าห้องที่มีคนใช้อยู่ได้
       // แล้วไปขึ้นกรอบแดง "ห้องซ้ำ" แทน (force ใช้ได้กับเซิร์ฟเวอร์รุ่นปัจจุบัน)
       const saved = await withWrite(async () => {
-        if (get().manualMode) {
-          const r = await api.moveSlots([{ slot_id: slotId, room_id: newRoomId }], true);
-          return r.slots.find((x) => x.id === slotId) ?? null;
-        }
-        return await api.updateSlot(slotId, { room_id: newRoomId });
+        const r = await api.moveSlots([{ slot_id: slotId, room_id: newRoomId }], true);
+        return r.slots.find((x) => x.id === slotId) ?? null;
       });
       // หมุดลานแรงกว่าการย้ายห้องด้วยมือ: ถ้าชั่วโมงนี้ปักหมุดไว้ เซิร์ฟเวอร์จะ
       // คืนห้องเป็นลานที่ปักไว้ ไม่ใช่ห้องที่กดเลือก เดิมหน้าจอเก็บห้องใหม่ไว้
@@ -738,8 +737,9 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         //
         // แต่ต้องยืนด่านคาบล็อกเองก่อนส่ง เพราะ force แปลว่า "ข้ามการตรวจ
         // ทั้งหมด" ซึ่งรวมด่านนั้นด้วย ตรวจทุกก้าวของเส้นทาง ไม่ใช่แค่ก้าวแรก
-        const manual = get().manualMode;
-        if (manual) {
+        // ด่านคาบล็อกต้องตรวจทุกครั้ง ไม่ใช่เฉพาะโหมดจัดเอง เพราะตอนนี้ทุก
+        // เส้นทางส่งแบบ "ข้ามการตรวจ" เพื่อไม่ให้เด้งกลับ
+        {
           const now = get().slots;
           const shares = buildSharesStudents(get().groups);
           const moved = new Set(moves.map((m) => m.slot_id));
@@ -757,9 +757,12 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
             }
           }
         }
-        const r = await withWrite(() => api.moveSlots(moves, manual));
+        // เส้นทางที่โรงเรียนกดเลือกเองต้องได้ลงจริง ไม่ถูกปฏิเสธกลับมาทั้งชุด
+        // เพราะมีจุดหนึ่งยังชนอยู่ — จุดนั้นไปขึ้นกรอบแดงในช่องแทน
+        const r = await withWrite(() => api.moveSlots(moves, true));
         if (!r.ok) {
-          // Someone else may have taken the cell since the plan was drawn.
+          // ที่ยังปฏิเสธได้คือเรื่องเชิงโครงสร้าง เช่น คาบคู่ลงที่นั้นไม่ได้
+          // เพราะไม่มีคาบติดกันพอ — บอกเหตุผลแล้วคืนของจริงจากเซิร์ฟเวอร์
           set({ solverError: `ย้ายไม่ได้: ${r.conflicts.slice(0, 2).join(" · ")}` });
           await get().loadSlots();
           return;

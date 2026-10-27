@@ -15,7 +15,8 @@
 import type { StudentGroup, TimetableSlot } from "../types";
 import { slotTeacherNames, slotLabel } from "./teacherSlots";
 
-export type ProblemKind = "no_room" | "teacher_clash" | "forced" | "room_clash";
+export type ProblemKind = "no_room" | "teacher_clash" | "forced" | "room_clash"
+  | "group_clash";
 
 export interface SlotProblem {
   slot:  TimetableSlot;
@@ -92,6 +93,42 @@ function roomSharers(
   return [...out];
 }
 
+/**
+ * นักเรียนกลุ่มเดียวกันมีสองคาบในชั่วโมงเดียวกันไหม
+ *
+ *   "ตอนสลับคาบกันมันเด้งกลับไปที่เดิม ช่วยทำให้ไม่เด้งกลับให้หน่อย ถ้าเกิด
+ *    ปัญหาค่อยขึ้นสีแดง"
+ *
+ * พอการวางไม่ถูกปฏิเสธอีกแล้ว "นักเรียนห้องนี้มีสองคาบพร้อมกัน" จึงเกิดขึ้นได้
+ * จริงบนตาราง และต้องเห็นเป็นสีแดง ไม่ใช่เงียบ — เดิมเรื่องนี้ไม่เคยต้องตรวจที่
+ * ช่องตาราง เพราะเซิร์ฟเวอร์ไม่ยอมให้เกิดตั้งแต่แรก
+ *
+ * ห้องแม่กับห้องย่อยของมันคือนักเรียนกลุ่มเดียวกัน (ม.4/6 กับ ม.4/6ก) ส่วนห้อง
+ * ย่อยพี่น้องกันคนละกลุ่ม เรียนพร้อมกันได้ตามปกติ
+ */
+function doubleBookedClasses(
+  s: TimetableSlot, all: TimetableSlot[], parentOf?: ReadonlyMap<number, number | null>,
+): string[] {
+  if (s.is_free_period) return [];
+  const out = new Set<string>();
+  for (const x of all) {
+    if (x.id === s.id || x.is_free_period) continue;
+    if (x.day !== s.day || x.period !== s.period) continue;
+    const sameStudents = x.group_id === s.group_id
+      || (parentOf ? (parentOf.get(x.group_id) ?? null) === s.group_id : false)
+      || (parentOf ? (parentOf.get(s.group_id) ?? null) === x.group_id : false);
+    if (!sameStudents) continue;
+    // คาบเดียวกันที่ถูกเขียนไว้หลายแถว — ไม่ใช่การชน
+    if (x.activity_key && x.activity_key === s.activity_key) continue;
+    if (x.elective_pool_id && x.elective_pool_id === s.elective_pool_id) continue;
+    if (x.parallel_group_key && x.parallel_group_key === s.parallel_group_key) continue;
+    if (x.subject_id != null && x.subject_id === s.subject_id
+        && x.teacher_id === s.teacher_id) continue;
+    out.add(slotLabel(x));
+  }
+  return [...out];
+}
+
 /** ห้องย่อยของห้องแม่เดียวกันไหม — ไม่รู้จักต้นไม้ห้องก็ตอบว่าใช่ (ดู roomSharers) */
 function siblings(
   a: number, b: number, parentOf?: ReadonlyMap<number, number | null>,
@@ -145,6 +182,13 @@ export function problemOf(
     says.push(`${s.room_name ? `ห้อง ${s.room_name}` : "ห้องสอนนี้"} มี `
       + `${mates.join(" · ")} เรียนอยู่ด้วยในชั่วโมงนี้`);
     fixes.push("เปลี่ยนห้องให้คาบใดคาบหนึ่ง (กด 🔁 ที่คาบ) หรือกดแก้เฉพาะห้องที่เลือก");
+  }
+  const twice = doubleBookedClasses(s, all, parentOf);
+  if (twice.length) {
+    kinds.push("group_clash");
+    says.push(`${s.group_name ?? "ห้องนี้"} มี ${twice.join(" · ")} `
+      + "เรียนพร้อมกันในชั่วโมงนี้");
+    fixes.push("ย้ายคาบใดคาบหนึ่งไปชั่วโมงอื่น");
   }
   if (!kinds.length) return null;
   return { slot: s, kinds, text: says.join(" · "), fix: fixes.join(" · ") };
