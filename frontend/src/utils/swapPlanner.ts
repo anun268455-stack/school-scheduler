@@ -192,7 +192,8 @@ function sameTeacher(a: number | null, b: number | null): boolean {
   return a != null && b != null && a === b;
 }
 
-function mkStep(
+/** ขั้นตอนหนึ่งของเส้นทาง — ส่งออกเพื่อให้ตัวหาทางแบบเป็นทอดใช้รูปแบบเดียวกัน */
+export function mkStep(
   ctx: Ctx,
   slot: TimetableSlot,
   toDay: number,
@@ -331,7 +332,23 @@ export function planRoutes(
   // ประกอบด้วยตัวเดียวกับที่อื่น ไม่ประกอบมือ — ไม่งั้นพออะไรเพิ่มใน Ctx
   // ทางนี้จะได้ของไม่ครบ
   const ctx: Ctx = buildCtx(slots, rooms, teachers, periods, groups, numDays, subjects);
-  const { classPeriodNums, shares } = ctx;
+  return planRoutesIn(ctx, moving, targetDay, targetPeriod);
+}
+
+/**
+ * เหมือน planRoutes แต่ใช้ Ctx ที่สร้างไว้แล้ว
+ *
+ * การหา "ย้ายไปช่องไหนได้บ้าง" ต้องถามทุกช่องในสัปดาห์ ถ้าแต่ละช่องสร้าง Ctx
+ * ใหม่ ก็เท่ากับสร้างตารางค้นหาจากคาบ 2,700 กว่าคาบใหม่สี่สิบรอบต่อการคลิก
+ * หนึ่งครั้ง
+ */
+export function planRoutesIn(
+  ctx:      Ctx,
+  moving:   TimetableSlot,
+  targetDay:    number,
+  targetPeriod: number,
+): SwapRoute[] {
+  const { slots, classPeriodNums, shares } = ctx;
 
   const atTarget = slots.filter(
     (s) => s.day === targetDay && s.period === targetPeriod && s.id !== moving.id,
@@ -434,7 +451,7 @@ export function planRoutes(
     // ── Route 2+: relocate the blocker to another free cell ───────────────────
     // Enumerate free cells for the blocker (excluding origin & target), pick a few.
     const candidates: { day: number; period: number }[] = [];
-    for (let d = 0; d < numDays; d++) {
+    for (let d = 0; d < ctx.numDays; d++) {
       for (const p of classPeriodNums) {
         if (d === targetDay && p === targetPeriod) continue;     // that's where moving goes
         if (d === blocker.day && p === blocker.period) continue; // blocker already there

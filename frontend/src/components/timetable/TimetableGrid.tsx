@@ -37,6 +37,7 @@ import { CELL_SCALE_DEFAULT, cellScaleStyle, clampCellScale } from "../../utils/
 import { optionsAll, previewSlots, trimOptions } from "../../utils/guidedMove";
 import { DAYS, type Period, type TimetableSlot, type DragItem, type CellImpact } from "../../types";
 import { ParkTray, PARK_DROP_ID, type ParkDragItem } from "./ParkTray";
+import { MoveOptionsModal } from "./MoveOptionsModal";
 
 // ─── Cell fixed dimensions ────────────────────────────────────────────────────
 // These are ratios as much as sizes: the columns are laid out as shares of the
@@ -64,6 +65,7 @@ interface DroppableCellProps {
   onLock:   (id: number) => void;
   onDelete: (id: number) => void;
   onPark:   (id: number) => void;
+  onMoveOptions: (slot: TimetableSlot) => void;
   onSwapRoom: (slot: TimetableSlot) => void;
   onOpenElective: (slot: TimetableSlot) => void;
   onRescue: (slot: TimetableSlot) => void;
@@ -96,7 +98,7 @@ interface DroppableCellProps {
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
-  periodDef, day, period, slots, impact, onLock, onDelete, onPark, onSwapRoom, onOpenElective, onRescue,
+  periodDef, day, period, slots, impact, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue,
   preLockMode, onPreLockClick, isDragging, onAddLesson, yardMode, yardLabel, onYardClick,
   onYardRemove, guideKind, guideNote, guideMode, onGuidePick, onGuideChoose, onFillRoom,
 }) => {
@@ -156,7 +158,7 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
       );
     } else {
       body = (
-        <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} onPark={onPark} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} onRescue={onRescue} />
+        <DraggableWrapper slots={slots} onLock={onLock} onDelete={onDelete} onPark={onPark} onMoveOptions={onMoveOptions} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} onRescue={onRescue} />
       );
     }
   } else if (guideMode && guideKind && onGuideChoose) {
@@ -326,10 +328,11 @@ const DraggableWrapper: React.FC<{
   onLock:   (id: number) => void;
   onDelete: (id: number) => void;
   onPark:   (id: number) => void;
+  onMoveOptions: (slot: TimetableSlot) => void;
   onSwapRoom: (slot: TimetableSlot) => void;
   onOpenElective: (slot: TimetableSlot) => void;
   onRescue: (slot: TimetableSlot) => void;
-}> = ({ slots, onLock, onDelete, onPark, onSwapRoom, onOpenElective, onRescue }) => {
+}> = ({ slots, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue }) => {
   const primary  = slots[0];
   const isLocked = slots.some((s) => s.is_locked);
 
@@ -351,7 +354,7 @@ const DraggableWrapper: React.FC<{
       {...attributes}
       className={clsx("w-full h-full", isLocked ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing")}
     >
-      <SlotCell slots={slots} isDragging={isDragging} onLock={onLock} onDelete={onDelete} onPark={onPark} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} onRescue={onRescue} />
+      <SlotCell slots={slots} isDragging={isDragging} onLock={onLock} onDelete={onDelete} onPark={onPark} onMoveOptions={onMoveOptions} onSwapRoom={onSwapRoom} onOpenElective={onOpenElective} onRescue={onRescue} />
     </div>
   );
 };
@@ -388,6 +391,8 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   // that matters is the lesson's own, which on a parent's or a teacher's sheet
   // is not the one selected.
   const [rescueSlot, setRescueSlot] = useState<TimetableSlot | null>(null);
+  // คาบที่กำลังถามว่า "ย้ายไปไหนได้บ้าง"
+  const [moveFor, setMoveFor] = useState<TimetableSlot | null>(null);
   // The cell whose ลาน is being picked: its day and the column(s) it covers.
   const [yardCell, setYardCell] = useState<{ day: number; cols: YardCol[] } | null>(null);
   const electiveSlot = electiveSlotId != null ? slots.find((s) => s.id === electiveSlotId) ?? null : null;
@@ -1213,6 +1218,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                             onLock={toggleLock}
                             onDelete={deleteSlot}
                             onPark={parkSlot}
+                            onMoveOptions={setMoveFor}
                             onSwapRoom={handleSwapRoomClick}
                             onOpenElective={handleOpenElective}
                             onRescue={setRescueSlot}
@@ -1239,6 +1245,10 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
               ))}
             </tbody>
           </table>
+
+          {moveFor && (
+            <MoveOptionsModal slot={moveFor} onClose={() => setMoveFor(null)} />
+          )}
 
           {/* ถาดพักคาบ — ต้องอยู่ในวงลากวางเดียวกับตาราง ไม่งั้นลากข้ามกันไม่ได้
               "เอาไว้วางคาบเฉยๆ เพื่อรอเปลี่ยนได้" */}

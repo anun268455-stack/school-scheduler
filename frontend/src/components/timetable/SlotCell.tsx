@@ -14,6 +14,7 @@ interface SlotCellProps {
   onLock?:     (id: number) => void;
   onDelete?:   (id: number) => void;
   onPark?:     (id: number) => void;
+  onMoveOptions?: (slot: TimetableSlot) => void;
   onSwapRoom?: (slot: TimetableSlot) => void;
   onOpenElective?: (slot: TimetableSlot) => void;
   /** หาลานให้คาบที่ไม่มีห้อง — ปุ่มขึ้นเฉพาะคาบกรอบแดงที่ไม่มีห้อง */
@@ -54,7 +55,7 @@ function slotColors(s: TimetableSlot, bad?: boolean): string {
 }
 
 export const SlotCell: React.FC<SlotCellProps> = ({
-  slots, isDragging, isOver, onLock, onDelete, onPark, onSwapRoom, onOpenElective, onRescue, compact,
+  slots, isDragging, isOver, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue, compact,
 }) => {
   // ทุกคาบในตาราง เพราะ "ครูติดสอนห้องอื่นในชั่วโมงนี้" ดูจากคาบของตัวเองไม่ได้
   // และ "ห้องนี้มีอีกห้องเรียนอยู่ด้วย" ก็เช่นกัน — ต้นไม้ห้องมาด้วยเพราะห้องย่อย
@@ -98,7 +99,7 @@ export const SlotCell: React.FC<SlotCellProps> = ({
         </div>
       ) : (
         <Layer slot={slots[0]} problem={probs.get(slots[0].id) ?? null}
-          onLock={onLock} onDelete={onDelete} onPark={onPark} onSwapRoom={onSwapRoom}
+          onLock={onLock} onDelete={onDelete} onPark={onPark} onMoveOptions={onMoveOptions} onSwapRoom={onSwapRoom}
           onOpenElective={onOpenElective} onRescue={onRescue} compact={compact} />
       )}
     </div>
@@ -112,12 +113,13 @@ interface LayerProps {
   onLock?:   (id: number) => void;
   onDelete?: (id: number) => void;
   onPark?:   (id: number) => void;
+  onMoveOptions?: (slot: TimetableSlot) => void;
   onSwapRoom?: (slot: TimetableSlot) => void;
   onOpenElective?: (slot: TimetableSlot) => void;
   onRescue?: (slot: TimetableSlot) => void;
 }
 
-const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete, onPark, onSwapRoom, onOpenElective, onRescue }) => {
+const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue }) => {
   // สอนร่วม and a คาบกิจกรรม duty roster both put more than one teacher in the
   // room. The line truncates, so the count goes in a badge that cannot.
   const names = slotTeacherNames(slot);
@@ -326,6 +328,17 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
           title="หาลานให้คาบนี้ — ดูว่าลานไหนช่วยให้ได้ห้อง"
         >
           🌳
+        </button>
+      )}
+      {/* คาบนี้ย้ายไปไหนได้บ้าง — ลองทุกช่องให้ แล้วบอกว่าง่ายหรือยาก
+          "คลิกคาบที่ต้องการย้ายจะมีให้ขึ้นว่าสลับไปคาบไหนง่าย ปลายกลางยาก" */}
+      {onMoveOptions && !slot.is_locked && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onMoveOptions(slot); }}
+          className="bg-white/90 text-[8px] px-0.5 py-0.5 rounded shadow hover:bg-sky-50 leading-none"
+          title="คาบนี้ย้ายไปไหนได้บ้าง — ลองทุกช่องให้ พร้อมบอกว่าง่ายหรือยาก"
+        >
+          🧭
         </button>
       )}
       {/* ยกคาบนี้ไปพักไว้ในถาดใต้ตาราง — ไม่ใช่ลบ คาบเดิมยังเป็นคาบเดิม
