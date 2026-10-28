@@ -28,10 +28,10 @@ const ROWS: {
 }[] = [
   { key: "gaps", label: "คาบว่างคั่นกลางวันของนักเรียน",
     hint: "เรียน-ว่าง-เรียน ในวันเดียว หัวท้ายว่างไม่นับ" },
-  { key: "heavy_days", label: "ครู-วัน ที่สอนเกิน 6 คาบ",
+  { key: "heavy_days", label: "ครู-วัน ที่สอนเกินเพดานต่อวัน",
     hint: "นับเป็นครูหนึ่งคนต่อหนึ่งวัน" },
-  { key: "long_runs", label: "คาบที่ทำให้ครูสอนติดกันเกิน 3",
-    hint: "คาบที่เลยคาบที่สามของช่วงติดกัน" },
+  { key: "long_runs", label: "คาบที่ทำให้ครูสอนติดกันเกินเพดาน",
+    hint: "คาบที่เลยเพดานของช่วงติดกัน" },
   { key: "clash_teacher", label: "ครูอยู่สองที่พร้อมกัน", hint: "" },
   { key: "clash_room", label: "ห้องถูกใช้ซ้อนกัน", hint: "" },
   { key: "clash_group", label: "ชั้นเรียนซ้อนกัน", hint: "" },
@@ -214,6 +214,8 @@ export const ProposeNewModal: React.FC<Props> = ({ onClose }) => {
                 รอบขยับให้สวยย้าย {s.polish_moves} คาบ ทำให้คาบว่างคั่นกลางวันลดจาก{" "}
                 {s.gaps_before} เหลือ {s.gaps_after}
                 {s.rescued > 0 && <> · ทำให้ลงเพิ่มได้อีก {s.rescued} คาบ</>}
+                {" "}· เพดานครู {s.max_per_day} คาบ/วัน ติดกันไม่เกิน{" "}
+                {s.max_consecutive} คาบ (ตามที่ตั้งไว้)
                 {" "}· หน้าต่างกิจกรรม {s.activity_windows} หน้าต่าง
                 {s.kept_activity_time ? " (อยู่วันเดิมเวลาเดิม)" : " (ให้เครื่องเลือกเวลาเอง)"}
               </div>

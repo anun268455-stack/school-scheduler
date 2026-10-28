@@ -39,16 +39,25 @@ from typing import Any
 NOGOOD_LIMIT = 150_000
 
 # ลำดับการลงที่โรงเรียนสั่ง
-PHASE_SHARED = 0   # คาบเสรี · สาธารณะ · กิจกรรมที่หลายห้องเรียนร่วมกัน
-PHASE_LOWER  = 1   # ม.ต้นที่มีห้องประจำ — ให้เสร็จก่อน
-PHASE_DOUBLE = 2   # คาบคู่
-PHASE_REST   = 3   # ที่เหลือ
+# ลำดับการลง
+#
+#   "ที่สำคัญคือคาบ ม.ต้นต้องเต็มก่อน พอเต็มแล้วก็ลงคาบ ม.ปลาย"
+#
+# ม.ต้นทั้งระดับมาก่อน ม.ปลาย ไม่ใช่เฉพาะห้องที่มีห้องประจำ — ห้องประจำยังได้
+# คิวแรกในกลุ่ม ม.ต้นด้วยกันเอง เพราะมันคับที่สุด แต่ ม.ต้นที่ไม่มีห้องประจำ
+# ก็ยังต้องลงให้หมดก่อนจะเริ่ม ม.ปลาย
+PHASE_SHARED     = 0   # คาบเสรี · สาธารณะ · กิจกรรมที่หลายห้องเรียนร่วมกัน
+PHASE_LOWER_HOME = 1   # ม.ต้นที่มีห้องประจำ
+PHASE_LOWER      = 2   # ม.ต้นที่เหลือ
+PHASE_DOUBLE     = 3   # คาบคู่ของ ม.ปลาย
+PHASE_REST       = 4   # ที่เหลือ
 
 PHASE_NAME = {
-    PHASE_SHARED: "คาบเสรี/สาธารณะ",
-    PHASE_LOWER:  "ม.ต้นที่มีห้องประจำ",
-    PHASE_DOUBLE: "คาบคู่",
-    PHASE_REST:   "ที่เหลือ",
+    PHASE_SHARED:     "คาบเสรี/สาธารณะ",
+    PHASE_LOWER_HOME: "ม.ต้นที่มีห้องประจำ",
+    PHASE_LOWER:      "ม.ต้นที่เหลือ",
+    PHASE_DOUBLE:     "คาบคู่",
+    PHASE_REST:       "ที่เหลือ",
 }
 
 DAYS = 5
@@ -255,9 +264,9 @@ def build_world(
         want = r.get("weekly_count") or 0
         double = int(sub.get("duration") or 1) == 2
         has_home = grp.get("homeroom_room_id") is not None
-        # ลำดับที่โรงเรียนสั่ง: ม.ต้นที่มีห้องประจำมาก่อนคาบคู่
-        if lv == "lower" and has_home:
-            phase = PHASE_LOWER
+        # ลำดับที่โรงเรียนสั่ง: ม.ต้นให้เต็มก่อน แล้วค่อย ม.ปลาย
+        if lv == "lower":
+            phase = PHASE_LOWER_HOME if has_home else PHASE_LOWER
         elif double:
             phase = PHASE_DOUBLE
         else:
@@ -604,16 +613,22 @@ def _gap_count(idxs: set[int]) -> int:
     return (max(idxs) - min(idxs) + 1) - len(idxs)
 
 
-def _teacher_day_cost(load: Counter) -> int:
-    """ภาระวันหนึ่งของครูคนหนึ่ง — สอนเยอะเกินไป และสอนติดกันยาวเกินไป"""
+def _teacher_day_cost(load: Counter, day_cap: int = TEACH_CAP,
+                      run_cap: int = RUN_CAP) -> int:
+    """ภาระวันหนึ่งของครูคนหนึ่ง — สอนเยอะเกินไป และสอนติดกันยาวเกินไป
+
+    เพดานส่งเข้ามาได้ เพราะโรงเรียนตั้งค่า max_consecutive ของตัวเองไว้แล้ว
+    ("อยากให้คาบครูไม่ติดกันเกินไปตามที่กำหนด") ค่าตั้งต้นตรงนี้มีไว้ให้
+    ทดสอบเรียกง่าย ๆ เท่านั้น
+    """
     total = sum(load.values())
-    cost = max(0, total - TEACH_CAP) * LOAD_W
+    cost = max(0, total - day_cap) * LOAD_W
     run = 0
     prev = None
     for r in sorted(load):
         run = run + 1 if prev is not None and r == prev + 1 else 1
         prev = r
-        if run > RUN_CAP:
+        if run > run_cap:
             cost += RUN_W
     return cost
 
@@ -622,7 +637,10 @@ class Polisher:
     """ขยับคาบที่ลงแล้วให้วันของแต่ละห้องต่อเนื่องขึ้น โดยไม่ทำให้ชนเพิ่ม"""
 
     def __init__(self, world: World, placed: dict[int, tuple[int, int]],
-                 seed: int = 0) -> None:
+                 seed: int = 0, day_cap: int = TEACH_CAP,
+                 run_cap: int = RUN_CAP) -> None:
+        self.day_cap = max(1, int(day_cap))
+        self.run_cap = max(1, int(run_cap))
         self.world = world
         self.by_uid = {u.uid: u for u in world.units}
         self.rng = random.Random(seed)
@@ -669,7 +687,8 @@ class Polisher:
 
     def cost(self) -> int:
         return (GAP_W * sum(_gap_count(v) for v in self.occ.values())
-                + sum(_teacher_day_cost(v) for v in self.tocc.values()))
+                + sum(_teacher_day_cost(v, self.day_cap, self.run_cap)
+                      for v in self.tocc.values()))
 
     def gaps(self) -> int:
         """จำนวนรูเปล่า ๆ — ตัวเลขที่ครูดูรู้เรื่อง ไม่ใช่คะแนนรวม"""
@@ -695,7 +714,8 @@ class Polisher:
                 after = load.copy()
                 for r in ranks:
                     after[r] += 1
-                out += _teacher_day_cost(after) - _teacher_day_cost(load)
+                out += (_teacher_day_cost(after, self.day_cap, self.run_cap)
+                        - _teacher_day_cost(load, self.day_cap, self.run_cap))
         return out
 
     # -- ลองลงของที่เคยลงไม่ได้ ------------------------------------------
@@ -938,6 +958,8 @@ def solve(
     budget_s: float = 60.0,
     polish_s: float = 30.0,
     seed: int = 1,
+    max_per_day: int = TEACH_CAP,
+    max_consecutive: int = RUN_CAP,
 ) -> dict[str, Any]:
     """จัดตารางทั้งโรงเรียน แล้วคืน "ข้อเสนอ" ออกไป
 
@@ -957,7 +979,8 @@ def solve(
     # ได้ตารางที่ลงได้แล้ว ค่อยขยับให้สวย — ไม่รื้อ ไม่ทำให้ชนเพิ่ม
     polish_moves = polish_passes = rescued = 0
     if polish_s > 0 and found.placed:
-        pol = Polisher(world, found.placed, seed=seed)
+        pol = Polisher(world, found.placed, seed=seed,
+                       day_cap=max_per_day, run_cap=max_consecutive)
         before_gaps = pol.gaps()
         found.placed, polish_moves, polish_passes = pol.run(time.time() + polish_s)
         # ขยับเสร็จแล้วช่องว่างย้ายที่ ของที่เคยลงไม่ได้อาจลงได้แล้ว
@@ -1038,6 +1061,8 @@ def solve(
         "polish_moves": polish_moves,
         "polish_passes": polish_passes,
         "rescued": rescued,
+        "max_per_day": max_per_day,
+        "max_consecutive": max_consecutive,
         "seconds": round(time.time() - t0, 1),
         "note": found.note,
     }

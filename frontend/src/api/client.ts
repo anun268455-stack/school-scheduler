@@ -313,6 +313,9 @@ export interface ProposeSummary {
   over_capacity: OverCapacity[];
   activity_windows:   number;
   kept_activity_time: boolean;
+  /** เพดานของครูที่ใช้คิด — มาจากการตั้งค่าโรงเรียน */
+  max_per_day:     number;
+  max_consecutive: number;
 }
 
 export interface ProposeJob {

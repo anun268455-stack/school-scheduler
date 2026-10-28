@@ -14864,7 +14864,9 @@ def _propose_worker(job: str, snap: dict[str, Any],
         res = _S2.solve(snap["requirements"], snap["groups"], snap["subjects"],
                        snap["teachers"], snap["periods"], snap["rooms"],
                        snap["elective_pools"], acts,
-                       budget_s=budget_s, polish_s=polish_s, seed=1)
+                       budget_s=budget_s, polish_s=polish_s, seed=1,
+                       max_per_day=snap["max_per_day"],
+                       max_consecutive=snap["max_consecutive"])
         note("กำลังวัดผล")
         now = _S2.quality(world, snap["slots"])
         new = _S2.quality(world, res["proposed"])
@@ -14879,11 +14881,13 @@ def _propose_worker(job: str, snap: dict[str, Any],
                     "gaps_before": res["gaps_before"],
                     "gaps_after": res["gaps_after"],
                     "polish_moves": res["polish_moves"],
-                    "rescued": res["rescued"],
                     "now": now, "proposed": new,
                     "over_capacity": over,
                     "activity_windows": len(acts),
                     "kept_activity_time": keep_act,
+                    "max_per_day": res["max_per_day"],
+                    "max_consecutive": res["max_consecutive"],
+                    "rescued": res["rescued"],
                 },
                 slots=res["proposed"])
     except Exception as exc:                       # noqa: BLE001
@@ -14917,6 +14921,14 @@ def propose_new(body: dict[str, Any] | None = None) -> dict[str, Any]:
         "elective_pools": _copy.deepcopy(ELECTIVE_POOLS),
         "slots": _copy.deepcopy(SLOTS),
         "activities": _activity_windows(),
+        # เพดานของครูมาจากการตั้งค่าโรงเรียน ไม่ใช่ค่าตายตัวในเครื่อง
+        #
+        #   "อยากให้คาบครูไม่ติดกันเกินไปตามที่กำหนด"
+        #
+        "max_consecutive": int(p.get("max_consecutive")
+                               or (SCHOOL_CONFIG or {}).get("max_consecutive") or 3),
+        "max_per_day": int(p.get("max_per_day")
+                           or (SCHOOL_CONFIG or {}).get("max_per_day") or 6),
     }
     job = f"{int(_time.time())}-{random.randint(1000, 9999)}"
     with _PROPOSE_LOCK:
