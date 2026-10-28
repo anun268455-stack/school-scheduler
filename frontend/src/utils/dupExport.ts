@@ -77,8 +77,10 @@ function cell(v: string): string {
 export function dupCsv(input: DupExportInput): string {
   const lines = [[...DUP_HEADERS], ...dupRows(input)]
     .map((row) => row.map(cell).join(","));
-  // ﻿ ให้ Excel อ่านภาษาไทยถูก · \r\n ให้ Excel บน Windows ขึ้นบรรทัดถูก
-  return "﻿" + lines.join("\r\n") + "\r\n";
+  // ตัวนำหน้าไฟล์ (BOM) ทำให้ Excel อ่านภาษาไทยถูก — ต้องเขียนเป็นข้อความ
+  // หลบหนี \uFEFF ไม่ใช่วางตัวอักขระลงไปตรง ๆ เพราะตัวตรวจไวยากรณ์ห้าม
+  // อักขระล่องหนในซอร์ส และจะหยุดการติดตั้งทั้งเว็บ · \r\n ให้ Excel บน Windows ขึ้นบรรทัดถูก
+  return "\uFEFF" + lines.join("\r\n") + "\r\n";
 }
 
 /** สรุปหัวเรื่องสั้น ๆ ไว้บอกผู้ใช้ตอนกดบันทึก */
