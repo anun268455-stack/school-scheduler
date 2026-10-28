@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-28.2"
+API_BUILD = "2026-10-28.3"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -10328,6 +10328,181 @@ def _enrich_slot(s: dict[str, Any],
     s["room_type"]    = room.get("type") if room else None
     return s
 
+# ── ที่พักคาบ ─────────────────────────────────────────────────────────────
+#
+#   "ช่วยทำช่องว่างๆ ออกมาให้หน่อย เพื่อเอาไว้วางคาบเฉยๆ เพื่อรอเปลี่ยนได้"
+#
+# เวลาจัดตารางด้วยมือ มักต้องยกคาบหนึ่งออกมาก่อนเพื่อเปิดทางให้อีกคาบลง แล้ว
+# ค่อยหาที่ให้มันทีหลัง ถ้าไม่มีที่พัก ทางเดียวคือลบทิ้งแล้วสร้างใหม่ ซึ่งลืม
+# ง่ายและได้คาบใหม่ที่ไม่ใช่คาบเดิม (เลขคาบเปลี่ยน ประวัติขาด)
+#
+# ที่พักเก็บเป็นรายการแยกจากตาราง ไม่ใช่คาบที่ไม่มีวันเวลาปนอยู่ใน SLOTS เพราะ
+# ทั้งไฟล์มีโค้ดนับร้อยแห่งที่อ่าน s["day"] กับ s["period"] ตรง ๆ คาบไร้เวลา
+# ที่ปนเข้าไปจะทำให้ทุกที่พังเงียบ ๆ ทีละแห่ง
+#
+# คาบที่พักไว้ถือว่า "ยังไม่ได้ลง" ตัวนับคาบไม่พอจึงขึ้นตามจริง — ตั้งใจให้เป็น
+# อย่างนั้น จะได้ไม่ลืมว่ามีคาบค้างอยู่ในถาด
+
+PARKED: list[dict[str, Any]] = []
+
+
+def _parked_entry(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """หนึ่งรายการในถาด — คาบคู่นับเป็นรายการเดียวที่มีสองชั่วโมง"""
+    first = rows[0]
+    return {
+        "parked_id": first["id"],
+        "parked_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "from_day": first.get("day"),
+        "from_periods": [r.get("period") for r in rows],
+        "rows": [{k: v for k, v in r.items() if k not in ("day", "period")}
+                 for r in rows],
+        "periods": [r.get("period") for r in rows],
+    }
+
+
+def _parked_view(entry: dict[str, Any]) -> dict[str, Any]:
+    """รายการในถาดอย่างที่หน้าจอต้องใช้ — ชื่อครบ และบอกว่ากลับที่เดิมได้ไหม"""
+    rows = _enrich_all([dict(r) for r in entry["rows"]])
+    head = rows[0] if rows else {}
+    day = entry.get("from_day")
+    nums = entry.get("from_periods") or []
+    free = day is not None and all(
+        n is not None and not _cell_busy(head.get("group_id"), day, n)
+        for n in nums)
+    return {
+        "parked_id": entry["parked_id"],
+        "parked_at": entry.get("parked_at"),
+        "group_id": head.get("group_id"),
+        "group_name": head.get("group_name"),
+        "subject_id": head.get("subject_id"),
+        "subject_code": head.get("subject_code"),
+        "subject_name": head.get("subject_name"),
+        "teacher_id": head.get("teacher_id"),
+        "teacher_name": head.get("teacher_name"),
+        "co_teacher_id": head.get("co_teacher_id"),
+        "co_teacher_name": head.get("co_teacher_name"),
+        "room_id": head.get("room_id"),
+        "room_name": head.get("room_name"),
+        "is_elective": bool(head.get("is_elective")),
+        "is_activity_block": bool(head.get("is_activity_block")),
+        "elective_label": head.get("elective_label"),
+        "hours": len(rows),
+        "from_day": day,
+        "from_periods": nums,
+        "home_free": free,
+    }
+
+
+def _cell_busy(group_id: Any, day: int, period: int) -> bool:
+    return any(s for s in SLOTS
+               if s.get("group_id") == group_id
+               and s.get("day") == day and s.get("period") == period)
+
+
+@app.get("/api/timetable/parked")
+def list_parked() -> list[dict[str, Any]]:
+    """ทุกคาบที่พักไว้ในถาดตอนนี้"""
+    return [_parked_view(e) for e in PARKED]
+
+
+@app.post("/api/timetable/park")
+def park_slots(body: dict[str, Any]) -> dict[str, Any]:
+    """ยกคาบออกจากตารางมาพักไว้ก่อน — ยังไม่หายไปไหน
+
+    คาบคู่ยกออกไปด้วยกันทั้งคู่เสมอ แยกครึ่งเดียวไม่ได้ เพราะครึ่งที่เหลือจะ
+    กลายเป็นคาบคู่ที่ขาดคู่ ซึ่งระบบจะไปไล่ซ่อมทีหลังโดยที่ไม่มีใครสั่ง
+    """
+    ids = body.get("slot_ids")
+    if not ids and body.get("slot_id") is not None:
+        ids = [body["slot_id"]]
+    if not ids:
+        raise HTTPException(400, "ไม่ได้บอกว่าจะพักคาบไหน")
+
+    done: list[dict[str, Any]] = []
+    for sid in ids:
+        target = next((s for s in SLOTS if s["id"] == sid), None)
+        if target is None:
+            continue                      # พักไปแล้ว หรือถูกลบไปแล้ว
+        key = target.get("double_group_key")
+        rows = ([s for s in SLOTS if s.get("double_group_key") == key]
+                if key else [target])
+        rows.sort(key=lambda r: (r.get("day") or 0, r.get("period") or 0))
+        locked = [r for r in rows if r.get("is_locked")]
+        if locked and not body.get("force"):
+            raise HTTPException(409, "คาบนี้ล็อกไว้อยู่ — ปลดล็อกก่อน "
+                                     "หรือสั่งพักทั้งที่ล็อกก็ได้")
+        entry = _parked_entry(rows)
+        for r in rows:
+            SLOTS.remove(r)
+        PARKED.append(entry)
+        done.append(_parked_view(entry))
+    if not done:
+        raise HTTPException(404, "ไม่พบคาบที่จะพัก")
+    return {"parked": done, "count": len(done), "total": len(PARKED)}
+
+
+@app.post("/api/timetable/unpark")
+def unpark_slot(body: dict[str, Any]) -> dict[str, Any]:
+    """เอาคาบจากถาดกลับลงตาราง — ไม่บอกช่องก็กลับที่เดิม"""
+    pid = body.get("parked_id")
+    entry = next((e for e in PARKED if e["parked_id"] == pid), None)
+    if entry is None:
+        raise HTTPException(404, "ไม่พบคาบนี้ในถาด")
+
+    day = body.get("day", entry.get("from_day"))
+    if day is None:
+        raise HTTPException(400, "ไม่รู้ว่าจะวางลงวันไหน")
+    day = int(day)
+
+    rows = [dict(r) for r in entry["rows"]]
+    if body.get("period") is not None:
+        start = int(body["period"])
+        if len(rows) == 1:
+            nums = [start]
+        else:
+            grp = _find_group(rows[0].get("group_id"))
+            second = _next_class_period_for(_level_key(grp), start) if grp else None
+            if second is None:
+                raise HTTPException(400, "คาบนี้เป็นคาบคู่ แต่ช่องที่เลือกต่อ"
+                                         "อีกชั่วโมงไม่ได้ — เป็นคาบสุดท้ายของวัน "
+                                         "หรือคาบถัดไปเป็นเวลาพัก")
+            nums = [start, second]
+    else:
+        nums = [n for n in (entry.get("from_periods") or []) if n is not None]
+        if len(nums) != len(rows):
+            raise HTTPException(400, "ไม่รู้ที่เดิมของคาบนี้ — เลือกช่องที่จะวางด้วย")
+
+    if body.get("room_id") is not None:
+        for r in rows:
+            r["room_id"] = body["room_id"] or None
+
+    for r, n in zip(rows, nums):
+        r["day"] = day
+        r["period"] = n
+    SLOTS.extend(rows)
+    if not body.get("force"):
+        problems = _validate_moves([{"slot_id": r["id"]} for r in rows])
+        if problems:
+            for r in rows:
+                SLOTS.remove(r)
+            raise HTTPException(409, " · ".join(problems[:3]))
+    for r in rows:
+        _settle_yard(r)
+    PARKED.remove(entry)
+    _enrich_all(rows)
+    return {"slots": rows, "total": len(PARKED)}
+
+
+@app.delete("/api/timetable/parked/{parked_id}")
+def drop_parked(parked_id: int) -> dict[str, Any]:
+    """ทิ้งคาบในถาดไปเลย — ใช้เมื่อตั้งใจจะไม่สอนคาบนั้นแล้วจริง ๆ"""
+    entry = next((e for e in PARKED if e["parked_id"] == parked_id), None)
+    if entry is None:
+        raise HTTPException(404, "ไม่พบคาบนี้ในถาด")
+    PARKED.remove(entry)
+    return {"total": len(PARKED)}
+
+
 # ── Elective Slots (วิชาเสรี) ────────────────────────────────────────────────
 # An elective slot is a TimetableSlot pinned to one classroom/day/period with
 # is_elective=True. It carries a catalog of "elective_options" (each a
@@ -12885,7 +13060,8 @@ def _lower_home_guard() -> bool:
 _STATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data_state.json")
 _SAVE_KEYS = ("departments", "buildings", "rooms", "teachers", "subjects",
               "requirements", "periods", "slots", "elective_pools", "school_config",
-              "absences", "substitutions", "repayments", "curricula", "yard_picks")
+              "absences", "substitutions", "repayments", "curricula", "yard_picks",
+              "parked")
 
 
 def _snapshot() -> dict[str, Any]:
@@ -12926,6 +13102,10 @@ def _snapshot() -> dict[str, Any]:
         # classes back indoors without a word. Copied for the same reason as
         # the curricula above. The order of the ลาน rides inside school_config.
         "yard_picks": [dict(r) for r in YARD_PICKS],
+        # ถาดพักคาบ — คาบที่ยกออกมารอสลับยังไม่ได้ลงที่ไหน ถ้าไม่เก็บไว้ด้วย
+        # การรีสตาร์ตครั้งเดียวจะทำให้มันหายไปเงียบ ๆ ทั้งที่คนจัดยังรออยู่
+        "parked": [{**e, "rows": [dict(r) for r in e.get("rows") or []]}
+                   for e in PARKED],
         "counters": _counters,
     }
 
@@ -12947,7 +13127,7 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
                         ("elective_pools", ELECTIVE_POOLS),
                         ("absences", ABSENCES), ("substitutions", SUBSTITUTIONS),
                         ("repayments", REPAYMENTS), ("curricula", CURRICULA),
-                        ("yard_picks", YARD_PICKS)):
+                        ("yard_picks", YARD_PICKS), ("parked", PARKED)):
         rows = data.get(key)
         if rows is not None:
             rows = [dict(r) for r in rows]

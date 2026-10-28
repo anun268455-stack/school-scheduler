@@ -210,6 +210,60 @@ export const coteachApply = (reqId: number, coTeacherId: number, keep: number[])
   api.post<CoteachResult>("/timetable/coteach",
     { req_id: reqId, co_teacher_id: coTeacherId, keep }).then((r) => r.data);
 
+// ── ที่พักคาบ ────────────────────────────────────────────────────────────
+//
+//   "ช่วยทำช่องว่างๆ ออกมาให้หน่อย เพื่อเอาไว้วางคาบเฉยๆ เพื่อรอเปลี่ยนได้"
+//
+// ยกคาบออกจากตารางมาพักไว้ก่อน แล้วค่อยหาที่ให้ทีหลัง — ไม่ต้องลบทิ้งแล้วสร้าง
+// ใหม่ คาบเดิมยังเป็นคาบเดิม
+
+export interface ParkedLesson {
+  parked_id:  number;
+  parked_at:  string;
+  group_id:   number | null;
+  group_name: string | null;
+  subject_id:   number | null;
+  subject_code: string | null;
+  subject_name: string | null;
+  teacher_id:   number | null;
+  teacher_name: string | null;
+  co_teacher_id:   number | null;
+  co_teacher_name: string | null;
+  room_id:   number | null;
+  room_name: string | null;
+  is_elective:        boolean;
+  is_activity_block:  boolean;
+  elective_label: string | null;
+  /** คาบคู่คือสองชั่วโมง */
+  hours: number;
+  from_day: number | null;
+  from_periods: number[];
+  /** ช่องเดิมยังว่างอยู่ไหม — ถ้าว่างก็กดคืนที่เดิมได้เลย */
+  home_free: boolean;
+}
+
+export const listParked = () =>
+  api.get<ParkedLesson[]>("/timetable/parked").then((r) => r.data);
+
+/** ยกคาบออกจากตารางมาพักไว้ — คาบคู่ไปด้วยกันทั้งคู่เสมอ */
+export const parkSlots = (slotIds: number[], force = false) =>
+  api.post<{ parked: ParkedLesson[]; count: number; total: number }>(
+    "/timetable/park", { slot_ids: slotIds, force }).then((r) => r.data);
+
+/** วางกลับลงตาราง — ไม่บอกช่องก็กลับที่เดิม */
+export const unparkSlot = (
+  parkedId: number,
+  at?: { day: number; period?: number; room_id?: number | null },
+  force = false,
+) =>
+  api.post<{ slots: TimetableSlot[]; total: number }>(
+    "/timetable/unpark", { parked_id: parkedId, ...(at ?? {}), force })
+    .then((r) => r.data);
+
+/** ทิ้งจากถาดไปเลย — คาบนั้นจะไม่อยู่ในตารางอีก */
+export const dropParked = (parkedId: number) =>
+  api.delete<{ total: number }>(`/timetable/parked/${parkedId}`).then((r) => r.data);
+
 // ── ปุ่มตรวจคาบ — เครื่องจัดตารางตัวใหม่ ─────────────────────────────────
 //
 // จัดตารางใหม่ทั้งโรงเรียนแล้วคืนเป็น "ข้อเสนอ" ไม่เขียนลงตารางที่ใช้อยู่
@@ -923,7 +977,7 @@ export const fetchStateInfo = () =>
  * ต้องตรงกับ API_BUILD ใน mock_api.py และขยับพร้อมกันเสมอ — มีเทสต์
  * (scratchpad/apibuild.py) คอยจับไว้ว่าสองที่นี้ตรงกัน
  */
-export const EXPECTED_API_BUILD = "2026-10-28.2";
+export const EXPECTED_API_BUILD = "2026-10-28.3";
 
 export interface ApiBuildCheck {
   /** รุ่นที่เซิร์ฟเวอร์ตอบมา — null เมื่อเก่าจนไม่มีช่องนี้เลย */

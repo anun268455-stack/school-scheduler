@@ -193,6 +193,9 @@ interface TimetableStore {
   yardPickMode:   boolean;
   /** Every mark in the school: which class, which hour, which ลาน. */
   yardPicks:      api.YardPickRow[];
+  /** คาบที่ยกออกมาพักไว้รอหาที่ใหม่ */
+  parked:         api.ParkedLesson[];
+  parkError:      string | null;
   /** The ลาน, in the order the school saved. */
   yardList:       api.Yard[];
   /** Why the marks could not be loaded, in Thai — null when they could. */
@@ -271,6 +274,12 @@ interface TimetableStore {
   loadSlots: () => Promise<void>;
   /** Never throws: a server that cannot answer leaves yardPicksError set. */
   loadYardPicks: () => Promise<void>;
+  loadParked:  () => Promise<void>;
+  /** ยกคาบออกจากตารางมาพักไว้ */
+  parkSlot:    (slotId: number, force?: boolean) => Promise<void>;
+  /** วางกลับลงตาราง — ไม่บอกช่องก็กลับที่เดิม */
+  unpark:      (parkedId: number, at?: { day: number; period?: number }) => Promise<void>;
+  dropParked:  (parkedId: number) => Promise<void>;
   /** Saves at once. `room_id: null` removes the mark. Throws on a refusal, for the caller to show. */
   /**
    * เอาหมุดลานออกจากชั่วโมงที่ระบุ (ทีละหลายชั่วโมงได้ สำหรับคาบคู่)
@@ -363,6 +372,8 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   manualMode:        false,
   yardPickMode:      false,
   yardPicks:         [],
+  parked:            [],
+  parkError:         null,
   yardList:          [],
   yardPicksError:    null,
   draggingSlot:      null,
@@ -629,6 +640,9 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
           api.fetchPeriods().catch(() => get().periods.length ? get().periods : DEFAULT_PERIODS),
           api.fetchSchoolConfig().catch(() => null),
         ]);
+      // ถาดพักคาบโหลดแยก — เซิร์ฟเวอร์รุ่นเก่ายังไม่มีเส้นนี้ ปล่อยให้ถาดว่าง
+      // ไปก่อนดีกว่าทำให้ทั้งหน้าโหลดไม่ขึ้น
+      void get().loadParked();
       set({ departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
       void get().loadYardPicks();
       // The school name, logo and signatories live on the server too, so a
@@ -642,6 +656,48 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   loadSlots: async () => {
     const slots = await api.fetchSlots();
     set({ slots });
+  },
+
+  loadParked: async () => {
+    try {
+      set({ parked: await api.listParked(), parkError: null });
+    } catch (e) {
+      set({ parkError: api.errorDetail(e, "อ่านถาดพักคาบไม่สำเร็จ") });
+    }
+  },
+
+  // ยกคาบออกจากตาราง แล้วโหลดทั้งตารางกับถาดใหม่ — คาบคู่ถูกยกไปด้วยกันทั้งคู่
+  // ฝั่งเซิร์ฟเวอร์ จึงเดาเองไม่ได้ว่าหายไปกี่แถว
+  parkSlot: async (slotId, force = false) => {
+    try {
+      await api.parkSlots([slotId], force);
+      set({ parkError: null });
+      await get().loadSlots();
+      await get().loadParked();
+    } catch (e) {
+      set({ parkError: api.errorDetail(e, "พักคาบไม่สำเร็จ") });
+    }
+  },
+
+  unpark: async (parkedId, at) => {
+    try {
+      await api.unparkSlot(parkedId, at);
+      set({ parkError: null });
+      await get().loadSlots();
+      await get().loadParked();
+    } catch (e) {
+      set({ parkError: api.errorDetail(e, "วางคาบกลับไม่สำเร็จ") });
+    }
+  },
+
+  dropParked: async (parkedId) => {
+    try {
+      await api.dropParked(parkedId);
+      set({ parkError: null });
+      await get().loadParked();
+    } catch (e) {
+      set({ parkError: api.errorDetail(e, "ทิ้งคาบไม่สำเร็จ") });
+    }
   },
 
   loadYardPicks: async () => {
