@@ -164,6 +164,49 @@ def _needs_special(
     return any(tid in owners["teachers"] for tid in teacher_ids)
 
 
+def fold_coteaching(
+    rows: list[dict[str, Any]],
+) -> tuple[set[int], dict[int, int], dict[int, tuple[int, ...]]]:
+    """สอนร่วมที่เขียนไว้สองฝั่ง — สองแถว แต่เป็นคาบเดียว
+
+    โรงเรียนที่นำเข้าแผนการสอนจะได้แถวละครู ครูไทยมี ม.1/1 EN21204 และครูต่าง
+    ชาติก็มี ม.1/1 EN21204 ซึ่งจริงทั้งคู่ เพราะทั้งสองคนเดินเข้าห้องนั้น แต่
+    "เด็กเรียนคาบเดียว"
+
+    ถ้านับทีละแถว ม.1/1 จะกลายเป็นขอ 45 คาบในสัปดาห์ที่มี 40 ช่อง แล้วเครื่อง
+    ก็จะไปบอกโรงเรียนให้ตัดวิชาที่ไม่มีอยู่จริงทิ้ง — ซึ่งเคยเกิดขึ้นมาแล้ว
+
+    สองแถวจะถูกรวมก็ต่อเมื่อ **อ้างถึงกันและกัน** ครูสองคนที่ต่างคนต่างคิดว่า
+    ห้องนี้เป็นของตัวเองคือความขัดแย้งจริง ไม่ใช่คาบเดียวกัน
+
+    คืน: ไอดีของแถวที่ถูกยุบ · จำนวนคาบที่ตกลงกันของแถวที่เหลือ · และครูทั้งคู่
+    """
+    by_cell: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        by_cell[(r.get("group_id"), r.get("subject_id"))].append(r)
+    folded: set[int] = set()
+    count: dict[int, int] = {}
+    pair: dict[int, tuple[int, ...]] = {}
+    for cell in by_cell.values():
+        for i, a in enumerate(cell):
+            if a["id"] in folded:
+                continue
+            for b in cell[i + 1:]:
+                if b["id"] in folded:
+                    continue
+                if (a.get("co_teacher_id") == b.get("teacher_id")
+                        or b.get("co_teacher_id") == a.get("teacher_id")):
+                    folded.add(b["id"])
+                    count[a["id"]] = max(a.get("weekly_count") or 0,
+                                         b.get("weekly_count") or 0)
+                    pair[a["id"]] = tuple(sorted({
+                        t for t in (a.get("teacher_id"), a.get("co_teacher_id"),
+                                    b.get("teacher_id"), b.get("co_teacher_id"))
+                        if t}))
+                    break
+    return folded, count, pair
+
+
 def build_world(
     requirements: list[dict[str, Any]],
     groups: list[dict[str, Any]],
@@ -306,13 +349,19 @@ def build_world(
             ))
             uid += 1
 
+    # คาบสอนร่วมที่เขียนไว้สองฝั่งต้องนับเป็นคาบเดียว ไม่งั้นห้องที่สอนร่วมเยอะ
+    # จะดูเหมือนขอคาบเกินช่องที่มี ทั้งที่ของจริงพอดี
+    folded, fold_count, fold_pair = fold_coteaching(plain)
+    plain = [r for r in plain if r["id"] not in folded]
+
     for r in plain:
         grp = g_map.get(r["group_id"]) or {}
         sub = s_map.get(r.get("subject_id")) or {}
         lv = _level_of(grp)
-        tids = tuple(x for x in (r.get("teacher_id"), r.get("co_teacher_id"))
-                     if x and x in t_map)
-        want = r.get("weekly_count") or 0
+        tids = fold_pair.get(r["id"]) or tuple(
+            x for x in (r.get("teacher_id"), r.get("co_teacher_id")) if x)
+        tids = tuple(x for x in tids if x in t_map)
+        want = fold_count.get(r["id"], r.get("weekly_count") or 0)
         double = int(sub.get("duration") or 1) == 2
         has_home = grp.get("homeroom_room_id") is not None
         # ลำดับที่โรงเรียนสั่ง
@@ -805,6 +854,151 @@ class Polisher:
             self._mark(u, best[0], best[1], +1)
         return left
 
+    # -- ไล่เบียดให้ของที่เหลือลงให้ได้ ------------------------------------
+    def _who_blocks(self, u: Unit, day: int, period: int) -> set[int] | None:
+        """ใครขวางอยู่ถ้าจะวาง u ลงช่องนี้ — None คือช่องนี้ลงไม่ได้เลย
+
+        ต่างจาก Board.fits ตรงที่ fits ตอบแค่ว่าได้หรือไม่ได้ ตัวนี้ตอบว่า
+        "ติดใคร" ซึ่งเป็นสิ่งที่ต้องรู้ถ้าจะไปขอให้เขาขยับ
+        """
+        w = self.world
+        idx = u.pindex
+        i = idx.get(period)
+        if i is None:
+            return None
+        if u.length == 2 and i + 1 >= len(idx):
+            return None
+        nums = [period]
+        if u.length == 2:
+            nums.append(next(n for n, j in idx.items() if j == i + 1))
+        for t in u.teacher_ids:
+            if day in w.teacher_off.get(t, ()):
+                return None
+        if u.subject_id is not None and day in w.subject_off.get(u.subject_id, ()):
+            return None
+        out: set[int] = set()
+        for n in nums:
+            for gid in u.group_ids:
+                v = self.board.group_at.get((gid, day, n))
+                if v is not None:
+                    out.add(v)
+            for tid in u.teacher_ids:
+                v = self.board.teacher_at.get((tid, day, n))
+                if v is not None:
+                    out.add(v)
+        out.discard(u.uid)
+        return out
+
+    def squeeze(self, unplaced: list[int], max_depth: int = 3,
+                budget: int = 40_000) -> list[int]:
+        """ของที่ยังลงไม่ได้ ไล่เบียดคนอื่นจนกว่าจะลงให้ได้
+
+        ขยับเฉย ๆ ไม่พอสำหรับชั้นที่คาบเต็มพอดีทุกช่อง เช่น ม.6/1 ที่มี 40
+        หน่วยลง 40 ช่อง คาบสุดท้ายเป็นวิชาสอนร่วมที่ครูทั้งสองคนว่างแค่ 4 ช่อง
+        และชั้นนี้ไม่ว่างสักช่องในสี่ช่องนั้น ทางเดียวคือขอให้คาบที่นั่งอยู่
+        ขยับออกไปก่อน ซึ่งอาจต้องขยับต่อกันอีกทอด
+
+        เดินแบบเดียวกับตัวค้นหา: ลอง ถอย จำว่าใครตกลงที่แล้วจะได้ไม่วน
+        """
+        journal: list[tuple[int, tuple[int, int] | None]] = []
+        settled: set[int] = set()
+        # ช่องที่ "จองไว้แล้ว" ระหว่างเดิน
+        #
+        # ตอนยกคนที่ขวางออกไปหาที่ใหม่ ช่องที่ตัวตั้งกำลังจะลงยังว่างอยู่ (เพราะ
+        # ตัวตั้งยังไม่ได้วาง) เขาจึงย้ายเข้าไปนั่งตรงนั้นได้ แล้วพอวางตัวตั้ง
+        # ทับลงไปก็กลายเป็นสองคาบในช่องเดียว โดยที่ไม่มีใครฟ้อง
+        claimed: set[tuple[int, int]] = set()
+        box = [budget]
+
+        def cells_used(v: Unit, day: int, period: int) -> list[tuple[int, int]]:
+            return [(day, n) for n in Board._nums(v, period, self.world)]
+
+        def lift(v: Unit) -> None:
+            day, period = self.board.placed[v.uid]
+            self._mark(v, day, period, -1)
+            self.board.take(v, self.world)
+            journal.append((v.uid, (day, period)))
+
+        def drop(v: Unit, day: int, period: int) -> None:
+            self.board.put(v, day, period, self.world)
+            self._mark(v, day, period, +1)
+            journal.append((v.uid, None))
+
+        def rollback(mark: int) -> None:
+            while len(journal) > mark:
+                uid, home = journal.pop()
+                v = self.by_uid[uid]
+                if home is None:
+                    day, period = self.board.placed[uid]
+                    self._mark(v, day, period, -1)
+                    self.board.take(v, self.world)
+                else:
+                    drop_no_log(v, home[0], home[1])
+
+        def drop_no_log(v: Unit, day: int, period: int) -> None:
+            self.board.put(v, day, period, self.world)
+            self._mark(v, day, period, +1)
+
+        def cells_of(v: Unit, cur: tuple[int, int] | None) -> list[tuple[int, int]]:
+            pin = self.world.fixed.get(v.uid)
+            if pin is not None:
+                return [pin]
+            scored = []
+            for c in v.cells:
+                if c == cur or c in claimed:
+                    continue
+                who = self._who_blocks(v, c[0], c[1])
+                if who is None:
+                    continue
+                if any(x in claimed for x in cells_used(v, c[0], c[1])):
+                    continue
+                scored.append((len(who), self._delta(v, c[0], c[1]), c))
+            scored.sort()
+            return [c for _, _, c in scored[:6]]
+
+        def put_in(v: Unit, day: int, period: int, depth: int) -> bool:
+            if box[0] <= 0:
+                return False
+            box[0] -= 1
+            who = self._who_blocks(v, day, period)
+            if who is None:
+                return False
+            if any(b in settled or b in self.world.fixed for b in who):
+                return False
+            if who and depth <= 0:
+                return False
+            mark = len(journal)
+            settled.add(v.uid)
+            taking = cells_used(v, day, period)
+            if any(c in claimed for c in taking):
+                settled.discard(v.uid)
+                return False
+            claimed.update(taking)
+            for b in who:
+                bu = self.by_uid[b]
+                cur = self.board.placed.get(b)
+                if cur is None:
+                    rollback(mark); settled.discard(v.uid); return False
+                lift(bu)
+                if not any(put_in(bu, c[0], c[1], depth - 1) for c in cells_of(bu, cur)):
+                    rollback(mark)
+                    settled.discard(v.uid)
+                    claimed.difference_update(taking)
+                    return False
+            drop(v, day, period)
+            return True
+
+        left: list[int] = []
+        for uid in unplaced:
+            u = self.by_uid[uid]
+            journal.clear()
+            settled.clear()
+            claimed.clear()
+            if not any(put_in(u, c[0], c[1], max_depth)
+                       for c in cells_of(u, None)):
+                left.append(uid)
+        return left
+
     # -- วน --------------------------------------------------------------
     def run(self, deadline: float) -> tuple[dict[int, tuple[int, int]], int, int]:
         world = self.world
@@ -1065,6 +1259,9 @@ def solve(
         # ขยับเสร็จแล้วช่องว่างย้ายที่ ของที่เคยลงไม่ได้อาจลงได้แล้ว
         if found.unplaced:
             left = pol.place_more(found.unplaced)
+            # ยังเหลือก็ไล่เบียดต่อ — ชั้นที่คาบเต็มพอดีทุกช่องต้องใช้วิธีนี้
+            if left:
+                left = pol.squeeze(left)
             rescued = len(found.unplaced) - len(left)
             found.unplaced = left
             if rescued:

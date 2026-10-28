@@ -96,6 +96,12 @@ export function findChain(
   // ที่อยู่ปัจจุบันของคาบที่ถูกขยับไปแล้ว — slot.day/period เป็นที่เดิมเสมอ
   const now = new Map<number, { day: number; period: number }>();
   const settled = new Set<number>();
+  // ช่องที่จองไว้แล้วระหว่างเดิน
+  //
+  // ตอนยกคนที่ขวางออกไปหาที่ใหม่ ช่องที่ตัวตั้งกำลังจะลงยังว่างอยู่ (เพราะตัวตั้ง
+  // ถูกยกออกไปแล้วและยังไม่ได้วางกลับ) เขาจึงย้ายเข้าไปนั่งตรงนั้นได้ แล้วพอวาง
+  // ตัวตั้งทับลงไปก็กลายเป็นสองคาบในช่องเดียวโดยไม่มีใครฟ้อง
+  const claimed = new Set<string>();
   const journal: { id: number; from: string; to: string | null; slot: TimetableSlot }[] = [];
   const result: ChainMove[] = [];
   const cellCache = new Map<number, { day: number; period: number }[]>();
@@ -150,6 +156,7 @@ export function findChain(
     const scored: { day: number; period: number; n: number }[] = [];
     for (const c of cells) {
       if (c.day === here.day && c.period === here.period) continue;
+      if (claimed.has(key(c.day, c.period))) continue;
       const n = blockersAt(view, s, c.day, c.period, settled).length;
       scored.push({ ...c, n });
     }
@@ -169,7 +176,10 @@ export function findChain(
 
     const mark = journal.length;
     const addedResult = result.length;
+    const spot = key(d, p);
+    if (claimed.has(spot)) return false;
     settled.add(s.id);
+    claimed.add(spot);
     lift(s);
 
     for (const b of blockers) {
@@ -179,6 +189,7 @@ export function findChain(
       }
       if (!moved) {
         settled.delete(s.id);
+        claimed.delete(spot);
         rollbackTo(mark);
         result.length = addedResult;
         return false;
