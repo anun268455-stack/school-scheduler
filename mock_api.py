@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-28.1"
+API_BUILD = "2026-10-28.2"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -10156,7 +10156,16 @@ def get_slots(group_id: int | None = None, teacher_id: int | None = None,
     if teacher_id is not None: result = _teacher_view(result, teacher_id)
     if day        is not None: result = [s for s in result if s["day"]        == day]
     if room_id    is not None: result = [s for s in result if s["room_id"]    == room_id]
-    return result
+    # เติมชื่อให้ครบทุกแถวก่อนส่งออก
+    #
+    #   "ครูมีคาบสองคาบในตารางแต่พอปริ้นมาแล้วไม่มีคาบ"
+    #
+    # ชื่อวิชา ชื่อชั้น ชื่อห้อง ที่ติดมากับแถวเป็นแค่สำเนาไว้ให้อ่านง่าย ตัวจริง
+    # คือเลขอ้างอิง ถ้าแถวไหนถูกเขียนลงไปโดยไม่ได้เติมสำเนา หน้าจอยังวาดถูกเพราะ
+    # คาบคู่ใช้ข้อมูลของชั่วโมงแรก แต่ใบพิมพ์วาดทีละแถวจึงได้ช่องว่าง เติมตอนส่ง
+    # ออกทำให้ทุกคนได้ชื่อครบเสมอ ไม่ว่าแถวนั้นถูกเขียนมาอย่างไร และยังทำให้ชื่อ
+    # ที่ค้างอยู่ (เช่นห้องที่เปลี่ยนชื่อทีหลัง) ตรงกับทะเบียนปัจจุบันด้วย
+    return _enrich_all(result)
 
 @app.post("/api/timetable/slots")
 def create_slot(body: dict[str, Any]):
@@ -10221,7 +10230,10 @@ def create_slot(body: dict[str, Any]):
                 SLOTS.remove(x)
             _counters["slot"] -= len(made)
             raise HTTPException(409, " · ".join(problems[:3]))
-    return _enrich_slot(made[0])
+    # ทั้งสองชั่วโมงของคาบคู่ ไม่ใช่แค่ชั่วโมงแรก — ชั่วโมงที่สองที่ไม่ได้เติมชื่อ
+    # จะวาดบนจอถูก (คาบคู่ใช้ข้อมูลของชั่วโมงแรก) แต่พิมพ์ออกมาเป็นช่องว่าง
+    _enrich_all(made)
+    return made[0]
 
 def _teacher_clash_with(s: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
     """ครูของคาบนี้ยังติดสอนคาบอื่นอยู่ในชั่วโมงเดียวกันไหม — (ครู, คาบนั้น)
@@ -10269,12 +10281,34 @@ def _settle_overflow(s: dict[str, Any]) -> dict[str, Any]:
     return s
 
 
-def _enrich_slot(s: dict[str, Any]) -> dict[str, Any]:
+def _name_books() -> dict[str, dict[int, dict[str, Any]]]:
+    """ทะเบียนชื่อทั้งสี่เล่ม — สร้างทีเดียวแล้วใช้กับทุกคาบ
+
+    แยกออกมาเพราะการเติมชื่อให้คาบทีละแถวแล้วสร้างทะเบียนใหม่ทุกแถว จะกลาย
+    เป็นงานหลายแสนครั้งเวลาเติมทั้งตาราง
+    """
+    return {
+        "t": {t["id"]: t for t in TEACHERS},
+        "g": {g["id"]: g for g in _flat_groups()},
+        "s": {sub["id"]: sub for sub in SUBJECTS},
+        "r": {r["id"]: r for r in ROOMS},
+    }
+
+
+def _enrich_all(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """เติมชื่อให้ทุกแถวด้วยทะเบียนชุดเดียว"""
+    books = _name_books()
+    for s in rows:
+        _enrich_slot(s, books)
+    return rows
+
+
+def _enrich_slot(s: dict[str, Any],
+                 books: dict[str, dict[int, dict[str, Any]]] | None = None,
+                 ) -> dict[str, Any]:
     """Re-derive display fields (name/type lookups) from current id fields."""
-    t_map = {t["id"]: t for t in TEACHERS}
-    g_map = {g["id"]: g for g in _flat_groups()}
-    s_map = {sub["id"]: sub for sub in SUBJECTS}
-    r_map = {r["id"]: r for r in ROOMS}
+    b = books if books is not None else _name_books()
+    t_map, g_map, s_map, r_map = b["t"], b["g"], b["s"], b["r"]
     teacher = t_map.get(s.get("teacher_id"), {})
     group   = g_map.get(s.get("group_id"), {})
     subj    = s_map.get(s.get("subject_id"), {})
