@@ -46,14 +46,16 @@ NOGOOD_LIMIT = 150_000
 # ม.ต้นทั้งระดับมาก่อน ม.ปลาย ไม่ใช่เฉพาะห้องที่มีห้องประจำ — ห้องประจำยังได้
 # คิวแรกในกลุ่ม ม.ต้นด้วยกันเอง เพราะมันคับที่สุด แต่ ม.ต้นที่ไม่มีห้องประจำ
 # ก็ยังต้องลงให้หมดก่อนจะเริ่ม ม.ปลาย
-PHASE_SHARED     = 0   # คาบเสรี · สาธารณะ · กิจกรรมที่หลายห้องเรียนร่วมกัน
-PHASE_LOWER_HOME = 1   # ม.ต้นที่มีห้องประจำ
-PHASE_LOWER      = 2   # ม.ต้นที่เหลือ
-PHASE_DOUBLE     = 3   # คาบคู่ของ ม.ปลาย
-PHASE_REST       = 4   # ที่เหลือ
+PHASE_SHARED      = 0  # คาบเสรี · สาธารณประโยชน์ · ชุมนุม · ลูกเสือ
+PHASE_LOWER_SPEC  = 1  # ม.ต้นที่ต้องใช้ห้องพิเศษ (คอม ดนตรี แล็บ ฯลฯ)
+PHASE_LOWER_HOME  = 2  # ม.ต้นที่เหลือของห้องที่มีห้องประจำ
+PHASE_LOWER       = 3  # ม.ต้นที่เหลือ
+PHASE_DOUBLE      = 4  # คาบคู่ของ ม.ปลาย
+PHASE_REST        = 5  # ที่เหลือ
 
 PHASE_NAME = {
-    PHASE_SHARED:     "คาบเสรี/สาธารณะ",
+    PHASE_SHARED:     "คาบเสรี/สาธารณะ/กิจกรรม",
+    PHASE_LOWER_SPEC: "ม.ต้นที่ใช้ห้องพิเศษ",
     PHASE_LOWER_HOME: "ม.ต้นที่มีห้องประจำ",
     PHASE_LOWER:      "ม.ต้นที่เหลือ",
     PHASE_DOUBLE:     "คาบคู่",
@@ -116,6 +118,52 @@ def _level_of(group: dict[str, Any]) -> str:
     return "upper" if (group.get("level") or "") in ("M4", "M5", "M6") else "lower"
 
 
+def special_room_map(rooms: list[dict[str, Any]] | None) -> dict[str, set]:
+    """ใครเป็นเจ้าของห้องพิเศษบ้าง
+
+    โรงเรียนนี้ไม่ได้ตรึงห้องไว้ที่ทะเบียนวิชา และไม่มีครูสักคนที่มีห้องประจำ
+    ของตัวเอง (0 จาก 170) ความผูกพันกับห้องพิเศษอยู่ที่สองอย่าง
+
+      specialized_dept_id    ห้องคอมฯ ทั้งห้าเป็นของกลุ่มสาระเทคโนโลยี
+      reserved_teacher_ids   ห้องดนตรี นาฏศิลป์ วงโยฯ ห้องสมุด กันไว้ให้ครูเฉพาะคน
+
+    นับเฉพาะห้องที่ใช้ได้จริง ห้องที่โรงเรียนปิดไว้ (usable=False เช่น 234
+    ห้องกลุ่มวิทย์) ไม่ใช่ห้องที่ใครจะได้ไปเรียน
+    """
+    depts: set = set()
+    teachers: set = set()
+    for r in (rooms or []):
+        if r.get("type") != "special":
+            continue
+        if r.get("usable") is False or (r.get("capacity") or 1) <= 0:
+            continue
+        if r.get("specialized_dept_id"):
+            depts.add(r["specialized_dept_id"])
+        for tid in (r.get("reserved_teacher_ids") or ()):
+            teachers.add(tid)
+    return {"depts": depts, "teachers": teachers}
+
+
+def _needs_special(
+    sub: dict[str, Any],
+    teacher_ids: tuple[int, ...],
+    owners: dict[str, set],
+) -> bool:
+    """คาบนี้ต้องไปเรียนห้องพิเศษไหม
+
+    สามทาง: วิชาตรึงห้องไว้เอง · กลุ่มสาระของวิชาเป็นเจ้าของห้องพิเศษ (คอม) ·
+    มีห้องพิเศษกันไว้ให้ครูผู้สอนคนนี้ (ดนตรี นาฏศิลป์)
+
+    ทั้งสามแบบแปลว่าคาบนี้เลือกที่ลงได้น้อยกว่าคาบที่เรียนในห้องประจำของชั้น
+    จึงต้องได้คิวก่อน ("ให้ลงของเด็ก ม.ต้นให้เสร็จ เริ่มจากห้องพิเศษ")
+    """
+    if sub.get("fixed_room_ids") or sub.get("fixed_room_id"):
+        return True
+    if sub.get("department_id") in owners["depts"]:
+        return True
+    return any(tid in owners["teachers"] for tid in teacher_ids)
+
+
 def build_world(
     requirements: list[dict[str, Any]],
     groups: list[dict[str, Any]],
@@ -124,6 +172,7 @@ def build_world(
     periods: list[dict[str, Any]],
     elective_pools: list[dict[str, Any]] | None = None,
     activities: list[dict[str, Any]] | None = None,
+    rooms: list[dict[str, Any]] | None = None,
 ) -> World:
     """แปลงแผนการสอนเป็นหน่วยที่ต้องลง
 
@@ -140,6 +189,8 @@ def build_world(
     g_map = {g["id"]: g for g in groups}
     s_map = {s["id"]: s for s in subjects}
     t_map = {t["id"]: t for t in teachers}
+    # กลุ่มสาระไหนและครูคนไหนเป็นเจ้าของห้องพิเศษ
+    owners = special_room_map(rooms)
 
     cells_for: dict[str, list[tuple[int, int]]] = {}
     period_index: dict[str, dict[int, int]] = {}
@@ -264,9 +315,18 @@ def build_world(
         want = r.get("weekly_count") or 0
         double = int(sub.get("duration") or 1) == 2
         has_home = grp.get("homeroom_room_id") is not None
-        # ลำดับที่โรงเรียนสั่ง: ม.ต้นให้เต็มก่อน แล้วค่อย ม.ปลาย
+        # ลำดับที่โรงเรียนสั่ง
+        #
+        #   "ให้ลงของเด็ก ม.ต้นให้เสร็จ เริ่มจากห้องพิเศษ"
+        #
+        # ห้องพิเศษมีอยู่ 18 ห้องทั้งโรงเรียน และคาบที่ต้องใช้มันเลือกที่ลงได้
+        # น้อยกว่าคาบที่เรียนในห้องประจำตัวเองมาก จึงต้องได้คิวก่อน ไม่งั้นพอถึง
+        # คิวมันห้องก็ถูกจองไปหมดแล้ว
         if lv == "lower":
-            phase = PHASE_LOWER_HOME if has_home else PHASE_LOWER
+            if _needs_special(sub, tids, owners):
+                phase = PHASE_LOWER_SPEC
+            else:
+                phase = PHASE_LOWER_HOME if has_home else PHASE_LOWER
         elif double:
             phase = PHASE_DOUBLE
         else:
@@ -901,6 +961,8 @@ def room_options(
     groups: dict[int, dict[str, Any]],
     subjects: dict[int, dict[str, Any]],
     teachers: dict[int, dict[str, Any]],
+    lower_homeroom_first: bool = True,
+    upper_teacher_room_first: bool = False,
 ) -> list[int]:
     """ห้องที่คาบนี้ใช้ได้ เรียงจากเหมาะที่สุด — ยังไม่ดูว่าใครจองไว้
 
@@ -933,14 +995,29 @@ def room_options(
         if r.get("specialized_dept_id") and dept and r["specialized_dept_id"] != dept:
             continue
         rid = r["id"]
-        # ห้องเฉพาะของวิชานี้ > ห้องประจำของชั้นนี้ > ห้องของครู >
-        # ห้องธรรมดาในอาคาร > ห้องที่ไม่ได้ผูกอาคาร (ลาน ฯลฯ) > ห้องประจำคนอื่น
+        # ลำดับความชอบ
+        #
+        #   "ม.ต้นจะต้องเรียนที่ห้องประจำก่อน แล้วตอนไปเรียนวิชาที่มีห้องพิเศษ
+        #    เช่น คอมพิวเตอร์ ก็สามารถเอาห้องอื่นมาเรียนได้"
+        #
+        # ห้องพิเศษที่เป็นของวิชานี้จริง ๆ มาก่อนห้องประจำ เพราะคาบคอมพิวเตอร์
+        # ที่ไปนั่งห้องประจำคือคาบที่สอนไม่ได้ ส่วนวิชาอื่นทั้งหมดอยู่ห้องประจำ
+        # ของชั้นเป็นหลัก ไม่ใช่ถูกกระจายไปห้องกลุ่มสาระที่มีไม่พอจะรับอยู่แล้ว
+        is_special = r.get("type") == "special"
+        mine_by_dept = is_special and dept and r.get("specialized_dept_id") == dept
+        mine_by_keep = is_special and any(t in (r.get("reserved_teacher_ids") or ())
+                                          for t in u.teacher_ids)
+        home_beats_teacher = (lower_homeroom_first if u.level == "lower"
+                              else not upper_teacher_room_first)
         if rid in fixed_rooms:          rank = 0
-        elif home is not None and rid == home: rank = 1
-        elif rid in teacher_rooms:      rank = 2
-        elif rid in homerooms:          rank = 5
-        elif r.get("building_id"):      rank = 3
-        else:                           rank = 4
+        elif mine_by_keep:              rank = 1
+        elif mine_by_dept:              rank = 2
+        elif home is not None and rid == home:
+            rank = 3 if home_beats_teacher else 4
+        elif rid in teacher_rooms:      rank = 4 if home_beats_teacher else 3
+        elif rid in homerooms:          rank = 8
+        elif r.get("building_id"):      rank = 6
+        else:                           rank = 7
         out.append((rank, rid))
     out.sort()
     return [rid for _, rid in out]
@@ -960,6 +1037,8 @@ def solve(
     seed: int = 1,
     max_per_day: int = TEACH_CAP,
     max_consecutive: int = RUN_CAP,
+    lower_homeroom_first: bool = True,
+    upper_teacher_room_first: bool = False,
 ) -> dict[str, Any]:
     """จัดตารางทั้งโรงเรียน แล้วคืน "ข้อเสนอ" ออกไป
 
@@ -972,7 +1051,7 @@ def solve(
     t_map = {t["id"]: t for t in teachers}
 
     world = build_world(requirements, groups, subjects, teachers, periods,
-                        elective_pools, activities)
+                        elective_pools, activities, rooms)
     search = Search(world, seed=seed)
     found = search.run(time.time() + budget_s)
 
@@ -997,7 +1076,9 @@ def solve(
 
     by_uid = {u.uid: u for u in world.units}
     # ห้องที่แต่ละหน่วยใช้ได้ คิดครั้งเดียว ไม่ใช่ทุกชั่วโมง
-    opts = {u.uid: room_options(u, rooms, g_map, s_map, t_map) for u in world.units}
+    opts = {u.uid: room_options(u, rooms, g_map, s_map, t_map,
+                                lower_homeroom_first, upper_teacher_room_first)
+            for u in world.units}
 
     # แจกห้องทีละชั่วโมง — ในชั่วโมงเดียวกันแย่งห้องกัน คนละชั่วโมงไม่เกี่ยวกัน
     #

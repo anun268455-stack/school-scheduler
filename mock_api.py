@@ -14866,7 +14866,9 @@ def _propose_worker(job: str, snap: dict[str, Any],
                        snap["elective_pools"], acts,
                        budget_s=budget_s, polish_s=polish_s, seed=1,
                        max_per_day=snap["max_per_day"],
-                       max_consecutive=snap["max_consecutive"])
+                       max_consecutive=snap["max_consecutive"],
+                       lower_homeroom_first=snap["lower_homeroom_first"],
+                       upper_teacher_room_first=snap["upper_teacher_room_first"])
         note("กำลังวัดผล")
         now = _S2.quality(world, snap["slots"])
         new = _S2.quality(world, res["proposed"])
@@ -14929,6 +14931,11 @@ def propose_new(body: dict[str, Any] | None = None) -> dict[str, Any]:
                                or (SCHOOL_CONFIG or {}).get("max_consecutive") or 3),
         "max_per_day": int(p.get("max_per_day")
                            or (SCHOOL_CONFIG or {}).get("max_per_day") or 6),
+        # "ม.ต้นจะต้องเรียนที่ห้องประจำก่อน" — โรงเรียนตั้งไว้แล้วทั้งสองข้อ
+        "lower_homeroom_first":
+            bool((SCHOOL_CONFIG or {}).get("lower_homeroom_first", True)),
+        "upper_teacher_room_first":
+            bool((SCHOOL_CONFIG or {}).get("upper_teacher_room_first", False)),
     }
     job = f"{int(_time.time())}-{random.randint(1000, 9999)}"
     with _PROPOSE_LOCK:
