@@ -10,6 +10,7 @@
  * แต่ไม่แย่งที่ของตาราง และเงียบสนิทเมื่อไม่มีอะไรผิด
  */
 import { useEffect, useState } from "react";
+import { buildAdvice, compareBuild } from "../../utils/apiBuild";
 import clsx from "clsx";
 import * as api from "../../api/client";
 
@@ -41,6 +42,10 @@ export const AlertChips = () => {
   }, []);
 
   const stale = build != null && !build.ok;
+  // ไม่ตรงกันมีสองแบบที่แก้คนละวิธี — ต้องบอกให้ถูกฝั่ง ไม่งั้นคนใช้จะไปสั่ง
+  // ติดตั้งเซิร์ฟเวอร์ซ้ำ ๆ ทั้งที่ของที่ค้างคือหน้าเว็บตรงหน้า
+  const advice = buildAdvice(
+    build ? compareBuild(build.server, build.expected) : "unknown");
   const over = cap?.total ?? 0;
   if (!stale && over === 0) return null;
 
@@ -52,10 +57,10 @@ export const AlertChips = () => {
         <button
           type="button"
           onClick={() => setOpen(open === "build" ? null : "build")}
-          title="ตัวจัดตารางบนเซิร์ฟเวอร์ยังเป็นรุ่นเก่า — กดดูวิธีแก้"
+          title={`${advice.title} — กดดูวิธีแก้`}
           className={clsx(chip, "bg-orange-900/40 border-orange-600 text-orange-300 hover:text-orange-100")}
         >
-          🚧 เซิร์ฟเวอร์รุ่นเก่า
+          {advice.chip}
         </button>
       )}
       {over > 0 && (
@@ -71,17 +76,13 @@ export const AlertChips = () => {
 
       {open === "build" && build && (
         <div className="absolute right-2 top-full mt-1 z-50 w-[22rem] bg-gray-800 border border-orange-700 rounded-lg shadow-xl p-3 text-[11px] leading-relaxed text-orange-100">
-          <p className="font-bold text-orange-300">ตัวจัดตารางบนเซิร์ฟเวอร์ยังเป็นรุ่นเก่า</p>
+          <p className="font-bold text-orange-300">{advice.title}</p>
           <p className="mt-1">
             หน้าเว็บเป็นรุ่น <span className="font-mono font-bold">{build.expected}</span>{" "}
-            แต่ตัวจัดตารางที่รันอยู่เป็นรุ่น{" "}
-            <span className="font-mono font-bold">{build.server ?? "เก่ากว่านั้น"}</span>{" "}
-            — กดสร้างตารางตอนนี้จะได้ผลของรุ่นเก่า
+            ส่วนตัวจัดตารางที่รันอยู่เป็นรุ่น{" "}
+            <span className="font-mono font-bold">{build.server ?? "เก่ากว่านั้น"}</span>
           </p>
-          <p className="mt-1">
-            รออีก 2–5 นาทีแล้วป้ายนี้จะหายเอง ถ้ายังไม่หาย ให้เข้า Render →
-            school-scheduler-api → Manual Deploy → Deploy latest commit
-          </p>
+          <p className="mt-1">{advice.how}</p>
         </div>
       )}
       {open === "cap" && cap && (
