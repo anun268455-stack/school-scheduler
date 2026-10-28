@@ -13,9 +13,10 @@
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { ModalShell } from "../common/ModalShell";
-import { DAYS } from "../../types";
+import { DAYS, type TimetableSlot } from "../../types";
 import { useTimetableStore } from "../../store/timetableStore";
 import { auditRooms, allocateRooms, type AuditRow, type DupKind } from "../../utils/roomAudit";
+import { dupCsv, dupFileName, dupSummary } from "../../utils/dupExport";
 
 export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const slots     = useTimetableStore((s) => s.slots);
@@ -52,6 +53,33 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
   // ที่มีปัญหาเรื่องห้อง — ในตารางจริงมีแค่ 13 จาก 115 แถวที่บังเอิญซ้ำด้วย
   const needFix = useMemo(() => audit.dups.filter((d) => d.kind !== "คาบคู่"), [audit]);
   const plan = useMemo(() => allocateRooms(audit), [audit]);
+  // ชื่อห้องของแต่ละคาบ — คนที่เอาไฟล์ไปตรวจอยากเห็นด้วยว่าคาบที่ซ้ำอยู่ห้องไหน
+  const roomNameOf = useMemo(() => {
+    const roomById = new Map<number, string>(rooms.map((r) => [r.id, r.name]));
+    const bySlot = new Map<number, TimetableSlot>(slots.map((x) => [x.id, x]));
+    return (slotId: number) => {
+      const sl = bySlot.get(slotId);
+      return sl?.room_name ?? (sl?.room_id != null ? roomById.get(sl.room_id) : null) ?? null;
+    };
+  }, [slots, rooms]);
+
+  // เขียนรายการออกเป็นไฟล์ไว้กาตรวจทีละแถว
+  //
+  //   "รหัสวิชาที่เหมือนกันที่เรียนวันเดียวกันเขียนออกมาเพื่อที่จะตรวจสอบ"
+  //
+  // เขียนทุกชุด รวมคาบคู่ที่ตั้งใจไว้แล้ว เพราะคนตรวจต้องเห็นของที่ถูกอยู่แล้ว
+  // ด้วยจึงจะรู้ว่าไม่มีอะไรตกไป โดยมีคอลัมน์บอกไว้ว่าชุดไหนต้องแก้
+  const saveDupFile = () => {
+    const text = dupCsv({ dups: audit.dups, dayNames: DAYS, roomOf: roomNameOf });
+    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = dupFileName();
+    a.click();
+    URL.revokeObjectURL(url);
+    setDone(`บันทึกไฟล์แล้ว ${audit.dups.length} ชุด — ${dupSummary(audit.dups)}`);
+  };
   const movable = audit.rows.length - audit.stuck.length;
 
   const moveOne = async (row: AuditRow) => {
@@ -111,6 +139,13 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
               )}
               {/* ปุ่มย้ายห้องหมู่ไม่ได้แก้เรื่องซ้ำในวัน จึงซ่อนตอนดูรายการนั้น
                   ไม่งั้นจะอ่านเหมือนว่ากดแล้วรายการข้างล่างจะหาย */}
+              {kind === "ซ้ำในวัน" && (
+                <button onClick={saveDupFile} disabled={!audit.dups.length}
+                  title={`เขียนออกเป็นไฟล์ตาราง เปิดใน Excel ได้ เอาไปกาตรวจทีละแถว — เขียนทั้ง ${audit.dups.length} ชุด รวมคาบคู่ที่ตั้งใจไว้แล้ว โดยมีคอลัมน์บอกว่าชุดไหนต้องแก้`}
+                  className="ml-auto px-2.5 py-1 rounded bg-violet-600 text-white font-semibold hover:bg-violet-700 disabled:bg-violet-300">
+                  ⬇ เขียนออกเป็นไฟล์ตรวจ
+                </button>
+              )}
               {kind !== "ซ้ำในวัน" && (
                 <button onClick={() => void moveAll()} disabled={busy || !plan.length}
                   title="ย้ายทุกคาบที่หาห้องว่างให้ได้ เข้าห้องในครั้งเดียว — เปลี่ยนแค่ห้อง ไม่ขยับเวลา"
