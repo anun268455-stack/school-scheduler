@@ -13,11 +13,13 @@
  * คาบที่อยู่ในถาดถือว่า "ยังไม่ได้ลง" ตัวนับคาบไม่พอจึงขึ้นตามจริง — ตั้งใจให้
  * เป็นอย่างนั้น จะได้ไม่ลืมว่ามีคาบค้างอยู่
  */
+import { useMemo } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import clsx from "clsx";
 import { DAYS } from "../../types";
 import type { ParkedLesson } from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
+import { homeFreeIn, occupiedCells } from "../../utils/parkTray";
 
 export const PARK_DROP_ID = "park-tray";
 
@@ -31,12 +33,17 @@ const Card: React.FC<{
   /** ของ React เอง ประกาศไว้เพราะไฟล์นี้ตรวจ props เข้ม */
   key?: string | number;
   row:  ParkedLesson;
-}> = ({ row }) => {
+  /** ที่เดิมยังว่างอยู่ไหม — คิดสด ๆ จากตาราง ไม่ใช่ค่าที่เซิร์ฟเวอร์ส่งมาตอนโหลด */
+  homeFree: boolean;
+  /** กำลังรอเซิร์ฟเวอร์อยู่ — ปิดปุ่มไว้ไม่ให้กดซ้ำ */
+  busy: boolean;
+}> = ({ row, homeFree, busy }) => {
   const unpark = useTimetableStore((s) => s.unpark);
   const drop   = useTimetableStore((s) => s.dropParked);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `parked-${row.parked_id}`,
     data: { parkedId: row.parked_id, hours: row.hours } as ParkDragItem,
+    disabled: busy,
   });
 
   const where = row.from_day != null && row.from_periods.length
@@ -50,8 +57,11 @@ const Card: React.FC<{
       {...attributes}
       className={clsx(
         "group relative shrink-0 w-[9.5rem] rounded border bg-white px-2 py-1.5 shadow-sm",
-        "cursor-grab active:cursor-grabbing select-none",
-        isDragging ? "opacity-40 border-amber-400" : "border-amber-300 hover:border-amber-500",
+        "select-none transition-opacity",
+        busy ? "opacity-50 border-amber-200 cursor-progress"
+             : "cursor-grab active:cursor-grabbing",
+        !busy && (isDragging ? "opacity-40 border-amber-400"
+                             : "border-amber-300 hover:border-amber-500"),
       )}
       title={`${row.group_name ?? ""} ${row.subject_code ?? ""} · ยกมาจาก ${where}`}
     >
@@ -73,9 +83,10 @@ const Card: React.FC<{
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); void unpark(row.parked_id); }}
-          disabled={!row.home_free || row.from_day == null}
-          title={row.from_day == null ? "ไม่รู้ที่เดิมของคาบนี้ — ลากไปวางในช่องที่ต้องการ"
-            : row.home_free ? `คืนไปที่ ${where}`
+          disabled={busy || !homeFree || row.from_day == null}
+          title={busy ? "กำลังทำงาน…"
+            : row.from_day == null ? "ไม่รู้ที่เดิมของคาบนี้ — ลากไปวางในช่องที่ต้องการ"
+            : homeFree ? `คืนไปที่ ${where}`
             : "ที่เดิมมีคาบอื่นลงไปแล้ว — ลากไปวางช่องอื่น"}
           className="flex-1 px-1 py-0.5 rounded text-[9px] font-semibold bg-emerald-600 text-white
                      hover:bg-emerald-700 disabled:bg-gray-200 disabled:text-gray-400"
@@ -85,8 +96,10 @@ const Card: React.FC<{
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); void drop(row.parked_id); }}
+          disabled={busy}
           title="ทิ้งคาบนี้ไปเลย — ชั้นนี้จะไม่ได้เรียนคาบนี้"
-          className="px-1 py-0.5 rounded text-[9px] text-gray-400 hover:text-rose-700 hover:bg-rose-50"
+          className="px-1 py-0.5 rounded text-[9px] text-gray-400 hover:text-rose-700
+                     hover:bg-rose-50 disabled:text-gray-300 disabled:hover:bg-transparent"
         >
           ทิ้ง
         </button>
@@ -98,7 +111,13 @@ const Card: React.FC<{
 export const ParkTray: React.FC = () => {
   const parked = useTimetableStore((s) => s.parked);
   const err    = useTimetableStore((s) => s.parkError);
+  const slots  = useTimetableStore((s) => s.slots);
+  const busy   = useTimetableStore((s) => s.parkBusy);
   const { setNodeRef, isOver } = useDroppable({ id: PARK_DROP_ID, data: { park: true } });
+
+  // ช่องที่มีคาบลงอยู่แล้ว คิดทีเดียวแล้วทุกการ์ดถามจากชุดนี้ — ถ้าให้แต่ละใบ
+  // ไล่ทั้งตารางเอง ถาดจะกลายเป็นตัวถ่วงเวลาตารางเปลี่ยน
+  const occupied = useMemo(() => occupiedCells(slots), [slots]);
 
   return (
     <div
@@ -133,7 +152,11 @@ export const ParkTray: React.FC = () => {
 
       {parked.length > 0 && (
         <div className="mt-1.5 flex gap-2 overflow-x-auto pb-1">
-          {parked.map((row) => <Card key={row.parked_id} row={row} />)}
+          {parked.map((row) => (
+            <Card key={row.parked_id} row={row}
+                  homeFree={homeFreeIn(row, occupied)}
+                  busy={busy.includes(row.parked_id)} />
+          ))}
         </div>
       )}
     </div>

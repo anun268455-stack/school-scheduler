@@ -6,6 +6,7 @@ import type {
 } from "../types";
 import { DEFAULT_PERIODS } from "../types";
 import { buildImpactMap } from "../utils/conflictAnalyzer";
+import { parkAgrees, parkRows, withoutRows, withRows } from "../utils/parkTray";
 import { buildSharesStudents, flattenGroups } from "../utils/groupHierarchy";
 import { levelKeyOf } from "../utils/levels";
 import { lockClashAt } from "../utils/lockGuard";
@@ -196,6 +197,8 @@ interface TimetableStore {
   /** คาบที่ยกออกมาพักไว้รอหาที่ใหม่ */
   parked:         api.ParkedLesson[];
   parkError:      string | null;
+  /** id ที่กำลังรอเซิร์ฟเวอร์ — การ์ดหมองลงและกดซ้ำไม่ได้ */
+  parkBusy:       number[];
   /** The ลาน, in the order the school saved. */
   yardList:       api.Yard[];
   /** Why the marks could not be loaded, in Thai — null when they could. */
@@ -374,6 +377,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   yardPicks:         [],
   parked:            [],
   parkError:         null,
+  parkBusy:          [],
   yardList:          [],
   yardPicksError:    null,
   draggingSlot:      null,
@@ -666,37 +670,63 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     }
   },
 
-  // ยกคาบออกจากตาราง แล้วโหลดทั้งตารางกับถาดใหม่ — คาบคู่ถูกยกไปด้วยกันทั้งคู่
-  // ฝั่งเซิร์ฟเวอร์ จึงเดาเองไม่ได้ว่าหายไปกี่แถว
+  // ── ถาดพักคาบ ───────────────────────────────────────────────────────────
+  //
+  //   "ตอนนี้ช่องฝากคาบด้านล่างใช้งานได้แต่ยังช้าอยู่"
+  //
+  // ของเดิมยิงเซิร์ฟเวอร์สามรอบเรียงกันทุกครั้ง: สั่งงาน → โหลดตารางทั้ง
+  // โรงเรียนใหม่ (2,735 แถว ≈ 3.3 MB) → โหลดถาดใหม่ ทั้งที่คำตอบของรอบแรก
+  // บอกทุกอย่างที่ต้องรู้มาแล้ว ตอนนี้เหลือรอบเดียว แล้วแก้ในเครื่องจากคำตอบ
+  // นั้น — แนวเดียวกับ moveSlot ที่ทำอย่างนี้อยู่ก่อนแล้ว
+  //
+  // withWrite ครอบไว้เพราะการดึงข้อมูลเป็นรอบที่ลอยอยู่อาจเอาตารางรุ่นก่อน
+  // การฝากมาทับ แล้วคาบที่ยกออกไปก็จะโผล่กลับมาในตารางเอง
+
   parkSlot: async (slotId, force = false) => {
+    const before = get().slots;
+    const rows = parkRows(slotId, before);
+    if (rows.length === 0) return;
+
+    // ยกออกจากตารางให้เห็นผลทันที ไม่ต้องรอเซิร์ฟเวอร์
+    set({ slots: withoutRows(before, rows), parkError: null,
+          parkBusy: [...get().parkBusy, slotId] });
     try {
-      await api.parkSlots([slotId], force);
-      set({ parkError: null });
-      await get().loadSlots();
-      await get().loadParked();
+      const r = await withWrite(() => api.parkSlots([slotId], force));
+      set((st) => ({ parked: [...st.parked, ...r.parked] }));
+      // ที่คิดไว้ไม่ตรงกับที่เซิร์ฟเวอร์ทำ = ตารางสองฝั่งไม่เหมือนกันแล้ว
+      // ยอมโหลดใหม่ ช้าแต่ถูก
+      const hours = r.parked.reduce((n, c) => n + c.hours, 0);
+      if (!parkAgrees(rows, hours)) await get().loadSlots();
     } catch (e) {
-      set({ parkError: api.errorDetail(e, "พักคาบไม่สำเร็จ") });
+      set({ slots: before, parkError: api.errorDetail(e, "พักคาบไม่สำเร็จ") });
+    } finally {
+      set((st) => ({ parkBusy: st.parkBusy.filter((x) => x !== slotId) }));
     }
   },
 
+  // เซิร์ฟเวอร์คืนแถวใหม่มาพร้อมชื่อครบแล้ว จึงใส่ลงตารางได้เลย
   unpark: async (parkedId, at) => {
+    set((st) => ({ parkError: null, parkBusy: [...st.parkBusy, parkedId] }));
     try {
-      await api.unparkSlot(parkedId, at);
-      set({ parkError: null });
-      await get().loadSlots();
-      await get().loadParked();
+      const r = await withWrite(() => api.unparkSlot(parkedId, at));
+      set((st) => ({
+        slots:  withRows(st.slots, r.slots),
+        parked: st.parked.filter((c) => c.parked_id !== parkedId),
+      }));
     } catch (e) {
       set({ parkError: api.errorDetail(e, "วางคาบกลับไม่สำเร็จ") });
+    } finally {
+      set((st) => ({ parkBusy: st.parkBusy.filter((x) => x !== parkedId) }));
     }
   },
 
   dropParked: async (parkedId) => {
+    const before = get().parked;
+    set({ parked: before.filter((c) => c.parked_id !== parkedId), parkError: null });
     try {
-      await api.dropParked(parkedId);
-      set({ parkError: null });
-      await get().loadParked();
+      await withWrite(() => api.dropParked(parkedId));
     } catch (e) {
-      set({ parkError: api.errorDetail(e, "ทิ้งคาบไม่สำเร็จ") });
+      set({ parked: before, parkError: api.errorDetail(e, "ทิ้งคาบไม่สำเร็จ") });
     }
   },
 
