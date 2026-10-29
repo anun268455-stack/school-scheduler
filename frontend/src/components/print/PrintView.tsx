@@ -14,6 +14,7 @@ import type { Department, LessonRequirement, Period, Room, SchoolConfig, Student
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { myElectiveOption, slotTeacherNames, slotsForTeacher } from "../../utils/teacherSlots";
+import { displayWidth, FONT_STACK } from "../../utils/fonts";
 import { normalizePrintLayout, type CellLayout, type CellPartKey } from "../../utils/cellLayout";
 import { effectiveHomeroomIds } from "../../utils/homeroom";
 import { WorkloadReport } from "./WorkloadReport";
@@ -487,7 +488,10 @@ const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.1, fontSi
  */
 function fitFont(text: string, basePt: string, maxChars: number): string {
   const base = parseFloat(basePt);
-  const n = (text ?? "").length;
+  // วัดความกว้างจริง ไม่ใช่จำนวนตัวอักษร — สระกับวรรณยุกต์ไทยลอยอยู่บน-ล่าง
+  // ไม่กินที่ ถ้านับไปด้วยชื่อไทยจะถูกย่อเกินจำเป็น แล้วพิมพ์ออกมาเล็กกว่า
+  // ชื่ออังกฤษที่กว้างเท่ากัน
+  const n = displayWidth(text);
   if (!base || n <= maxChars) return basePt;
   const scaled = base * (maxChars / n);
   return `${Math.max(scaled, base * 0.72).toFixed(1)}pt`;
@@ -758,8 +762,10 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
     return (
       <div ref={ref} className="print-wrapper">
         <style>{`
-          @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
-          .print-wrapper { font-family: 'Sarabun','TH Sarabun New',Arial,sans-serif; }
+          /* ฟอนต์โหลดไว้แล้วที่ index.html — ไม่ @import ซ้ำที่นี่ เพราะ
+             บล็อกนี้ถูกซ่อนอยู่จนกดสั่งพิมพ์ ฟอนต์ที่เพิ่งเริ่มโหลดตอนนั้น
+             มาไม่ทันหน้าตัวอย่างพิมพ์ แล้วได้ฟอนต์สำรองที่ขนาดไม่เท่ากัน */
+          .print-wrapper { font-family: ${FONT_STACK}; }
           .print-page { width: 190mm; }
           .tt-block + .tt-block { margin-top: 5mm; padding-top: 3mm; border-top: 1px dashed #bbb; }
           /* The frame round the whole timetable. It is on this wrapper rather

@@ -4,7 +4,9 @@
 
 /* ── Thai + Latin font stack ───────────────────────────────────────────────── */
 @layer base {
-  html { font-family: "Inter", "Sarabun", sans-serif; }
+  /* รายการฟอนต์ต้นฉบับอยู่ที่ src/utils/fonts.ts — ทุกตัวต้องมีทั้งไทยและ
+     อังกฤษในตัวเอง ไม่งั้นคำที่ปนสองภาษาจะมาจากฟอนต์สองตัวคนละขนาด */
+  html { font-family: "Sarabun","Noto Sans Thai","Leelawadee UI","Tahoma",sans-serif; }
   body { @apply bg-gray-50 text-gray-900; }
 
   * { box-sizing: border-box; }
