@@ -104,6 +104,74 @@ export function withRows(
 }
 
 /**
+ * การ์ดหนึ่งใบในถาด เท่าที่ ParkedLesson ของฝั่งเครือข่ายต้องการ
+ *
+ * ประกาศซ้ำที่นี่เพราะไฟล์ในโฟลเดอร์นี้นำเข้าจากฝั่งเครือข่ายไม่ได้ (ตัวคิด
+ * ต้องไม่รู้จักเครือข่าย) ถ้าสองฝั่งหลุดกัน ตัวตรวจชนิดจะฟ้องตอนที่ store
+ * เอาค่าไปใส่ ซึ่งเป็นจุดที่ทั้งสองฝั่งมาเจอกัน
+ */
+export interface ParkedCard {
+  parked_id:       number;
+  parked_at:       string;
+  group_id:        number | null;
+  group_name:      string | null;
+  subject_id:      number | null;
+  subject_code:    string | null;
+  subject_name:    string | null;
+  teacher_id:      number | null;
+  teacher_name:    string | null;
+  co_teacher_id:   number | null;
+  co_teacher_name: string | null;
+  room_id:         number | null;
+  room_name:       string | null;
+  is_elective:       boolean;
+  is_activity_block: boolean;
+  elective_label:  string | null;
+  hours:           number;
+  from_day:        number | null;
+  from_periods:    number[];
+  home_free:       boolean;
+}
+
+/**
+ * การ์ดชั่วคราว ใช้ระหว่างรอคำตอบจากเซิร์ฟเวอร์
+ *
+ * ถ้าไม่มีใบนี้ คาบจะหายจากตารางไปแล้วแต่การ์ดยังไม่มา — มีช่วงหนึ่งที่คาบ
+ * "ไม่อยู่ที่ไหนเลย" ซึ่งบนเน็ตที่ช้าอาจกินเวลาเกือบวินาที คนใช้ก็จะคิดว่า
+ * คาบถูกลบไปแล้ว พอคำตอบมาถึง ใบนี้ถูกแทนด้วยใบจริงที่มี parked_id เดียวกัน
+ *
+ * ค่าทุกตัวมาจากแถวที่ยกออก ซึ่งมีชื่อครบอยู่แล้ว (เซิร์ฟเวอร์เติมชื่อให้ตอน
+ * ส่งตารางออกมา) จึงไม่ต้องเดาอะไร
+ */
+export function provisionalCard(rows: TimetableSlot[]): ParkedCard {
+  const head = rows[0];
+  return {
+    parked_id:       head.id,
+    parked_at:       new Date().toISOString(),
+    group_id:        head.group_id,
+    group_name:      head.group_name,
+    subject_id:      head.subject_id,
+    subject_code:    head.subject_code,
+    subject_name:    head.subject_name,
+    teacher_id:      head.teacher_id,
+    teacher_name:    head.teacher_name,
+    co_teacher_id:   head.co_teacher_id ?? null,
+    co_teacher_name: head.co_teacher_name ?? null,
+    room_id:         head.room_id,
+    room_name:       head.room_name,
+    is_elective:       !!head.is_elective,
+    is_activity_block: !!head.is_activity_block,
+    elective_label:  head.elective_label ?? null,
+    hours:           rows.length,
+    from_day:        head.day,
+    from_periods:    rows.map((r) => r.period),
+    // ที่เดิมเพิ่งว่างเพราะเราเพิ่งยกออกมาเอง แต่ถาดคิดค่านี้ใหม่จากตารางอยู่
+    // แล้ว ค่านี้จึงเป็นเพียงค่าตั้งต้นที่ไม่มีใครใช้
+    home_free:       true,
+  };
+}
+
+/**
  * ที่หน้าเว็บคิดไว้ตรงกับที่เซิร์ฟเวอร์ทำจริงไหม
  *
  * ถ้าไม่ตรง แปลว่าตารางในหน้าเว็บกับของเซิร์ฟเวอร์ไม่เหมือนกันแล้ว (คนอื่น

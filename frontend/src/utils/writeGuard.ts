@@ -16,6 +16,19 @@
 export class WriteGuard {
   private inFlight = 0;
   private seq = 0;
+  private doneAt = 0;
+
+  /**
+   * เวลาที่การแก้ครั้งล่าสุดเพิ่งจบ (แบบ Date.now)
+   *
+   * ซิงค์สดใช้ตัวนี้ตอบว่า "มือนิ่งแล้วหรือยัง" การแก้ของหน้าจอนี้ก็ทำให้เลข
+   * รุ่นของเซิร์ฟเวอร์ขยับเหมือนของคนอื่น แยกกันไม่ออกจากเลขรุ่นอย่างเดียว
+   * การโหลดใหม่ทุกครั้งที่ขยับจึงกลายเป็นการโหลดทับสิ่งที่หน้าจอนี้แก้ไปเอง
+   * ซ้ำแล้วซ้ำอีกตลอดเวลาที่กำลังจัดตาราง
+   */
+  get lastDoneAt(): number {
+    return this.doneAt;
+  }
 
   /** จำนวนการแก้ที่เคยเริ่มทั้งหมด — ใช้เป็นตั๋วก่อนเริ่มดึง */
   token(): number {
@@ -45,6 +58,7 @@ export class WriteGuard {
       return await fn();
     } finally {
       this.inFlight = Math.max(0, this.inFlight - 1);
+      this.doneAt = Date.now();
     }
   }
 }

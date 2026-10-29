@@ -6,7 +6,8 @@ import type {
 } from "../types";
 import { DEFAULT_PERIODS } from "../types";
 import { buildImpactMap } from "../utils/conflictAnalyzer";
-import { parkAgrees, parkRows, withoutRows, withRows } from "../utils/parkTray";
+import { parkAgrees, parkRows, provisionalCard, withoutRows, withRows }
+  from "../utils/parkTray";
 import { buildSharesStudents, flattenGroups } from "../utils/groupHierarchy";
 import { levelKeyOf } from "../utils/levels";
 import { lockClashAt } from "../utils/lockGuard";
@@ -23,6 +24,28 @@ import {
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
 const POLL_MS = 3500;
+
+/**
+ * โหลดใหม่ "เมื่อมือนิ่งแล้ว" ไม่ใช่ทุกครั้งที่เลขรุ่นขยับ
+ *
+ * การแก้ของหน้าจอนี้ก็ทำให้เลขรุ่นขยับเหมือนของคนอื่น และเซิร์ฟเวอร์บอกมาแค่
+ * เลขรุ่น จึงแยกไม่ออกว่าใครแก้ ของเดิมจึงโหลดใหม่ทั้งชุด (เก้าเส้น รวมตาราง
+ * ทั้งโรงเรียน ≈ 3.3 MB) หลังการแก้ทุกครั้ง ทั้งที่ตารางบนจอถูกแก้ไปแล้ว —
+ * เวลาจัดตารางติด ๆ กันหลายคาบ หน้าเว็บจึงดาวน์โหลดแทบไม่หยุด
+ *
+ * ทางแก้ไม่ใช่การเดาว่าใครแก้ (เดาผิดแล้วงานของคนอื่นจะหายไปเงียบ ๆ) แต่คือ
+ * รอให้นิ่งแล้วโหลดทีเดียว การแก้สิบครั้งติดกันจึงเหลือการโหลดครั้งเดียว
+ * งานของคนอื่นยังมาครบเหมือนเดิม แค่มาช้ากว่าเดิมไม่กี่วินาทีระหว่างที่อีก
+ * ฝั่งกำลังแก้อยู่
+ *
+ * และถ่วงได้ไม่เกิน HOLD_CAP_MS เผื่อคนที่แก้ไม่หยุดมือเลย ไม่งั้นงานของคนอื่น
+ * จะไม่มาถึงจนกว่าจะพักมือ
+ */
+const QUIET_MS = 2500;
+const HOLD_CAP_MS = 20000;
+
+/** เริ่มถ่วงการโหลดไว้ตั้งแต่เมื่อไร — 0 = ไม่ได้ถ่วงอยู่ */
+let holdingSince = 0;
 let pollTimer: number | null = null;
 
 /**
@@ -684,21 +707,30 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
 
   parkSlot: async (slotId, force = false) => {
     const before = get().slots;
+    const wasParked = get().parked;
     const rows = parkRows(slotId, before);
     if (rows.length === 0) return;
 
-    // ยกออกจากตารางให้เห็นผลทันที ไม่ต้องรอเซิร์ฟเวอร์
-    set({ slots: withoutRows(before, rows), parkError: null,
-          parkBusy: [...get().parkBusy, slotId] });
+    // ยกออกจากตารางและขึ้นการ์ดให้เห็นผลทันที ไม่ต้องรอเซิร์ฟเวอร์ — ถ้าไม่
+    // ขึ้นการ์ดชั่วคราวไว้ จะมีช่วงที่คาบหายจากตารางแล้วแต่การ์ดยังไม่มา คาบ
+    // "ไม่อยู่ที่ไหนเลย" ซึ่งคนใช้จะคิดว่าถูกลบไปแล้ว
+    const card = provisionalCard(rows);
+    set({ slots: withoutRows(before, rows), parked: [...wasParked, card],
+          parkError: null, parkBusy: [...get().parkBusy, slotId] });
     try {
       const r = await withWrite(() => api.parkSlots([slotId], force));
-      set((st) => ({ parked: [...st.parked, ...r.parked] }));
+      // ใบจริงมี parked_id เดียวกับใบชั่วคราว (เซิร์ฟเวอร์ใช้ id ของแถวแรก)
+      set((st) => ({
+        parked: [...st.parked.filter((c) => c.parked_id !== card.parked_id),
+                 ...r.parked],
+      }));
       // ที่คิดไว้ไม่ตรงกับที่เซิร์ฟเวอร์ทำ = ตารางสองฝั่งไม่เหมือนกันแล้ว
       // ยอมโหลดใหม่ ช้าแต่ถูก
       const hours = r.parked.reduce((n, c) => n + c.hours, 0);
       if (!parkAgrees(rows, hours)) await get().loadSlots();
     } catch (e) {
-      set({ slots: before, parkError: api.errorDetail(e, "พักคาบไม่สำเร็จ") });
+      set({ slots: before, parked: wasParked,
+            parkError: api.errorDetail(e, "พักคาบไม่สำเร็จ") });
     } finally {
       set((st) => ({ parkBusy: st.parkBusy.filter((x) => x !== slotId) }));
     }
@@ -798,8 +830,12 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
           serverStoreError: info.store === "file" ? "ยังไม่ได้เก็บลงฐานข้อมูล"
             : (info.store_error ?? null),
         });
-        if (revision === prev) return;
-        if (prev === -1) { set({ lastRevision: revision }); return; }  // first poll: just record
+        if (revision === prev) { holdingSince = 0; return; }
+        if (prev === -1) {
+          set({ lastRevision: revision });
+          holdingSince = 0;
+          return;                                      // first poll: just record
+        }
         // A revision that went BACKWARDS means the process restarted: the
         // counter only ever climbs while the server is up. Restarts are
         // ordinary on a host that sleeps when nobody is using it, and the
@@ -808,9 +844,16 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         // server over a full screen, which is the only risk worth guarding.
         if (revision < prev) {
           set({ lastRevision: revision, syncState: "live" });
+          holdingSince = 0;
           await quietRefresh(set, get);
           return;
         }
+        // มือยังไม่นิ่ง — ถ่วงไว้ก่อน ไม่จดเลขรุ่น รอบหน้ามาคิดใหม่
+        if (Date.now() - writeGuard.lastDoneAt < QUIET_MS) {
+          if (holdingSince === 0) holdingSince = Date.now();
+          if (Date.now() - holdingSince < HOLD_CAP_MS) return;
+        }
+        holdingSince = 0;
         // Someone (possibly us) changed the data — pull a fresh copy quietly,
         // without flipping isLoading so the table doesn't flash a spinner.
         await quietRefresh(set, get);
