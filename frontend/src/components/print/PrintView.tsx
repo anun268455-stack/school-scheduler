@@ -591,6 +591,11 @@ function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
 function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metrics; teacherId?: number }) {
   if (slots.length === 0) return null;
   const s = slots[0];
+  // ครูคนหนึ่งอาจมีหลายห้องเรียนในชั่วโมงเดียว — ห้องย่อย ก/ข/ค ที่เรียนพร้อมกัน
+  // ใบพิมพ์เคยวาดแค่คาบแรก ครูจึงเห็นบนจอสองห้องแต่พิมพ์ออกมาห้องเดียว
+  //
+  //   "คุณลองเช็คระบบปริ้นคาบต้องให้ตรงกับตารางที่เห็น"
+  const classes = [...new Set(slots.map((x) => shortClass(x.group_name)).filter(Boolean))];
   // In a shared elective the class cell names nobody, but THIS teacher does
   // teach one of its options — print that subject, not an empty box.
   const mine = teacherId != null ? myElectiveOption(s, teacherId) : null;
@@ -603,7 +608,7 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
       // here would be picking a room at random.
       mid={mine?.label ?? (s.is_activity_block && s.activity_scope
             ? s.activity_scope
-            : shortClass(s.group_name))}
+            : classes.join(" "))}
       room={roomNumber(s.room_name)}
     />
   );

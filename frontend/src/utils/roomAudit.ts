@@ -42,7 +42,11 @@ export interface AuditWorld {
  *   ติดกันแต่ไม่ผูกคู่ — อยู่ติดกันแต่ระบบไม่รู้ว่าเป็นคาบคู่ ควรผูกให้
  *   ซ้ำคนละช่วง        — เช้าทีบ่ายที เด็กเรียนวิชาเดิมสองรอบในวันเดียว
  */
-export type DupKind = "คาบคู่" | "ติดกันแต่ไม่ผูกคู่" | "ซ้ำคนละช่วง";
+export type DupKind =
+  | "คาบคู่"            // ผูกกันไว้แล้ว ไม่ต้องแก้
+  | "ควรผูกเป็นคาบคู่"   // ติดกัน หลักสูตรบอกว่าเป็นวิชาคาบคู่ และผูกได้จริง
+  | "ติดกันตามปกติ"      // ติดกันเฉย ๆ ไม่ใช่ความผิด
+  | "ซ้ำคนละช่วง";       // เรียนวิชาเดิมสองรอบคนละช่วงของวัน
 
 export interface SameDayDup {
   groupId:   number;
@@ -54,6 +58,32 @@ export interface SameDayDup {
   periods:   number[];
   slotIds:   number[];
   kind:      DupKind;
+  note:      string;
+  /** เหตุที่ผูกเป็นคาบคู่ไม่ได้ — ว่างแปลว่าผูกได้ */
+  blockers:  string[];
+}
+
+/**
+ * คาบคู่ที่สองชั่วโมงอยู่คนละห้อง
+ *
+ *   "อีกระบบคือตรวจคาบคู่ว่าสอนห้องเดียวกันไหม"
+ *
+ * คาบคู่คือคาบเดียวที่ยาวสองชั่วโมง ถ้าชั่วโมงที่สองอยู่คนละห้อง เด็กต้องเก็บ
+ * ของย้ายห้องกลางคาบ ซึ่งแทบไม่มีใครตั้งใจให้เป็นอย่างนั้น — บนตารางจริงมี 8 ชุด
+ */
+export interface DoubleRoomSplit {
+  key:       string;
+  groupId:   number;
+  groupName: string;
+  day:       number;
+  periods:   number[];
+  subjectCode: string;
+  teacherName: string;
+  slotIds:   number[];
+  roomNames: (string | null)[];
+  /** ห้องที่รับได้ทั้งสองชั่วโมง — ว่างแปลว่าต้องหาเอง */
+  fixRoomId:   number | null;
+  fixRoomName: string | null;
   note:      string;
 }
 
@@ -79,6 +109,8 @@ export interface RoomAudit {
   dups: SameDayDup[];
   /** คาบไหนอยู่ในชุดซ้ำแบบไหน — ไว้เติมคอลัมน์ในตารางเรื่องห้อง */
   dupOf: Map<number, DupKind>;
+  /** คาบคู่ที่สองชั่วโมงอยู่คนละห้อง — เด็กต้องย้ายห้องกลางคาบ */
+  roomSplits: DoubleRoomSplit[];
   /** แถวที่หาห้องให้ไม่ได้เลย */
   stuck: AuditRow[];
   /** ห้องที่ใช้สอนได้แต่ไม่มีคาบไหนใช้เลยทั้งสัปดาห์ */
@@ -172,6 +204,79 @@ export function freeRoomsFor(
  * ม.ปลาย 1,2,4,5,7…) คาบ 2 กับคาบ 4 ของ ม.ต้นคือคาบที่ติดกันจริง ทั้งที่
  * เลขห่างกันสอง
  */
+/**
+ * คาบคู่ที่สองชั่วโมงอยู่คนละห้อง
+ *
+ *   "อีกระบบคือตรวจคาบคู่ว่าสอนห้องเดียวกันไหม"
+ *
+ * คาบคู่คือคาบเดียวที่ยาวสองชั่วโมง ถ้าชั่วโมงที่สองอยู่คนละห้อง เด็กต้องเก็บของ
+ * ย้ายห้องกลางคาบ ซึ่งแทบไม่มีใครตั้งใจ และบนใบพิมพ์ก็อ่านเหมือนเป็นสองวิชา
+ *
+ * หาห้องที่รับได้ทั้งสองชั่วโมงมาเสนอให้ด้วย ถ้ามี — ไม่งั้นบอกได้แค่ว่าต้องไป
+ * เลือกเอง
+ */
+export function doubleRoomSplits(world: AuditWorld): DoubleRoomSplit[] {
+  const sets = new Map<string, TimetableSlot[]>();
+  for (const s of world.slots) {
+    if (!s.double_group_key) continue;
+    const list = sets.get(s.double_group_key);
+    if (list) list.push(s); else sets.set(s.double_group_key, [s]);
+  }
+
+  // ใครใช้ห้องไหนอยู่ตอนไหน — ไว้ดูว่าห้องที่จะเสนอว่างจริงทั้งสองชั่วโมง
+  //
+  // ต้องเก็บเป็นรายคาบ ไม่ใช่แค่เลขห้อง เพราะคาบคู่ชุดนี้เองก็ใช้ห้องอยู่ และ
+  // ห้องที่ "ตัวเองใช้อยู่" ต้องนับว่าว่างสำหรับตัวเอง
+  const occupants = new Map<string, TimetableSlot[]>();
+  for (const s of world.slots) {
+    if (s.room_id == null) continue;
+    const k = `${s.day}-${s.period}`;
+    const list = occupants.get(k);
+    if (list) list.push(s); else occupants.set(k, [s]);
+  }
+
+  const out: DoubleRoomSplit[] = [];
+  for (const [key, rows] of sets) {
+    if (rows.length < 2) continue;
+    const roomIds = [...new Set(rows.map((r) => r.room_id ?? null))];
+    if (roomIds.length < 2) continue;
+    const sorted = [...rows].sort((a, b) => a.day - b.day || a.period - b.period);
+    const first = sorted[0];
+
+    // ห้องที่รับคาบนี้ได้ และว่างทุกชั่วโมงของคาบคู่นี้
+    const mine = new Set(sorted.map((r) => r.id));
+    const fits = world.rooms.filter((r) =>
+      roomTakes(r, first, world.subjects)
+      && sorted.every((x) => !(occupants.get(`${x.day}-${x.period}`) ?? [])
+        .some((o) => o.room_id === r.id && !mine.has(o.id))));
+    // ห้องที่ชั่วโมงใดชั่วโมงหนึ่งใช้อยู่แล้วมาก่อน — ย้ายน้อยที่สุด
+    fits.sort((a, b) =>
+      Number(roomIds.includes(b.id)) - Number(roomIds.includes(a.id))
+      || a.name.localeCompare(b.name, "th"));
+    const pick = fits[0] ?? null;
+
+    out.push({
+      key,
+      groupId: first.group_id as number,
+      groupName: first.group_name ?? "?",
+      day: first.day,
+      periods: sorted.map((r) => r.period),
+      subjectCode: first.subject_code ?? first.subject_name ?? "?",
+      teacherName: first.teacher_name ?? "",
+      slotIds: sorted.map((r) => r.id),
+      roomNames: sorted.map((r) => r.room_name ?? null),
+      fixRoomId: pick?.id ?? null,
+      fixRoomName: pick?.name ?? null,
+      note: pick
+        ? `ย้ายทั้งคาบคู่ไปอยู่ ${pick.name} ได้ — ว่างทั้งสองชั่วโมง`
+        : "ไม่มีห้องไหนว่างทั้งสองชั่วโมง — ต้องขยับเวลาหรือเลือกห้องเอง",
+    });
+  }
+  out.sort((a, b) => a.groupName.localeCompare(b.groupName, "th") || a.day - b.day);
+  return out;
+}
+
+
 export function sameDayDuplicates(world: AuditWorld): SameDayDup[] {
   const groups = flat(world.groups);
   const byGroup = new Map(groups.map((g) => [g.id, g]));
@@ -186,6 +291,9 @@ export function sameDayDuplicates(world: AuditWorld): SameDayDup[] {
     numsFor.set(groupId, nums);
     return nums;
   };
+
+  const subjById = new Map((world.subjects ?? []).map((x) => [x.id, x]));
+  const subjectOf = (id: number) => subjById.get(id);
 
   const bucket = new Map<string, TimetableSlot[]>();
   for (const s of world.slots) {
@@ -203,6 +311,7 @@ export function sameDayDuplicates(world: AuditWorld): SameDayDup[] {
     // คาบคู่นับเป็นชุดเดียว — สองแถวที่ผูกกันไว้ไม่ใช่การซ้ำ
     const units = new Set(rows.map((r) => r.double_group_key || `s${r.id}`));
     const tied = rows.some((r) => r.double_group_key);
+    const blockers: string[] = [];
     let kind: DupKind;
     if (units.size === 1 && tied) {
       kind = "คาบคู่";
@@ -212,7 +321,28 @@ export function sameDayDuplicates(world: AuditWorld): SameDayDup[] {
       const ix = periods.map((x) => pos.get(x)).filter((x): x is number => x != null);
       const adjacent = ix.length === periods.length && periods.length === 2
         && Math.abs(ix[1] - ix[0]) === 1;
-      kind = adjacent ? "ติดกันแต่ไม่ผูกคู่" : "ซ้ำคนละช่วง";
+      if (!adjacent) {
+        kind = "ซ้ำคนละช่วง";
+      } else {
+        // ติดกันเฉย ๆ ไม่ใช่ความผิด — จะบอกให้ "ผูกเป็นคาบคู่" ได้ก็ต่อเมื่อ
+        // หลักสูตรบอกว่าวิชานี้เป็นวิชาคาบคู่ และผูกได้จริง
+        //
+        // ของเดิมบอกให้ผูกทุกคู่ที่ติดกัน บนตารางจริง 28 จาก 47 คู่เป็นวิชาที่
+        // หลักสูตรกำหนดเป็นคาบเดี่ยว และอีก 15 คู่ล็อกไว้จนผูกไม่ได้ — ย้ายคาบ
+        // แก้เท่าไรก็ไม่หมด เพราะมันไม่ใช่เรื่องที่ต้องแก้ตั้งแต่ต้น
+        const sub = subjectOf(first.subject_id as number);
+        if ((sub?.duration ?? 1) !== 2) {
+          blockers.push("หลักสูตรกำหนดวิชานี้เป็นคาบเดี่ยว");
+        }
+        if (rows.some((r) => r.is_locked)) blockers.push("มีคาบที่ล็อกไว้");
+        if (new Set(rows.map((r) => r.teacher_id ?? null)).size > 1) {
+          blockers.push("คนละครู");
+        }
+        if (new Set(rows.map((r) => r.room_id ?? null)).size > 1) {
+          blockers.push("คนละห้อง");
+        }
+        kind = blockers.length ? "ติดกันตามปกติ" : "ควรผูกเป็นคาบคู่";
+      }
     }
     out.push({
       groupId: first.group_id as number,
@@ -220,11 +350,13 @@ export function sameDayDuplicates(world: AuditWorld): SameDayDup[] {
       day: first.day,
       subjectCode: first.subject_code ?? first.subject_name ?? "?",
       teacherName: first.teacher_name ?? "",
-      periods, slotIds: rows.map((r) => r.id), kind,
+      periods, slotIds: rows.map((r) => r.id), kind, blockers,
       note: kind === "คาบคู่"
         ? "คาบคู่ที่ผูกกันไว้แล้ว — ติดกัน ไม่ต้องแก้"
-        : kind === "ติดกันแต่ไม่ผูกคู่"
-        ? "อยู่ติดกันแต่ยังไม่ได้ผูกเป็นคาบคู่ — ผูกได้ที่ ⋯ เครื่องมือ › ตรวจความสอดคล้องของข้อมูล"
+        : kind === "ควรผูกเป็นคาบคู่"
+        ? "หลักสูตรกำหนดวิชานี้เป็นคาบคู่ และสองคาบนี้ติดกันอยู่แล้ว — ผูกได้ที่ ⋯ เครื่องมือ › ตรวจความสอดคล้องของข้อมูล"
+        : kind === "ติดกันตามปกติ"
+        ? `เรียนติดกันสองคาบ ซึ่งปกติ — ผูกเป็นคาบคู่ไม่ได้เพราะ${blockers.join(" · ")}`
         : "วิชาเดียวกันสองรอบในวันเดียว คนละช่วง — ย้ายคาบหนึ่งไปวันอื่นถ้าไม่ได้ตั้งใจ",
     });
   }
@@ -234,7 +366,12 @@ export function sameDayDuplicates(world: AuditWorld): SameDayDup[] {
 }
 
 const rank = (k: DupKind): number =>
-  k === "ซ้ำคนละช่วง" ? 0 : k === "ติดกันแต่ไม่ผูกคู่" ? 1 : 2;
+  k === "ซ้ำคนละช่วง" ? 0 : k === "ควรผูกเป็นคาบคู่" ? 1
+  : k === "ติดกันตามปกติ" ? 2 : 3;
+
+/** เรื่องที่ต้องลงมือแก้จริง ๆ — ที่เหลือเป็นของที่ตั้งใจหรือปกติอยู่แล้ว */
+export const dupNeedsFix = (d: SameDayDup): boolean =>
+  d.kind === "ซ้ำคนละช่วง" || d.kind === "ควรผูกเป็นคาบคู่";
 
 export function auditRooms(world: AuditWorld, yardPicks: YardPick[]): RoomAudit {
   const byId = new Map(world.rooms.map((r) => [r.id, r]));
@@ -346,6 +483,7 @@ export function auditRooms(world: AuditWorld, yardPicks: YardPick[]): RoomAudit 
     rows, stuck: rows.filter((r) => !r.free.length),
     neverUsed, closed, peOnYard, pinnedOnYard, activityNoRoom,
     dups, dupOf,
+    roomSplits: doubleRoomSplits(world),
   };
 }
 

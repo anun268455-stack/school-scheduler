@@ -15,7 +15,8 @@ import clsx from "clsx";
 import { ModalShell } from "../common/ModalShell";
 import { DAYS, type TimetableSlot } from "../../types";
 import { useTimetableStore } from "../../store/timetableStore";
-import { auditRooms, allocateRooms, type AuditRow, type DupKind } from "../../utils/roomAudit";
+import { auditRooms, allocateRooms, dupNeedsFix,
+         type AuditRow, type DupKind } from "../../utils/roomAudit";
 import { dupCsv, dupFileName, dupSummary } from "../../utils/dupExport";
 
 export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
@@ -38,7 +39,8 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
-  const [kind, setKind] = useState<"all" | "เรียนลาน" | "ไม่มีห้อง" | "ซ้ำในวัน">("all");
+  const [kind, setKind] = useState<
+    "all" | "เรียนลาน" | "ไม่มีห้อง" | "ซ้ำในวัน" | "คาบคู่คนละห้อง">("all");
 
   const audit = useMemo(
     () => auditRooms({ slots, rooms, groups, subjects, periods }, yardPicks),
@@ -51,7 +53,12 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
   );
   // เรื่องซ้ำในวันเดียวเป็นคนละเรื่องกับห้อง จึงดูทั้งโรงเรียน ไม่ใช่เฉพาะแถว
   // ที่มีปัญหาเรื่องห้อง — ในตารางจริงมีแค่ 13 จาก 115 แถวที่บังเอิญซ้ำด้วย
-  const needFix = useMemo(() => audit.dups.filter((d) => d.kind !== "คาบคู่"), [audit]);
+  // "ต้องแก้" คือสองอย่าง: เรียนซ้ำคนละช่วงของวัน กับคู่ที่หลักสูตรบอกว่าเป็น
+  // คาบคู่แต่ยังไม่ได้ผูก ส่วนคาบที่ติดกันเฉย ๆ ไม่ใช่ความผิด — เคยนับรวมเข้ามา
+  // ด้วย เลยได้รายการยาวที่ย้ายคาบแก้เท่าไรก็ไม่หมด
+  const needFix = useMemo(() => audit.dups.filter(dupNeedsFix), [audit]);
+  const normalAdj = useMemo(
+    () => audit.dups.filter((d) => d.kind === "ติดกันตามปกติ").length, [audit]);
   const plan = useMemo(() => allocateRooms(audit), [audit]);
   // ชื่อห้องของแต่ละคาบ — คนที่เอาไฟล์ไปตรวจอยากเห็นด้วยว่าคาบที่ซ้ำอยู่ห้องไหน
   const roomNameOf = useMemo(() => {
@@ -88,6 +95,21 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
     await Promise.resolve(swapRoom(row.slotIds[0], row.free[0].id));
     setBusy(false);
     setDone(`ย้าย ${row.slot.group_name} ${row.slot.subject_code} เข้า ${row.free[0].name} แล้ว`);
+  };
+
+  // คาบคู่ที่หาห้องว่างทั้งสองชั่วโมงได้ — ย้ายทั้งชุดไปห้องเดียวกัน
+  const splitPlan = useMemo(
+    () => audit.roomSplits.filter((x) => x.fixRoomId != null), [audit]);
+
+  const fixAllSplits = async () => {
+    if (!splitPlan.length) return;
+    setBusy(true); setDone(null);
+    const problem = await setManyRooms(
+      splitPlan.flatMap((x) => x.slotIds.map((id) => ({
+        slotId: id, roomId: x.fixRoomId as number }))),
+      "คาบคู่คนละห้อง");
+    setBusy(false);
+    setDone(problem ?? `ย้ายให้อยู่ห้องเดียวกันแล้ว ${splitPlan.length} คาบคู่`);
   };
 
   const moveAll = async () => {
@@ -132,6 +154,10 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
                 label={`ไม่มีห้อง ${audit.rows.filter((r) => r.kind === "ไม่มีห้อง").length}`} tone="rose" />
               <Chip on={kind === "ซ้ำในวัน"} onClick={() => setKind("ซ้ำในวัน")}
                 label={`ซ้ำในวันเดียว ${needFix.length}`} tone="violet" />
+              {/* "ตรวจคาบคู่ว่าสอนห้องเดียวกันไหม" — คาบคู่คือคาบเดียวที่ยาว
+                  สองชั่วโมง ถ้าชั่วโมงที่สองอยู่คนละห้อง เด็กต้องย้ายห้องกลางคาบ */}
+              <Chip on={kind === "คาบคู่คนละห้อง"} onClick={() => setKind("คาบคู่คนละห้อง")}
+                label={`คาบคู่คนละห้อง ${audit.roomSplits.length}`} tone="rose" />
               {audit.stuck.length > 0 && (
                 <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
                   หาห้องให้ไม่ได้ {audit.stuck.length}
@@ -139,6 +165,14 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
               )}
               {/* ปุ่มย้ายห้องหมู่ไม่ได้แก้เรื่องซ้ำในวัน จึงซ่อนตอนดูรายการนั้น
                   ไม่งั้นจะอ่านเหมือนว่ากดแล้วรายการข้างล่างจะหาย */}
+              {kind === "คาบคู่คนละห้อง" && audit.roomSplits.length > 0 && (
+                <button onClick={() => void fixAllSplits()}
+                  disabled={busy || !splitPlan.length}
+                  title="ย้ายทุกคาบคู่ที่หาห้องว่างทั้งสองชั่วโมงได้ ให้ไปอยู่ห้องเดียวกันทั้งคาบ"
+                  className="ml-auto px-2.5 py-1 rounded bg-rose-600 text-white font-semibold hover:bg-rose-700 disabled:bg-rose-300">
+                  {busy ? "กำลังย้าย…" : `✓ ย้ายให้อยู่ห้องเดียวกัน (${splitPlan.length})`}
+                </button>
+              )}
               {kind === "ซ้ำในวัน" && (
                 <button onClick={saveDupFile} disabled={!audit.dups.length}
                   title={`เขียนออกเป็นไฟล์ตาราง เปิดใน Excel ได้ เอาไปกาตรวจทีละแถว — เขียนทั้ง ${audit.dups.length} ชุด รวมคาบคู่ที่ตั้งใจไว้แล้ว โดยมีคอลัมน์บอกว่าชุดไหนต้องแก้`}
@@ -146,7 +180,7 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
                   ⬇ เขียนออกเป็นไฟล์ตรวจ
                 </button>
               )}
-              {kind !== "ซ้ำในวัน" && (
+              {kind !== "ซ้ำในวัน" && kind !== "คาบคู่คนละห้อง" && (
                 <button onClick={() => void moveAll()} disabled={busy || !plan.length}
                   title="ย้ายทุกคาบที่หาห้องว่างให้ได้ เข้าห้องในครั้งเดียว — เปลี่ยนแค่ห้อง ไม่ขยับเวลา"
                   className="ml-auto px-2.5 py-1 rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-emerald-300">
@@ -156,10 +190,19 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
             </div>
 
             {/* สิ่งที่ตั้งใจไว้แล้ว ไม่ได้นับเป็นปัญหา */}
-            {kind === "ซ้ำในวัน" ? (
+            {kind === "คาบคู่คนละห้อง" ? (
               <div className="text-[10px] text-gray-400 leading-relaxed">
-                ไม่นับเป็นปัญหา: คาบคู่ที่ผูกกันไว้แล้ว {audit.dups.length - needFix.length} ชุด
-                — ติดกันอยู่แล้วตามตั้งใจ · เรื่องนี้แก้ด้วยการย้ายเวลา ไม่ใช่ย้ายห้อง
+                คาบคู่คือคาบเดียวที่ยาวสองชั่วโมง ทั้งสองชั่วโมงควรอยู่ห้องเดียวกัน
+                — ถ้าคนละห้อง เด็กต้องเก็บของย้ายห้องกลางคาบ และบนใบพิมพ์ก็อ่าน
+                เหมือนเป็นสองวิชา
+              </div>
+            ) : kind === "ซ้ำในวัน" ? (
+              <div className="text-[10px] text-gray-400 leading-relaxed">
+                ไม่นับเป็นปัญหา: คาบคู่ที่ผูกกันไว้แล้ว{" "}
+                {audit.dups.length - needFix.length - normalAdj} ชุด ·
+                เรียนติดกันสองคาบตามปกติ {normalAdj} ชุด (หลักสูตรกำหนดเป็นคาบเดี่ยว
+                หรือผูกไม่ได้เพราะล็อกไว้/คนละครู/คนละห้อง)
+                · เรื่องนี้แก้ด้วยการย้ายเวลา ไม่ใช่ย้ายห้อง
               </div>
             ) : (
               <div className="text-[10px] text-gray-400 leading-relaxed">
@@ -183,7 +226,47 @@ export const RoomAuditModal: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
           {/* รายการ */}
           <div className="flex-1 min-h-0 overflow-y-auto">
-            {kind === "ซ้ำในวัน" ? (
+            {kind === "คาบคู่คนละห้อง" ? (
+              audit.roomSplits.length === 0 ? (
+                <div className="px-4 py-10 text-center space-y-2">
+                  <div className="text-2xl">✅</div>
+                  <div className="text-xs text-gray-600">
+                    คาบคู่ทุกชุดอยู่ห้องเดียวกันทั้งสองชั่วโมง
+                  </div>
+                </div>
+              ) : (
+                <table className="w-full text-[11px]">
+                  <thead className="sticky top-0 bg-gray-50 border-b border-gray-200">
+                    <tr className="text-gray-500 text-[10px]">
+                      <th className="px-3 py-1.5 text-left font-semibold">ชั้น / วิชา</th>
+                      <th className="px-2 py-1.5 text-left font-semibold">เวลา</th>
+                      <th className="px-2 py-1.5 text-left font-semibold">ตอนนี้อยู่ห้อง</th>
+                      <th className="px-2 py-1.5 text-left font-semibold">ทำยังไงได้</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {audit.roomSplits.map((x) => (
+                      <tr key={x.key} className="border-b border-gray-100 hover:bg-rose-50/40">
+                        <td className="px-3 py-1.5">
+                          <b className="text-gray-800">{x.groupName}</b>{" "}
+                          <span className="text-gray-700">{x.subjectCode}</span>
+                          <div className="text-[10px] text-gray-500 truncate">{x.teacherName}</div>
+                        </td>
+                        <td className="px-2 py-1.5 whitespace-nowrap text-gray-600">
+                          {DAYS[x.day]} คาบ {x.periods.join("–")}
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <span className="text-rose-800 font-medium">
+                            {x.roomNames.map((n) => n ?? "ไม่มีห้อง").join(" → ")}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-gray-600">{x.note}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            ) : kind === "ซ้ำในวัน" ? (
               needFix.length === 0 ? (
                 <div className="px-4 py-10 text-center space-y-2">
                   <div className="text-2xl">✅</div>
@@ -327,7 +410,9 @@ const DupTag: React.FC<{ kind: DupKind | null }> = ({ kind }) => {
   if (!kind) return <span className="text-[10px] text-gray-300">—</span>;
   const look = kind === "คาบคู่"
     ? "bg-violet-50 text-violet-600 border-violet-200"
-    : kind === "ติดกันแต่ไม่ผูกคู่"
+    : kind === "ติดกันตามปกติ"
+    ? "bg-gray-100 text-gray-600 border-gray-300"
+    : kind === "ควรผูกเป็นคาบคู่"
     ? "bg-amber-100 text-amber-800 border-amber-300"
     : "bg-rose-100 text-rose-800 border-rose-300";
   return (

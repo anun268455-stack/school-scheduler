@@ -11,7 +11,7 @@
  * ที่ถูกอยู่แล้วด้วยจึงจะรู้ว่าไม่ได้ตกไป แต่มีคอลัมน์ "ต้องแก้" บอกไว้ให้ชัด
  * และเรียงให้ของที่ต้องแก้ขึ้นก่อน
  */
-import type { SameDayDup } from "./roomAudit";
+import { dupNeedsFix, type SameDayDup } from "./roomAudit";
 
 export interface DupExportInput {
   dups: SameDayDup[];
@@ -24,13 +24,20 @@ export interface DupExportInput {
 export const DUP_HEADERS = [
   "ต้องแก้", "ชั้น", "วัน", "รหัสวิชา", "ครู",
   "จำนวนคาบในวันนั้น", "คาบที่ลงไว้", "ห้อง", "เป็นอะไร", "หมายเหตุ",
+  "ผูกเป็นคาบคู่ไม่ได้เพราะ",
 ] as const;
 
-/** คาบคู่ที่ผูกกันไว้แล้วคือของที่ตั้งใจ ไม่ใช่ปัญหา */
-export const needsFix = (d: SameDayDup): boolean => d.kind !== "คาบคู่";
+/**
+ * ชุดไหนต้องลงมือแก้จริง
+ *
+ * คาบคู่ที่ผูกไว้แล้วคือของที่ตั้งใจ และ "ติดกันตามปกติ" ก็ไม่ใช่ความผิด —
+ * เคยนับรวมทั้งสองอย่างเป็นปัญหา เลยได้รายการยาวที่ย้ายคาบแก้เท่าไรก็ไม่หมด
+ */
+export const needsFix = (d: SameDayDup): boolean => dupNeedsFix(d);
 
 const order = (d: SameDayDup): number =>
-  d.kind === "ซ้ำคนละช่วง" ? 0 : d.kind === "ติดกันแต่ไม่ผูกคู่" ? 1 : 2;
+  d.kind === "ซ้ำคนละช่วง" ? 0 : d.kind === "ควรผูกเป็นคาบคู่" ? 1
+  : d.kind === "ติดกันตามปกติ" ? 2 : 3;
 
 /** เรียงให้ของที่ต้องแก้ขึ้นก่อน แล้วไล่ตามชั้น วัน รหัสวิชา */
 export function sortForCheck(dups: SameDayDup[]): SameDayDup[] {
@@ -48,7 +55,7 @@ export function dupRows(input: DupExportInput): string[][] {
       ? [...new Set(d.slotIds.map((id) => roomOf(id)).filter(Boolean))].join(" · ")
       : "";
     return [
-      needsFix(d) ? "ต้องแก้" : "ไม่ (ตั้งใจไว้)",
+      needsFix(d) ? "ต้องแก้" : "ไม่ต้องแก้",
       d.groupName,
       dayNames[d.day] ?? String(d.day),
       d.subjectCode,
@@ -58,6 +65,7 @@ export function dupRows(input: DupExportInput): string[][] {
       rooms,
       d.kind,
       d.note,
+      d.blockers.join(" · "),
     ];
   });
 }
