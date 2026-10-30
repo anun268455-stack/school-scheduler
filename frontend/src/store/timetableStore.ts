@@ -6,6 +6,7 @@ import type {
 } from "../types";
 import { DEFAULT_PERIODS } from "../types";
 import { buildImpactMap } from "../utils/conflictAnalyzer";
+import { loadFresh } from "../utils/freshLoad";
 import { parkAgrees, parkRows, provisionalCard, withoutRows, withRows }
   from "../utils/parkTray";
 import { buildSharesStudents, flattenGroups } from "../utils/groupHierarchy";
@@ -680,9 +681,15 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     }
   },
 
+  // โหลดตารางใหม่ทั้งก้อน — ทับของในจอก็ต่อเมื่อระหว่างทางไม่มีใครแก้อะไร
+  //
+  //   "มีบางครั้งเวลาย้ายคาบแล้วเด้งกลับแบบทีหลัง"
+  //
+  // ตารางหนัก 3.3 MB ดาวน์โหลดเป็นวินาที ถ้าระหว่างนั้นมีการย้ายคาบแล้วคำตอบ
+  // ที่กำลังมาถึงมาทับ สิ่งที่เพิ่งย้ายจะเด้งกลับที่เดิมโดยไม่มีอะไรฟ้อง
+  // เหตุผลเต็มอยู่ใน utils/freshLoad.ts
   loadSlots: async () => {
-    const slots = await api.fetchSlots();
-    set({ slots });
+    await loadFresh(() => api.fetchSlots(), (slots) => set({ slots }), writeGuard);
   },
 
   loadParked: async () => {
@@ -951,14 +958,20 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       // ไม่งั้นเซ็ตห้องแม่ลูกจะขาดครึ่ง
       // ส่งพี่น้องของเซ็ตห้องย่อยไปในชุดเดียวกัน เพราะเส้นทาง "ข้ามการตรวจ"
       // ย้ายเฉพาะที่สั่ง ไม่ได้พาไปให้เองเหมือนเส้นทางที่ตรวจ
-      await withWrite(() => api.moveSlots(
+      const landed = await withWrite(() => api.moveSlots(
         affected.map((s) => ({ slot_id: s.id, day: newDay, period: newPeriod })),
         true));
       // คาบคู่: เซิร์ฟเวอร์พาอีกครึ่งไปวางในคาบที่ติดกันให้แล้ว ("คาบคู่ มีคาบ
       // ที่คู่กันที่หายไป") แต่จอยังไม่รู้ว่าครึ่งนั้นไปอยู่ไหน — คาบติดกันจริง
-      // หรือไม่เป็นเรื่องของผังคาบของชั้นนั้น ซึ่งเซิร์ฟเวอร์เป็นคนรู้ จึงโหลด
-      // ตารางใหม่ทีเดียวแทนที่จะคิดกฎนั้นซ้ำที่ฝั่งนี้แล้วเสี่ยงคิดไม่ตรงกัน
-      if (slot.double_group_key) await get().loadSlots();
+      // หรือไม่เป็นเรื่องของผังคาบของชั้นนั้น ซึ่งเซิร์ฟเวอร์เป็นคนรู้
+      //
+      // เส้นทางนี้คืนแถวที่ขยับจริงมาให้อยู่แล้ว (ชื่อครบ) จึงใส่ลงไปเลย
+      // ของเดิมโหลดตารางทั้งก้อนกลับมา (3.3 MB) ซึ่งนอกจากช้าแล้วยังเป็นต้นตอ
+      // ของอาการ "ย้ายแล้วเด้งกลับทีหลัง" เพราะระหว่างที่โหลดอยู่คนจัดตาราง
+      // ย้ายคาบถัดไปไปแล้ว พอคำตอบมาถึงก็ทับของใหม่ด้วยของเก่า
+      if (landed?.slots?.length) {
+        set((st) => ({ slots: withRows(st.slots, landed.slots) }));
+      }
     } catch (err: unknown) {
       // The backend refuses a move that would double-book a class, teacher or
       // room. Put the lesson back and say why, rather than letting it snap
@@ -1204,9 +1217,8 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
 
   bulkLockSlots: async (params) => {
     const result = await withWrite(() => api.bulkLockSlots(params));
-    // Re-fetch slots to reflect changes
-    const slots = await api.fetchSlots();
-    set({ slots });
+    // Re-fetch slots to reflect changes — ผ่านด่านเดียวกับ loadSlots
+    await loadFresh(() => api.fetchSlots(), (slots) => set({ slots }), writeGuard);
     return result;
   },
 

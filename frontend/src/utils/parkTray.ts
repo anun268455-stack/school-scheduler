@@ -99,8 +99,13 @@ export function withRows(
   slots: TimetableSlot[], rows: TimetableSlot[],
 ): TimetableSlot[] {
   if (rows.length === 0) return slots;
-  const incoming = new Set(rows.map((r) => r.id));
-  return [...slots.filter((s) => !incoming.has(s.id)), ...rows];
+  const by = new Map(rows.map((r) => [r.id, r]));
+  const here = new Set(slots.map((s) => s.id));
+  // แถวที่มีอยู่แล้วทับอยู่กับที่ ไม่ย้ายไปท้ายรายการ — ช่องที่มีหลายคาบซ้อน
+  // กัน (ห้องย่อยเรียนพร้อมกัน) จะได้ไม่สลับลำดับบนจอทุกครั้งที่แตะคาบหนึ่ง
+  const out = slots.map((s) => by.get(s.id) ?? s);
+  for (const r of rows) if (!here.has(r.id)) out.push(r);
+  return out;
 }
 
 /**
