@@ -28,7 +28,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-29.1"
+API_BUILD = "2026-10-30.1"
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -14882,6 +14882,10 @@ def _propose_worker(job: str, snap: dict[str, Any],
                     "restarts": res["restarts"], "seconds": res["seconds"],
                     "gaps_before": res["gaps_before"],
                     "gaps_after": res["gaps_after"],
+                    "walk_before": res.get("walk_before", -1),
+                    "walk_after": res.get("walk_after", -1),
+                    "tries": res.get("tries", 1),
+                    "best_seed": res.get("best_seed"),
                     "polish_moves": res["polish_moves"],
                     "now": now, "proposed": new,
                     "over_capacity": over,

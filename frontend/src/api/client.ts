@@ -284,6 +284,10 @@ export interface ScheduleQuality {
   clash_teacher: number;
   clash_room:    number;
   no_room:       number;
+  /** ครูต้องเดินข้ามอาคารทันทีที่คาบจบ — ไม่มีเวลาพักเลย */
+  walk:          number;
+  /** ข้ามอาคารโดยมีคาบว่างคั่น ยังพอเดินทัน */
+  walk_gap:      number;
 }
 
 /** ห้องที่หลักสูตรขอคาบไว้เกินช่องที่มีจริง — ไม่มีเครื่องไหนแก้ได้ */
@@ -305,6 +309,12 @@ export interface ProposeSummary {
   /** รูก่อนและหลังรอบขยับให้สวย */
   gaps_before:   number;
   gaps_after:    number;
+  /** การเดินข้ามอาคารก่อนและหลังรอบขยับ */
+  walk_before?:  number;
+  walk_after?:   number;
+  /** ลองจัดกี่รอบ แล้วรอบไหนชนะ */
+  tries?:        number;
+  best_seed?:    number;
   polish_moves:  number;
   /** คาบที่เคยลงไม่ได้ แล้วลงได้หลังขยับ */
   rescued:       number;
@@ -980,7 +990,7 @@ export const fetchStateInfo = () =>
  * ต้องตรงกับ API_BUILD ใน mock_api.py และขยับพร้อมกันเสมอ — มีเทสต์
  * (scratchpad/apibuild.py) คอยจับไว้ว่าสองที่นี้ตรงกัน
  */
-export const EXPECTED_API_BUILD = "2026-10-29.1";
+export const EXPECTED_API_BUILD = "2026-10-30.1";
 
 export interface ApiBuildCheck {
   /** รุ่นที่เซิร์ฟเวอร์ตอบมา — null เมื่อเก่าจนไม่มีช่องนี้เลย */
