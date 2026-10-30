@@ -89,6 +89,34 @@ export function displayWidth(text: string): number {
   return (text ?? "").replace(THAI_ZERO_WIDTH, "").length;
 }
 
+/**
+ * ย่อขนาดตัวอักษรของบรรทัดหนึ่งจนพอดีช่อง
+ *
+ * ช่องหนึ่งในใบพิมพ์กว้างไม่กี่มิลลิเมตร ข้อความที่ยาวเกินเคยถูกตัดด้วย
+ * overflow:hidden บนบรรทัดที่จัดกึ่งกลาง ซึ่งกินทั้งหัวและท้าย —
+ * "ห้องประชุมเกียรติยศ" พิมพ์ออกมาเป็น "ประชุมเกียรติ" ซึ่งไม่มีใครตามหาเจอ
+ * ย่อลงหนึ่งถึงสองจุดจึงเก็บชื่อไว้ได้ทั้งชื่อ
+ *
+ * `floor` คือพื้นที่ย่อลงไปได้ลึกสุด เทียบกับขนาดตั้งต้น มีไว้กันไม่ให้ย่อจน
+ * อ่านไม่ออก บรรทัดที่อ่านแวบเดียว (รหัสวิชา · เลขห้อง) ตั้งพื้นไว้สูง ส่วน
+ * บรรทัดรองอย่างชื่อครูตั้งต่ำกว่าได้ เพราะยอมให้เล็กลงดีกว่าถูกตัดท้ายหาย
+ *
+ * วัดด้วย displayWidth ไม่ใช่จำนวนตัวอักษร — สระและวรรณยุกต์ไทยไม่กินความกว้าง
+ */
+export function fitFont(
+  text: string, basePt: string, maxChars: number, floor = 0.72,
+): string {
+  const base = parseFloat(basePt);
+  const n = displayWidth(text);
+  if (!base || n <= maxChars) return basePt;
+  const scaled = base * (maxChars / n);
+  return `${Math.max(scaled, base * floor).toFixed(1)}pt`;
+}
+
+/** กว้างได้เท่าไรก่อนจะถูกตัดท้ายด้วยจุดไข่ปลา แม้ย่อจนชนพื้นแล้ว */
+export const fitsWithin = (maxChars: number, floor = 0.72): number =>
+  maxChars / floor;
+
 interface FontLoader {
   load?: (font: string, text?: string) => Promise<unknown>;
 }

@@ -14,7 +14,8 @@ import type { Department, LessonRequirement, Period, Room, SchoolConfig, Student
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { myElectiveOption, slotTeacherNames, slotsForTeacher } from "../../utils/teacherSlots";
-import { displayWidth, FONT_STACK } from "../../utils/fonts";
+import { shortTeacher, teacherLine, withKhru } from "../../utils/teacherLabel";
+import { fitFont, FONT_STACK } from "../../utils/fonts";
 import { normalizePrintLayout, type CellLayout, type CellPartKey } from "../../utils/cellLayout";
 import { effectiveHomeroomIds } from "../../utils/homeroom";
 import { WorkloadReport } from "./WorkloadReport";
@@ -294,83 +295,6 @@ const TimetableBlock: React.FC<BlockProps> = ({
 };
 
 
-/**
- * "นางสาวกรรณิการ์ เจริญกิจ" → "กรรณิการ์".
- *
- * A printed cell is a few millimetres wide. The surname is the part nobody
- * needs to tell two teachers apart on a timetable, and the title in front of
- * the given name is three or four characters of the cell spent saying nothing
- * — every teacher has one.
- *
- * Thai titles run together with the name ("นางสาวกรรณิการ์"), so they are
- * stripped off the front of the first word, longest first: take "นาง" off
- * "นางสาวกรรณิการ์" and what is left is "สาวกรรณิการ์". Western titles stand
- * as their own word and are dropped with it.
- */
-// Sorted longest-first below, so the list can be written in any order: match
-// "นาง" before "นางสาว" and "นางสาวกรรณิการ์" comes out as "สาวกรรณิการ์".
-const THAI_TITLES = [
-  "นางสาว", "นาง", "นาย", "น.ส.", "ด.ช.", "ด.ญ.", "ครู",
-  "ดร.", "ผศ.ดร.", "รศ.ดร.", "ศ.ดร.", "ผศ.", "รศ.", "ศ.",
-  "ว่าที่ร้อยตรีหญิง", "ว่าที่ร้อยตรี", "ว่าที่ ร.ต.", "ว่าที่ร.ต.",
-  // Ranks: this school has a "สิบตำรวจตรี" on the staff list.
-  "สิบตำรวจตรี", "สิบตำรวจโท", "สิบตำรวจเอก", "จ่าสิบตำรวจ",
-  "ร้อยตำรวจตรี", "ร้อยตำรวจโท", "ร้อยตำรวจเอก",
-  "พันตำรวจตรี", "พันตำรวจโท", "พันตำรวจเอก",
-  "จ่าสิบตรี", "จ่าสิบโท", "จ่าสิบเอก",
-  "สิบตรี", "สิบโท", "สิบเอก", "ร้อยตรี", "ร้อยโท", "ร้อยเอก",
-  "พันตรี", "พันโท", "พันเอก",
-  "ด.ต.", "ส.ต.ต.", "ส.ต.ท.", "ส.ต.อ.", "ร.ต.ต.",
-].sort((a, b) => b.length - a.length);
-const WESTERN_TITLE = /^(mr|mrs|miss|ms|dr|prof|master|sir)\.?$/i;
-/** The same titles written hard against the name: "Mr.Charles", "Mr.Hu". */
-const WESTERN_GLUED = /^(mr|mrs|miss|ms|dr|prof)\.\s*(?=\S)/i;
-
-/**
- * The teacher line inside one printed cell.
- *
- * A lesson has one name, สอนร่วม has two, and a ลูกเสือ period can have four
- * standing with the same class. Four names do not fit a timetable cell: set
- * side by side they shrink the subject code to nothing or spill over the
- * border, and a printed sheet has no tooltip to recover them from. So past
- * two the cell counts instead, and the group sheet stays readable.
- */
-function teacherLine(s: TimetableSlot): string {
-  const names = slotTeacherNames(s).map(shortTeacher).filter(Boolean);
-  if (names.length <= 2) return names.join(" + ");
-  // A ลูกเสือ roster is a list the school keeps, not a cell caption: the
-  // first name carries no more meaning than the twelfth, so the cell counts.
-  if (s.is_activity_block) return `ครู ${names.length} คน`;
-  return `${names[0]} +${names.length - 1} คน`;
-}
-
-function shortTeacher(name: string | null | undefined): string {
-  if (!name) return "";
-  const parts = String(name).trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "";
-
-  // "Mr. Charles" / "Miss Risen" — the title is a word of its own.
-  let rest = parts;
-  if (WESTERN_TITLE.test(parts[0])) {
-    rest = parts.slice(1);
-    if (rest.length === 0) return parts[0];   // nothing but a title; keep it
-  }
-
-  // "Mr.Charles" — the same title with the space left out, which the
-  // whole-word test above cannot see.
-  let first = rest[0].replace(WESTERN_GLUED, "");
-  if (!first) first = rest[0];
-  for (const t of THAI_TITLES) {
-    if (first.startsWith(t)) {
-      const stripped = first.slice(t.length);
-      // Only drop the title if a name is actually left behind, so someone
-      // recorded as just "นาย" does not come out as an empty cell.
-      if (stripped) first = stripped;
-      break;                                   // longest match wins, once
-    }
-  }
-  return first;
-}
 
 /**
  * "131 ห้องคอมฯ3" → "131".
@@ -477,26 +401,6 @@ const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.1, fontSi
  * codes across a row sit on one line, the teachers on the next and the rooms
  * on the next — instead of every cell starting wherever its own content ended.
  */
-/**
- * Shrink a line's type until the words fit the column.
- *
- * A lesson column on a two-per-sheet A4 is about eleven characters wide.
- * Longer than that and the old cell clipped the text with overflow:hidden on
- * a centred flex line, which cuts BOTH ends: "ห้องประชุมเกียรติยศ" printed as
- * "ประชุมเกียรติ" — a room nobody can look up. A point or two smaller keeps
- * the whole name, and the floor stops it shrinking into something unreadable.
- */
-function fitFont(text: string, basePt: string, maxChars: number): string {
-  const base = parseFloat(basePt);
-  // วัดความกว้างจริง ไม่ใช่จำนวนตัวอักษร — สระกับวรรณยุกต์ไทยลอยอยู่บน-ล่าง
-  // ไม่กินที่ ถ้านับไปด้วยชื่อไทยจะถูกย่อเกินจำเป็น แล้วพิมพ์ออกมาเล็กกว่า
-  // ชื่ออังกฤษที่กว้างเท่ากัน
-  const n = displayWidth(text);
-  if (!base || n <= maxChars) return basePt;
-  const scaled = base * (maxChars / n);
-  return `${Math.max(scaled, base * 0.72).toFixed(1)}pt`;
-}
-
 function CellLines(
   { m, code, mid, room }: { m: Metrics; code: string; mid: string; room: string },
 ) {
@@ -512,6 +416,16 @@ function CellLines(
   };
   const maxChars: Record<CellPartKey, number> = {
     subject: 9, teacher: 11, room: 10, group: 11,
+  };
+  // ย่อลงได้ลึกแค่ไหนก่อนจะยอมให้ตัดท้ายด้วยจุดไข่ปลา
+  //
+  // รหัสวิชากับเลขห้องคือสองอย่างที่อ่านแวบเดียว จึงไม่ยอมให้เล็กมาก ส่วน
+  // บรรทัดชื่อครูยอมให้เล็กลงได้อีก เพราะคาบที่สอนร่วมกันอย่าง
+  // "ครูทัฬหมน + Charles" กว้าง 17 ช่อง ซึ่งพื้นเดิม (72%) รับได้แค่ราว 15
+  // แล้วชื่อครูอีกคนจะหายไปในจุดไข่ปลา — ชื่อเล็กลงยังอ่านได้ ชื่อที่ถูกตัด
+  // หายไม่เหลืออะไรให้อ่าน
+  const minScale: Record<CellPartKey, number> = {
+    subject: 0.72, teacher: 0.64, room: 0.72, group: 0.64,
   };
   const weight: Record<CellPartKey, number> = {
     subject: 600, teacher: 400, room: 500, group: 400,
@@ -546,7 +460,8 @@ function CellLines(
           <div key={part.key}
                style={{ ...line, fontWeight: weight[part.key], color: colour[part.key] }}>
             <span style={{ ...text,
-                           fontSize: fitFont(content[part.key], base, maxChars[part.key]) }}>
+                           fontSize: fitFont(content[part.key], base,
+                                             maxChars[part.key], minScale[part.key]) }}>
               {content[part.key]}
             </span>
           </div>
@@ -632,13 +547,15 @@ function RoomCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
   const s = slots[0];
   const classes = [...new Set(slots.map((x) => shortClass(x.group_name)).filter(Boolean))];
   const who = [...new Set(slots.flatMap((x) => slotTeacherNames(x)))]
-    .map((n) => shortTeacher(n));
+    .map((n) => shortTeacher(n)).filter(Boolean);
   return (
     <CellLines
       m={m}
       code={s.subject_code ?? s.subject_name ?? (s.is_elective ? "วิชาเสรี" : "")}
       mid={classes.join(" ")}
-      room={who.join(" ")}
+      // บรรทัดล่างของใบนี้เป็นชื่อครู (ไม่ใช่ชื่อห้องซึ่งซ้ำกับหัวกระดาษ) จึงใส่
+      // คำว่าครูนำหน้าด้วยกฎเดียวกับใบของชั้นเรียน
+      room={withKhru(who, " ")}
     />
   );
 }
