@@ -15,7 +15,9 @@ import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { myElectiveOption, slotTeacherNames, slotsForTeacher } from "../../utils/teacherSlots";
 import { shortTeacher, teacherLine, withKhru } from "../../utils/teacherLabel";
-import { fitFont, FONT_STACK } from "../../utils/fonts";
+import { fitFont, FONT_STACK, THAI_LINE_HEIGHT } from "../../utils/fonts";
+import { DEFAULT_FREE_LABEL, DEFAULT_FREE_THROUGH, freeCellLabel }
+  from "../../utils/freePeriodLabel";
 import { normalizePrintLayout, type CellLayout, type CellPartKey } from "../../utils/cellLayout";
 import { effectiveHomeroomIds } from "../../utils/homeroom";
 import { WorkloadReport } from "./WorkloadReport";
@@ -38,10 +40,19 @@ export interface PrintOptions {
    * report only subject teaching, so this is the school's call, not ours.
    */
   countActivities: boolean;
+  /**
+   * คำที่เขียนลงในคาบว่างของตารางชั้นเรียน — ว่าง = ไม่เขียนอะไร
+   *
+   *   "อยากให้คาบว่างในคาบที่ 1-8 ให้มีคำว่าเสริมการเรียนรู้"
+   */
+  freeLabel: string;
+  /** เขียนถึงคาบที่เท่าไร (เลขบนหัวตาราง) — คาบสุดท้ายของวันไม่เอา */
+  freeLabelThrough: number;
 }
 
 export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   mode: "group", selectedIds: [], sort: "name", perPage: 2, countActivities: true,
+  freeLabel: DEFAULT_FREE_LABEL, freeLabelThrough: DEFAULT_FREE_THROUGH,
 };
 
 interface PrintViewProps {
@@ -124,10 +135,18 @@ interface BlockProps {
   metrics:  Metrics;
   compact:  boolean;
   renderCell: (slots: TimetableSlot[]) => React.ReactNode;
+  /**
+   * คำที่เขียนในช่องที่ไม่มีคาบ — ใบของชั้นเรียนเท่านั้น
+   *
+   * ใบของครูกับใบของห้องสอนไม่ส่งมา เพราะช่องว่างในใบพวกนั้นแปลว่า "ครูว่าง"
+   * หรือ "ห้องว่าง" ไม่ได้แปลว่านักเรียนมีชั่วโมงเสริมการเรียนรู้
+   */
+  fillEmpty?: (printedNo: number, slots: TimetableSlot[]) => string | null;
 }
 
 const TimetableBlock: React.FC<BlockProps> = ({
   level, title, subtitle, grid, periods, schoolConfig, metrics: m, compact, renderCell,
+  fillEmpty,
 }) => {
   const cols = getDisplayPeriods(periods, level);
 
@@ -254,12 +273,14 @@ const TimetableBlock: React.FC<BlockProps> = ({
                     </td>
                   );
                 }
+                const cs = grid.get(`${dayIdx}-${p.period_num}`) ?? [];
+                const filler = fillEmpty?.(printedNum.get(p.period_num) ?? 0, cs) ?? null;
                 return (
                   <td key={p.period_num} style={TD}>
                     {/* A full-height wrapper, so the cell's three lines can
                         share the row however tall the row ends up. */}
                     <div style={{ height: "100%", minHeight: m.rowH }}>
-                      {renderCell(grid.get(`${dayIdx}-${p.period_num}`) ?? [])}
+                      {filler ? <FreeCell text={filler} m={m} /> : renderCell(cs)}
                     </div>
                   </td>
                 );
@@ -392,7 +413,10 @@ function minutesBetween(a?: string | null, b?: string | null): number | null {
 }
 
 // ── Cell renderers ───────────────────────────────────────────────────────────
-const cellText = (m: Metrics): React.CSSProperties => ({ lineHeight: 1.1, fontSize: m.cellFont });
+// ความสูงบรรทัดมาจาก THAI_LINE_HEIGHT — เตี้ยกว่านั้นแล้ววรรณยุกต์ที่ซ้อน
+// อยู่บนสระจะถูกเฉือนหายไปเงียบ ๆ ("เชื้อหมอ" กลายเป็น "เชือหมอ")
+const cellText = (m: Metrics): React.CSSProperties =>
+  ({ lineHeight: THAI_LINE_HEIGHT, fontSize: m.cellFont });
 
 /**
  * The three lines every cell has: subject code, teacher, room.
@@ -476,6 +500,27 @@ function scalePt(pt: string, scale: number): string {
   const n = parseFloat(pt);
   if (!Number.isFinite(n)) return pt;
   return `${(n * scale).toFixed(1)}pt`;
+}
+
+/**
+ * ช่องที่ไม่มีคาบ แต่เขียนคำกำกับไว้
+ *
+ * วางกลางช่องทั้งช่อง ไม่ใช่บนบรรทัดรหัสวิชา เพราะไม่ได้เป็นคาบเรียน — และ
+ * ใช้สีเทาเข้มแทนสีดำ เพื่อให้แยกออกจากคาบจริงเมื่อกวาดตามองทั้งหน้า
+ */
+function FreeCell({ text, m }: { text: string; m: Metrics }) {
+  return (
+    <div style={{
+      ...cellText(m), height: "100%", display: "flex",
+      alignItems: "center", justifyContent: "center", overflow: "hidden",
+    }}>
+      <span style={{
+        width: "100%", textAlign: "center", whiteSpace: "nowrap",
+        overflow: "hidden", textOverflow: "ellipsis", color: "#4b5563",
+        fontSize: fitFont(text, m.subFont, 11, 0.64),
+      }}>{text}</span>
+    </div>
+  );
 }
 
 function GroupCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
@@ -665,6 +710,10 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             grid={grid} periods={periods} schoolConfig={schoolConfig}
             metrics={m} compact={compact}
             renderCell={(cs) => <GroupCell slots={cs} m={m} />}
+            fillEmpty={(no, cs) => freeCellLabel(no, cs, {
+              label: options.freeLabel ?? DEFAULT_FREE_LABEL,
+              through: options.freeLabelThrough ?? DEFAULT_FREE_THROUGH,
+            })}
           />,
         );
       });

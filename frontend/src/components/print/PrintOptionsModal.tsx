@@ -11,6 +11,7 @@ import clsx from "clsx";
 import { useTimetableStore } from "../../store/timetableStore";
 import { flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import type { PrintOptions, PrintMode, PrintSort } from "./PrintView";
+import { DEFAULT_FREE_LABEL, DEFAULT_FREE_THROUGH } from "../../utils/freePeriodLabel";
 
 /** Sentinel id that matches nothing — "clear" without meaning "print everything". */
 const NONE_SELECTED = -1;
@@ -151,6 +152,49 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
               </select>
             </div>
           </div>
+
+          {/* คาบว่างเขียนว่าอะไร — ตารางชั้นเรียนเท่านั้น
+              
+              "อยากให้คาบว่างในคาบที่ 1-8 (ยกเว้นคาบ 9 และคาบพักเที่ยง) ให้มี
+               คำว่าเสริมการเรียนรู้"
+
+              ใบของครูกับใบของห้องสอนไม่มีตัวเลือกนี้ เพราะช่องว่างตรงนั้น
+              แปลว่าครูว่างหรือห้องว่าง ไม่ได้แปลว่านักเรียนมีชั่วโมงเสริม */}
+          {opt.mode === "group" && (
+            <div className="bg-sky-50 border border-sky-200 rounded-lg p-2.5">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input type="checkbox" className="mt-0.5"
+                  checked={!!opt.freeLabel?.trim()}
+                  onChange={(e) => set({ freeLabel: e.target.checked ? DEFAULT_FREE_LABEL : "" })} />
+                <span className="text-xs text-sky-900 leading-relaxed">
+                  <strong>เขียนคำกำกับในคาบว่าง</strong> — ช่องที่ไม่มีคาบลงจะไม่ปล่อยว่างเปล่า
+                </span>
+              </label>
+              {!!opt.freeLabel?.trim() && (
+                <div className="mt-2 pl-6 flex flex-wrap items-center gap-2">
+                  <input
+                    className="flex-1 min-w-[9rem] border border-sky-300 rounded px-2 py-1 text-xs"
+                    value={opt.freeLabel}
+                    onChange={(e) => set({ freeLabel: e.target.value })}
+                    placeholder={DEFAULT_FREE_LABEL}
+                  />
+                  <label className="flex items-center gap-1 text-[11px] text-sky-900 whitespace-nowrap">
+                    เขียนถึงคาบที่
+                    <input type="number" min={1} max={12}
+                      className="w-12 border border-sky-300 rounded px-1 py-1 text-xs text-center"
+                      value={opt.freeLabelThrough ?? DEFAULT_FREE_THROUGH}
+                      onChange={(e) => set({
+                        freeLabelThrough: Math.max(0, Number(e.target.value) || 0),
+                      })} />
+                  </label>
+                  <span className="w-full text-[11px] text-sky-700/80">
+                    คาบหลังจากนั้นปล่อยว่างไว้เหมือนเดิม · คาบพักเที่ยงเป็นคอลัมน์พัก
+                    จึงไม่มีช่องให้เขียนอยู่แล้ว
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* นับคาบกิจกรรมไหม — อัตรากำลังเท่านั้น */}
           {opt.mode === "workload" && (
