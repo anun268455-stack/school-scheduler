@@ -27,6 +27,9 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
   const { groups, teachers, departments, rooms, slots } = useTimetableStore();
   const [opt, setOpt]       = useState<PrintOptions>(value);
   const [search, setSearch] = useState("");
+  // เปิด/ปิดการเขียนคำกำกับ แยกจากตัวข้อความ ไม่งั้นพอลบคำจนหมดเพื่อจะพิมพ์
+  // ใหม่ ช่องกรอกก็หายไปทั้งช่อง — พิมพ์ต่อไม่ได้
+  const [labelOn, setLabelOn] = useState(!!value.freeLabel?.trim());
 
   const flat = useMemo(() => flattenGroups(groups), [groups]);
   const deptName = (id: number | null | undefined) =>
@@ -80,11 +83,24 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
   const allOn    = opt.selectedIds.length === 0;   // empty means "everything"
   const countSel = allOn ? universe.length : opt.selectedIds.filter((id) => universe.includes(id)).length;
 
-  const set = (patch: Partial<PrintOptions>) => {
-    const next = { ...opt, ...patch };
-    setOpt(next);
-    onChange(next);
-  };
+  /**
+   * แก้ตัวเลือกในหน้าต่างนี้
+   *
+   *   "เขียนไม่ได้"
+   *
+   * เก็บไว้ในหน้าต่างนี้อย่างเดียว ไม่ดันขึ้นไปที่หน้าหลักทุกครั้งที่แก้
+   * เพราะหน้าหลักวาดเอกสารสำหรับพิมพ์ทั้งชุดไว้ (94 ตาราง 47 หน้า ≈ 17,000
+   * จุดในหน้าเว็บ) การดันขึ้นไปจึงสั่งวาดใหม่ทั้งเอกสารทุกครั้ง — กดแป้นหนึ่ง
+   * ตัวก็วาดหนึ่งรอบ พิมพ์ภาษาไทยซึ่งต้องประกอบตัวอักษรหลายจังหวะจึงพิมพ์
+   * ไม่ติด และการติ๊กเลือกห้องทีละห้องก็หน่วงด้วยเหตุเดียวกัน
+   *
+   * หน้าหลักต้องการค่านี้ตอนจะพิมพ์จริงเท่านั้น (onConfirm) กับตอนปิดหน้าต่าง
+   * เพื่อให้เปิดมาใหม่แล้วยังเป็นค่าเดิม — ส่งให้ตอนนั้นพอ
+   */
+  const set = (patch: Partial<PrintOptions>) => setOpt((cur) => ({ ...cur, ...patch }));
+
+  /** ปิดหน้าต่าง — ส่งค่าที่ตั้งไว้ขึ้นไปเก็บ จะได้เปิดมาใหม่เป็นค่าเดิม */
+  const close = () => { onChange(opt); onClose(); };
 
   const toggle = (id: number) => {
     // Materialise "all" into a real list the first time something is unticked.
@@ -95,7 +111,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
   const sheets = Math.ceil(countSel / opt.perPage);
 
   return (
-    <ModalShell onClose={onClose} maxWidth="max-w-2xl">
+    <ModalShell onClose={close} maxWidth="max-w-2xl">
 
         <div className="flex items-center gap-3 bg-gray-800 px-5 py-4 shrink-0">
           <span className="text-2xl">🖨</span>
@@ -103,7 +119,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
             <h2 className="text-white font-bold text-base leading-tight">ตัวเลือกการพิมพ์</h2>
             <p className="text-gray-300 text-xs mt-0.5">กระดาษ A4 แนวตั้ง · เลือกได้ว่าจะพิมพ์อะไรบ้าง</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-lg leading-none">✕</button>
+          <button onClick={close} className="text-gray-400 hover:text-white text-lg leading-none">✕</button>
         </div>
 
         <div className="px-5 py-4 space-y-4 overflow-y-auto">
@@ -164,17 +180,22 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
             <div className="bg-sky-50 border border-sky-200 rounded-lg p-2.5">
               <label className="flex items-start gap-2 cursor-pointer">
                 <input type="checkbox" className="mt-0.5"
-                  checked={!!opt.freeLabel?.trim()}
-                  onChange={(e) => set({ freeLabel: e.target.checked ? DEFAULT_FREE_LABEL : "" })} />
+                  checked={labelOn}
+                  onChange={(e) => {
+                    setLabelOn(e.target.checked);
+                    set({ freeLabel: e.target.checked
+                      ? (opt.freeLabel?.trim() || DEFAULT_FREE_LABEL) : "" });
+                  }} />
                 <span className="text-xs text-sky-900 leading-relaxed">
                   <strong>เขียนคำกำกับในคาบว่าง</strong> — ช่องที่ไม่มีคาบลงจะไม่ปล่อยว่างเปล่า
                 </span>
               </label>
-              {!!opt.freeLabel?.trim() && (
+              {labelOn && (
                 <div className="mt-2 pl-6 flex flex-wrap items-center gap-2">
                   <input
-                    className="flex-1 min-w-[9rem] border border-sky-300 rounded px-2 py-1 text-xs"
-                    value={opt.freeLabel}
+                    className="flex-1 min-w-[9rem] border border-sky-300 rounded px-2 py-1 text-xs
+                               bg-white text-gray-900"
+                    value={opt.freeLabel ?? ""}
                     onChange={(e) => set({ freeLabel: e.target.value })}
                     placeholder={DEFAULT_FREE_LABEL}
                   />
@@ -187,10 +208,20 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
                         freeLabelThrough: Math.max(0, Number(e.target.value) || 0),
                       })} />
                   </label>
-                  <span className="w-full text-[11px] text-sky-700/80">
-                    คาบหลังจากนั้นปล่อยว่างไว้เหมือนเดิม · คาบพักเที่ยงเป็นคอลัมน์พัก
-                    จึงไม่มีช่องให้เขียนอยู่แล้ว
-                  </span>
+                  {!opt.freeLabel?.trim() ? (
+                    <span className="w-full text-[11px] text-amber-800">
+                      ยังไม่ได้ใส่คำ — คาบว่างจะยังปล่อยว่างไว้
+                      <button type="button" className="ml-1 underline font-semibold"
+                        onClick={() => set({ freeLabel: DEFAULT_FREE_LABEL })}>
+                        ใช้คำว่า “{DEFAULT_FREE_LABEL}”
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="w-full text-[11px] text-sky-700/80">
+                      คาบหลังจากนั้นปล่อยว่างไว้เหมือนเดิม · คาบพักเที่ยงเป็นคอลัมน์พัก
+                      จึงไม่มีช่องให้เขียนอยู่แล้ว
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -263,7 +294,7 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
               ? <>พิมพ์ <strong>{countSel}</strong> คน แยกเป็นตารางตามกลุ่มสาระ (ขึ้นหน้าใหม่ทุกกลุ่มสาระ)</>
               : <>จะได้ <strong>{sheets}</strong> แผ่น ({countSel} ตาราง × {opt.perPage} ต่อแผ่น)</>}
           </p>
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-lg font-medium">ยกเลิก</button>
+          <button onClick={close} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-lg font-medium">ยกเลิก</button>
           <button
             onClick={() => onConfirm(opt)}
             disabled={countSel === 0}
