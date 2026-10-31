@@ -21,6 +21,7 @@ import { normalizeScreenLayout, normalizePrintLayout, type CellLayout } from "..
 import {
   chooseOption, previewSlots, verdictAt, type GuidedStep,
 } from "../utils/guidedMove";
+import { stateAfter, tally, type DataState } from "../utils/serverWake";
 
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
@@ -48,6 +49,15 @@ const HOLD_CAP_MS = 20000;
 /** เริ่มถ่วงการโหลดไว้ตั้งแต่เมื่อไร — 0 = ไม่ได้ถ่วงอยู่ */
 let holdingSince = 0;
 let pollTimer: number | null = null;
+
+/**
+ * ลองกู้ข้อมูลหลังเซิร์ฟเวอร์ตื่น ได้ถี่สุดเท่าไร
+ *
+ * ถี่กว่านี้ไม่ได้ช่วยอะไร เพราะเหตุที่ยังไม่ได้ข้อมูลตอนที่เส้นเล็กตอบได้แล้ว
+ * คือเครื่องรับงานไม่ทัน ไม่ใช่เครื่องยังหลับ
+ */
+const RECOVER_MS = 8000;
+let lastRecoveryAt = 0;
 
 /**
  * Reload every collection without flipping `isLoading`, so another person's edit
@@ -238,6 +248,15 @@ interface TimetableStore {
   lastRevision:  number;                    // last server revision we rendered
   lastSyncedAt:  number | null;             // epoch ms of last successful poll
   syncState:     "connecting" | "live" | "offline";
+  /**
+   * เซิร์ฟเวอร์ตอบเรื่องข้อมูลแล้วหรือยัง — คนละเรื่องกับ syncState
+   *
+   * syncState บอกว่าการติดต่อรอบล่าสุดเป็นอย่างไร ส่วนตัวนี้บอกว่าสิ่งที่อยู่
+   * บนจอมาจากเซิร์ฟเวอร์จริงหรือเป็นแค่รายการเปล่าตั้งต้น ซึ่งเป็นเส้นแบ่งที่
+   * ทำให้หน้า "เริ่มสร้างตารางเรียน" ไม่เด้งขึ้นมาตอนเครื่องกำลังตื่น
+   * เหตุผลเต็มอยู่ใน utils/serverWake.ts
+   */
+  dataState:     DataState;
   remoteUpdates: number;                    // how many times someone else's edit arrived
   /**
    * The copy in this browser: when it was last written, and what is happening
@@ -298,6 +317,8 @@ interface TimetableStore {
   setYardPickMode:      (on: boolean) => void;
 
   loadAll:   () => Promise<void>;
+  /** ลองโหลดใหม่หลังต่อเซิร์ฟเวอร์ไม่ติด — เว้นระยะให้เอง */
+  retryLoad: (force?: boolean) => Promise<void>;
   loadSlots: () => Promise<void>;
   /** Never throws: a server that cannot answer leaves yardPicksError set. */
   loadYardPicks: () => Promise<void>;
@@ -412,6 +433,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   lastRevision:      -1,
   lastSyncedAt:      null,
   syncState:         "connecting",
+  dataState:         "loading",
   remoteUpdates:     0,
   lastSavePointAt:   null,
   savePointState:    "idle",
@@ -652,33 +674,81 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     if (on) void get().loadYardPicks();
   },
 
+  /**
+   * โหลดข้อมูลทั้งหมด — และบอกให้รู้ด้วยว่าเซิร์ฟเวอร์ตอบหรือไม่ตอบ
+   *
+   *   "ตอนนี้เหมือนว่ารอเซิร์ฟเวอร์นานมาก"
+   *
+   * ของเดิมทุกเส้นมี .catch ที่คืนค่าเดิม ซึ่งตอนเปิดหน้าใหม่คือรายการเปล่า
+   * เซิร์ฟเวอร์ที่ยังไม่ตื่นจึงกลายเป็น "โรงเรียนไม่มีข้อมูล" แบบไม่มีใครรู้
+   * แล้วหน้าตั้งค่าเริ่มต้นก็เด้งขึ้นมาเหมือนตารางทั้งเทอมหายไป
+   *
+   * ตอนนี้ของที่ล้มไม่ถูกเขียนทับ (ค่าเดิมคงอยู่) ของที่สำเร็จขึ้นจอ และผลรวม
+   * ของรอบนี้ถูกบันทึกไว้ที่ dataState เพื่อให้จอรู้ว่าความว่างเปล่าที่เห็น
+   * มาจากเซิร์ฟเวอร์หรือมาจากความเงียบ
+   */
   loadAll: async () => {
     set({ isLoading: true });
     try {
-      const [departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods, config] =
-        await Promise.all([
-          api.fetchDepartments().catch(() => get().departments),
-          api.fetchBuildings().catch(() => get().buildings),
-          api.fetchRooms().catch(() => get().rooms),
-          api.fetchGroups().catch(() => get().groups),
-          api.fetchTeachers().catch(() => get().teachers),
-          api.fetchSubjects().catch(() => get().subjects),
-          api.fetchRequirements().catch(() => get().requirements),
-          api.fetchSlots().catch(() => get().slots),
-          api.fetchPeriods().catch(() => get().periods.length ? get().periods : DEFAULT_PERIODS),
-          api.fetchSchoolConfig().catch(() => null),
-        ]);
+      // ทุกเส้นออกพร้อมกันเหมือนเดิม — เวลารวมคือเส้นที่ช้าที่สุด ไม่ใช่ผลบวก
+      // ค่าตั้งโรงเรียนยิงไปด้วยในจังหวะเดียวกัน แต่แยกถือไว้เพราะมันไม่ได้
+      // ทับค่าเดิม มันผสมเข้ากับค่าเดิม
+      const configAsked = api.fetchSchoolConfig().catch(() => null);
+      const results = await Promise.allSettled([
+        api.fetchDepartments(),  api.fetchBuildings(), api.fetchRooms(),
+        api.fetchGroups(),       api.fetchTeachers(),  api.fetchSubjects(),
+        api.fetchRequirements(), api.fetchSlots(),     api.fetchPeriods(),
+      ]);
+      const [departments, buildings, rooms, groups, teachers, subjects,
+             requirements, slots, periods] = results;
+      // เส้นที่ล้มเก็บของเดิมไว้ ไม่เขียนทับด้วยความว่าง
+      const keep = <T,>(r: PromiseSettledResult<T>, was: T): T =>
+        r.status === "fulfilled" ? r.value : was;
+      const state = stateAfter(tally(results));
+      // ค่าสำรองอ่านจากสถานะ ณ ตอนใส่ ไม่ใช่ภาพก่อนยิงคำขอ — ระหว่างรอคำตอบ
+      // อาจมีการย้ายคาบเกิดขึ้น ถ้าเอาภาพเก่ามาใส่คืน คาบที่เพิ่งย้ายจะเด้งกลับ
+      // ที่เดิมโดยไม่มีอะไรฟ้อง ซึ่งเป็นอาการเดียวกับที่เพิ่งแก้ไปเมื่อวาน
+      set((st) => ({
+        departments:  keep(departments,  st.departments),
+        buildings:    keep(buildings,    st.buildings),
+        rooms:        keep(rooms,        st.rooms),
+        groups:       keep(groups,       st.groups),
+        teachers:     keep(teachers,     st.teachers),
+        subjects:     keep(subjects,     st.subjects),
+        requirements: keep(requirements, st.requirements),
+        slots:        keep(slots,        st.slots),
+        periods:      keep(periods, st.periods.length ? st.periods : DEFAULT_PERIODS),
+        dataState:    state,
+      }));
+      if (state !== "ready") return;    // เครื่องยังไม่ตื่น อย่าไปรบกวนต่อ
       // ถาดพักคาบโหลดแยก — เซิร์ฟเวอร์รุ่นเก่ายังไม่มีเส้นนี้ ปล่อยให้ถาดว่าง
       // ไปก่อนดีกว่าทำให้ทั้งหน้าโหลดไม่ขึ้น
       void get().loadParked();
-      set({ departments, buildings, rooms, groups, teachers, subjects, requirements, slots, periods });
       void get().loadYardPicks();
       // The school name, logo and signatories live on the server too, so a
       // refresh — or the other person's browser — shows the same header.
+      const config = await configAsked;
       if (config) set((st) => ({ schoolConfig: { ...st.schoolConfig, ...config } }));
     } finally {
       set({ isLoading: false });
     }
+  },
+
+  /**
+   * ลองโหลดใหม่หลังต่อเซิร์ฟเวอร์ไม่ติด — ที่เดียวที่คุมจังหวะการลองซ้ำ
+   *
+   * มีผู้เรียกสองทาง: ซิงค์สดที่เจอว่าเครื่องตื่นแล้ว และปุ่ม "ลองโหลดใหม่เลย"
+   * บนหน้ารอ ทั้งสองทางจึงไม่ยิงซ้อนกัน และการกดปุ่มรัว ๆ ไม่กลายเป็นการโหลด
+   * ทั้งโรงเรียนซ้อนกันหลายชุด
+   *
+   * คนกดปุ่มเองได้ทันที (force) เพราะคนที่กดคือคนที่ตั้งใจจะไม่รอ — แต่ยังไม่
+   * ยิงถ้ากำลังโหลดอยู่แล้ว เพราะนั่นคือสิ่งที่เขาต้องการอยู่แล้ว
+   */
+  retryLoad: async (force = false) => {
+    if (get().isLoading) return;
+    if (!force && Date.now() - lastRecoveryAt < RECOVER_MS) return;
+    lastRecoveryAt = Date.now();
+    await get().loadAll();
   },
 
   // โหลดตารางใหม่ทั้งก้อน — ทับของในจอก็ต่อเมื่อระหว่างทางไม่มีใครแก้อะไร
@@ -837,6 +907,22 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
           serverStoreError: info.store === "file" ? "ยังไม่ได้เก็บลงฐานข้อมูล"
             : (info.store_error ?? null),
         });
+        // เซิร์ฟเวอร์ตอบแล้ว แต่หน้านี้ยังไม่เคยได้ข้อมูลมาเลย
+        //
+        // นี่คือจังหวะที่เครื่องเพิ่งตื่นหลังจากหลับ และเป็นจุดที่ของเดิมพลาด:
+        // รอบแรกที่สำเร็จแค่จดเลขรุ่นแล้วจบ จอจึงค้างว่างอยู่อย่างนั้นทั้งที่
+        // เซิร์ฟเวอร์พร้อมแล้ว คนใช้ต้องกดรีเฟรชเองโดยไม่มีอะไรบอก
+        //
+        // จดเลขรุ่นไว้ก่อนแล้วไปโหลด เพื่อไม่ให้รอบถัดไปเข้ามาโหลดซ้ำซ้อน
+        //
+        // retryLoad เว้นระยะไว้ให้ เผื่อกรณีที่เส้นเล็กตอบได้แต่เส้นข้อมูลยัง
+        // ล้มหมด (เครื่องรับงานไม่ทัน)
+        if (get().dataState !== "ready") {
+          set({ lastRevision: revision });
+          holdingSince = 0;
+          await get().retryLoad();
+          return;
+        }
         if (revision === prev) { holdingSince = 0; return; }
         if (prev === -1) {
           set({ lastRevision: revision });

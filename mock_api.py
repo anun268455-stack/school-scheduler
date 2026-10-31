@@ -5,6 +5,7 @@ Run: python mock_api.py
 from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from typing import Any, Callable
 import copy as _copy
 import random
@@ -28,7 +29,29 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-30.1"
+API_BUILD = "2026-10-31.1"
+
+# บีบอัดคำตอบก่อนส่งออก
+#
+#   "ตอนนี้เหมือนว่ารอเซิร์ฟเวอร์นานมาก"
+#
+# ตารางทั้งโรงเรียนคือ 2,735 แถว เติมชื่อครบแล้วส่งออกไปดิบ ๆ 4.5 MB และ
+# หน้าเว็บขอตารางใหม่ทุกครั้งที่มีใครแก้อะไร บนเครื่องฟรีที่แบ่ง CPU กันใช้
+# เวลาเกือบทั้งหมดที่คนนั่งรอ คือเวลาที่ไบต์วิ่งอยู่บนสาย ไม่ใช่เวลาคิด
+#
+# วัดกับตารางขนาดจริง: 4.52 MB → 0.35 MB เล็กลง 13 เท่า ใช้เวลาบีบ 37 ms
+# (ระดับ 9 เล็กลงกว่านี้แค่ 3% แต่ใช้เวลา 121 ms — บนเครื่องที่ CPU น้อย
+# การแลกนั้นขาดทุน จึงเลือกระดับ 5)
+#
+# ข้ามคำตอบสั้น เพราะ /api/state/version ถูกถามทุก 3.5 วินาที การบีบอัดของ
+# ไม่ถึงกิโลไบต์มีแต่เสีย
+#
+# ลำดับสำคัญ: add_middleware แทรกจากข้างหน้า ตัวที่เพิ่มทีหลังจึงอยู่ชั้นนอกกว่า
+# จึงเพิ่ม GZip ก่อน CORS เพื่อให้ GZip อยู่ชั้นในสุด ติดกับตัวจัดเส้นทาง —
+# หัวข้อ CORS ถูกเติมหลังการบีบอัดแล้ว และติดไปกับคำตอบที่ GZip สร้างทุกใบ
+# (ชั้นนอกสุดจริง ๆ คือ _bump_revision ด้านล่าง ซึ่งเพิ่มทีหลังสุด — ตัวนับรุ่น
+# ต้องเห็นสถานะของคำตอบ ไม่ใช่เนื้อของมัน จึงอยู่นอกการบีบอัดได้โดยไม่กระทบกัน)
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Live collaboration: data revision counter ─────────────────────────────────
@@ -13445,6 +13468,15 @@ def _save_state() -> None:
         _save_state_to_file()
 
 
+# พักกี่วินาทีก่อนลองต่อฐานข้อมูลรอบถัดไป — จำนวนรอบคือ len(ตารางนี้) + 1
+#
+# เริ่มสั้นแล้วค่อยถอยยาวขึ้น เพราะฐานข้อมูลส่วนใหญ่ตื่นในหนึ่งวินาที การพัก
+# สองวินาทีตั้งแต่รอบแรกคือการต่อแถวรอโดยไม่จำเป็นทุกครั้งที่เซิร์ฟเวอร์เพิ่งตื่น
+# — และทุกวินาทีตรงนี้คือวินาทีที่คนเปิดหน้าเว็บนั่งรอ เพราะงานนี้ทำตอน import
+# เซิร์ฟเวอร์ยังไม่เริ่มรับคำขอจนกว่าจะเสร็จ
+_DB_WAKE_BACKOFF = (0.5, 1, 2, 3, 4)
+
+
 def _load_state() -> bool:
     """Bring the data back, preferring the copy that survives a restart.
 
@@ -13454,19 +13486,26 @@ def _load_state() -> bool:
     starting cold. Giving up on the first timeout means coming up on the
     shipped data with the real timetable sitting untouched in a database this
     process decided it could not reach.
+
+    ทุกวินาทีตรงนี้คือวินาทีที่คนเปิดหน้าเว็บนั่งรอ เพราะงานนี้ทำตอน import
+    เซิร์ฟเวอร์ยังไม่เริ่มรับคำขอจนกว่าจะเสร็จ ของเดิมพักยาวตั้งแต่รอบแรก
+    (2 วินาที) ทั้งที่ฐานข้อมูลส่วนใหญ่ตื่นใน ๑ วินาที — คือรอเกินจำเป็น
+    ทุกครั้งที่เซิร์ฟเวอร์เพิ่งตื่น ตารางใหม่เริ่มสั้นแล้วค่อยถอยยาวขึ้น
+    รวมเวลาพักน้อยกว่าเดิม (10.5 วินาที) แต่ได้ลองมากกว่าเดิมสองครั้ง
     """
     global _STORE_KIND, _STORE_ERROR, _DB_HAD_DATA
     if _DB_URL:
+        backoff = _DB_WAKE_BACKOFF
         blob, last = None, None
-        for attempt in range(4):
+        for attempt in range(len(backoff) + 1):
             try:
                 blob = _db_read()
                 last = None
                 break
             except Exception as exc:               # noqa: BLE001
                 last = exc
-                if attempt < 3:
-                    _time.sleep(2 * (attempt + 1))  # 2s, 4s, 6s — ~12s of waking
+                if attempt < len(backoff):
+                    _time.sleep(backoff[attempt])
         if last is None:
             _STORE_KIND, _STORE_ERROR = "postgres", None
             _threading.Thread(target=_writer_loop, daemon=True).start()

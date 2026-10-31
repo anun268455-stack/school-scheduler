@@ -22,6 +22,7 @@ import { YardPickModal, type YardCol } from "./YardPickModal";
 import { YardRescueModal } from "./YardRescueModal";
 import { ClassProblemsModal, type ShortRow } from "./ClassProblemsModal";
 import { useTimetableStore } from "../../store/timetableStore";
+import { showServerWaking, type DataState } from "../../utils/serverWake";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
 import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
@@ -360,6 +361,62 @@ const DraggableWrapper: React.FC<{
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// รออยู่ ไม่ใช่พัง
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * หน้าที่ขึ้นแทน ตอนเซิร์ฟเวอร์ยังไม่ตอบ
+ *
+ * สิ่งสำคัญที่สุดที่หน้านี้ต้องสื่อคือ "ข้อมูลยังอยู่" เพราะคนที่เจอจอเปล่า
+ * พร้อมหน้าตั้งค่าที่ยังไม่ติ๊กอะไรเลย จะคิดว่างานทั้งเทอมหายไป แล้วอาจลงมือ
+ * กรอกใหม่ทับของเดิม ซึ่งเป็นความเสียหายที่แก้คืนยากกว่าการรอ
+ *
+ * นาฬิกาเดินให้เห็นว่ารออยู่จริง ไม่ใช่ค้าง — การรอที่นับได้ทนได้ง่ายกว่าการ
+ * รอที่ไม่รู้ว่านานแค่ไหนแล้ว
+ */
+const ServerWaking: React.FC<{ state: DataState; onRetry: () => void }> = ({
+  state, onRetry,
+}) => {
+  const [secs, setSecs] = useState(0);
+  React.useEffect(() => {
+    const t = setInterval(() => setSecs((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const waking = state === "unreachable";
+  return (
+    <div className="flex-1 overflow-y-auto flex items-start justify-center py-16 px-4">
+      <div className="w-full max-w-md text-center">
+        <span className="inline-block w-10 h-10 rounded-full border-[3px] border-gray-200
+                         border-t-indigo-500 animate-spin" />
+        <h2 className="text-lg font-bold text-gray-800 mt-4">
+          {waking ? "กำลังปลุกเซิร์ฟเวอร์" : "กำลังโหลดข้อมูล"}
+        </h2>
+        <p className="text-sm text-gray-500 mt-2 leading-relaxed">
+          {waking
+            ? "เซิร์ฟเวอร์หลับเมื่อไม่มีคนใช้งานสักพัก การเปิดครั้งแรกจึงต้องรอให้ตื่น "
+              + "มักใช้เวลาไม่เกินหนึ่งนาที ข้อมูลจะขึ้นเองเมื่อตื่นแล้ว ไม่ต้องกดอะไร"
+            : "กำลังดึงตารางจากเซิร์ฟเวอร์"}
+        </p>
+        {waking && (
+          <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200
+                        rounded-lg px-3 py-2 mt-3">
+            ตารางและข้อมูลของโรงเรียนยังอยู่ครบในฐานข้อมูล — นี่คือการรอเครื่องตื่น
+            ไม่ใช่ข้อมูลหาย
+          </p>
+        )}
+        <p className="text-xs text-gray-400 mt-4 tabular-nums">รอมาแล้ว {secs} วินาที</p>
+        <button
+          onClick={onRetry}
+          className="mt-4 px-4 py-2 rounded-lg border border-gray-300 bg-white text-sm
+                     text-gray-700 hover:border-indigo-300 hover:text-indigo-700"
+        >
+          ลองโหลดใหม่เลย
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main Grid
 // ─────────────────────────────────────────────────────────────────────────────
 interface TimetableGridProps { onNav?: (page: string) => void }
@@ -373,6 +430,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     yardPickMode, yardPicks, yardList, removeYardPicks, schoolConfig,
     guideMode, guideMovingId, guideSteps, guidePick, guideChoose, guideBack,
     guideClear, guideApply,
+    dataState, retryLoad,
   } = useTimetableStore();
 
   const [validAlert,   setValidAlert]   = useState<string | null>(null);
@@ -724,6 +782,21 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [undo, undoStack.length]);
+
+  // ยังไม่ได้ยินเสียงเซิร์ฟเวอร์ — จอว่างไม่ได้แปลว่าโรงเรียนไม่มีข้อมูล
+  //
+  //   "ตอนนี้เหมือนว่ารอเซิร์ฟเวอร์นานมาก"
+  //
+  // ของเดิมตกมาถึงหน้าตั้งค่าเริ่มต้นตรง ๆ เพราะทุกรายการเป็นศูนย์ คนที่เปิด
+  // หน้าเว็บตอนเครื่องกำลังตื่นจึงเห็น "เริ่มสร้างตารางเรียน" พร้อมขั้นตอนที่
+  // ยังไม่ติ๊กแม้แต่ข้อเดียว เหมือนงานทั้งเทอมหายไป
+  //
+  // แต่ถ้าตารางยังอยู่บนจอ (เซิร์ฟเวอร์ล่มกลางทาง) ห้ามบัง — ป้ายบนแถบ
+  // เครื่องมือบอกเรื่องการติดต่อได้อยู่แล้ว
+  if (showServerWaking(dataState,
+        { groups: groups.length, teachers: teachers.length, slots: slots.length })) {
+    return <ServerWaking state={dataState} onRetry={() => void retryLoad(true)} />;
+  }
 
   if (!selectedGroupId && !selectedTeacherId && !selectedRoomId) {
     const steps = [

@@ -6,6 +6,7 @@ import clsx from "clsx";
 import { useReactToPrint } from "react-to-print";
 
 import { useTimetableStore } from "../../store/timetableStore";
+import { syncChip } from "../../utils/serverWake";
 import { SolverWidget } from "../solver/SolverWidget";
 import { RepairClassesModal } from "../solver/RepairClassesModal";
 import { BalanceTeachersModal } from "../solver/BalanceTeachersModal";
@@ -149,8 +150,11 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     yardPickMode, setYardPickMode,
     guideMode, setGuideMode,
     lockAll, unlockAll,
-    liveSync, setLiveSync, syncState, remoteUpdates, isSolving, runSolver,
+    liveSync, setLiveSync, syncState, dataState, remoteUpdates, isSolving, runSolver,
   } = useTimetableStore();
+
+  // ป้ายสถานะการติดต่อ — ตัวตัดสินอยู่ใน utils/serverWake เพื่อทดสอบได้
+  const chip = syncChip(liveSync, syncState, dataState);
 
   const [showSolver,  setShowSolver]  = useState(false);
   const [showRepair,  setShowRepair]  = useState(false);
@@ -379,24 +383,29 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
           onClick={() => setLiveSync(!liveSync)}
           title={
             !liveSync ? "ซิงค์อัตโนมัติปิดอยู่ — คลิกเพื่อเปิด"
-            : syncState === "offline" ? "ต่อเซิร์ฟเวอร์ไม่ได้ — กำลังลองใหม่"
+            : chip.tone === "waking"
+              ? "เซิร์ฟเวอร์หลับเมื่อไม่มีคนใช้ กำลังปลุกให้ — ไม่ต้องทำอะไร "
+                + "ข้อมูลจะขึ้นเองเมื่อตื่น"
+            : chip.tone === "offline" ? "ต่อเซิร์ฟเวอร์ไม่ได้ — กำลังลองใหม่"
             : "ซิงค์อัตโนมัติเปิดอยู่ — เห็นการแก้ไขของคนอื่นโดยไม่ต้องรีเฟรช"
           }
           className={clsx(
             "flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-medium border transition-colors",
-            !liveSync        ? "bg-gray-800 border-gray-600 text-gray-400 hover:text-gray-200"
-            : syncState === "offline" ? "bg-red-900/40 border-red-700 text-red-300"
+            chip.tone === "off"     ? "bg-gray-800 border-gray-600 text-gray-400 hover:text-gray-200"
+            : chip.tone === "waking"  ? "bg-amber-900/40 border-amber-700 text-amber-300"
+            : chip.tone === "offline" ? "bg-red-900/40 border-red-700 text-red-300"
             : "bg-emerald-900/40 border-emerald-700 text-emerald-300",
           )}
         >
           <span className={clsx(
             "inline-block w-1.5 h-1.5 rounded-full",
-            !liveSync ? "bg-gray-500"
-            : syncState === "offline" ? "bg-red-400"
+            chip.tone === "off"     ? "bg-gray-500"
+            : chip.tone === "waking"  ? "bg-amber-400 animate-pulse"
+            : chip.tone === "offline" ? "bg-red-400"
             : "bg-emerald-400 animate-pulse",
           )} />
-          {!liveSync ? "ซิงค์ปิด" : syncState === "offline" ? "ออฟไลน์" : "ซิงค์สด"}
-          {liveSync && syncState === "live" && remoteUpdates > 0 && (
+          {chip.label}
+          {chip.tone === "live" && remoteUpdates > 0 && (
             <span className="text-emerald-400/70">·{remoteUpdates}</span>
           )}
         </button>
