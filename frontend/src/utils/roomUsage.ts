@@ -13,16 +13,28 @@ export interface RoomSlotLike {
   room_id: number | null;
   day:     number;
   period:  number;
+  /** คาบเสรี: ห้องอยู่ที่วิชาแต่ละวิชา ไม่ได้อยู่ที่ตัวคาบ */
+  elective_options?: { room_id?: number | null }[] | null;
 }
 
-/** ห้อง -> ชั่วโมงที่ถูกใช้ (ไม่ซ้ำ day-period) */
+/**
+ * ห้อง -> ชั่วโมงที่ถูกใช้ (ไม่ซ้ำ day-period)
+ *
+ * นับห้องของวิชาในคาบเสรีด้วย เพราะช่องห้องของตัวคาบเสรีว่างไว้เสมอ ถ้าไม่นับ
+ * ห้องที่ใช้สอนวิชาเสรีจะรายงานว่า "ไม่เคยถูกใช้" แล้วหลุดจากใบพิมพ์ตารางการ
+ * ใช้ห้องไปทั้งใบ (ดู roomsToPrint ข้างล่าง ที่ตัดห้องที่ไม่มีคาบออก)
+ */
 export function roomHoursOf<S extends RoomSlotLike>(slots: S[]): Map<number, Set<string>> {
   const out = new Map<number, Set<string>>();
-  for (const s of slots) {
-    if (s.room_id == null) continue;
-    const at = out.get(s.room_id) ?? new Set<string>();
+  const mark = (roomId: number | null | undefined, s: RoomSlotLike): void => {
+    if (roomId == null) return;
+    const at = out.get(roomId) ?? new Set<string>();
     at.add(`${s.day}-${s.period}`);
-    out.set(s.room_id, at);
+    out.set(roomId, at);
+  };
+  for (const s of slots) {
+    mark(s.room_id, s);
+    for (const o of s.elective_options ?? []) mark(o.room_id, s);
   }
   return out;
 }

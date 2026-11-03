@@ -455,8 +455,19 @@ export const unplaceElectivePool = (id: number) =>
 export const addPoolOption = (id: number, d: { subject_id: number; teacher_id?: number; label?: string }) =>
   api.post<ElectivePool>(`/elective-pools/${id}/options`, d).then((r) => r.data);
 
-export const updatePoolOption = (id: number, key: number, d: { teacher_id?: number; subject_id?: number; label?: string }) =>
-  api.put<ElectivePool>(`/elective-pools/${id}/options/${key}`, d).then((r) => r.data);
+/**
+ * เปลี่ยนครู หรือห้องสอน ของวิชาหนึ่งในคาบเสรี
+ *
+ *   "ครูมาบอกว่าต้องการห้องสอนที่นี้"
+ *
+ * ห้องอยู่ที่วิชา ไม่ได้อยู่ที่คาบ เพราะทุกวิชาในคาบเสรีเรียนพร้อมกันคนละห้อง
+ * ตั้งที่นี่ครั้งเดียวแล้วเซิร์ฟเวอร์พาไปให้ทุกห้องเรียนในหน้าต่างนั้นเอง
+ * `room_id: null` = เอาห้องออก
+ */
+export const updatePoolOption = (id: number, key: number, d: {
+  teacher_id?: number; subject_id?: number; label?: string;
+  room_id?: number | null;
+}) => api.put<ElectivePool>(`/elective-pools/${id}/options/${key}`, d).then((r) => r.data);
 
 export const deletePoolOption = (id: number, key: number) =>
   api.delete<ElectivePool>(`/elective-pools/${id}/options/${key}`).then((r) => r.data);
@@ -990,7 +1001,7 @@ export const fetchStateInfo = () =>
  * ต้องตรงกับ API_BUILD ใน mock_api.py และขยับพร้อมกันเสมอ — มีเทสต์
  * (scratchpad/apibuild.py) คอยจับไว้ว่าสองที่นี้ตรงกัน
  */
-export const EXPECTED_API_BUILD = "2026-10-31.1";
+export const EXPECTED_API_BUILD = "2026-11-03.1";
 
 export interface ApiBuildCheck {
   /** รุ่นที่เซิร์ฟเวอร์ตอบมา — null เมื่อเก่าจนไม่มีช่องนี้เลย */

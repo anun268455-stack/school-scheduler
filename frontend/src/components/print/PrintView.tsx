@@ -14,6 +14,7 @@ import type { Department, LessonRequirement, Period, Room, SchoolConfig, Student
 import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { myElectiveOption, slotTeacherNames, slotsForTeacher } from "../../utils/teacherSlots";
+import { optionsInRoom, roomNameForTeacher, slotUsesRoom } from "../../utils/electiveRooms";
 import { shortTeacher, teacherLine, withKhru } from "../../utils/teacherLabel";
 import { fitFont, FONT_STACK, THAI_LINE_HEIGHT } from "../../utils/fonts";
 import { DEFAULT_FREE_LABEL, DEFAULT_FREE_THROUGH, freeCellLabel }
@@ -573,7 +574,9 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
       mid={mine?.label ?? (s.is_activity_block && s.activity_scope
             ? s.activity_scope
             : classes.join(" "))}
-      room={roomNumber(s.room_name)}
+      // ห้องของครูคนนี้ ไม่ใช่ห้องของคาบ — ในคาบเสรีแต่ละวิชาอยู่คนละห้อง
+      // ของเดิมใบนี้เว้นช่องห้องว่างไว้ทุกคาบเสรี เพราะคาบเสรีไม่มีห้องของตัวเอง
+      room={roomNumber(roomNameForTeacher(s, teacherId) ?? s.room_name)}
     />
   );
 }
@@ -587,16 +590,26 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
  * ห้องหนึ่งอาจมีหลายห้องเรียนในชั่วโมงเดียวได้จริง — คาบที่สอนรวมสองห้องย่อย
  * หรือคาบกิจกรรมที่ใช้ห้องร่วมกัน จึงรวมชื่อห้องเรียนไว้ในบรรทัดเดียว
  */
-function RoomCell({ slots, m }: { slots: TimetableSlot[]; m: Metrics }) {
+function RoomCell({ slots, m, roomId }: {
+  slots: TimetableSlot[]; m: Metrics; roomId?: number;
+}) {
   if (slots.length === 0) return null;
   const s = slots[0];
   const classes = [...new Set(slots.map((x) => shortClass(x.group_name)).filter(Boolean))];
-  const who = [...new Set(slots.flatMap((x) => slotTeacherNames(x)))]
-    .map((n) => shortTeacher(n)).filter(Boolean);
+  // คาบเสรีมีหลายวิชาเรียนพร้อมกันคนละห้อง ใบของห้องนี้ต้องเขียนวิชาที่สอนใน
+  // ห้องนี้ ไม่ใช่ "วิชาเสรี" ลอย ๆ และไม่ใช่ครูของทุกวิชาในคาบนั้น
+  const here = roomId != null
+    ? slots.flatMap((x) => optionsInRoom(x, roomId))
+    : [];
+  const who = (here.length
+    ? [...new Set(here.map((o) => o.teacher_name ?? null))]
+    : [...new Set(slots.flatMap((x) => slotTeacherNames(x)))]
+  ).filter((n): n is string => !!n).map((n) => shortTeacher(n)).filter(Boolean);
   return (
     <CellLines
       m={m}
-      code={s.subject_code ?? s.subject_name ?? (s.is_elective ? "วิชาเสรี" : "")}
+      code={here[0]?.code ?? here[0]?.label
+            ?? s.subject_code ?? s.subject_name ?? (s.is_elective ? "วิชาเสรี" : "")}
       mid={classes.join(" ")}
       // บรรทัดล่างของใบนี้เป็นชื่อครู (ไม่ใช่ชื่อห้องซึ่งซ้ำกับหัวกระดาษ) จึงใส่
       // คำว่าครูนำหน้าด้วยกฎเดียวกับใบของชั้นเรียน
@@ -660,7 +673,9 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
           : 0) || compareNames(a.name, b.name));
 
       list.forEach((room, idx) => {
-        const mine = slots.filter((x) => x.room_id === room.id);
+        // คาบเสรีเก็บห้องไว้ที่วิชาแต่ละวิชา ไม่ได้เก็บที่ตัวคาบ — ดู
+        // utils/electiveRooms ถ้าเทียบ room_id ตรง ๆ ใบนี้จะไม่มีคาบเสรีเลย
+        const mine = slots.filter((x) => slotUsesRoom(x, room.id));
         const grid = buildGrid(mine);
         const hours = roomHourCount(hourMap, room.id);
         const where = [room.building_name, room.floor ? `ชั้น ${room.floor}` : ""]
@@ -674,7 +689,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
               .filter(Boolean).join("  ·  ")}
             grid={grid} periods={periods} schoolConfig={schoolConfig}
             metrics={m} compact={compact}
-            renderCell={(cs) => <RoomCell slots={cs} m={m} />}
+            renderCell={(cs) => <RoomCell slots={cs} m={m} roomId={room.id} />}
           />,
         );
       });

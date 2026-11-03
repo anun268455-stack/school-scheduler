@@ -23,6 +23,8 @@ import { YardRescueModal } from "./YardRescueModal";
 import { ClassProblemsModal, type ShortRow } from "./ClassProblemsModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { showServerWaking, type DataState } from "../../utils/serverWake";
+import { electiveDutiesOf, slotUsesRoom } from "../../utils/electiveRooms";
+import { ElectiveRoomsModal } from "../rooms/ElectiveRoomsModal";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
 import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
 import { buildSharesStudents, flattenGroups } from "../../utils/groupHierarchy";
@@ -440,6 +442,8 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     { moving: TimetableSlot; target: { day: number; period: number }; routes: SwapRoute[] } | null
   >(null);
   const [roomSwapSlot, setRoomSwapSlot] = useState<TimetableSlot | null>(null);
+  /** ครูที่กำลังเลือกห้องให้คาบเสรีของเขา — null = ไม่ได้เปิดอยู่ */
+  const [electiveRoomsFor, setElectiveRoomsFor] = useState<number | null>(null);
   const [addCell, setAddCell] = useState<{ day: number; period: number } | null>(null);
   /** ช่องว่างของตารางห้องสอนที่กดไว้ — "เอาคาบมาลงห้องนี้" */
   const [fillCell, setFillCell] = useState<{ day: number; period: number } | null>(null);
@@ -498,11 +502,21 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   );
   const pctOf = (w: number) => `${((w / totalGridW) * 100).toFixed(4)}%`;
 
+  // คาบเสรีของครูที่กำลังดูอยู่ — หนึ่งรายการต่องานสอนจริงหนึ่งงาน ไม่ใช่ต่อ
+  // ห้องเรียน (วิชาหนึ่งในหน้าต่างสิบห้องเรียนคือการสอนครั้งเดียว)
+  const electiveDuties = useMemo(
+    () => electiveDutiesOf(slots, selectedTeacherId),
+    [slots, selectedTeacherId]);
+  const electiveRoomsMissing = electiveDuties.filter((d) => d.roomId == null).length;
+
   // Filtered slots for current view
   const viewSlots = useMemo(() => {
     if (selectedGroupId   != null) return slots.filter((s) => shares(s.group_id, selectedGroupId));
     if (selectedTeacherId != null) return slotsForTeacher(slots, selectedTeacherId);
-    if (selectedRoomId    != null) return slots.filter((s) => s.room_id    === selectedRoomId);
+    // คาบเสรีไม่ได้ใช้ช่องห้องของตัวเอง ห้องอยู่ที่วิชาแต่ละวิชาในคาบนั้น —
+    // เทียบ room_id ตรง ๆ จึงไม่มีคาบเสรีขึ้นในตารางห้องเลย ซึ่งเป็นสาเหตุที่
+    // "ตารางการใช้ห้องไม่ขึ้นคาบเสรี" (utils/electiveRooms)
+    if (selectedRoomId    != null) return slots.filter((s) => slotUsesRoom(s, selectedRoomId));
     return [];
   }, [slots, shares, selectedGroupId, selectedTeacherId, selectedRoomId]);
 
@@ -902,6 +916,15 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       />
     )}
 
+    {/* ห้องสอนของคาบเสรี มองจากฝั่งครู */}
+    {electiveRoomsFor != null && (
+      <ElectiveRoomsModal
+        teacherId={electiveRoomsFor}
+        teacherName={teachers.find((t) => t.id === electiveRoomsFor)?.name ?? null}
+        onClose={() => setElectiveRoomsFor(null)}
+      />
+    )}
+
     {/* Add-lesson Modal (click an empty cell, in any of the three views) */}
     {addCell && (
       <AddLessonModal
@@ -1002,6 +1025,28 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       {/* ตารางห้องสอน — ป้ายบอกว่าช่องว่างกดได้ และห้องนี้ติดอะไรอยู่หรือเปล่า
           ("ไม่เห็นมีเลย") คนที่เปิดตารางห้องมาดูว่าห้องว่างเท่าไร ควรเห็น
           ตั้งแต่บรรทัดแรกว่าทำอะไรกับช่องว่างได้ ไม่ต้องไปค้นในเมนู */}
+      {/* ── ห้องสอนของคาบเสรี มองจากฝั่งครู ────────────────────────────────
+          "เข้าไปที่ครูที่สอนคนนั้นแล้วเลือกห้องให้"
+          ขึ้นเฉพาะตารางของครูที่มีคาบเสรีจริง และบอกจำนวนที่ยังไม่มีห้อง
+          เพราะนั่นคือสิ่งที่ต้องไปทำ ไม่ใช่แค่ทางเข้าเฉย ๆ */}
+      {selectedTeacherId != null && electiveDuties.length > 0 && (
+        <div className="flex items-center gap-2 px-4 py-1.5 border-b text-[11px] shrink-0
+                        bg-purple-50 border-purple-200 text-purple-900">
+          <span>🚪</span>
+          <span className="flex-1">
+            {electiveRoomsMissing > 0
+              ? `คาบเสรี ${electiveDuties.length} คาบ — ยังไม่ได้เลือกห้อง ${electiveRoomsMissing} คาบ`
+              : `คาบเสรี ${electiveDuties.length} คาบ — เลือกห้องไว้ครบแล้ว`}
+          </span>
+          <button
+            onClick={() => setElectiveRoomsFor(selectedTeacherId)}
+            className="px-2 py-0.5 rounded border border-purple-300 bg-white
+                       hover:bg-purple-100 font-medium">
+            {electiveRoomsMissing > 0 ? "เลือกห้องสอน" : "ดู / เปลี่ยนห้อง"}
+          </button>
+        </div>
+      )}
+
       {selectedRoomId != null && roomHint && (
         <div className={clsx(
           "flex items-center gap-2 px-4 py-1.5 border-b text-[11px] shrink-0",

@@ -29,7 +29,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-10-31.1"
+API_BUILD = "2026-11-03.1"
 
 # บีบอัดคำตอบก่อนส่งออก
 #
@@ -740,6 +740,30 @@ def _slot_teachers(slot: dict[str, Any]) -> set[int]:
     # of it. They are busy for that hour once; see _same_activity.
     out |= {t for t in (slot.get("activity_teacher_ids") or []) if t}
     return out | _elective_option_teachers(slot)
+
+
+def _slot_rooms(slot: dict[str, Any]) -> set[int]:
+    """Every room this lesson occupies, and which therefore is not free.
+
+      "คาบเสรี ครูมาบอกว่าต้องการห้องสอนที่นี้ ... เพื่อให้ตารางการใช้ห้อง
+       ขึ้นคาบเสรีอันนี้"
+
+    คาบธรรมดาอยู่ห้องเดียว ตอบด้วย room_id ก็จบ แต่คาบเสรีคือหน้าต่างเวลาที่มี
+    หลายวิชาเรียนพร้อมกัน แต่ละวิชามีครูและห้องของตัวเอง — ช่อง room_id ของตัว
+    คาบจึงว่างไว้เสมอ (ดู _sync_pool_slots) และคำว่า "ห้องของคาบนี้" มีได้หลาย
+    ห้องพร้อมกัน ซึ่งเป็นเรื่องจริงของมัน ไม่ใช่ข้อมูลเสีย
+
+    เป็นที่เดียวที่ตอบคำถามนี้ ด้วยเหตุผลเดียวกับ _slot_teachers: ถ้าที่ใดที่
+    หนึ่งตอบผิด มันจะไม่เหมือนบั๊ก มันจะเหมือนตารางการใช้ห้องที่บอกว่าห้องว่าง
+    ทั้งที่มีคนสอนอยู่ในนั้น
+    """
+    out: set[int] = set()
+    if slot.get("room_id"):
+        out.add(slot["room_id"])
+    for o in (slot.get("elective_options") or []):
+        if o.get("room_id"):
+            out.add(o["room_id"])
+    return out
 
 
 def _shared_lesson_key(s: dict[str, Any]) -> str | None:
@@ -10349,6 +10373,16 @@ def _enrich_slot(s: dict[str, Any],
     s["subject_code"] = subj.get("code")
     s["room_name"]    = room.get("name") if room else None
     s["room_type"]    = room.get("type") if room else None
+    # ห้องของแต่ละวิชาในคาบเสรี — ตารางของครูต้องขึ้นห้องของครูคนนั้น และตาราง
+    # ของห้องต้องขึ้นวิชาที่สอนในห้องนั้น ชื่อห้องจึงต้องเดินทางมาพร้อมตัวเลือก
+    # ไม่ใช่ให้หน้าจอไปเปิดทะเบียนห้องเองทีละตัว
+    opts = s.get("elective_options")
+    if opts:
+        for o in opts:
+            o["room_name"] = r_map.get(o.get("room_id"), {}).get("name") if o.get("room_id") else None
+            # ชื่อครูของวิชานั้นด้วย — ใบตารางการใช้ห้องเขียนชื่อครูไว้บรรทัดล่าง
+            # และครูที่ควรขึ้นคือครูของวิชาที่สอนในห้องนั้น ไม่ใช่ครูทุกคนในคาบ
+            o["teacher_name"] = t_map.get(o.get("teacher_id"), {}).get("name") if o.get("teacher_id") else None
     return s
 
 # ── ที่พักคาบ ─────────────────────────────────────────────────────────────
@@ -11155,8 +11189,40 @@ def _teacher_busy_outside_pool(teacher_id: int, pool: dict[str, Any]) -> list[di
     return out
 
 
+def _room_busy_outside_pool(room_id: int | None, pool: dict[str, Any]) -> list[dict[str, Any]]:
+    """What else is using this room during this pool's window.
+
+    เงาของ _teacher_busy_outside_pool — ถามเรื่องห้องด้วยกฎชุดเดียวกัน เพื่อให้
+    ห้องที่ยังว่างอยู่จริงเท่านั้นถูกเสนอให้เลือก และห้องที่ชนถูกฟ้องตอนที่แก้
+    ยังง่าย ไม่ใช่ตอนพิมพ์ใบตารางออกมาแล้ว
+
+    คาบของหน้าต่างตัวเองถูกข้าม เพราะสำเนาของตัวเลือกชุดเดียวกันอยู่ทุกห้องเรียน
+    ในหน้าต่างนั้น ถ้าไม่ข้าม ห้องจะฟ้องว่าชนกับตัวเองเท่าจำนวนห้องเรียน
+    """
+    periods = _pool_periods(pool)
+    if not periods or not room_id:
+        return []
+    seen, out = set(), []
+    for s in SLOTS:
+        if s["day"] != pool["day"] or s["period"] not in periods:
+            continue
+        if s.get("elective_pool_id") == pool["id"]:
+            continue
+        if room_id in _slot_rooms(s):
+            grp = _find_group(s["group_id"]) or {}
+            subj = next((x for x in SUBJECTS if x["id"] == s.get("subject_id")), {})
+            label = subj.get("name") or s.get("elective_label") or "วิชาเสรี"
+            key = (label, grp.get("name"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"group_name": grp.get("name"), "subject_name": label,
+                        "period": s["period"]})
+    return out
+
+
 def _decorate_pool(p: dict[str, Any]) -> dict[str, Any]:
-    """A pool as the UI needs it: who teaches what, and who is double-booked."""
+    """A pool as the UI needs it: who teaches what, where, and what clashes."""
     t_map = {t["id"]: t for t in TEACHERS}
     s_map = {s["id"]: s for s in SUBJECTS}
     d_map = {d["id"]: d for d in DEPARTMENTS}
@@ -11168,7 +11234,14 @@ def _decorate_pool(p: dict[str, Any]) -> dict[str, Any]:
     for o in p.get("options", []):
         if o.get("teacher_id"):
             inside[o["teacher_id"]].append(o)
+    # ห้องซ้ำกันในหน้าต่างเดียวกันก็เป็นการชน ด้วยเหตุผลเดียวกับครูซ้ำเป๊ะ ๆ:
+    # ทุกวิชาในหน้าต่างเรียนพร้อมกัน ห้องเดียวจึงรับได้วิชาเดียว
+    inside_room = defaultdict(list)
+    for o in p.get("options", []):
+        if o.get("room_id"):
+            inside_room[o["room_id"]].append(o)
 
+    r_map = {r["id"]: r for r in ROOMS}
     options = []
     for o in p.get("options", []):
         t = t_map.get(o.get("teacher_id"), {})
@@ -11183,6 +11256,16 @@ def _decorate_pool(p: dict[str, Any]) -> dict[str, Any]:
                 "subject_name": osubj.get("name") or other.get("label"),
                 "period": p.get("period"),
             })
+        room_conflicts = _room_busy_outside_pool(o.get("room_id"), p)
+        for other in inside_room.get(o.get("room_id"), []):
+            if other is o:
+                continue
+            osubj = s_map.get(other.get("subject_id"), {})
+            room_conflicts.append({
+                "group_name": "ในคาบเสรีนี้",
+                "subject_name": osubj.get("name") or other.get("label"),
+                "period": p.get("period"),
+            })
         options.append({
             **o,
             "subject_code": subj.get("code") or o.get("code"),
@@ -11191,6 +11274,10 @@ def _decorate_pool(p: dict[str, Any]) -> dict[str, Any]:
             "teacher_code": t.get("code"),
             "department_name": d_map.get(subj.get("department_id"), {}).get("name"),
             "conflicts": conflicts,
+            # ห้องของวิชานี้ — ชื่อถูกเติมที่นี่ที่เดียว หน้าจอจึงไม่ต้องถือ
+            # ทะเบียนห้องไว้เองเพื่ออ่านชื่อ
+            "room_name": r_map.get(o.get("room_id"), {}).get("name"),
+            "room_conflicts": room_conflicts,
         })
 
     placed = [s for s in SLOTS if s.get("elective_pool_id") == p["id"]]
@@ -11368,11 +11455,30 @@ def delete_pool_option(pool_id: int, option_key: int):
 
 @app.put("/api/elective-pools/{pool_id}/options/{option_key}")
 def update_pool_option(pool_id: int, option_key: int, body: dict[str, Any]):
-    """Change which teacher takes an option — the usual fix for a clash."""
+    """Change which teacher takes an option, or which room it uses.
+
+      "ครูมาบอกว่าต้องการห้องสอนที่นี้"
+
+    ห้องอยู่ที่วิชา ไม่ได้อยู่ที่คาบ เพราะทุกวิชาในหน้าต่างเดียวกันเรียนพร้อมกัน
+    คนละห้อง ตั้งที่นี่ครั้งเดียวแล้ว _sync_pool_slots พาไปให้ทุกห้องเรียนใน
+    หน้าต่างนั้นเอง — room_id ติดไปกับสำเนาของตัวเลือก (ดู `{**o}` ใน
+    _sync_pool_slots) จึงไม่ต้องเขียนทางส่งต่อแยก
+
+    ห้องชนถูก "รายงาน" ไม่ใช่ "ปฏิเสธ" แบบเดียวกับครูซ้ำ เพราะตอนจัดของจริง
+    ต้องเดินผ่านสถานะที่ยังไม่ลงตัวได้ หน้าจอเป็นฝ่ายไม่เสนอห้องที่ไม่ว่างให้
+    เลือกตั้งแต่ต้น (utils/electiveRooms.freeRoomsAt)
+    """
     pool = _find_pool(pool_id)
     opt = next((o for o in pool["options"] if o.get("key") == option_key), None)
     if not opt:
         raise HTTPException(404, "ไม่พบตัวเลือกนี้")
+    if "room_id" in body:
+        rid = body["room_id"]
+        if rid is not None:
+            rid = int(rid)
+            if not any(r["id"] == rid for r in ROOMS):
+                raise HTTPException(400, "ไม่พบห้องสอนที่เลือก (อาจถูกลบไปแล้ว)")
+        opt["room_id"] = rid
     for k in ("teacher_id", "subject_id", "label"):
         if k in body:
             opt[k] = body[k]
@@ -11680,8 +11786,17 @@ def _validate_moves(moves: list[dict[str, Any]],
                 mine = yours = set()
             for tid in mine & yours:
                 msgs.append(f"{t_name.get(tid, '?')} สอนคาบนี้อยู่แล้ว")
-            if s.get("room_id") and s["room_id"] == o.get("room_id"):
-                msgs.append(f"ห้อง {r_name.get(s['room_id'], '?')} ถูกใช้อยู่แล้ว")
+            # ห้องก็ถามผ่านที่เดียวเหมือนครู เพราะคาบเสรีอยู่ได้หลายห้องพร้อมกัน
+            # ห้องละวิชา — เทียบ room_id ตรง ๆ จะมองไม่เห็นห้องพวกนั้นเลย
+            #
+            # สองช่องของหน้าต่างคาบเสรีเดียวกันถือสำเนาตัวเลือกชุดเดียวกัน ห้อง
+            # จึงตรงกันทุกช่องโดยธรรมชาติ นั่นไม่ใช่การชน เป็นห้องเดียวกันของ
+            # วิชาเดียวกัน — ด่าน _same_activity ข้างบนคัดกรณีนี้ออกไปแล้ว
+            mine_r, yours_r = _slot_rooms(s), _slot_rooms(o)
+            if _same_activity(s, o):
+                mine_r = yours_r = set()
+            for rid in mine_r & yours_r:
+                msgs.append(f"ห้อง {r_name.get(rid, '?')} ถูกใช้อยู่แล้ว")
             # ถึงตรงนี้ในโหมดจัดเอง แปลว่าคู่กรณีเป็นคาบที่ล็อกไว้ — ถ้าชนกันจริง
             # ค่อยปฏิเสธ พร้อมบอกว่าชนกับคาบล็อกตัวไหน
             if allow_conflicts:

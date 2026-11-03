@@ -24,10 +24,57 @@ import { flattenGroups, groupLabel } from "../../utils/groupHierarchy";
 import { TableSearch, matches } from "../common/TableSearch";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { AddElectiveSubjectModal } from "./AddElectiveSubjectModal";
+import { freeRoomsAt } from "../../utils/electiveRooms";
 import { DAYS, periodLabel } from "../../types";
-import type { ElectivePool, ElectivePoolOption, PoolTeacherCandidate, Period } from "../../types";
+import type { ElectivePool, ElectivePoolOption, PoolTeacherCandidate, Period, Room } from "../../types";
 
 // ── Small shared pieces ──────────────────────────────────────────────────────
+
+/**
+ * ห้องที่ว่างให้เลือก — ชิปเรียงกัน แบบเดียวกับการเลือกครูบนแถวเดียวกัน
+ *
+ * โรงเรียนนี้มีห้องมากกว่าร้อยห้อง พิมพ์หาเร็วกว่าไล่ดู (รูปแบบเดียวกับ
+ * RoomSwapModal ซึ่งมีเหตุผลเต็มเขียนไว้แล้ว)
+ */
+const RoomChoices: React.FC<{
+  free:     Room[];
+  chosen:   number | null;
+  busy:     boolean;
+  search:   string;
+  onSearch: (q: string) => void;
+  onPick:   (roomId: number) => void;
+}> = ({ free, chosen, busy, search, onSearch, onPick }) => (
+  <div className="pl-16 mt-1">
+    <input
+      autoFocus
+      value={search}
+      onChange={(e) => onSearch(e.target.value)}
+      placeholder="พิมพ์ชื่อหรือเลขห้อง"
+      className="w-44 border border-gray-200 rounded px-2 py-0.5 text-[11px] mb-1"
+    />
+    <div className="flex flex-wrap gap-1">
+      {free
+        .filter((r) => matches(search, r.name, r.building_name ?? ""))
+        .slice(0, 24)
+        .map((r) => (
+          <button key={r.id} onClick={() => onPick(r.id)}
+            disabled={busy || r.id === chosen}
+            className={clsx("text-[10px] px-1.5 py-0.5 rounded border",
+              r.id === chosen
+                ? "bg-gray-100 border-gray-200 text-gray-400"
+                : "bg-white border-emerald-300 text-emerald-800 hover:bg-emerald-50")}
+            title={r.building_name ?? ""}>
+            {r.id === chosen ? "✓ " : ""}{r.name}
+          </button>
+        ))}
+      {free.length === 0 && (
+        <span className="text-[10px] text-amber-700">
+          ไม่มีห้องว่างในคาบนี้เลย — วิชาอื่นในคาบเสรีเดียวกันและคาบปกติใช้ห้องไปหมดแล้ว
+        </span>
+      )}
+    </div>
+  </div>
+);
 
 /** "ชนกับ ม.5/1 ทักษะดนตรีไทย" — said once, in full, on the row that owns it. */
 const ConflictNote: React.FC<{ option: ElectivePoolOption }> = ({ option }) => {
@@ -326,7 +373,7 @@ const PoolCard: React.FC<{
   onToggle: () => void;
   onChanged: (p?: ElectivePool) => void;
 }> = ({ pool, expanded, onToggle, onChanged }) => {
-  const { groups, periods } = useTimetableStore();
+  const { groups, periods, rooms, slots, loadSlots } = useTimetableStore();
   const flat = useMemo(() => flattenGroups(groups), [groups]);
   const gName = (id: number) => groupLabel(flat, id);
 
@@ -334,6 +381,8 @@ const PoolCard: React.FC<{
   const [moving, setMoving] = useState(false);
   const [when, setWhen] = useState({ day: pool.day, period: pool.period, isDouble: pool.is_double });
   const [swapping, setSwapping] = useState<number | null>(null);
+  const [pickingRoom, setPickingRoom] = useState<number | null>(null);
+  const [roomSearch, setRoomSearch] = useState("");
   const [cands, setCands] = useState<PoolTeacherCandidate[]>([]);
   // Deleting takes two clicks: it throws away the subject list and the period
   // together, and nothing restores it.
@@ -370,6 +419,31 @@ const PoolCard: React.FC<{
     try {
       onChanged(await api.updatePoolOption(pool.id, o.key, { teacher_id: teacherId }));
       setSwapping(null);
+    } finally { setBusy(false); }
+  };
+
+  /**
+   * ห้องที่ยังว่างในชั่วโมงนี้ สำหรับวิชานี้
+   *
+   *   "ครูมาบอกว่าต้องการห้องสอนที่นี้"
+   *
+   * ทุกวิชาในหน้าต่างเรียนพร้อมกัน ห้องจึงต้องไม่ซ้ำกัน — เสนอแต่ห้องที่ว่าง
+   * จริง รวมห้องของตัวเองไว้ด้วยเพื่อให้เห็นว่าตั้งอะไรไว้ (utils/electiveRooms)
+   */
+  const roomsFor = (o: ElectivePoolOption): Room[] => {
+    if (pool.day == null || pool.period == null) return [];
+    return freeRoomsAt(rooms, slots, pool.day, pool.period, {
+      poolId: pool.id, optionKey: o.key, teacherId: o.teacher_id,
+    }) as Room[];
+  };
+
+  const setRoom = async (o: ElectivePoolOption, roomId: number | null) => {
+    setBusy(true);
+    try {
+      onChanged(await api.updatePoolOption(pool.id, o.key, { room_id: roomId }));
+      setPickingRoom(null);
+      // ห้องเพิ่งเปลี่ยนในตารางจริง — ดึงมาให้ตารางห้องและใบพิมพ์ตรงกันทันที
+      await loadSlots();
     } finally { setBusy(false); }
   };
 
@@ -517,6 +591,48 @@ const PoolCard: React.FC<{
                     <button onClick={() => removeOption(o)} disabled={busy}
                       className="text-xs text-red-400 hover:text-red-600 shrink-0" title="เอาวิชานี้ออก">✕</button>
                   </div>
+
+                  {/* ห้องสอนของวิชานี้ — ทุกวิชาในคาบนี้เรียนพร้อมกันคนละห้อง
+                      ห้องที่ตั้งไว้ที่นี่จะขึ้นทั้งตารางครูและตารางการใช้ห้อง */}
+                  <div className="flex items-center gap-2 pl-16 mt-0.5">
+                    <span className="text-[10px] text-gray-400 shrink-0">ห้องสอน</span>
+                    <span className={clsx("text-[11px] truncate",
+                      (o.room_conflicts?.length ?? 0) > 0 ? "text-red-700 font-medium"
+                        : o.room_name ? "text-gray-700" : "text-gray-400")}>
+                      {o.room_name ?? "— ยังไม่ได้เลือกห้อง —"}
+                    </span>
+                    {pinned ? (
+                      <button
+                        onClick={() => {
+                          setRoomSearch("");
+                          setPickingRoom(pickingRoom === o.key ? null : o.key);
+                        }}
+                        className="text-[10px] text-blue-600 hover:underline shrink-0">
+                        {o.room_id ? "เปลี่ยนห้อง" : "เลือกห้อง"}
+                      </button>
+                    ) : (
+                      <span className="text-[10px] text-gray-400 shrink-0">
+                        ลงคาบเสรีในตารางก่อน แล้วจึงเลือกห้องได้
+                      </span>
+                    )}
+                    {o.room_id != null && (
+                      <button onClick={() => void setRoom(o, null)} disabled={busy}
+                        className="text-[10px] text-gray-400 hover:text-red-600 shrink-0"
+                        title="เอาห้องออก">เอาออก</button>
+                    )}
+                  </div>
+                  {(o.room_conflicts?.length ?? 0) > 0 && (
+                    <p className="pl-16 text-[10px] text-red-600">
+                      ⚠ ห้องนี้ถูกใช้อยู่แล้วคาบนี้ —{" "}
+                      {o.room_conflicts!.map((x) =>
+                        `${x.group_name ?? ""} ${x.subject_name ?? ""}`.trim()).join(" · ")}
+                    </p>
+                  )}
+                  {pickingRoom === o.key && <RoomChoices
+                    free={roomsFor(o)} chosen={o.room_id ?? null} busy={busy}
+                    search={roomSearch} onSearch={setRoomSearch}
+                    onPick={(rid) => void setRoom(o, rid)} />}
+
                   {(o.conflicts?.length ?? 0) > 0 && (
                     <div className="pl-16 mt-0.5"><ConflictNote option={o} /></div>
                   )}

@@ -272,6 +272,26 @@ export interface ElectiveOption {
   label:      string;
   /** Subject code, carried over when the option came from a กลุ่มวิชาเสรี. */
   code?:      string;
+  /**
+   * คงที่ข้ามห้องเรียน — ตัวบอกว่าเป็น "วิชาเดียวกัน"
+   *
+   * หน้าต่างคาบเสรีถูกเขียนเป็นหลายแถว แถวละห้องเรียน ทุกแถวถือสำเนาของ
+   * ตัวเลือกชุดเดียวกัน `id` ถูกแจกใหม่ทีละแถวจึงใช้เทียบกันไม่ได้ ส่วน `key`
+   * มาจากกลุ่มวิชาเสรีและเท่ากันทุกแถว
+   */
+  key?:       number;
+  /**
+   * ห้องสอนของวิชานี้ — คนละห้องกับวิชาอื่นในคาบเดียวกัน
+   *
+   *   "ครูมาบอกว่าต้องการห้องสอนที่นี้"
+   *
+   * ห้องอยู่ที่วิชา ไม่ได้อยู่ที่คาบ เพราะทุกวิชาในหน้าต่างเรียนพร้อมกัน
+   * เหตุผลเต็มอยู่ใน utils/electiveRooms.ts
+   */
+  room_id?:   number | null;
+  // เติมโดยเซิร์ฟเวอร์ตอนส่งตารางออก
+  room_name?:    string | null;
+  teacher_name?: string | null;
 }
 
 /**
@@ -293,13 +313,18 @@ export interface ElectivePoolOption {
   teacher_id: number | null;
   label:      string;
   code?:      string;
+  /** ห้องสอนของวิชานี้ — ทุกวิชาในหน้าต่างเรียนพร้อมกัน จึงต้องคนละห้อง */
+  room_id?:   number | null;
   // Filled in by the API.
   subject_code?:    string | null;
   subject_name?:    string | null;
   teacher_name?:    string | null;
   teacher_code?:    string | null;
   department_name?: string | null;
+  room_name?:       string | null;
   conflicts?: { group_name: string | null; subject_name: string | null; period: number | null }[];
+  /** ห้องนี้ถูกใช้อยู่ที่อื่นในชั่วโมงเดียวกัน — รูปแบบเดียวกับ conflicts */
+  room_conflicts?: { group_name: string | null; subject_name: string | null; period: number | null }[];
 }
 
 export interface ElectivePool {
