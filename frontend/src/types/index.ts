@@ -592,6 +592,14 @@ export interface SchoolConfig {
   cell_layout?:        unknown;
   /** ผังบรรทัดของใบพิมพ์ — แยกจากบนจอ เพราะกระดาษไม่มีบรรทัดชั้นเรียน */
   print_layout?:       unknown;
+  /**
+   * แบบฟอร์มใบพิมพ์ที่โรงเรียนแก้เองได้ — ช่องลงชื่อ หมายเหตุ วันที่ เลขหน้า
+   *
+   * ปล่อยเป็น unknown เหมือน print_layout แล้วแปลงที่ขอบด้วย
+   * utils/printSheet.normalizeSheet เพราะค่านี้มาจากก้อน JSON อิสระ และ
+   * เซิร์ฟเวอร์รุ่นเก่าก็ไม่รู้จักช่องนี้ — ใบพิมพ์ต้องไม่ล้มในทั้งสองกรณี
+   */
+  print_sheet?:        unknown;
   /** เวรคาบสุดท้าย: last-period lessons each teacher should carry per week. */
   min_last_period?:    number;
   /** เพดานคาบสุดท้าย/สัปดาห์ต่อครู — 0 = ไม่จำกัด */

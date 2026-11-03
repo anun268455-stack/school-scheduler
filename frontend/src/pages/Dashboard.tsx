@@ -15,6 +15,10 @@ import {
   PART_SCALE_MIN, PART_SCALE_MAX, PART_SCALE_STEP,
   type CellLayout, type CellPartKey,
 } from "../utils/cellLayout";
+import {
+  MAX_SIGNERS, normalizeSheet, pageLabel, sheetSigners, thaiDate,
+  type SheetSetup, type Signer,
+} from "../utils/printSheet";
 import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject, LessonRequirement, ElectivePool } from "../types";
 import { DAYS, periodLabel } from "../types";
 import * as api from "../api/client";
@@ -3823,7 +3827,162 @@ const ToolSettingsPanel: React.FC = () => {
           </div>
         )}
       </div>
+
+      <SheetFormEditor />
     </Section>
+  );
+};
+
+/**
+ * แบบฟอร์มใบพิมพ์ — ช่องลงชื่อ หมายเหตุ วันที่ เลขหน้า
+ *
+ *   "ช่วยทำระบบที่สามารถเขียนข้อความจัดหน้ากระดาษก่อนจะปริ้นให้หน่อย พอมีอะไร
+ *    แก้ไขจะได้แก้ไขได้เลยไม่ต้องมานั่งเขียนโค้ดใหม่"
+ *
+ * ของที่เคยแก้ไม่ได้เลย: ข้อความใต้เส้นลงชื่อ และจำนวนผู้เซ็นที่เป็นสองคนตายตัว
+ * โรงเรียนเลือกข้อนี้เองว่าสำคัญที่สุด — "ช่องลงชื่อ สามารถลดหรือเพิ่มได้"
+ *
+ * ค่าถูกเก็บกับค่าตั้งโรงเรียนในฐานข้อมูล ตั้งที่เครื่องหนึ่งทุกเครื่องเห็น
+ * เหมือนกัน และติดไปกับไฟล์สำรองอยู่แล้ว
+ */
+const SheetFormEditor: React.FC = () => {
+  const { schoolConfig, setPrintSheet } = useTimetableStore();
+  const setup = useMemo(() => normalizeSheet(schoolConfig.print_sheet),
+                        [schoolConfig.print_sheet]);
+  // ที่แสดงบนจอ = ที่จะพิมพ์ รวมถึงตอนที่ยังไม่ได้ตั้งอะไร (สองช่องเดิม)
+  const signers = sheetSigners(setup, schoolConfig);
+  const custom = setup.signers !== undefined;
+
+  const write = (next: Partial<SheetSetup>) => setPrintSheet({ ...setup, ...next });
+  const writeSigners = (list: Signer[]) => write({ signers: list });
+  const edit = (i: number, patch: Partial<Signer>) =>
+    writeSigners(signers.map((s, k) => (k === i ? { ...s, ...patch } : s)));
+  const move = (i: number, by: number) => {
+    const to = i + by;
+    if (to < 0 || to >= signers.length) return;
+    const list = [...signers];
+    [list[i], list[to]] = [list[to], list[i]];
+    writeSigners(list);
+  };
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-5 mt-4">
+      <p className="text-sm font-semibold text-gray-800 mb-1">แบบฟอร์มใบพิมพ์ 🖊️</p>
+      <p className="text-[11px] text-gray-500 mb-4">
+        ข้อความบนใบพิมพ์ที่เมื่อก่อนต้องแก้ในโค้ด — แก้ที่นี่ได้เอง มีผลกับใบของ
+        ชั้นเรียน ใบของครู และใบตารางการใช้ห้องสอน
+      </p>
+
+      {/* ── ช่องลงชื่อ ──────────────────────────────────────────────── */}
+      <p className="text-[11px] font-semibold text-gray-600 mb-1">
+        ช่องลงชื่อ ({signers.length})
+      </p>
+      <p className="text-[10px] text-gray-400 mb-2">
+        เรียงจากซ้ายไปขวาบนกระดาษ · เว้นชื่อว่างไว้ได้ จะได้เส้นเปล่าให้เซ็นแล้ว
+        เขียนชื่อเอง
+        {!custom && " · ตอนนี้ยังเป็นค่าตั้งต้น ซึ่งดึงชื่อจากหัวข้อข้อมูลโรงเรียน"}
+      </p>
+
+      <div className="space-y-1.5 mb-2">
+        {signers.map((s, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <span className="text-[10px] text-gray-400 w-4 shrink-0 text-right">{i + 1}.</span>
+            <input
+              value={s.name}
+              onChange={(e) => edit(i, { name: e.target.value })}
+              placeholder="ชื่อ — เว้นว่างได้"
+              className="w-40 border border-gray-200 rounded px-2 py-1 text-xs"
+            />
+            <input
+              value={s.role}
+              onChange={(e) => edit(i, { role: e.target.value })}
+              placeholder="ตำแหน่ง"
+              className="flex-1 min-w-0 border border-gray-200 rounded px-2 py-1 text-xs"
+            />
+            <button onClick={() => move(i, -1)} disabled={i === 0}
+              className="text-xs text-gray-400 hover:text-gray-700 disabled:opacity-20 px-1"
+              title="เลื่อนไปทางซ้าย">↑</button>
+            <button onClick={() => move(i, 1)} disabled={i === signers.length - 1}
+              className="text-xs text-gray-400 hover:text-gray-700 disabled:opacity-20 px-1"
+              title="เลื่อนไปทางขวา">↓</button>
+            <button onClick={() => writeSigners(signers.filter((_, k) => k !== i))}
+              className="text-xs text-red-400 hover:text-red-600 px-1"
+              title="เอาช่องนี้ออก">✕</button>
+          </div>
+        ))}
+        {signers.length === 0 && (
+          <p className="text-[11px] text-gray-400 py-1">
+            ไม่มีช่องลงชื่อ — ใบพิมพ์จะไม่มีเส้นให้เซ็นเลย
+          </p>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 mb-5">
+        <button
+          onClick={() => writeSigners([...signers, { name: "", role: "" }])}
+          disabled={signers.length >= MAX_SIGNERS}
+          className="text-[11px] px-2 py-0.5 rounded border border-blue-300 text-blue-700
+                     hover:bg-blue-50 disabled:opacity-40">
+          + เพิ่มช่องลงชื่อ
+        </button>
+        {signers.length >= MAX_SIGNERS && (
+          <span className="text-[10px] text-gray-400">มากกว่า {MAX_SIGNERS} ช่องใบจะเสียรูป</span>
+        )}
+        {custom && (
+          <button
+            onClick={() => write({ signers: undefined })}
+            className="text-[11px] text-gray-500 hover:underline ml-auto">
+            คืนค่าตั้งต้น (สองช่องเดิม)
+          </button>
+        )}
+      </div>
+
+      {/* ── หมายเหตุ · วันที่ · เลขหน้า ─────────────────────────────── */}
+      <p className="text-[11px] font-semibold text-gray-600 mb-1">ท้ายกระดาษ</p>
+      <textarea
+        value={setup.note ?? ""}
+        onChange={(e) => write({ note: e.target.value })}
+        rows={2}
+        placeholder="หมายเหตุที่จะพิมพ์มุมซ้ายล่างของทุกแผ่น — เว้นว่างไว้ = ไม่พิมพ์"
+        className="w-full border border-gray-200 rounded px-2 py-1 text-xs mb-2"
+      />
+      <div className="flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+          <input type="checkbox" checked={setup.showDate === true}
+            onChange={(e) => write({ showDate: e.target.checked })} />
+          พิมพ์วันที่ที่พิมพ์ ({thaiDate()})
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+          <input type="checkbox" checked={setup.showPageNumbers === true}
+            onChange={(e) => write({ showPageNumbers: e.target.checked })} />
+          พิมพ์เลขหน้า (หน้า 1/47)
+        </label>
+      </div>
+
+      {/* ── ตัวอย่าง ────────────────────────────────────────────────── */}
+      <p className="text-[10px] text-gray-400 mt-4 mb-1">ตัวอย่างท้ายใบ</p>
+      <div className="border border-dashed border-gray-300 rounded bg-gray-50/60 px-3 py-3">
+        <div className="flex"
+          style={{ justifyContent: signers.length <= 2 ? "space-between" : "space-around" }}>
+          {signers.map((s, i) => (
+            <div key={i} className="text-center text-[9px] text-gray-700 leading-tight">
+              <div>ลงชื่อ{signers.length > 3 ? "........" : "..................."}</div>
+              {s.name && <div>({s.name})</div>}
+              <div>{s.role || <span className="text-gray-300">ตำแหน่ง</span>}</div>
+            </div>
+          ))}
+        </div>
+        {((setup.note ?? "").trim() || setup.showDate || setup.showPageNumbers) && (
+          <div className="flex justify-between gap-3 mt-2 text-[8px] text-gray-500">
+            <span className="whitespace-pre-wrap">{(setup.note ?? "").trim()}</span>
+            <span className="whitespace-nowrap">
+              {[setup.showDate ? `พิมพ์ ${thaiDate()}` : "",
+                setup.showPageNumbers ? pageLabel(0, 47) : ""].filter(Boolean).join("  ·  ")}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
   );
 };
 

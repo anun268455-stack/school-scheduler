@@ -1,7 +1,7 @@
 /**
  * App v4 — Top-toolbar layout with school config + pixel-perfect print.
  */
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { TopNavbar }     from "./components/layout/TopNavbar";
 import { PrintView, DEFAULT_PRINT_OPTIONS, type PrintOptions } from "./components/print/PrintView";
 import { TimetableGrid } from "./components/timetable/TimetableGrid";
@@ -9,6 +9,9 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { StorageWarningBanner } from "./components/backup/StorageWarningBanner";
 import { useAutoSavePoints } from "./utils/useAutoSavePoints";
 import { useTimetableStore } from "./store/timetableStore";
+import {
+  mergeRemembered, parseStored, toRemember, PRINT_MEMORY_KEY,
+} from "./utils/printMemory";
 import type { DashPage } from "./pages/Dashboard";
 
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
@@ -41,7 +44,29 @@ export default function App() {
     subjects, requirements,
     startLiveSync, stopLiveSync,
   } = useTimetableStore();
-  const [printOptions, setPrintOptions] = useState<PrintOptions>(DEFAULT_PRINT_OPTIONS);
+  /**
+   * ตัวเลือกการพิมพ์ — จำไว้ในเครื่องนี้ ไม่ต้องตั้งใหม่ทุกครั้งที่เปิดหน้าเว็บ
+   *
+   * ของเดิมอยู่ใน state เฉย ๆ ปิดแท็บแล้วหายหมด ต้องมาเลือกว่าพิมพ์อะไร กี่ใบ
+   * ต่อแผ่น และพิมพ์คำว่า "เสริมการเรียนรู้" ใหม่ทุกครั้ง
+   *
+   * เก็บในเครื่อง ไม่ใช่ที่เซิร์ฟเวอร์ และไม่จำว่าติ๊กห้องไหนไว้ — เหตุผลทั้งสอง
+   * ข้ออยู่ใน utils/printMemory.ts
+   */
+  const [printOptions, setPrintOptions] = useState<PrintOptions>(() => {
+    try {
+      return mergeRemembered(DEFAULT_PRINT_OPTIONS,
+                             parseStored(localStorage.getItem(PRINT_MEMORY_KEY)));
+    } catch {
+      return DEFAULT_PRINT_OPTIONS;   // โหมดส่วนตัวของเบราว์เซอร์ปิดที่เก็บไว้
+    }
+  });
+  const rememberPrint = useCallback((o: PrintOptions) => {
+    setPrintOptions(o);
+    try {
+      localStorage.setItem(PRINT_MEMORY_KEY, JSON.stringify(toRemember(o)));
+    } catch { /* จำไม่ได้ก็ยังพิมพ์ได้ */ }
+  }, []);
   const printRef = useRef<HTMLDivElement>(null);
 
   // The teachers' page fetches only what it needs through its own client, so
@@ -84,7 +109,7 @@ export default function App() {
         onCrudNav={(p) => setPage(p as Page)}
         currentPage={page}
         printOptions={printOptions}
-        onPrintOptionsChange={setPrintOptions}
+        onPrintOptionsChange={rememberPrint}
       />
 
       {/* Stands above everything: if the server has thrown its data away, the

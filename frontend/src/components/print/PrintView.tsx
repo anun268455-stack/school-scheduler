@@ -15,6 +15,10 @@ import { DAYS, DAYS_SHORT } from "../../types";
 import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { myElectiveOption, slotTeacherNames, slotsForTeacher } from "../../utils/teacherSlots";
 import { optionsInRoom, roomNameForTeacher, slotUsesRoom } from "../../utils/electiveRooms";
+import {
+  normalizeSheet, pageLabel, sheetSigners, thaiDate,
+  type SheetSetup, type Signer,
+} from "../../utils/printSheet";
 import { shortTeacher, teacherLine, withKhru } from "../../utils/teacherLabel";
 import { fitFont, FONT_STACK, THAI_LINE_HEIGHT } from "../../utils/fonts";
 import { DEFAULT_FREE_LABEL, DEFAULT_FREE_THROUGH, freeCellLabel }
@@ -143,11 +147,18 @@ interface BlockProps {
    * หรือ "ห้องว่าง" ไม่ได้แปลว่านักเรียนมีชั่วโมงเสริมการเรียนรู้
    */
   fillEmpty?: (printedNo: number, slots: TimetableSlot[]) => string | null;
+  /**
+   * ผู้เซ็นใต้ตาราง — มาจากแบบฟอร์มที่โรงเรียนตั้งไว้ (utils/printSheet)
+   *
+   * เคยเป็นสองช่องตายตัวพร้อมข้อความตำแหน่งที่เขียนตรึงไว้ในไฟล์นี้
+   * "ช่องลงชื่อ สามารถลดหรือเพิ่มได้" คือข้อที่โรงเรียนเลือกว่าสำคัญที่สุด
+   */
+  signers:  Signer[];
 }
 
 const TimetableBlock: React.FC<BlockProps> = ({
   level, title, subtitle, grid, periods, schoolConfig, metrics: m, compact, renderCell,
-  fillEmpty,
+  fillEmpty, signers,
 }) => {
   const cols = getDisplayPeriods(periods, level);
 
@@ -296,22 +307,27 @@ const TimetableBlock: React.FC<BlockProps> = ({
           is the flex child that grows, so whatever is reserved here is taken
           off the table rather than added to the page, and the signature line
           stops sitting right on the table's bottom border. */}
-      <div style={{
-        marginTop: compact ? "6mm" : "10mm",
-        display: "flex", justifyContent: "space-between",
-        fontSize: compact ? "8pt" : "10pt",
-      }}>
-        <div style={{ textAlign: "center", minWidth: "40%" }}>
-          <div>ลงชื่อ................................</div>
-          {schoolConfig.deputyName && <div>({schoolConfig.deputyName})</div>}
-          <div>รองผู้อำนวยการกลุ่มบริหารวิชาการ</div>
+      {signers.length > 0 && (
+        <div style={{
+          marginTop: compact ? "6mm" : "10mm",
+          display: "flex",
+          // สองคนยืนห่างกันคนละฝั่งเหมือนเดิม สามคนขึ้นไปเกลี่ยให้เท่ากัน
+          justifyContent: signers.length <= 2 ? "space-between" : "space-around",
+          fontSize: compact ? "8pt" : "10pt",
+        }}>
+          {signers.map((s, i) => (
+            <div key={i} style={{
+              textAlign: "center",
+              // เส้นลงชื่อสั้นลงเมื่อมีคนเซ็นมาก ไม่งั้นมันจะชนกัน
+              minWidth: signers.length <= 2 ? "40%" : `${Math.floor(92 / signers.length)}%`,
+            }}>
+              <div>ลงชื่อ{signers.length > 3 ? "................" : "................................"}</div>
+              {s.name && <div>({s.name})</div>}
+              <div>{s.role}</div>
+            </div>
+          ))}
         </div>
-        <div style={{ textAlign: "center", minWidth: "40%" }}>
-          <div>ลงชื่อ................................</div>
-          {schoolConfig.directorName && <div>({schoolConfig.directorName})</div>}
-          <div>ผู้อำนวยการโรงเรียน</div>
-        </div>
-      </div>
+      )}
     </div>
   );
 };
@@ -582,6 +598,42 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
 }
 
 /**
+ * บรรทัดล่างสุดของกระดาษหนึ่งแผ่น — หมายเหตุของโรงเรียน · วันที่ · เลขหน้า
+ *
+ *   "ช่วยทำระบบที่สามารถเขียนข้อความจัดหน้ากระดาษก่อนจะปริ้นให้หน่อย"
+ *
+ * ของเดิมบนใบตารางไม่มีวันที่ ไม่มีเลขหน้า และไม่มีที่ให้โรงเรียนเขียนอะไรเลย
+ * ใบที่หลุดจากปึกไปแล้วจึงบอกไม่ได้ว่าเป็นของปึกไหน หรือพิมพ์เมื่อไร
+ *
+ * เลขหน้าทำที่นี่ ไม่ได้ใช้ counter(page) ของ CSS เพราะเบราว์เซอร์ไม่รองรับกล่อง
+ * ขอบกระดาษ (@bottom-center) — แต่ที่นี่รู้อยู่แล้วว่าแผ่นนี้เป็นแผ่นที่เท่าไร
+ * จากทั้งหมดกี่แผ่น เพราะใบพิมพ์เป็นฝ่ายจัดแผ่นเองทั้งหมด
+ *
+ * เงียบสนิทเมื่อโรงเรียนไม่ได้เปิดอะไรไว้ — ค่าตั้งต้นคือใบเดิมทุกตัวอักษร
+ */
+const SheetFooter: React.FC<{
+  setup: SheetSetup; index: number; total: number; compact: boolean;
+}> = ({ setup, index, total, compact }) => {
+  const note = (setup.note ?? "").trim();
+  const right = [
+    setup.showDate ? `พิมพ์ ${thaiDate()}` : "",
+    setup.showPageNumbers ? pageLabel(index, total) : "",
+  ].filter(Boolean).join("  ·  ");
+  if (!note && !right) return null;
+  return (
+    <div style={{
+      marginTop: "2mm", display: "flex", justifyContent: "space-between",
+      gap: "4mm", fontSize: compact ? "7pt" : "8pt", color: "#444",
+      // ไม่ให้ยืดแย่งที่จากตาราง — เอาเท่าที่ข้อความต้องการ
+      flex: "0 0 auto",
+    }}>
+      <span style={{ whiteSpace: "pre-wrap" }}>{note}</span>
+      <span style={{ whiteSpace: "nowrap" }}>{right}</span>
+    </div>
+  );
+};
+
+/**
  * หนึ่งช่องของ "ตารางการใช้ห้องสอน" — ห้องเป็นเจ้าของกระดาษแผ่นนี้ บรรทัดที่สาม
  * จึงเป็นชื่อครูแทนชื่อห้อง (ซึ่งจะซ้ำกับหัวกระดาษทุกช่อง)
  *
@@ -630,6 +682,10 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
     };
     const compact = options.perPage === 2;
     const pick = new Set(options.selectedIds);
+    // แบบฟอร์มใบพิมพ์ — ช่องลงชื่อ หมายเหตุ วันที่ เลขหน้า เก็บไว้กับค่าตั้ง
+    // โรงเรียนเหมือนผังบรรทัด ยังไม่ได้ตั้ง = ใบเดิมทุกตัวอักษร (utils/printSheet)
+    const sheetSetup = normalizeSheet(schoolConfig.print_sheet);
+    const signers = sheetSigners(sheetSetup, schoolConfig);
 
     // Build one block per class / teacher, in the requested order.
     const blocks: React.ReactNode[] = [];
@@ -657,6 +713,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             subtitle={[codePart, deptName(teacher.department_id), termLabel]
               .filter(Boolean).join("  ·  ")}
             grid={grid} periods={periods} schoolConfig={schoolConfig}
+            signers={signers}
             metrics={m} compact={compact}
             renderCell={(cs) => <TeacherCell slots={cs} m={m} teacherId={teacher.id} />}
           />,
@@ -688,6 +745,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
                        `ใช้ ${hours} คาบ/สัปดาห์`, termLabel]
               .filter(Boolean).join("  ·  ")}
             grid={grid} periods={periods} schoolConfig={schoolConfig}
+            signers={signers}
             metrics={m} compact={compact}
             renderCell={(cs) => <RoomCell slots={cs} m={m} roomId={room.id} />}
           />,
@@ -723,6 +781,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             title={`ตารางเรียน ${String(idx + 1).padStart(3, "0")}  ห้อง ${group.name}`}
             subtitle={`${termLabel}${advisorLabel}`}
             grid={grid} periods={periods} schoolConfig={schoolConfig}
+            signers={signers}
             metrics={m} compact={compact}
             renderCell={(cs) => <GroupCell slots={cs} m={m} />}
             fillEmpty={(no, cs) => freeCellLabel(no, cs, {
@@ -802,6 +861,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             <div key={i}
               className={`print-page${options.perPage === 2 && sheet.length === 1 ? " half" : ""}`}>
               {sheet}
+              <SheetFooter setup={sheetSetup} index={i} total={sheets.length} compact={compact} />
             </div>
           ))
         ) : (

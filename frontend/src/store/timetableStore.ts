@@ -22,6 +22,7 @@ import {
   chooseOption, previewSlots, verdictAt, type GuidedStep,
 } from "../utils/guidedMove";
 import { stateAfter, tally, type DataState } from "../utils/serverWake";
+import type { SheetSetup } from "../utils/printSheet";
 
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
@@ -187,6 +188,8 @@ interface TimetableStore {
    */
   setCellLayout:  (layout: CellLayout) => void;
   setPrintLayout: (layout: CellLayout) => void;
+  /** แบบฟอร์มใบพิมพ์ — ช่องลงชื่อ หมายเหตุ วันที่ เลขหน้า (utils/printSheet) */
+  setPrintSheet:  (sheet: SheetSetup) => void;
 
   /**
    * ล็อก/ปลดล็อกทั้งห้อง — "ห้องนี้จัดเสร็จแล้ว"
@@ -394,6 +397,7 @@ function moveRefusal(err: unknown): string {
 let scaleSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let cellLayoutTimer: ReturnType<typeof setTimeout> | null = null;
 let printLayoutTimer: ReturnType<typeof setTimeout> | null = null;
+let printSheetTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useTimetableStore = create<TimetableStore>((set, get) => ({
   departments:       [],
@@ -501,6 +505,23 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     printLayoutTimer = setTimeout(() => {
       printLayoutTimer = null;
       api.updateSchoolConfig({ print_layout: v }).catch(() => { /* อยู่ในจอนี้ก็ยังใช้ได้ */ });
+    }, 600);
+  },
+
+  /**
+   * แบบฟอร์มใบพิมพ์ — ช่องลงชื่อ หมายเหตุ วันที่ เลขหน้า
+   *
+   * หน่วงก่อนส่งเหมือนผังบรรทัด เพราะคนพิมพ์ชื่อผู้เซ็นทีละตัวอักษร ถ้าส่งทุก
+   * ปุ่มที่กด จะได้คำขอเท่าจำนวนตัวอักษร และทุกคำขอขยับเลขรุ่น ซึ่งทำให้ทุก
+   * เครื่องที่เปิดอยู่ไปโหลดตารางใหม่
+   */
+  setPrintSheet: (sheet) => {
+    set((s) => ({ schoolConfig: { ...s.schoolConfig, print_sheet: sheet } }));
+    if (printSheetTimer !== null) clearTimeout(printSheetTimer);
+    printSheetTimer = setTimeout(() => {
+      printSheetTimer = null;
+      api.updateSchoolConfig({ print_sheet: sheet })
+        .catch(() => { /* อยู่ในจอนี้ก็ยังใช้ได้ */ });
     }, 600);
   },
 

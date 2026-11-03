@@ -14871,6 +14871,33 @@ def _clean_cell_layout(raw: Any, allowed: tuple[str, ...]) -> list[dict[str, Any
     return out
 
 
+# ผู้เซ็นมากกว่านี้ใบพิมพ์เสียรูป — เส้นลงชื่อเรียงกันในแถวเดียว
+# ต้องตรงกับ MAX_SIGNERS ใน frontend/src/utils/printSheet.ts
+_MAX_SIGNERS = 6
+
+
+def _clean_print_sheet(raw: Any) -> dict[str, Any]:
+    """แบบฟอร์มใบพิมพ์ที่เก็บได้ — ของที่อ่านไม่ได้ถูกทิ้ง ไม่ใช่เก็บตามที่ส่งมา
+
+    `signers` ที่ไม่ใช่รายการถูกตัดออกทั้งช่อง ซึ่งหน้าเว็บอ่านว่า "ยังไม่ได้
+    ตั้ง" แล้วกลับไปใช้สองช่องเดิม — ปลอดภัยกว่าการเก็บค่าที่ใช้ไม่ได้ไว้ เพราะ
+    อย่างน้อยใบพิมพ์ยังออกมาเหมือนเดิม
+    """
+    r = raw if isinstance(raw, dict) else {}
+    out: dict[str, Any] = {
+        "note": str(r.get("note") or "")[:400],
+        "showDate": bool(r.get("showDate")),
+        "showPageNumbers": bool(r.get("showPageNumbers")),
+    }
+    if isinstance(r.get("signers"), list):
+        out["signers"] = [
+            {"name": str(s.get("name") or "")[:120],
+             "role": str(s.get("role") or "")[:120]}
+            for s in r["signers"][:_MAX_SIGNERS] if isinstance(s, dict)
+        ]
+    return out
+
+
 @app.put("/api/school/config")
 def update_school_config(body: dict[str, Any]):
     for k in ("schoolName", "term", "year", "directorName", "deputyName", "logoUrl",
@@ -14899,6 +14926,15 @@ def update_school_config(body: dict[str, Any]):
         if key not in body:
             continue
         SCHOOL_CONFIG[key] = _clean_cell_layout(body[key], allowed)
+    # แบบฟอร์มใบพิมพ์ — ช่องลงชื่อ หมายเหตุ วันที่ เลขหน้า
+    #
+    #   "ช่วยทำระบบที่สามารถเขียนข้อความจัดหน้ากระดาษก่อนจะปริ้นให้หน่อย
+    #    พอมีอะไรแก้ไขจะได้แก้ไขได้เลยไม่ต้องมานั่งเขียนโค้ดใหม่"
+    #
+    # ตรวจที่นี่ด้วยเหตุผลเดียวกับผังบรรทัด: ค่านี้ถูกอ่านโดยทุกเครื่อง และ
+    # ใบพิมพ์ 47 หน้าต้องไม่ล้มเพราะค่าเพี้ยนค่าเดียว
+    if "print_sheet" in body:
+        SCHOOL_CONFIG["print_sheet"] = _clean_print_sheet(body["print_sheet"])
     for k in _CONFIG_FLAGS:
         if k not in body:
             continue
