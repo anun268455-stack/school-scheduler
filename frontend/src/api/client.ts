@@ -408,6 +408,26 @@ export const addElectiveOption = (slotId: number, d: { subject_id: number; teach
 export const deleteElectiveOption = (slotId: number, optionId: number) =>
   api.delete<TimetableSlot>(`/timetable/elective-slots/${slotId}/options/${optionId}`).then((r) => r.data);
 
+/**
+ * ตั้งห้องสอนให้วิชาหนึ่งในคาบเสรี — ทุกห้องเรียนที่เรียนวิชานั้นพร้อมกัน
+ *
+ *   "ครูมาบอกว่าต้องการห้องสอนที่นี้"
+ *
+ * ระบุด้วย (วัน · คาบ · วิชา · ครู) ไม่ใช่เลขตัวเลือก เพราะคาบเสรีที่สร้างทีละ
+ * คาบแล้วคัดลอกไปห้องอื่น ตัวเลือกของแต่ละสำเนาได้เลขใหม่คนละเลข — เหตุผลเต็ม
+ * อยู่ใน utils/electiveRooms.ts และในเส้นทางฝั่งเซิร์ฟเวอร์
+ *
+ * `room_id: null` = เอาห้องออก · `busy` ที่คืนมาคือสิ่งที่ใช้ห้องนั้นอยู่แล้ว
+ * ในชั่วโมงเดียวกัน (ไม่ได้ห้าม แต่ต้องบอก)
+ */
+export const setElectiveRoom = (d: {
+  day: number; period: number;
+  subject_id: number | null; teacher_id: number; room_id: number | null;
+}) => api.post<{
+  slots: TimetableSlot[];
+  busy:  { group_name: string | null; subject_name: string | null }[];
+}>("/timetable/elective-rooms", d).then((r) => r.data);
+
 /** Copy an elective to other classes. Classes already busy then are skipped. */
 export const copyElectiveSlot = (slotId: number, targetGroupIds: number[]) =>
   api.post<{
@@ -1001,7 +1021,7 @@ export const fetchStateInfo = () =>
  * ต้องตรงกับ API_BUILD ใน mock_api.py และขยับพร้อมกันเสมอ — มีเทสต์
  * (scratchpad/apibuild.py) คอยจับไว้ว่าสองที่นี้ตรงกัน
  */
-export const EXPECTED_API_BUILD = "2026-11-03.1";
+export const EXPECTED_API_BUILD = "2026-11-05.1";
 
 export interface ApiBuildCheck {
   /** รุ่นที่เซิร์ฟเวอร์ตอบมา — null เมื่อเก่าจนไม่มีช่องนี้เลย */

@@ -29,7 +29,7 @@ app = FastAPI(title="School Scheduler Mock API v3")
 # เกิดอะไรขึ้น และคนก็กดสร้างตารางซ้ำอยู่อย่างนั้น
 #
 # หน้าเว็บเทียบเลขนี้กับที่ตัวเองรู้ แล้วขึ้นแถบเตือนเมื่อไม่ตรง
-API_BUILD = "2026-11-03.1"
+API_BUILD = "2026-11-05.1"
 
 # บีบอัดคำตอบก่อนส่งออก
 #
@@ -11550,6 +11550,9 @@ def create_elective_slot(body: dict[str, Any]):
         "subject_id": body["subject_id"],
         "teacher_id": body["teacher_id"],
         "label": body.get("label") or "วงที่ 1",
+        # ห้องของวิชานี้ ตั้งทีหลังผ่าน /api/timetable/elective-rooms — เขียนช่อง
+        # ไว้ตั้งแต่สร้างเพื่อให้ทุกตัวเลือกมีรูปร่างเดียวกัน ไม่ว่าสร้างทางไหน
+        "room_id": None,
     }
     _mark_elective(option["subject_id"])
     common = {
@@ -11608,6 +11611,7 @@ def add_elective_option(slot_id: int, body: dict[str, Any]):
         "subject_id": body["subject_id"],
         "teacher_id": body["teacher_id"],
         "label": body.get("label") or f"วงที่ {len(slot['elective_options']) + 1}",
+        "room_id": None,
     }
     slot["elective_options"].append(option)
     _mark_elective(option["subject_id"])
@@ -11625,6 +11629,96 @@ def delete_elective_option(slot_id: int, option_id: int):
     slot["elective_options"] = [o for o in slot["elective_options"] if o["id"] != option_id]
     _sync_doubles(slot)
     return _apply_selected_option(slot)
+
+@app.post("/api/timetable/elective-rooms")
+def set_elective_room(body: dict[str, Any]):
+    """ตั้งห้องสอนให้วิชาหนึ่งในคาบเสรี ทุกห้องเรียนที่เรียนวิชานั้นพร้อมกัน
+
+      "คาบเสรี ครูมาบอกว่าต้องการห้องสอนที่นี้"
+
+    ── ทำไมระบุด้วย (วัน · คาบ · วิชา · ครู) ไม่ใช่เลขตัวเลือก ──
+
+    คาบเสรีมีสองรูปแบบในระบบนี้ และรูปแบบที่โรงเรียนใช้คือแบบที่สร้างทีละคาบแล้ว
+    คัดลอกไปห้องอื่น ซึ่งตัวเลือกของแต่ละสำเนาได้ `id` ใหม่คนละเลข และไม่มี
+    `key` แบบที่กลุ่มวิชาเสรีมี — ไม่มีอะไรผูกสำเนาเข้าด้วยกันเลยนอกจาก
+    "วิชาอะไร ครูคนไหน"
+
+    ซึ่งเป็นกฎเดียวกับที่ไฟล์นี้ใช้อยู่แล้วตอนนับชั่วโมงของครู
+    (`_elective_option_pairs` → `_same_activity`): ครูคนหนึ่งสอนวิชาหนึ่งใน
+    ชั่วโมงหนึ่ง คือการสอนครั้งเดียว ไม่ว่านักเรียนจะมาจากกี่ห้องเรียน ห้องจึง
+    เป็นของการสอนครั้งนั้น และต้องไปถึงทุกแถวที่เขียนการสอนครั้งนั้นไว้
+
+    เส้นทางเดิม (PUT บนตัวเลือกของกลุ่มวิชาเสรี) ยังอยู่และยังใช้ได้ แต่ใช้ได้
+    เฉพาะคาบเสรีที่มาจากกลุ่ม — เส้นนี้ใช้ได้ทั้งสองแบบ
+
+    ห้องชนไม่ถูกปฏิเสธ แต่ถูกส่งกลับไปให้หน้าจอบอก ด้วยเหตุผลเดียวกับครูซ้ำ:
+    ตอนจัดของจริงต้องเดินผ่านสถานะที่ยังไม่ลงตัวได้
+    """
+    try:
+        day    = int(body["day"])
+        period = int(body["period"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "ต้องระบุวันและคาบ")
+    subject_id = body.get("subject_id")
+    teacher_id = body.get("teacher_id")
+    if teacher_id is None:
+        raise HTTPException(400, "ต้องระบุครูผู้สอน")
+
+    room_id = body.get("room_id")
+    if room_id is not None:
+        room_id = int(room_id)
+        if not any(r["id"] == room_id for r in ROOMS):
+            raise HTTPException(400, "ไม่พบห้องสอนที่เลือก (อาจถูกลบไปแล้ว)")
+
+    def mine(o: dict[str, Any]) -> bool:
+        return (o.get("teacher_id") == teacher_id
+                and o.get("subject_id") == subject_id)
+
+    touched = []
+    for s in SLOTS:
+        if s["day"] != day or s["period"] != period or not s.get("is_elective"):
+            continue
+        hit = False
+        for o in (s.get("elective_options") or []):
+            if mine(o):
+                o["room_id"] = room_id
+                hit = True
+        if hit:
+            touched.append(s)
+
+    if not touched:
+        raise HTTPException(404, "ไม่พบวิชานี้ในคาบเสรีของชั่วโมงนั้น")
+
+    # คาบเสรีที่มาจากกลุ่มวิชาเสรีถูกเขียนใหม่ทั้งชุดทุกครั้งที่กลุ่มเปลี่ยน
+    # (_sync_pool_slots) ห้องที่เขียนไว้บนแถวอย่างเดียวจะหายตอนนั้น จึงเขียนลง
+    # ตัวกลุ่มด้วย ให้มันรอดการเขียนใหม่
+    for pid in {s.get("elective_pool_id") for s in touched if s.get("elective_pool_id")}:
+        pool = next((p for p in ELECTIVE_POOLS if p["id"] == pid), None)
+        for o in (pool or {}).get("options", []):
+            if mine(o):
+                o["room_id"] = room_id
+
+    # ใครใช้ห้องนี้อยู่อีกในชั่วโมงเดียวกัน — ไม่ได้ห้าม แต่ต้องบอก
+    busy = []
+    if room_id is not None:
+        seen = set()
+        for s in SLOTS:
+            if s["day"] != day or s["period"] != period or s in touched:
+                continue
+            if room_id not in _slot_rooms(s):
+                continue
+            grp = _find_group(s["group_id"]) or {}
+            subj = next((x for x in SUBJECTS if x["id"] == s.get("subject_id")), {})
+            label = subj.get("name") or s.get("elective_label") or "วิชาเสรี"
+            key = (grp.get("name"), label)
+            if key in seen:
+                continue
+            seen.add(key)
+            busy.append({"group_name": grp.get("name"), "subject_name": label})
+
+    books = _name_books()
+    return {"slots": [_enrich_slot(s, books) for s in touched], "busy": busy}
+
 
 @app.post("/api/timetable/elective-slots/{slot_id}/copy")
 def copy_elective_slot(slot_id: int, body: dict[str, Any]):

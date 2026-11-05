@@ -10,9 +10,9 @@
  * ถ้านับตรง ๆ มันจะฟ้องว่าห้องชนกับตัวเอง แล้วจะไม่มีห้องไหนเลือกได้
  */
 import {
-  electiveDutiesOf, freeRoomsAt, optionForTeacher, optionsInRoom, pickClashes,
-  roomBookingsAt, roomNameForTeacher, slotRoomIds, slotUsesRoom,
-  type ElectiveSlotLike,
+  dutyKey, electiveDutiesOf, freeRoomsAt, optionForTeacher, optionsInRoom,
+  pickClashes, roomBookingsAt, roomChoicesAt, roomNameForTeacher, slotRoomIds,
+  slotUsesRoom, type ElectiveSlotLike,
 } from "../../frontend/src/utils/electiveRooms.ts";
 
 let n = 0;
@@ -26,23 +26,30 @@ const eq = (a: unknown, b: unknown, what: string): void =>
 /** คาบปกติ */
 const plain = (id: number, day: number, period: number, roomId: number | null): ElectiveSlotLike => ({
   id, day, period, room_id: roomId, room_name: roomId ? `ห้อง ${roomId}` : null,
-  teacher_id: 900 + id, is_elective: false, elective_pool_id: null, elective_options: [],
+  teacher_id: 900 + id, group_id: 1, group_name: "ม.1/1", subject_name: "คณิตศาสตร์",
+  is_elective: false, elective_pool_id: null, elective_options: [],
 });
 
 /**
  * หนึ่งแถวของคาบเสรี — ห้องเรียนหนึ่งห้อง ถือสำเนาตัวเลือกทั้งชุด
  *
- * ตัวเลือกชุดเดียวกันถูกคัดลอกไปทุกแถว `key` เท่ากันข้ามแถว ส่วน `id` ไม่เท่า
- * (เซิร์ฟเวอร์แจกใหม่ทีละแถว) — `key` จึงเป็นตัวบอกว่า "วิชาเดียวกัน"
+ * สร้างตามรูปแบบที่โรงเรียนใช้จริง คือคาบเสรีที่สร้างทีละคาบแล้วคัดลอกไปห้องอื่น
+ * ซึ่งแปลว่า **ไม่มี `elective_pool_id` และตัวเลือกไม่มี `key`** ทุกสำเนาได้
+ * `id` ใหม่คนละเลข — สิ่งเดียวที่ผูกสำเนาเข้าด้วยกันคือ (วิชา · ครู)
+ *
+ * ตัวทดสอบชุดแรกใช้รูปแบบกลุ่มวิชาเสรีซึ่งมี `key` ทุกข้อจึงผ่านหมด แต่ของจริง
+ * พัง: ขึ้นว่า "คาบเสรี 18 คาบ" ทั้งที่มี 5 และกดเลือกห้องแถวเดียวกางทั้ง 18
  */
-const pooled = (
-  id: number, day: number, period: number, poolId: number,
-  opts: { key: number; teacher_id: number | null; room_id: number | null; label: string }[],
+const window = (
+  id: number, day: number, period: number, groupId: number,
+  opts: { subject: number; teacher_id: number | null; room_id: number | null; label: string }[],
+  poolId: number | null = null,
 ): ElectiveSlotLike => ({
   id, day, period, room_id: null, room_name: null, teacher_id: null,
-  is_elective: true, elective_pool_id: poolId,
+  group_id: groupId, is_elective: true, elective_pool_id: poolId,
   elective_options: opts.map((o, i) => ({
-    id: id * 100 + i, key: o.key, subject_id: o.key, teacher_id: o.teacher_id,
+    // id ไม่ซ้ำกันข้ามแถว — เลียนแบบ _next("elective_option") ของเซิร์ฟเวอร์
+    id: id * 100 + i, subject_id: o.subject, teacher_id: o.teacher_id,
     label: o.label, room_id: o.room_id,
     room_name: o.room_id ? `ห้อง ${o.room_id}` : null,
   })),
@@ -50,11 +57,12 @@ const pooled = (
 
 // คาบเสรีวันจันทร์คาบ 7 ของสามห้องเรียน สามวิชาให้เลือก
 const OPTS = [
-  { key: 11, teacher_id: 1, room_id: 501, label: "กรีฑา" },
-  { key: 12, teacher_id: 2, room_id: 502, label: "ดนตรี" },
-  { key: 13, teacher_id: 3, room_id: null, label: "ศิลปะ" },   // ยังไม่ได้ห้อง
+  { subject: 11, teacher_id: 1, room_id: 501, label: "กรีฑา" },
+  { subject: 12, teacher_id: 2, room_id: 502, label: "ดนตรี" },
+  { subject: 13, teacher_id: 3, room_id: null, label: "ศิลปะ" },   // ยังไม่ได้ห้อง
 ];
-const window7 = [pooled(1, 0, 7, 9, OPTS), pooled(2, 0, 7, 9, OPTS), pooled(3, 0, 7, 9, OPTS)];
+const window7 = [window(1, 0, 7, 71, OPTS), window(2, 0, 7, 72, OPTS),
+                 window(3, 0, 7, 73, OPTS)];
 
 // ── ห้องที่คาบหนึ่งใช้ ──────────────────────────────────────────────────────
 eq(slotRoomIds(plain(7, 0, 7, 301)), [301], "คาบปกติใช้ห้องของตัวเอง");
@@ -110,20 +118,41 @@ const ROOMS = [
 ];
 const all = [...window7, plain(50, 0, 7, 301)];
 
-// วิชา "ศิลปะ" (key 13) ยังไม่มีห้อง — เลือกได้เฉพาะห้องที่ว่างจริง
-const forArt = freeRoomsAt(ROOMS, all, 0, 7, { poolId: 9, optionKey: 13, teacherId: 3 });
+// วิชา "ศิลปะ" ยังไม่มีห้อง — ห้องที่ว่างจริงมีห้องเดียว
+const forArt = freeRoomsAt(ROOMS, all, 0, 7, { subjectId: 13, teacherId: 3 });
 eq(forArt.map((r) => r.id), [503], "เหลือห้องเดียวที่ว่าง (504 ห้ามใช้ · 505 กันไว้ให้ครูอื่น)");
 
 // วิชาที่มีห้องอยู่แล้ว ต้องเห็นห้องของตัวเองในรายการ ไม่งั้นเปิดมาแล้วห้องที่
 // เลือกไว้หายจากลิสต์ เหมือนระบบลืมว่าเคยตั้งไว้
-const forMusic = freeRoomsAt(ROOMS, all, 0, 7, { poolId: 9, optionKey: 12, teacherId: 2 });
+const forMusic = freeRoomsAt(ROOMS, all, 0, 7, { subjectId: 12, teacherId: 2 });
 ok(forMusic.some((r) => r.id === 502), "ห้องของตัวเองยังอยู่ในรายการ");
-ok(!forMusic.some((r) => r.id === 501), "ห้องของวิชาอื่นในคาบเดียวกันเลือกไม่ได้");
-ok(!forMusic.some((r) => r.id === 301), "ห้องที่คาบปกติใช้อยู่ก็เลือกไม่ได้");
+ok(!forMusic.some((r) => r.id === 501), "ห้องของวิชาอื่นในคาบเดียวกันไม่นับว่าว่าง");
+ok(!forMusic.some((r) => r.id === 301), "ห้องที่คาบปกติใช้อยู่ก็ไม่ว่าง");
 
 // ห้องที่กันไว้ให้ครูคนหนึ่ง ครูคนนั้นเลือกได้
-const forMrSeven = freeRoomsAt(ROOMS, all, 0, 7, { poolId: 9, optionKey: 13, teacherId: 7 });
+const forMrSeven = freeRoomsAt(ROOMS, all, 0, 7, { subjectId: 13, teacherId: 7 });
 ok(forMrSeven.some((r) => r.id === 505), "ครูที่ห้องกันไว้ให้ เลือกห้องนั้นได้");
+
+// ── ห้องต้องขึ้นครบ พร้อมบอกว่าว่างไหม ──────────────────────────────────────
+//
+//   "ไม่สามารถเลือกห้องได้ เพราะห้องไม่ขึ้น ช่วยทำให้ห้องขึ้นให้หน่อย
+//    โดยดูว่าห้องว่างไหม"
+//
+// ในคาบที่ทั้งโรงเรียนเรียนพร้อมกัน การคืนเฉพาะห้องว่างเหลือแต่ลานกลางแจ้ง
+// ครูที่เดินมาขอห้องดนตรีไทยจึงไม่เห็นห้องนั้นเลย และไม่มีอะไรบอกว่าทำไม
+const choices = roomChoicesAt(ROOMS, all, 0, 7, { subjectId: 13, teacherId: 3 });
+eq(choices.map((c) => c.room.id), [503, 301, 501, 502],
+   "ขึ้นทุกห้องที่ใช้ได้ · ว่างก่อน · 504 กับ 505 ตัดออกเพราะใช้ไม่ได้จริง");
+eq(choices.filter((c) => c.free).map((c) => c.room.id), [503], "ห้องที่ว่าง");
+eq(choices.find((c) => c.room.id === 501)?.usedBy, "วิชาเสรี กรีฑา",
+   "บอกว่าห้องที่ไม่ว่างติดอะไรอยู่ — ไม่ใช่แค่ซ่อนไป");
+eq(choices.find((c) => c.room.id === 301)?.usedBy, "ม.1/1 คณิตศาสตร์", "คาบปกติก็บอก");
+ok(choices.every((c) => !c.mine), "ศิลปะยังไม่มีห้องของตัวเอง");
+
+// ห้องของตัวเองต้องถูกทำเครื่องหมายไว้ ไม่ใช่ขึ้นว่า "ไม่ว่าง เพราะตัวเองใช้อยู่"
+const musicChoices = roomChoicesAt(ROOMS, all, 0, 7, { subjectId: 12, teacherId: 2 });
+const own = musicChoices.find((c) => c.room.id === 502);
+ok(own?.mine === true && own?.free === true, "ห้องของตัวเองนับว่าว่างและเป็นของเรา");
 
 // ── ตรวจชุดที่กำลังจะบันทึก ─────────────────────────────────────────────────
 //
@@ -142,24 +171,44 @@ eq(pickClashes([{ optionKey: 11, roomId: 601 }, { optionKey: 11, roomId: 601 }])
 // ── มองจากฝั่งครู ───────────────────────────────────────────────────────────
 //
 // วิชาหนึ่งในหน้าต่างที่มีสามห้องเรียนถูกเขียนไว้สามแถว แต่ครูสอนครั้งเดียว
-// ถ้าไม่ยุบ หน้าจอจะขึ้นงานเดียวกันสามรายการให้เลือกห้องสามครั้ง
-const withGroups = window7.map((s, i) => ({ ...s, group_id: 71 + i }));
-const duties = electiveDutiesOf(withGroups, 1);
+// ถ้าไม่ยุบ หน้าจอจะขึ้นงานเดียวกันสามรายการให้เลือกห้องสามครั้ง — ซึ่งคือสิ่งที่
+// โรงเรียนเจอจริง: "คาบเสรี 18 คาบ" ทั้งที่บนตารางมี 5 ช่อง
+const duties = electiveDutiesOf(window7, 1);
 eq(duties.length, 1, "สามแถว = งานสอนหนึ่งงาน");
 eq(duties[0].label, "กรีฑา", "วิชาของครูคนนั้น");
 eq(duties[0].roomId, 501, "ห้องที่ตั้งไว้");
 eq(duties[0].groupCount, 3, "บอกว่ามีสามห้องเรียนส่งนักเรียนมา");
-eq(duties[0].optionKey, 11, "ตัวระบุที่ใช้สั่งเปลี่ยนห้องได้");
-eq(duties[0].poolId, 9, "อยู่หน้าต่างไหน");
+eq(duties[0].subjectId, 11, "ตัวระบุที่ใช้สั่งเปลี่ยนห้อง: วิชา");
+eq(duties[0].teacherId, 1, "ตัวระบุที่ใช้สั่งเปลี่ยนห้อง: ครู");
 
-eq(electiveDutiesOf(withGroups, 3)[0].roomId, null, "วิชาที่ยังไม่มีห้อง");
-eq(electiveDutiesOf(withGroups, 99), [], "ครูที่ไม่ได้สอนคาบเสรีเลย");
-eq(electiveDutiesOf(withGroups, null), [], "ยังไม่ได้เลือกครู");
+// คีย์บนจอต้องต่างกันจริงทุกงานสอน — ของเดิมได้ "null-null" เหมือนกันหมด
+// ทำให้กดกางแถวเดียวแล้วกางทั้งหมด และ React ได้คีย์ซ้ำ
+const many = electiveDutiesOf([
+  ...window7,
+  window(9, 1, 2, 71, [{ subject: 21, teacher_id: 1, room_id: null, label: "ว่ายน้ำ" }]),
+], 1);
+eq(new Set(many.map(dutyKey)).size, many.length, "คีย์ไม่ซ้ำกันเอง");
+eq(many.length, 2, "สองงานสอน");
+eq(many.map((d) => d.label), ["กรีฑา", "ว่ายน้ำ"], "เรียงตามวันแล้วคาบ");
 
-// ครูที่สอนสองหน้าต่างคนละวัน ต้องได้สองรายการ เรียงตามวันแล้วคาบ
-const monday = pooled(21, 0, 7, 9, [{ key: 11, teacher_id: 1, room_id: 501, label: "กรีฑา" }]);
-const tuesday = pooled(22, 1, 2, 10, [{ key: 21, teacher_id: 1, room_id: null, label: "ว่ายน้ำ" }]);
-const two = electiveDutiesOf([tuesday, monday], 1);
-eq(two.map((d) => d.label), ["กรีฑา", "ว่ายน้ำ"], "เรียงตามวันแล้วคาบ");
+// สำเนาที่ยังไม่ได้รับห้อง (เพิ่งคัดลอกไปห้องเรียนใหม่) ต้องไม่ลบห้องที่ตั้งไว้
+const halfSet = electiveDutiesOf([
+  window(31, 0, 7, 81, [{ subject: 11, teacher_id: 1, room_id: null, label: "กรีฑา" }]),
+  window(32, 0, 7, 82, [{ subject: 11, teacher_id: 1, room_id: 501, label: "กรีฑา" }]),
+], 1);
+eq(halfSet.length, 1, "ยังเป็นงานเดียว");
+eq(halfSet[0].roomId, 501, "ห้องที่ตั้งไว้ชนะค่าว่างของสำเนาที่ยังไม่ได้รับ");
+
+eq(electiveDutiesOf(window7, 3)[0].roomId, null, "วิชาที่ยังไม่มีห้อง");
+eq(electiveDutiesOf(window7, 99), [], "ครูที่ไม่ได้สอนคาบเสรีเลย");
+eq(electiveDutiesOf(window7, null), [], "ยังไม่ได้เลือกครู");
+
+// รูปแบบกลุ่มวิชาเสรีต้องยังใช้ได้เหมือนกัน — ตัวระบุไม่ได้พึ่ง key อีกแล้ว
+const fromPool = electiveDutiesOf([
+  window(41, 2, 3, 91, [{ subject: 55, teacher_id: 4, room_id: 601, label: "โขน" }], 7),
+  window(42, 2, 3, 92, [{ subject: 55, teacher_id: 4, room_id: 601, label: "โขน" }], 7),
+], 4);
+eq(fromPool.length, 1, "คาบเสรีแบบกลุ่มวิชาเสรีก็ยุบถูก");
+eq(fromPool[0].roomId, 601, "และได้ห้องของมัน");
 
 console.log(`ALL PASS (${n})`);

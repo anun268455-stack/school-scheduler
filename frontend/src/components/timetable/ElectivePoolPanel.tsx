@@ -24,9 +24,9 @@ import { flattenGroups, groupLabel } from "../../utils/groupHierarchy";
 import { TableSearch, matches } from "../common/TableSearch";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { AddElectiveSubjectModal } from "./AddElectiveSubjectModal";
-import { freeRoomsAt } from "../../utils/electiveRooms";
+import { roomChoicesAt, type RoomChoice } from "../../utils/electiveRooms";
 import { DAYS, periodLabel } from "../../types";
-import type { ElectivePool, ElectivePoolOption, PoolTeacherCandidate, Period, Room } from "../../types";
+import type { ElectivePool, ElectivePoolOption, PoolTeacherCandidate, Period } from "../../types";
 
 // ── Small shared pieces ──────────────────────────────────────────────────────
 
@@ -37,44 +37,48 @@ import type { ElectivePool, ElectivePoolOption, PoolTeacherCandidate, Period, Ro
  * RoomSwapModal ซึ่งมีเหตุผลเต็มเขียนไว้แล้ว)
  */
 const RoomChoices: React.FC<{
-  free:     Room[];
-  chosen:   number | null;
+  choices:  RoomChoice[];
   busy:     boolean;
   search:   string;
   onSearch: (q: string) => void;
   onPick:   (roomId: number) => void;
-}> = ({ free, chosen, busy, search, onSearch, onPick }) => (
-  <div className="pl-16 mt-1">
-    <input
-      autoFocus
-      value={search}
-      onChange={(e) => onSearch(e.target.value)}
-      placeholder="พิมพ์ชื่อหรือเลขห้อง"
-      className="w-44 border border-gray-200 rounded px-2 py-0.5 text-[11px] mb-1"
-    />
-    <div className="flex flex-wrap gap-1">
-      {free
-        .filter((r) => matches(search, r.name, r.building_name ?? ""))
-        .slice(0, 24)
-        .map((r) => (
-          <button key={r.id} onClick={() => onPick(r.id)}
-            disabled={busy || r.id === chosen}
+}> = ({ choices, busy, search, onSearch, onPick }) => {
+  const shown = choices.filter(
+    (c) => matches(search, c.room.name, c.room.building_name ?? ""));
+  return (
+    <div className="pl-16 mt-1">
+      <div className="flex items-center gap-2 mb-1">
+        <input
+          autoFocus
+          value={search}
+          onChange={(e) => onSearch(e.target.value)}
+          placeholder="พิมพ์ชื่อหรือเลขห้อง"
+          className="w-44 border border-gray-200 rounded px-2 py-0.5 text-[11px]"
+        />
+        <span className="text-[10px] text-gray-400">
+          ว่าง {choices.filter((c) => c.free).length} จาก {choices.length} ห้อง
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {shown.slice(0, 40).map((c) => (
+          <button key={c.room.id} onClick={() => onPick(c.room.id)}
+            disabled={busy || c.mine}
             className={clsx("text-[10px] px-1.5 py-0.5 rounded border",
-              r.id === chosen
-                ? "bg-gray-100 border-gray-200 text-gray-400"
-                : "bg-white border-emerald-300 text-emerald-800 hover:bg-emerald-50")}
-            title={r.building_name ?? ""}>
-            {r.id === chosen ? "✓ " : ""}{r.name}
+              c.mine ? "bg-gray-100 border-gray-200 text-gray-400"
+                : c.free ? "bg-white border-emerald-300 text-emerald-800 hover:bg-emerald-50"
+                : "bg-white border-red-200 text-red-600 hover:bg-red-50")}
+            title={c.free ? (c.room.building_name ?? "ว่างคาบนี้")
+                          : `ไม่ว่าง — ${c.usedBy}`}>
+            {c.mine ? "✓ " : c.free ? "" : "⚠ "}{c.room.name}
           </button>
         ))}
-      {free.length === 0 && (
-        <span className="text-[10px] text-amber-700">
-          ไม่มีห้องว่างในคาบนี้เลย — วิชาอื่นในคาบเสรีเดียวกันและคาบปกติใช้ห้องไปหมดแล้ว
-        </span>
-      )}
+        {shown.length === 0 && (
+          <span className="text-[10px] text-gray-400">ไม่มีห้องที่ชื่อตรงกับที่พิมพ์</span>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 /** "ชนกับ ม.5/1 ทักษะดนตรีไทย" — said once, in full, on the row that owns it. */
 const ConflictNote: React.FC<{ option: ElectivePoolOption }> = ({ option }) => {
@@ -430,11 +434,11 @@ const PoolCard: React.FC<{
    * ทุกวิชาในหน้าต่างเรียนพร้อมกัน ห้องจึงต้องไม่ซ้ำกัน — เสนอแต่ห้องที่ว่าง
    * จริง รวมห้องของตัวเองไว้ด้วยเพื่อให้เห็นว่าตั้งอะไรไว้ (utils/electiveRooms)
    */
-  const roomsFor = (o: ElectivePoolOption): Room[] => {
+  const roomsFor = (o: ElectivePoolOption): RoomChoice[] => {
     if (pool.day == null || pool.period == null) return [];
-    return freeRoomsAt(rooms, slots, pool.day, pool.period, {
-      poolId: pool.id, optionKey: o.key, teacherId: o.teacher_id,
-    }) as Room[];
+    return roomChoicesAt(rooms, slots, pool.day, pool.period, {
+      subjectId: o.subject_id, teacherId: o.teacher_id,
+    });
   };
 
   const setRoom = async (o: ElectivePoolOption, roomId: number | null) => {
@@ -629,7 +633,7 @@ const PoolCard: React.FC<{
                     </p>
                   )}
                   {pickingRoom === o.key && <RoomChoices
-                    free={roomsFor(o)} chosen={o.room_id ?? null} busy={busy}
+                    choices={roomsFor(o)} busy={busy}
                     search={roomSearch} onSearch={setRoomSearch}
                     onPick={(rid) => void setRoom(o, rid)} />}
 

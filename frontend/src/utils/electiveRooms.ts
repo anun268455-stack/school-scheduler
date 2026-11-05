@@ -54,6 +54,9 @@ export interface ElectiveSlotLike {
   room_name?:        string | null;
   teacher_id:        number | null;
   group_id?:         number;
+  // ใช้บอกคนว่าห้องที่ไม่ว่างติดอะไรอยู่
+  group_name?:       string | null;
+  subject_name?:     string | null;
   is_elective?:      boolean;
   elective_pool_id?: number | null;
   elective_options?: ElectiveOptionLike[] | null;
@@ -65,6 +68,8 @@ export interface RoomLike {
   name:     string;
   usable?:  boolean;
   capacity?: number | null;
+  /** ใช้ค้นหาและบอกว่าห้องอยู่อาคารไหน */
+  building_name?: string | null;
   reserved_teacher_ids?: number[] | null;
   reserved_teacher_id?:  number | null;
 }
@@ -131,18 +136,38 @@ export function roomNameForTeacher(
  * การจองห้องหนึ่งครั้ง
  *
  * `id` คือตัวบอกว่าการจองสองรายการเป็นรายการเดียวกันหรือไม่ คาบปกติใช้เลขแถว
- * ส่วนคาบเสรีใช้ (กลุ่มวิชาเสรี · ตัวเลือก) เพื่อให้สำเนาข้ามแถวยุบเป็นหนึ่ง
+ * ส่วนคาบเสรีใช้ (วิชา · ครู) — ดู optionBookingId
  */
 export interface RoomBooking {
   roomId: number;
   id:     string;
+  /** ใช้บอกคนว่าห้องนี้ติดอะไรอยู่ */
+  label:  string;
 }
 
-/** ตัวระบุการจองของวิชาหนึ่งในคาบเสรี — คงที่ข้ามแถวที่เป็นสำเนากัน */
+/**
+ * ตัวระบุงานสอนหนึ่งงานในคาบเสรี — คงที่ข้ามแถวที่เป็นสำเนากัน
+ *
+ * ── ทำไมเป็น (วิชา · ครู) ไม่ใช่เลขตัวเลือก ──
+ *
+ * คาบเสรีในระบบนี้มีสองรูปแบบ และของโรงเรียนเป็นแบบที่สอง:
+ *
+ *   ๑ สร้างจาก "กลุ่มวิชาเสรี" — ตัวเลือกมี `key` ที่เท่ากันทุกห้องเรียน
+ *   ๒ สร้างทีละคาบ แล้วคัดลอกไปห้องอื่น (หรือมาจากการนำเข้า) — ตัวเลือก
+ *     **ไม่มี `key`** และทุกสำเนาได้ `id` ใหม่คนละเลข
+ *
+ * แบบที่สองจึงไม่มีอะไรผูกสำเนาเข้าด้วยกันเลย นอกจาก "วิชาอะไร ครูคนไหน"
+ * ซึ่งเป็นกฎเดียวกับที่เซิร์ฟเวอร์ใช้อยู่แล้วตอนนับชั่วโมงของครู
+ * (`_elective_option_pairs` → `_same_activity`) — ครูคนหนึ่งสอนวิชาหนึ่งใน
+ * ชั่วโมงหนึ่ง คือการสอนครั้งเดียว ไม่ว่านักเรียนจะมาจากกี่ห้องเรียน
+ *
+ * ตอนแรกไฟล์นี้ใช้ (กลุ่ม · key) ซึ่งใช้ได้เฉพาะแบบที่หนึ่ง ผลคือของโรงเรียน
+ * ขึ้นว่า "คาบเสรี 18 คาบ" ทั้งที่มีจริง 5 — และกดเลือกห้องแถวเดียวกางทั้ง 18
+ */
 export function optionBookingId(
-  poolId: number | null | undefined, optionKey: number | null | undefined,
+  subjectId: number | null | undefined, teacherId: number | null | undefined,
 ): string {
-  return `pool:${poolId ?? "-"}:opt:${optionKey ?? "-"}`;
+  return `elec:${subjectId ?? "-"}:${teacherId ?? "-"}`;
 }
 
 /**
@@ -155,23 +180,21 @@ export function roomBookingsAt(
 ): RoomBooking[] {
   const out: RoomBooking[] = [];
   const seen = new Set<string>();
-  const push = (roomId: number | null | undefined, id: string): void => {
+  const push = (roomId: number | null | undefined, id: string, label: string): void => {
     if (!roomId || roomId <= 0) return;
     const k = `${roomId}|${id}`;
     if (seen.has(k)) return;
     seen.add(k);
-    out.push({ roomId, id });
+    out.push({ roomId, id, label });
   };
   for (const s of slots) {
     if (s.day !== day || s.period !== period) continue;
-    push(s.room_id, `slot:${s.id}`);
+    push(s.room_id, `slot:${s.id}`,
+         [s.group_name, s.subject_name].filter(Boolean).join(" ") || "คาบอื่น");
     for (const o of options(s)) {
-      // ไม่มี key แปลว่าเป็นตัวเลือกที่เพิ่มเองในคาบเดียว ไม่ได้มาจากกลุ่ม —
-      // ไม่มีสำเนาที่อื่นให้ยุบ จึงนับด้วยแถวของมันเอง
-      const ident = o.key != null
-        ? optionBookingId(s.elective_pool_id, o.key)
-        : `slotopt:${s.id}:${o.id ?? o.subject_id ?? "-"}`;
-      push(o.room_id, ident);
+      push(o.room_id, optionBookingId(o.subject_id, o.teacher_id),
+           ["วิชาเสรี", o.label ?? o.code, o.teacher_name ? `· ครู${o.teacher_name}` : ""]
+             .filter(Boolean).join(" "));
     }
   }
   return out;
@@ -185,37 +208,84 @@ function reservedOk(r: RoomLike, teacherId: number | null | undefined): boolean 
 }
 
 export interface FreeRoomsFor {
-  /** กลุ่มวิชาเสรีและตัวเลือกที่กำลังจะลงห้อง — ห้องของตัวเองต้องยังเลือกได้ */
-  poolId?:    number | null;
-  optionKey?: number | null;
+  /** งานสอนที่กำลังจะลงห้อง — ห้องของตัวเองต้องยังเลือกได้ */
+  subjectId?: number | null;
+  teacherId?: number | null;
   /** คาบปกติ: เลขแถวที่กำลังจะเปลี่ยนห้อง */
   slotId?:    number | null;
-  teacherId?: number | null;
+}
+
+/** ห้องหนึ่งห้อง พร้อมคำตอบว่าชั่วโมงนี้ว่างไหม */
+export interface RoomChoice {
+  room:   RoomLike;
+  free:   boolean;
+  /** ติดอะไรอยู่ — ว่างเมื่อ free */
+  usedBy: string;
+  /** ห้องที่งานสอนนี้ถือไว้อยู่แล้ว */
+  mine:   boolean;
 }
 
 /**
- * ห้องที่เลือกได้สำหรับชั่วโมงนี้
+ * ห้องทั้งหมดที่ยกชั้นเรียนไปลงได้ พร้อมสถานะว่าง/ไม่ว่าง
  *
- * ห้องที่ตัวเองจองไว้อยู่แล้วต้องยังอยู่ในรายการ ไม่งั้นเปิดหน้าต่างมาแล้วห้อง
- * ที่เลือกไว้หายไปจากลิสต์ เหมือนระบบลืมว่าเคยตั้งไว้ แล้วคนก็ไม่กล้าเลือกอะไร
+ *   "ไม่สามารถเลือกห้องได้ เพราะห้องไม่ขึ้น ช่วยทำให้ห้องขึ้นให้หน่อย
+ *    โดยดูว่าห้องว่างไหม"
+ *
+ * ของเดิมคืนเฉพาะห้องที่ว่าง ซึ่งฟังดูสมเหตุสมผลจนกระทั่งเอาไปใช้จริง: ในคาบที่
+ * ทั้งโรงเรียนเรียนพร้อมกัน ห้องเรียนเกือบทุกห้องมีคนใช้ รายการจึงเหลือแต่ลาน
+ * กลางแจ้ง ๒๑ แห่ง — แล้วครูที่เดินมาขอ "ห้องดนตรีไทย" ก็ไม่เห็นห้องนั้นในจอ
+ * และไม่มีอะไรบอกว่าทำไม เหมือนระบบไม่รู้จักห้องนั้น
+ *
+ * บอกว่าไม่ว่างและติดอะไรอยู่ มีค่ากว่าการซ่อน เพราะมันเปลี่ยนคำถามจาก "ห้อง
+ * หายไปไหน" เป็น "จะย้ายอะไรออกดี" ซึ่งเป็นคำถามที่ตอบได้
+ *
+ * ห้องที่ใช้ไม่ได้จริง ๆ (ห้องพักครู ห้องปิด ห้องที่กันไว้ให้ครูคนอื่น) ยังถูก
+ * ตัดออก เพราะไม่ใช่ทางเลือกไม่ว่าชั่วโมงไหน
+ */
+export function roomChoicesAt(
+  rooms: readonly RoomLike[], slots: readonly ElectiveSlotLike[],
+  day: number, period: number, forWhom: FreeRoomsFor = {},
+): RoomChoice[] {
+  const mineId = forWhom.subjectId != null || forWhom.teacherId != null
+    ? optionBookingId(forWhom.subjectId, forWhom.teacherId)
+    : (forWhom.slotId != null ? `slot:${forWhom.slotId}` : null);
+  const taken = new Map<number, string>();
+  const held = new Set<number>();
+  for (const b of roomBookingsAt(slots, day, period)) {
+    if (b.id === mineId) { held.add(b.roomId); continue; }
+    if (!taken.has(b.roomId)) taken.set(b.roomId, b.label);
+  }
+  return rooms
+    .filter((r) => {
+      // ห้องพักครูหรือห้องที่ปิดใช้ ไม่ใช่ที่สำหรับยกชั้นเรียนไปลง
+      if (r.usable === false || (r.capacity ?? 1) <= 0) return false;
+      return reservedOk(r, forWhom.teacherId);
+    })
+    .map((r) => ({
+      room: r,
+      free: !taken.has(r.id),
+      usedBy: taken.get(r.id) ?? "",
+      mine: held.has(r.id),
+    }))
+    // ว่างขึ้นก่อน แล้วค่อยเรียงตามชื่อ — ห้องที่เลือกได้ควรอยู่ในสายตาก่อน
+    // แต่ห้องที่ไม่ว่างยังอยู่ในรายการให้เห็นว่ามีอยู่และติดอะไร
+    .sort((a, b) => Number(b.free) - Number(a.free)
+                    || a.room.name.localeCompare(b.room.name, "th", { numeric: true }));
+}
+
+/**
+ * ห้องที่ว่างจริงเท่านั้น
+ *
+ * เหลือไว้สำหรับที่ที่ต้องการ "เลือกได้เลย" ล้วน ๆ — ส่วนหน้าจอเลือกห้องใช้
+ * roomChoicesAt เพราะการซ่อนห้องที่ไม่ว่างทำให้คนหาห้องที่ต้องการไม่เจอ
  */
 export function freeRoomsAt(
   rooms: readonly RoomLike[], slots: readonly ElectiveSlotLike[],
   day: number, period: number, forWhom: FreeRoomsFor = {},
 ): RoomLike[] {
-  const mine = forWhom.optionKey != null
-    ? optionBookingId(forWhom.poolId, forWhom.optionKey)
-    : (forWhom.slotId != null ? `slot:${forWhom.slotId}` : null);
-  const taken = new Set(
-    roomBookingsAt(slots, day, period)
-      .filter((b) => b.id !== mine)
-      .map((b) => b.roomId));
-  return rooms.filter((r) => {
-    if (taken.has(r.id)) return false;
-    // ห้องพักครูหรือห้องที่ปิดใช้ ไม่ใช่ที่สำหรับยกชั้นเรียนไปลง
-    if (r.usable === false || (r.capacity ?? 1) <= 0) return false;
-    return reservedOk(r, forWhom.teacherId);
-  });
+  return roomChoicesAt(rooms, slots, day, period, forWhom)
+    .filter((c) => c.free || c.mine)
+    .map((c) => c.room);
 }
 
 /**
@@ -224,8 +294,9 @@ export function freeRoomsAt(
  *   "อยากให้ทำระบบที่เข้าไปที่ครูที่สอนคนนั้นแล้วเลือกห้องให้"
  */
 export interface ElectiveDuty {
-  poolId:    number | null;
-  optionKey: number | null;
+  /** ตัวระบุงานสอน ใช้เป็นคีย์บนจอและส่งให้เซิร์ฟเวอร์ตอนตั้งห้อง */
+  subjectId: number | null;
+  teacherId: number;
   day:       number;
   period:    number;
   label:     string;
@@ -233,6 +304,11 @@ export interface ElectiveDuty {
   roomName:  string | null;
   /** กี่ห้องเรียนส่งนักเรียนมาเรียนวิชานี้ — ใช้บอกขอบเขตบนจอ */
   groupCount: number;
+}
+
+/** คีย์ที่ใช้แยกแถวบนจอ — ต่างกันจริงทุกงานสอน ไม่ซ้ำกันเอง */
+export function dutyKey(d: ElectiveDuty): string {
+  return `${d.day}|${d.period}|${optionBookingId(d.subjectId, d.teacherId)}`;
 }
 
 /**
@@ -250,10 +326,10 @@ export function electiveDutiesOf(
   for (const s of slots) {
     const mine = optionForTeacher(s, teacherId);
     if (!mine) continue;
-    const k = `${s.elective_pool_id ?? "-"}|${mine.key ?? mine.id ?? "-"}|${s.day}|${s.period}`;
+    const k = `${s.day}|${s.period}|${optionBookingId(mine.subject_id, teacherId)}`;
     const row = by.get(k) ?? {
-      poolId: s.elective_pool_id ?? null,
-      optionKey: mine.key ?? null,
+      subjectId: mine.subject_id ?? null,
+      teacherId,
       day: s.day, period: s.period,
       label: mine.label ?? mine.code ?? "วิชาเสรี",
       roomId: mine.room_id ?? null,
@@ -261,6 +337,12 @@ export function electiveDutiesOf(
       groupCount: 0,
       groups: new Set<number>(),
     };
+    // ห้องที่ตั้งไว้แล้วชนะค่าว่าง — สำเนาบางแถวอาจยังไม่ได้รับห้อง (เช่นเพิ่ง
+    // คัดลอกไปห้องเรียนใหม่) จอต้องขึ้นห้องที่ตั้งไว้ ไม่ใช่ "ยังไม่มีห้อง"
+    if (row.roomId == null && mine.room_id != null) {
+      row.roomId = mine.room_id;
+      row.roomName = mine.room_name ?? null;
+    }
     if (s.group_id != null) row.groups.add(s.group_id);
     row.groupCount = row.groups.size;
     by.set(k, row);

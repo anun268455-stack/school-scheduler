@@ -4,57 +4,74 @@
  *   "คาบเสรี ครูมาบอกว่าต้องการห้องสอนที่นี้ เลยอยากให้ทำระบบที่เข้าไปที่ครู
  *    ที่สอนคนนั้นแล้วเลือกห้องให้ โดยจะขึ้นที่ตารางครูและตารางห้อง"
  *
- * ห้องของคาบเสรีตั้งได้ที่หน้ากลุ่มวิชาเสรีอยู่แล้ว แต่หน้านั้นเรียงตาม
- * "หน้าต่างเวลา" ไม่ใช่ตามครู เวลาครูเดินมาบอกว่าอยากได้ห้องนี้ คนจัดตารางต้อง
- * ไปหาว่าครูคนนั้นอยู่หน้าต่างไหน วิชาอะไร ซึ่งเป็นการค้นที่ไม่ควรต้องทำ
+ *   "ตอนนี้ไม่สามารถเลือกห้องได้ เพราะห้องไม่ขึ้น ช่วยทำให้ห้องขึ้นให้หน่อย
+ *    โดยดูว่าห้องว่างไหม"
  *
- * ที่นี่จึงมองจากฝั่งครู: เปิดตารางของครูคนนั้น กดปุ่มเดียว เห็นคาบเสรีของตัวเอง
- * ทั้งหมดพร้อมช่องเลือกห้อง ข้างในเรียกเส้นทางเดียวกับหน้ากลุ่มวิชาเสรี
- * (ห้องเก็บที่ "วิชา" ไม่ใช่ที่ "คาบ" — เหตุผลอยู่ใน utils/electiveRooms)
+ * รอบแรกหน้านี้ผูกกับ "กลุ่มวิชาเสรี" ซึ่งโรงเรียนไม่ได้ใช้ ผลคือทุกแถวได้คีย์
+ * เดียวกัน (`null-null`) กดกางแถวเดียวแล้วกางทั้งหมด และกดบันทึกแล้วถูกปฏิเสธ
+ * ตอนนี้ระบุงานสอนด้วย (วัน · คาบ · วิชา · ครู) ซึ่งใช้ได้กับคาบเสรีทั้งสอง
+ * รูปแบบ — เหตุผลเต็มอยู่ใน utils/electiveRooms.ts
+ *
+ * และรายการห้องแสดง **ทุกห้อง** พร้อมบอกว่าว่างหรือไม่ว่างเพราะอะไร ของเดิม
+ * ซ่อนห้องที่ไม่ว่าง ซึ่งในคาบที่ทั้งโรงเรียนเรียนพร้อมกันเหลือแต่ลานกลางแจ้ง
  */
 import React, { useMemo, useState } from "react";
 import clsx from "clsx";
 import { ModalShell } from "../common/ModalShell";
 import * as api from "../../api/client";
 import { useTimetableStore } from "../../store/timetableStore";
-import { electiveDutiesOf, freeRoomsAt } from "../../utils/electiveRooms";
+import { dutyKey, electiveDutiesOf, roomChoicesAt } from "../../utils/electiveRooms";
 import { matches } from "../common/TableSearch";
 import { DAYS, periodLabel } from "../../types";
-import type { Room, TimetableSlot } from "../../types";
 
 interface Props {
   teacherId:   number;
   teacherName: string | null;
+  /** เปิดมาที่งานสอนนี้เลย — ใช้ตอนกดจากช่องในตาราง */
+  focus?:      { day: number; period: number } | null;
   onClose:     () => void;
 }
 
-export const ElectiveRoomsModal: React.FC<Props> = ({ teacherId, teacherName, onClose }) => {
+export const ElectiveRoomsModal: React.FC<Props> = ({
+  teacherId, teacherName, focus, onClose,
+}) => {
   const { slots, rooms, periods, loadSlots } = useTimetableStore();
-  const [busy, setBusy]     = useState<string | null>(null);
-  const [error, setError]   = useState<string | null>(null);
-  const [opening, setOpening] = useState<string | null>(null);
+  const duties = useMemo(() => electiveDutiesOf(slots, teacherId), [slots, teacherId]);
+
+  const [busyRow, setBusyRow] = useState<string | null>(null);
+  const [error, setError]     = useState<string | null>(null);
+  const [note, setNote]       = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(() => {
+    if (!focus) return null;
+    const hit = duties.find((d) => d.day === focus.day && d.period === focus.period);
+    return hit ? dutyKey(hit) : null;
+  });
   const [search, setSearch] = useState("");
 
-  const duties = useMemo(() => electiveDutiesOf(slots, teacherId), [slots, teacherId]);
   const noRoom = duties.filter((d) => d.roomId == null).length;
 
   const pick = async (
-    poolId: number | null, optionKey: number | null, roomId: number | null, rowKey: string,
+    duty: typeof duties[number], roomId: number | null, rowKey: string,
   ) => {
-    if (poolId == null || optionKey == null) {
-      setError("คาบเสรีนี้ไม่ได้มาจากกลุ่มวิชาเสรี จึงตั้งห้องจากหน้านี้ไม่ได้");
-      return;
-    }
-    setBusy(rowKey);
+    setBusyRow(rowKey);
     setError(null);
+    setNote(null);
     try {
-      await api.updatePoolOption(poolId, optionKey, { room_id: roomId });
-      // ดึงตารางมาใหม่ เพื่อให้ตารางครูและตารางห้องตรงกันทันทีโดยไม่ต้องรีเฟรช
+      const r = await api.setElectiveRoom({
+        day: duty.day, period: duty.period,
+        subject_id: duty.subjectId, teacher_id: duty.teacherId, room_id: roomId,
+      });
+      // เอาห้องที่เพิ่งตั้งไปทับตารางในจอทันที ตารางห้องและใบพิมพ์จะได้ตรงกัน
       await loadSlots();
-      setOpening(null);
+      setOpen(null);
+      if (r.busy.length > 0) {
+        setNote(`ตั้งให้แล้ว แต่ชั่วโมงนี้ห้องนี้มีคนใช้อยู่ด้วย — `
+          + r.busy.map((b) => `${b.group_name ?? ""} ${b.subject_name ?? ""}`.trim())
+              .join(" · "));
+      }
     } catch (e) {
       setError(api.errorDetail(e, "ตั้งห้องไม่สำเร็จ"));
-    } finally { setBusy(null); }
+    } finally { setBusyRow(null); }
   };
 
   return (
@@ -75,6 +92,11 @@ export const ElectiveRoomsModal: React.FC<Props> = ({ teacherId, teacherName, on
             {error}
           </p>
         )}
+        {note && (
+          <p className="mb-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            ⚠ {note}
+          </p>
+        )}
 
         {duties.length === 0 ? (
           <p className="text-sm text-gray-500 py-6 text-center">
@@ -85,19 +107,21 @@ export const ElectiveRoomsModal: React.FC<Props> = ({ teacherId, teacherName, on
             <p className={clsx("text-[11px] mb-2",
               noRoom > 0 ? "text-amber-700" : "text-emerald-700")}>
               {noRoom > 0
-                ? `มี ${noRoom} คาบที่ยังไม่ได้เลือกห้อง`
-                : "ทุกคาบมีห้องแล้ว"}
+                ? `คาบเสรี ${duties.length} คาบ — ยังไม่ได้เลือกห้อง ${noRoom} คาบ`
+                : `คาบเสรี ${duties.length} คาบ — เลือกห้องไว้ครบแล้ว`}
             </p>
             <div className="divide-y divide-gray-100">
               {duties.map((d) => {
-                const rowKey = `${d.poolId}-${d.optionKey}`;
-                // หาห้องว่างเฉพาะแถวที่กางอยู่ — การหาหนึ่งครั้งต้องไล่ทั้งตาราง
-                // ทำทุกแถวทุกครั้งที่วาดจอคือการไล่ตารางซ้ำเท่าจำนวนแถว
-                const free = opening === rowKey
-                  ? freeRoomsAt(rooms, slots, d.day, d.period, {
-                      poolId: d.poolId, optionKey: d.optionKey, teacherId,
-                    }) as Room[]
+                const rowKey = dutyKey(d);
+                // หารายการห้องเฉพาะแถวที่กางอยู่ — การหาหนึ่งครั้งต้องไล่ทั้ง
+                // ตาราง ทำทุกแถวทุกครั้งที่วาดจอคือไล่ซ้ำเท่าจำนวนแถว
+                const choices = open === rowKey
+                  ? roomChoicesAt(rooms, slots, d.day, d.period, {
+                      subjectId: d.subjectId, teacherId: d.teacherId,
+                    })
                   : [];
+                const shown = choices.filter(
+                  (c) => matches(search, c.room.name, c.room.building_name ?? ""));
                 return (
                   <div key={rowKey} className="py-2">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -118,53 +142,62 @@ export const ElectiveRoomsModal: React.FC<Props> = ({ teacherId, teacherName, on
                       <button
                         onClick={() => {
                           setSearch("");
-                          setOpening(opening === rowKey ? null : rowKey);
+                          setOpen(open === rowKey ? null : rowKey);
                         }}
                         className="text-[11px] text-blue-600 hover:underline shrink-0">
                         {d.roomId ? "เปลี่ยนห้อง" : "เลือกห้อง"}
                       </button>
                       {d.roomId != null && (
-                        <button
-                          onClick={() => void pick(d.poolId, d.optionKey, null, rowKey)}
-                          disabled={busy === rowKey}
+                        <button onClick={() => void pick(d, null, rowKey)}
+                          disabled={busyRow === rowKey}
                           className="text-[11px] text-gray-400 hover:text-red-600 shrink-0">
                           เอาออก
                         </button>
                       )}
                     </div>
 
-                    {opening === rowKey && (
+                    {open === rowKey && (
                       <div className="mt-1.5">
-                        <input
-                          autoFocus
-                          value={search}
-                          onChange={(e) => setSearch(e.target.value)}
-                          placeholder="พิมพ์ชื่อหรือเลขห้อง"
-                          className="w-48 border border-gray-200 rounded px-2 py-1 text-xs mb-1.5"
-                        />
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <input
+                            autoFocus
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            placeholder="พิมพ์ชื่อหรือเลขห้อง"
+                            className="w-48 border border-gray-200 rounded px-2 py-1 text-xs"
+                          />
+                          <span className="text-[10px] text-gray-400">
+                            ว่าง {choices.filter((c) => c.free).length} ห้อง
+                            จาก {choices.length} ห้อง
+                          </span>
+                        </div>
                         <div className="flex flex-wrap gap-1">
-                          {free
-                            .filter((r) => matches(search, r.name, r.building_name ?? ""))
-                            .slice(0, 30)
-                            .map((r) => (
-                              <button key={r.id}
-                                onClick={() => void pick(d.poolId, d.optionKey, r.id, rowKey)}
-                                disabled={busy === rowKey || r.id === d.roomId}
-                                className={clsx("text-[11px] px-2 py-0.5 rounded border",
-                                  r.id === d.roomId
-                                    ? "bg-gray-100 border-gray-200 text-gray-400"
-                                    : "bg-white border-emerald-300 text-emerald-800 hover:bg-emerald-50")}
-                                title={r.building_name ?? ""}>
-                                {r.id === d.roomId ? "✓ " : ""}{r.name}
-                              </button>
-                            ))}
-                          {free.length === 0 && (
-                            <span className="text-[11px] text-amber-700">
-                              ไม่มีห้องว่างในคาบนี้เลย — วิชาอื่นในคาบเสรีเดียวกันและคาบปกติ
-                              ใช้ห้องไปหมดแล้ว
+                          {shown.slice(0, 60).map((c) => (
+                            <button key={c.room.id}
+                              onClick={() => void pick(d, c.room.id, rowKey)}
+                              disabled={busyRow === rowKey || c.mine}
+                              className={clsx("text-[11px] px-2 py-0.5 rounded border",
+                                c.mine
+                                  ? "bg-gray-100 border-gray-200 text-gray-400"
+                                  : c.free
+                                    ? "bg-white border-emerald-300 text-emerald-800 hover:bg-emerald-50"
+                                    : "bg-white border-red-200 text-red-600 hover:bg-red-50")}
+                              title={c.free
+                                ? (c.room.building_name ?? "ว่างคาบนี้")
+                                : `ไม่ว่าง — ${c.usedBy}`}>
+                              {c.mine ? "✓ " : c.free ? "" : "⚠ "}{c.room.name}
+                            </button>
+                          ))}
+                          {shown.length === 0 && (
+                            <span className="text-[11px] text-gray-400">
+                              ไม่มีห้องที่ชื่อตรงกับที่พิมพ์
                             </span>
                           )}
                         </div>
+                        <p className="text-[10px] text-gray-400 mt-1.5">
+                          สีแดงคือห้องที่มีคนใช้อยู่แล้วในคาบนี้ — เลือกได้ แต่จะกลายเป็นห้องซ้ำ
+                          (เอาเมาส์ชี้เพื่อดูว่าติดอะไรอยู่)
+                        </p>
                       </div>
                     )}
                   </div>
@@ -177,7 +210,7 @@ export const ElectiveRoomsModal: React.FC<Props> = ({ teacherId, teacherName, on
 
       <div className="px-5 py-3 border-t border-gray-100 flex items-center gap-3">
         <span className="text-[11px] text-gray-400 flex-1">
-          ห้องที่ตั้งไว้ถูกเก็บไว้กับวิชา จึงใช้ร่วมกันทุกห้องเรียนที่ส่งนักเรียนมาเรียนวิชานั้น
+          ห้องที่ตั้งไว้เป็นของวิชานั้น จึงใช้ร่วมกันทุกห้องเรียนที่ส่งนักเรียนมาเรียน
         </span>
         <button onClick={onClose}
           className="px-4 py-1.5 text-sm bg-gray-100 rounded-lg hover:bg-gray-200">
@@ -187,10 +220,3 @@ export const ElectiveRoomsModal: React.FC<Props> = ({ teacherId, teacherName, on
     </ModalShell>
   );
 };
-
-/** คาบเสรีของครูคนนี้ที่ยังไม่มีห้อง — ใช้ตั้งเลขบนปุ่ม */
-export function electiveRoomsMissing(
-  slots: TimetableSlot[], teacherId: number | null,
-): number {
-  return electiveDutiesOf(slots, teacherId).filter((d) => d.roomId == null).length;
-}

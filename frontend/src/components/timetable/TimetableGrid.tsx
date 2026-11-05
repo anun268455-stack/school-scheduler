@@ -23,7 +23,9 @@ import { YardRescueModal } from "./YardRescueModal";
 import { ClassProblemsModal, type ShortRow } from "./ClassProblemsModal";
 import { useTimetableStore } from "../../store/timetableStore";
 import { showServerWaking, type DataState } from "../../utils/serverWake";
-import { electiveDutiesOf, slotUsesRoom } from "../../utils/electiveRooms";
+import {
+  electiveDutiesOf, optionForTeacher, slotUsesRoom,
+} from "../../utils/electiveRooms";
 import { ElectiveRoomsModal } from "../rooms/ElectiveRoomsModal";
 import { impactBorderClass, impactDotColor } from "../../utils/conflictAnalyzer";
 import { planRoutes, type SwapRoute } from "../../utils/swapPlanner";
@@ -442,8 +444,14 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     { moving: TimetableSlot; target: { day: number; period: number }; routes: SwapRoute[] } | null
   >(null);
   const [roomSwapSlot, setRoomSwapSlot] = useState<TimetableSlot | null>(null);
-  /** ครูที่กำลังเลือกห้องให้คาบเสรีของเขา — null = ไม่ได้เปิดอยู่ */
-  const [electiveRoomsFor, setElectiveRoomsFor] = useState<number | null>(null);
+  /**
+   * ครูที่กำลังเลือกห้องให้คาบเสรีของเขา — null = ไม่ได้เปิดอยู่
+   *
+   * เก็บวันและคาบไว้ด้วยเมื่อเปิดจากช่องในตาราง เพื่อกางแถวนั้นให้เลย ไม่ต้อง
+   * ให้คนไปหาเองว่าช่องที่เพิ่งกดคือแถวไหนในรายการ
+   */
+  const [electiveRoomsFor, setElectiveRoomsFor] = useState<
+    { teacherId: number; day?: number; period?: number } | null>(null);
   const [addCell, setAddCell] = useState<{ day: number; period: number } | null>(null);
   /** ช่องว่างของตารางห้องสอนที่กดไว้ — "เอาคาบมาลงห้องนี้" */
   const [fillCell, setFillCell] = useState<{ day: number; period: number } | null>(null);
@@ -673,7 +681,24 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   }, [draggingSlot, slotGrid]);
 
   const handlePreLockClick = useCallback((slot: TimetableSlot) => toggleLock(slot.id), [toggleLock]);
-  const handleSwapRoomClick = useCallback((slot: TimetableSlot) => setRoomSwapSlot(slot), []);
+  /**
+   * ปุ่มเปลี่ยนห้องในช่อง — คาบเสรีไปคนละทาง
+   *
+   * หน้าต่าง "สลับห้อง" ตั้งห้องให้ **ทั้งคาบ** ซึ่งถูกสำหรับคาบปกติ แต่คาบเสรี
+   * มีหลายวิชาเรียนพร้อมกันคนละห้อง การตั้งห้องให้ทั้งคาบจึงไม่ใช่คำตอบ — ห้อง
+   * เป็นของวิชา ไม่ใช่ของคาบ
+   *
+   * บนตารางของครู เรารู้ว่าครูคนไหน จึงรู้ว่าวิชาไหน พาไปที่ตัวเลือกห้องของ
+   * วิชานั้นได้เลย ที่อื่น (ตารางชั้นเรียน) ยังไม่รู้ว่าหมายถึงวิชาไหนในคาบ
+   * จึงคงทางเดิมไว้ ซึ่งยังมีความหมายอยู่: ทั้งหน้าต่างใช้ห้องเดียวกัน
+   */
+  const handleSwapRoomClick = useCallback((slot: TimetableSlot) => {
+    if (selectedTeacherId != null && optionForTeacher(slot, selectedTeacherId)) {
+      setElectiveRoomsFor({ teacherId: selectedTeacherId, day: slot.day, period: slot.period });
+      return;
+    }
+    setRoomSwapSlot(slot);
+  }, [selectedTeacherId]);
   const handleOpenElective  = useCallback((slot: TimetableSlot) => setElectiveSlotId(slot.id), []);
 
   // An empty cell can be filled from any of the three timetables. Whichever one
@@ -919,8 +944,10 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     {/* ห้องสอนของคาบเสรี มองจากฝั่งครู */}
     {electiveRoomsFor != null && (
       <ElectiveRoomsModal
-        teacherId={electiveRoomsFor}
-        teacherName={teachers.find((t) => t.id === electiveRoomsFor)?.name ?? null}
+        teacherId={electiveRoomsFor.teacherId}
+        teacherName={teachers.find((t) => t.id === electiveRoomsFor.teacherId)?.name ?? null}
+        focus={electiveRoomsFor.day != null && electiveRoomsFor.period != null
+          ? { day: electiveRoomsFor.day, period: electiveRoomsFor.period } : null}
         onClose={() => setElectiveRoomsFor(null)}
       />
     )}
@@ -1039,7 +1066,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
               : `คาบเสรี ${electiveDuties.length} คาบ — เลือกห้องไว้ครบแล้ว`}
           </span>
           <button
-            onClick={() => setElectiveRoomsFor(selectedTeacherId)}
+            onClick={() => setElectiveRoomsFor({ teacherId: selectedTeacherId })}
             className="px-2 py-0.5 rounded border border-purple-300 bg-white
                        hover:bg-purple-100 font-medium">
             {electiveRoomsMissing > 0 ? "เลือกห้องสอน" : "ดู / เปลี่ยนห้อง"}
