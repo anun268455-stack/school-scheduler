@@ -6,7 +6,7 @@
  */
 import {
   activeTerm, blocksLiveWrite, canEdit, createLanding, dropLiveData, LIVE_DATA_KEYS, nextTerm, shouldPoll, sortTerms, termBanner, termLabel,
-  type TermMeta,
+  writeAllowedWhileViewing, type TermMeta,
 } from "../../frontend/src/utils/terms.ts";
 
 let n = 0;
@@ -120,5 +120,21 @@ eq(told, [], "ไม่ได้กัน ไม่เรียก onDrop");
   L.leave(first as number);
   ok(L.tryEnter() !== null, "คืนแล้วเริ่มงานใหม่ได้");
 }
+
+// ── ด่านขาออกตอนดูเทอมที่ปิด ─────────────────────────────────────────────────
+eq(writeAllowedWhileViewing("PUT", "/school/config"), true, "บันทึกค่าตั้งโรงเรียน (ใบพิมพ์) ผ่าน");
+eq(writeAllowedWhileViewing("put", "/school/config"), true, "ตัวพิมพ์เล็กก็ผ่าน");
+eq(writeAllowedWhileViewing("POST", "/terms"), true, "สร้างเทอมผ่าน");
+eq(writeAllowedWhileViewing("POST", "/terms/3/unlock"), true, "ปลดล็อกผ่าน");
+eq(writeAllowedWhileViewing("GET", "/timetable/slots"), true, "อ่านผ่าน");
+eq(writeAllowedWhileViewing("PUT", "/timetable/slots/12"), false, "แก้คาบถูกกัน");
+eq(writeAllowedWhileViewing("PATCH", "/timetable/slots/12"), false, "PATCH คาบถูกกัน");
+eq(writeAllowedWhileViewing("DELETE", "/timetable/slots/12"), false, "ลบคาบถูกกัน");
+eq(writeAllowedWhileViewing("POST", "/timetable/slots"), false, "เพิ่มคาบถูกกัน");
+eq(writeAllowedWhileViewing("POST", "/timetable/solve"), false, "สร้างตารางถูกกัน");
+eq(writeAllowedWhileViewing("POST", "/timetable/teacher-plan"), false, "POST ที่วิเคราะห์อย่างเดียวถูกกัน (ข้อจำกัดที่รู้)");
+eq(writeAllowedWhileViewing("PUT", "/school/config-evil"), false, "ชื่อที่ขึ้นต้นเหมือนไม่ผ่าน");
+eq(writeAllowedWhileViewing("POST", "/termsx"), false, "/termsx ไม่ใช่เส้นเทอม");
+eq(writeAllowedWhileViewing("PUT", "/school/config?x=1"), true, "query string ไม่ทำให้พลาด");
 
 console.log(`ALL PASS (${n})`);

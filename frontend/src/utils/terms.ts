@@ -136,3 +136,20 @@ export function dropLiveData<T extends object>(
   if (lost.length > 0 && onDrop) onDrop(lost);
   return kept;
 }
+
+/**
+ * คำขอนี้ผ่านด่านขาออกได้ไหมตอนดูเทอมที่ปิดอยู่
+ *
+ * ผ่านได้: อ่าน (GET/HEAD) · เส้นเทอม (/terms…) ซึ่งเป็นของระบบเทอมเอง · และ
+ * ค่าตั้งโรงเรียน (/school/config) เพราะแบบฟอร์มใบพิมพ์และช่องลงชื่อเป็นความชอบ
+ * ของทั้งโรงเรียน ไม่ใช่ข้อมูลของเทอม และการเปิดเทอมเก่าก็เพื่อพิมพ์ — เซิร์ฟเวอร์
+ * ไม่ยอมให้ค่านี้เปลี่ยน term/year เมื่อมีระบบเทอมแล้ว ชื่อเทอมบนใบพิมพ์จึงไม่เพี้ยน
+ * นอกนั้นถูกกัน รวมถึง POST ที่แค่วิเคราะห์ (ตั้งใจ: หลายตัวเขียนกลับลงข้อมูลที่
+ * วิเคราะห์ การแยกว่าตัวไหนปลอดภัยจริงเป็นงานที่ใหญ่กว่าที่เห็น)
+ */
+export function writeAllowedWhileViewing(method: string, url: string): boolean {
+  const m = method.toLowerCase();
+  if (m === "get" || m === "head") return true;
+  const path = url.split("?")[0];
+  return path === "/terms" || path.startsWith("/terms/") || path === "/school/config";
+}

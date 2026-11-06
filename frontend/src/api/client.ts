@@ -3,7 +3,7 @@ import type {
   Building, Department, LessonRequirement, Period, Room,
   ElectivePool, PoolTeacherCandidate, RequirementProblemReport, SchoolConfig, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
-import type { TermMeta } from "../utils/terms";
+import { writeAllowedWhileViewing, type TermMeta } from "../utils/terms";
 
 // In production (GitHub Pages), use the Render backend URL via env var
 // In development, use the Vite proxy at /api
@@ -23,10 +23,8 @@ let writeBlock: (() => string | null) | null = null;
 export const setWriteBlock = (fn: (() => string | null) | null): void => { writeBlock = fn; };
 
 api.interceptors.request.use((config) => {
-  const method = (config.method ?? "get").toLowerCase();
-  const url = config.url ?? "";
-  // อ่านได้เสมอ และเส้นเทอม (/terms…) เป็นของระบบเทอมเอง ไม่ใช่การแก้ตาราง
-  if (method === "get" || method === "head" || url.startsWith("/terms")) return config;
+  // อ่านได้เสมอ เส้นเทอม และค่าตั้งโรงเรียน — เหตุผลอยู่ที่ writeAllowedWhileViewing
+  if (writeAllowedWhileViewing(config.method ?? "get", config.url ?? "")) return config;
   const why = writeBlock ? writeBlock() : null;
   if (why) return Promise.reject(new Error(why));
   return config;
