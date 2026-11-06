@@ -411,6 +411,9 @@ interface TimetableStore {
 
 /** The backend's reason for refusing a move, or a usable fallback. */
 function moveRefusal(err: unknown): string {
+  // กำลังดูเทอมที่ปิด: เหตุผลคือเทอมนี้แก้ไม่ได้ ไม่ใช่ "ช่องนั้นไม่ว่าง"
+  const blocked = api.blockedReason(err);
+  if (blocked) return blocked;
   const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
   return typeof detail === "string" ? `ย้ายไม่ได้: ${detail}` : "ย้ายไม่ได้ — ช่องนั้นไม่ว่าง";
 }
@@ -429,12 +432,14 @@ let printSheetTimer: ReturnType<typeof setTimeout> | null = null;
 const landing = createLanding();
 /** งานเปลี่ยนเทอม (openTerm/closeViewing) ที่ค้างอยู่ — อีกงานหนึ่งเริ่มซ้อนไม่ได้ */
 const termOps = createLanding();
-/** ข้อมูลสดทั้งชุด — ล้มเส้นเดียวคือล้มทั้งชุด (closeViewing ต้องการแบบทั้งหมดหรือไม่เลย) */
+/** ข้อมูลสดทั้งชุด — ล้มเส้นเดียวคือล้มทั้งชุด ยกเว้นค่าตั้งโรงเรียน (closeViewing ต้องการแบบทั้งหมดหรือไม่เลย) */
 const fetchLiveBundle = () => Promise.all([
   api.fetchDepartments(),  api.fetchBuildings(), api.fetchRooms(),
   api.fetchGroups(),       api.fetchTeachers(),  api.fetchSubjects(),
   api.fetchRequirements(), api.fetchSlots(),     api.fetchPeriods(),
-  api.fetchSchoolConfig(),
+  // ค่าตั้งโรงเรียนล้มได้เงียบ ๆ เหมือน loadAll — ทางออกจากเทอมเก่าต้องไม่ขึ้นกับเส้นนี้
+  // ล้มแล้วใช้ค่าที่เก็บไว้ตอนเปิดเทอมเก่า (liveSchoolConfig)
+  api.fetchSchoolConfig().catch(() => null),
 ]);
 /** ค่าตั้งโรงเรียนของเทอมปัจจุบัน เก็บไว้ตอนเปิดเทอมเก่า เพื่อคืนตอนกลับ */
 let liveSchoolConfig: SchoolConfig | null = null;
@@ -1155,7 +1160,7 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
         set((st) => ({
           departments, buildings, rooms, groups, teachers, subjects, requirements, slots,
           periods: periods.length ? periods : DEFAULT_PERIODS,
-          schoolConfig: { ...(liveSchoolConfig ?? st.schoolConfig), ...config },
+          schoolConfig: { ...(liveSchoolConfig ?? st.schoolConfig), ...(config ?? {}) },
           dataState: "ready",
           viewingTerm: null,
           viewingError: null,

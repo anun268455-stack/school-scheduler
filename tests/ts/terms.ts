@@ -8,6 +8,9 @@ import {
   activeTerm, blocksLiveWrite, canEdit, createLanding, dropLiveData, LIVE_DATA_KEYS, nextTerm, shouldPoll, sortTerms, termBanner, termLabel,
   writeAllowedWhileViewing, type TermMeta,
 } from "../../frontend/src/utils/terms.ts";
+import {
+  blockedReason, gateRequest, setWriteBlock, WriteBlocked,
+} from "../../frontend/src/api/writeGate.ts";
 
 let n = 0;
 const ok = (cond: boolean, what: string): void => {
@@ -122,19 +125,48 @@ eq(told, [], "ไม่ได้กัน ไม่เรียก onDrop");
 }
 
 // ── ด่านขาออกตอนดูเทอมที่ปิด ─────────────────────────────────────────────────
-eq(writeAllowedWhileViewing("PUT", "/school/config"), true, "บันทึกค่าตั้งโรงเรียน (ใบพิมพ์) ผ่าน");
-eq(writeAllowedWhileViewing("put", "/school/config"), true, "ตัวพิมพ์เล็กก็ผ่าน");
+eq(writeAllowedWhileViewing("PUT", "/school/config"), false, "บันทึกค่าตั้งโรงเรียนถูกกัน (ไม่มียกเว้น)");
+eq(writeAllowedWhileViewing("GET", "/school/config"), true, "อ่านค่าตั้งโรงเรียนผ่าน");
 eq(writeAllowedWhileViewing("POST", "/terms"), true, "สร้างเทอมผ่าน");
 eq(writeAllowedWhileViewing("POST", "/terms/3/unlock"), true, "ปลดล็อกผ่าน");
 eq(writeAllowedWhileViewing("GET", "/timetable/slots"), true, "อ่านผ่าน");
+eq(writeAllowedWhileViewing("head", "/timetable/slots"), true, "HEAD ผ่าน");
 eq(writeAllowedWhileViewing("PUT", "/timetable/slots/12"), false, "แก้คาบถูกกัน");
 eq(writeAllowedWhileViewing("PATCH", "/timetable/slots/12"), false, "PATCH คาบถูกกัน");
 eq(writeAllowedWhileViewing("DELETE", "/timetable/slots/12"), false, "ลบคาบถูกกัน");
 eq(writeAllowedWhileViewing("POST", "/timetable/slots"), false, "เพิ่มคาบถูกกัน");
 eq(writeAllowedWhileViewing("POST", "/timetable/solve"), false, "สร้างตารางถูกกัน");
 eq(writeAllowedWhileViewing("POST", "/timetable/teacher-plan"), false, "POST ที่วิเคราะห์อย่างเดียวถูกกัน (ข้อจำกัดที่รู้)");
-eq(writeAllowedWhileViewing("PUT", "/school/config-evil"), false, "ชื่อที่ขึ้นต้นเหมือนไม่ผ่าน");
+eq(writeAllowedWhileViewing("POST", "/sub/absences"), false, "สอนแทน: บันทึกการลาถูกกัน");
+eq(writeAllowedWhileViewing("POST", "/sub/substitutions"), false, "สอนแทน: บันทึกการสอนแทนถูกกัน");
+eq(writeAllowedWhileViewing("DELETE", "/sub/absences/5"), false, "สอนแทน: ลบถูกกัน");
 eq(writeAllowedWhileViewing("POST", "/termsx"), false, "/termsx ไม่ใช่เส้นเทอม");
-eq(writeAllowedWhileViewing("PUT", "/school/config?x=1"), true, "query string ไม่ทำให้พลาด");
+eq(writeAllowedWhileViewing("POST", "/terms?x=1"), true, "query string ไม่ทำให้พลาด");
+
+// ── ด่านตัวจริง (ไม่มี axios): ใช้ร่วมกันทั้งสอง instance และข้อความต้องถึงผู้ใช้ ──
+const BLOCK_MSG = "กำลังดูเทอมที่ปิดแล้ว แก้ไขไม่ได้ กลับไปเทอมปัจจุบันก่อน";
+{
+  setWriteBlock(() => BLOCK_MSG);
+  const refused = async (cfg: { method?: string; url?: string }): Promise<unknown> => {
+    try { await gateRequest(cfg); return null; } catch (e) { return e; }
+  };
+  const e1 = await refused({ method: "patch", url: "/timetable/slots/12" });
+  ok(e1 instanceof WriteBlocked, "แก้คาบถูกปฏิเสธด้วย WriteBlocked");
+  eq(blockedReason(e1), BLOCK_MSG, "เหตุผลที่ผู้ใช้เห็นคือข้อความของด่าน");
+  // ผู้เรียกที่ใช้ข้อความสำรอง ต้องได้ข้อความของด่านก่อน ไม่ใช่ "ช่องนั้นไม่ว่าง"
+  eq(blockedReason(e1) ?? "ย้ายไม่ได้ — ช่องนั้นไม่ว่าง", BLOCK_MSG, "ไม่ใช่ข้อความสำรองของผู้เรียก");
+  eq(blockedReason(new Error("x")), null, "error อื่นไม่ถูกแปลง");
+  eq(blockedReason({ response: { data: { detail: "x" } } }), null, "error จากเซิร์ฟเวอร์ไม่ถูกแปลง");
+  ok((await refused({ method: "post", url: "/sub/absences" })) instanceof WriteBlocked,
+     "สอนแทน (instance ที่สอง) ถูกปฏิเสธด้วยด่านเดียวกัน");
+  ok((await refused({ method: "put", url: "/school/config" })) instanceof WriteBlocked,
+     "บันทึกค่าตั้งโรงเรียนถูกปฏิเสธ");
+  eq(await refused({ method: "get", url: "/timetable/slots" }), null, "อ่านผ่าน");
+  eq(await refused({ method: "post", url: "/terms/3/unlock" }), null, "เส้นเทอมผ่าน");
+  setWriteBlock(() => null);
+  eq(await refused({ method: "patch", url: "/timetable/slots/12" }), null, "ไม่ได้ดูเทอมปิด = ผ่านทุกอย่าง");
+  setWriteBlock(null);
+  eq(await refused({ method: "patch", url: "/timetable/slots/12" }), null, "ยังไม่ติดตัวตัดสิน = ผ่าน");
+}
 
 console.log(`ALL PASS (${n})`);

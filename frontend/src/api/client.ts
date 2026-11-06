@@ -3,7 +3,8 @@ import type {
   Building, Department, LessonRequirement, Period, Room,
   ElectivePool, PoolTeacherCandidate, RequirementProblemReport, SchoolConfig, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
-import { writeAllowedWhileViewing, type TermMeta } from "../utils/terms";
+import type { TermMeta } from "../utils/terms";
+import { blockedReason, gateRequest, setWriteBlock } from "./writeGate";
 
 // In production (GitHub Pages), use the Render backend URL via env var
 // In development, use the Vite proxy at /api
@@ -13,22 +14,9 @@ const BASE_URL = import.meta.env.VITE_API_URL
 
 const api = axios.create({ baseURL: BASE_URL, timeout: 180_000 });
 
-/**
- * ด่านขาออก: ตอนดูเทอมที่ปิดอยู่ในเบราว์เซอร์ เซิร์ฟเวอร์ยังเปิดเทอมปัจจุบันอยู่
- * และไม่รู้ว่าเบราว์เซอร์นี้กำลังดูอะไร — คำขอแก้ไขใด ๆ จึงไปแก้ตารางจริงโดยจอไม่
- * บอกอะไรเลย ร้านติดตัวตัดสินนี้ไว้ที่นี่ที่เดียว ทุกเส้นทาง (ลาก คีย์บอร์ด ปุ่ม
- * หรือโค้ดที่เพิ่มทีหลัง) ผ่านด่านเดียวกัน คืนข้อความไทยที่ตัดสินแล้วหรือ null
- */
-let writeBlock: (() => string | null) | null = null;
-export const setWriteBlock = (fn: (() => string | null) | null): void => { writeBlock = fn; };
-
-api.interceptors.request.use((config) => {
-  // อ่านได้เสมอ เส้นเทอม และค่าตั้งโรงเรียน — เหตุผลอยู่ที่ writeAllowedWhileViewing
-  if (writeAllowedWhileViewing(config.method ?? "get", config.url ?? "")) return config;
-  const why = writeBlock ? writeBlock() : null;
-  if (why) return Promise.reject(new Error(why));
-  return config;
-});
+// ด่านขาออกตอนดูเทอมที่ปิด — กติกาและเหตุผลอยู่ที่ api/writeGate.ts (ใช้ร่วมกับ subClient)
+api.interceptors.request.use(gateRequest);
+export { setWriteBlock, blockedReason };
 
 /**
  * สร้างตาราง รอได้นานกว่าคำขออื่น
@@ -1454,6 +1442,10 @@ export const fetchYardRescue = (p: { group_id: number; day: number; period: numb
  * detail is a developer's string, and a 422 puts a list there, not text.
  */
 export const errorDetail = (e: unknown, fallback: string): string => {
+  // ด่านกันแก้ไขตอนดูเทอมที่ปิด — ข้อความของด่านคือเหตุผลจริง ข้อความสำรองของผู้เรียก
+  // (เช่น "ย้ายไม่ได้ — ช่องนั้นไม่ว่าง") จะผิดความจริง
+  const blocked = blockedReason(e);
+  if (blocked) return blocked;
   // แถวที่ถูกปฏิเสธจาก bulk — เหตุผลอยู่ในตัว error เอง ไม่ได้อยู่ใน response
   if (e instanceof BulkRejected) {
     const reasons = Array.from(new Set(e.result.rejected.map((x) => x.reason)));
