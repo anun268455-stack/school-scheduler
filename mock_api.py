@@ -13564,6 +13564,125 @@ def _db_history_blob(hid: int) -> bytes | None:
     return bytes(row[0]) if row else None
 
 
+# One saved copy per academic term. The active term is not stored here: it
+# lives in the module-level variables and in app_state, exactly as before.
+# This table holds the terms the school has closed (and the one it is in, as
+# a row whose data is refreshed when it is closed), so a past term can be
+# opened read-only without disturbing the live one.
+#
+# X is enforced by the database on purpose: two clicks
+# on "new term" must not be able to leave two rows for the same term, whatever
+# the code above it checks.
+_TERMS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_terms (
+    id        bigserial PRIMARY KEY,
+    year      integer NOT NULL,
+    semester  integer NOT NULL,
+    label     text NOT NULL,
+    status    text NOT NULL,
+    data      bytea NOT NULL,
+    slots     integer,
+    opened_at timestamptz NOT NULL DEFAULT now(),
+    closed_at timestamptz,
+    UNIQUE (year, semester)
+)
+"""
+_TERM_COLUMNS = "id, year, semester, label, status, slots, opened_at, closed_at, length(data)"
+
+
+def term_label(year: int, semester: int) -> str:
+    return f"{semester}/{year}"
+
+
+def _require_db() -> None:
+    """For the endpoints that write a term. The listing never raises."""
+    if _STORE_KIND != "postgres":
+        raise HTTPException(400, "ยังไม่ได้ต่อฐานข้อมูล จึงใช้ระบบเทอมไม่ได้")
+
+
+def _term_dict(r) -> dict[str, Any]:
+    return {"id": r[0], "year": r[1], "semester": r[2], "label": r[3],
+            "status": r[4], "slots": r[5],
+            "opened_at": r[6].isoformat() if r[6] else None,
+            "closed_at": r[7].isoformat() if r[7] else None,
+            "bytes": r[8]}
+
+
+def _terms_list() -> list[dict[str, Any]]:
+    """The terms, newest first — enough to choose one, not to load it."""
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_TERMS_SCHEMA)
+            cur.execute(f"SELECT {_TERM_COLUMNS} FROM app_terms "
+                        "ORDER BY year DESC, semester DESC, id DESC")
+            rows = cur.fetchall()
+        conn.commit()
+    return [_term_dict(r) for r in rows]
+
+
+def _term_row(term_id: int) -> dict[str, Any] | None:
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_TERMS_SCHEMA)
+            cur.execute(f"SELECT {_TERM_COLUMNS} FROM app_terms WHERE id = %s", (term_id,))
+            row = cur.fetchone()
+        conn.commit()
+    return _term_dict(row) if row else None
+
+
+def _term_blob(term_id: int) -> bytes | None:
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_TERMS_SCHEMA)
+            cur.execute("SELECT data FROM app_terms WHERE id = %s", (term_id,))
+            row = cur.fetchone()
+        conn.commit()
+    return bytes(row[0]) if row else None
+
+
+def _term_insert(year: int, semester: int, label: str, status: str,
+                 blob: bytes, slots: int) -> int:
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_TERMS_SCHEMA)
+            cur.execute(
+                "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, "
+                "CASE WHEN %s = 'closed' THEN now() ELSE NULL END) RETURNING id",
+                (year, semester, label, status, blob, slots, status))
+            new_id = cur.fetchone()[0]
+        conn.commit()
+    return new_id
+
+
+def _term_set_status(term_id: int, status: str) -> None:
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_TERMS_SCHEMA)
+            cur.execute(
+                "UPDATE app_terms SET status = %s, "
+                "closed_at = CASE WHEN %s = 'closed' THEN now() ELSE NULL END "
+                "WHERE id = %s", (status, status, term_id))
+        conn.commit()
+
+
+@app.get("/api/terms")
+def list_terms():
+    """Every saved term, newest first.
+
+    Like the history list, this answers rather than raises when there is no
+    database: the screen has to open and say why it cannot be used.
+    """
+    if _STORE_KIND != "postgres":
+        return {"available": False, "terms": [],
+                "reason": "ยังไม่ได้ต่อฐานข้อมูล จึงใช้ระบบเทอมไม่ได้"}
+    try:
+        return {"available": True, "terms": _terms_list()}
+    except Exception:                              # noqa: BLE001
+        return {"available": False, "terms": [],
+                "reason": "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"}
+
+
 # The newest snapshot waiting to go out, and the thread that sends it.
 #
 # Saving runs after every edit, and a save now means a network round trip to
