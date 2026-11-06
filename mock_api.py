@@ -13837,16 +13837,27 @@ def create_term(body: dict[str, Any]):
     _save_state()
     # _save_state only queues the blob; until it is sent, app_state would still
     # hold the old term while app_terms says it is closed. Make it durable now.
-    _flush_pending(blocking=True)
-    # The rotate has committed, so a save that has not landed is reported, not
-    # raised. Fixed text: _STORE_ERROR can carry connection details.
+    flush_failed = False
+    try:
+        _flush_pending(blocking=True)
+    except Exception:                              # noqa: BLE001
+        # The rotate has committed: never raise from here, it would tell the
+        # school the term was not created when it was.
+        flush_failed = True
+    # save_error: None, or a fixed sentence once an error is actually known.
+    # None does NOT prove the write landed (the writer thread may already hold
+    # the blob); the save chip fed by /api/state/version is the authority, so
+    # save_pending is reported alongside. Fixed text: _STORE_ERROR can carry
+    # connection details.
     save_error = None
-    if _STORE_ERROR or _pending_blob is not None:
+    if flush_failed or _STORE_ERROR:
         save_error = ("สร้างเทอมใหม่แล้ว แต่ข้อมูลยังบันทึกลงฐานข้อมูลไม่สำเร็จ "
                       "ระบบจะลองบันทึกซ้ำ อย่าปิดหน้านี้จนกว่าจะบันทึกได้")
+    save_pending = _pending_blob is not None
     return {"closed": _term_row(old_id) if has_old else None,
             "active": _term_row(new_id),
-            "save_error": save_error}
+            "save_error": save_error,
+            "save_pending": save_pending}
 
 
 @app.get("/api/terms")

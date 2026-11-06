@@ -476,6 +476,28 @@ def test_create_term_reports_save_error_in_fixed_thai_without_raising():
         mock_api._STORE_ERROR, mock_api._pending_blob = saved
 
 
+def test_create_term_flush_raising_after_commit_still_reports_created_term():
+    mock_api.CURRENT_TERM.update(BLANK)
+    saved = (mock_api._STORE_ERROR, mock_api._pending_blob)
+
+    def run(log, calls):
+        def fake_flush(blocking=False):
+            calls.append(("flush", blocking))
+            if len(calls) > 1:
+                raise RuntimeError("postgresql://u:SECRET@h/d")
+        mock_api._flush_pending = fake_flush
+        mock_api._save_state = lambda: setattr(mock_api, "_pending_blob", (b"x", 0))
+        out = mock_api.create_term({"year": 2570, "semester": 1})   # must not raise
+        assert out["active"] == {"id": 99}
+        assert out["save_error"] and "SECRET" not in out["save_error"]
+        assert out["save_pending"] is True
+    try:
+        _with_fake_db(run)
+    finally:
+        mock_api._STORE_ERROR, mock_api._pending_blob = saved
+    assert mock_api.CURRENT_TERM["id"] == 99
+
+
 def test_create_term_save_error_none_when_flush_lands():
     mock_api.CURRENT_TERM.update(BLANK)
     saved = (mock_api._STORE_ERROR, mock_api._pending_blob)
@@ -483,7 +505,7 @@ def test_create_term_save_error_none_when_flush_lands():
 
     def run(log, calls):
         out = mock_api.create_term({"year": 2570, "semester": 1})
-        assert out["save_error"] is None
+        assert out["save_error"] is None and out["save_pending"] is False
     try:
         _with_fake_db(run)
     finally:
@@ -497,8 +519,6 @@ def test_pack_failure_restores_status_and_slots():
     mock_api.PARKED[:] = [{"id": 1, "rows": []}]
     saved_pack = mock_api._pack
 
-    def boom(snap):
-        raise MemoryError("x")
     for nth in (1, 2):          # the closing pack, then the new-term pack
         n = [0]
 
