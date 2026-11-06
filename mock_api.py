@@ -9122,14 +9122,17 @@ def del_room(i: int):
 
 @app.post("/api/rooms/bulk")
 def bulk_create_rooms(body: list[dict[str, Any]]):
+    # แปลง active ของทุกแถวก่อน แล้วค่อยเพิ่มทีละแถว: แถวที่ 5 เสียแล้วตอบ 400
+    # ต้องไม่ทิ้งแถว 1-4 ไว้ในรายการและไม่กินเลขรหัส (กดซ้ำจะได้ซ้ำสี่แถว)
+    actives = [_coerce_active(row.get("active", True)) for row in body]
     created = []
-    for row in body:
+    for row, active in zip(body, actives):
         row["id"] = _next("room")
         row.setdefault("building_name", None)
         row.setdefault("specialized_dept_id", None)
         row.setdefault("reserved_teacher_ids", [])
         row.setdefault("usable", True)
-        row["active"] = _coerce_active(row.get("active", True))
+        row["active"] = active
         ROOMS.append(row)
         created.append(row)
     return created
@@ -9514,15 +9517,18 @@ def del_teacher(i: int):
 
 @app.post("/api/teachers/bulk")
 def bulk_create_teachers(body: list[dict[str, Any]]):
+    # แปลง active ของทุกแถวก่อน แล้วค่อยเพิ่มทีละแถว: แถวที่ 5 เสียแล้วตอบ 400
+    # ต้องไม่ทิ้งแถว 1-4 ไว้ในรายการและไม่กินเลขรหัส (กดซ้ำจะได้ซ้ำสี่แถว)
+    actives = [_coerce_active(row.get("active", True)) for row in body]
     created = []
-    for row in body:
+    for row, active in zip(body, actives):
         row["id"] = _next("teacher")
         row.setdefault("code", None)
         row.setdefault("fixed_room_id", None)
         row.setdefault("outdoor_score", 5)
         row.setdefault("max_slots_per_day", 6)
         row.setdefault("max_outdoor_per_week", 2)
-        row["active"] = _coerce_active(row.get("active", True))
+        row["active"] = active
         TEACHERS.append(row)
         created.append(row)
     return created
@@ -9801,14 +9807,17 @@ def del_subject(i: int):
 
 @app.post("/api/subjects/bulk")
 def bulk_create_subjects(body: list[dict[str, Any]]):
+    # แปลง active ของทุกแถวก่อน แล้วค่อยเพิ่มทีละแถว: แถวที่ 5 เสียแล้วตอบ 400
+    # ต้องไม่ทิ้งแถว 1-4 ไว้ในรายการและไม่กินเลขรหัส (กดซ้ำจะได้ซ้ำสี่แถว)
+    actives = [_coerce_active(row.get("active", True)) for row in body]
     created = []
-    for row in body:
+    for row, active in zip(body, actives):
         row["id"] = _next("subject")
         row.setdefault("type", "common")
         row.setdefault("prefer_morning", False)
         row.setdefault("duration", 1)
         row.setdefault("fixed_room_id", None)
-        row["active"] = _coerce_active(row.get("active", True))
+        row["active"] = active
         SUBJECTS.append(row)
         created.append(row)
     return created

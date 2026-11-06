@@ -503,6 +503,30 @@ def test_put_and_create_store_coerced_active():
         mock_api.SUBJECTS[:] = saved[2]
 
 
+def test_bulk_create_is_all_or_nothing_when_a_later_row_has_bad_active():
+    cases = (("teacher", "TEACHERS", mock_api.bulk_create_teachers),
+             ("room", "ROOMS", mock_api.bulk_create_rooms),
+             ("subject", "SUBJECTS", mock_api.bulk_create_subjects))
+    for kind, coll, fn in cases:
+        lst = getattr(mock_api, coll)
+        before_ids = [r["id"] for r in lst]
+        before_len = len(lst)
+        before_counter = mock_api._counters.get(kind)
+        rows = [{"name": f"r{i}"} for i in range(4)] + [{"name": "bad", "active": "abc"},
+                                                       {"name": "after"}]
+        e = _expect_409(lambda: fn(rows))
+        ok(e is not None and e.status_code == 400, f"{kind}: ต้อง 400")
+        ok(len(lst) == before_len and [r["id"] for r in lst] == before_ids,
+           f"{kind}: รายการต้องไม่เปลี่ยน")
+        ok(mock_api._counters.get(kind) == before_counter, f"{kind}: เลขรหัสต้องไม่ขยับ")
+        ok(all("id" not in r for r in rows), f"{kind}: ต้องไม่แตะแถวที่ส่งมา")
+        # ชุดที่ถูกต้องทั้งหมดยังลงได้ตามปกติ
+        good = fn([{"name": "g1", "active": "false"}, {"name": "g2"}])
+        ok(len(lst) == before_len + 2 and good[0]["active"] is False and good[1]["active"] is True,
+           f"{kind}: ชุดดีต้องลงครบ")
+        lst[:] = lst[:before_len]
+
+
 def test_delete_teacher_still_works_without_database():
     mock_api._STORE_KIND = "file"
     t = mock_api.create_teacher({"name": "ลบได้"})
