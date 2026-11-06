@@ -5,7 +5,7 @@
  * ดึงเทอมปัจจุบันมาทับของเก่าที่เปิดดูอยู่ แล้วจอเด้งกลับโดยไม่มีอะไรฟ้อง
  */
 import {
-  activeTerm, canEdit, nextTerm, shouldPoll, sortTerms, termBanner, termLabel,
+  activeTerm, canEdit, dropLiveData, LIVE_DATA_KEYS, liveReloadComplete, nextTerm, shouldPoll, sortTerms, termBanner, termLabel,
   type TermMeta,
 } from "../../frontend/src/utils/terms.ts";
 
@@ -61,5 +61,26 @@ eq(termBanner(null, null), null, "ไม่มีระบบเทอมไม�
 eq(nextTerm(ACTIVE), { year: 2569, semester: 2 }, "ภาค 1 → ภาค 2 ปีเดิม");
 eq(nextTerm(CLOSED), { year: 2569, semester: 1 }, "ภาค 2 → ภาค 1 ปีถัดไป");
 eq(nextTerm(null), { year: 0, semester: 1 }, "ไม่มีเทอมเลย");
+
+// ── กฎข้อเดียว: ดูเทอมที่ปิด ข้อมูลสดห้ามลงร้าน ─────────────────────────────
+const landed = { slots: [1], teachers: [2], parked: [3], isLoading: false, dataState: "ready" };
+eq(dropLiveData(landed, true), { isLoading: false, dataState: "ready" },
+   "ตอนดูเทอมที่ปิด ตัดข้อมูลสดออก เหลือสถานะอื่น");
+eq(dropLiveData(landed, false), landed, "ปกติผ่านทั้งหมด");
+eq(dropLiveData({ viewingTerm: null }, true), { viewingTerm: null }, "ฟิลด์ที่ไม่ใช่ข้อมูลสดผ่าน");
+eq(dropLiveData({}, true), {}, "ว่างก็ว่าง");
+const orig = { slots: [1], x: 1 };
+dropLiveData(orig, true);
+eq(orig, { slots: [1], x: 1 }, "ไม่แก้ของที่รับมา");
+for (const k of ["groups", "teachers", "subjects", "rooms", "requirements", "slots", "periods",
+                 "departments", "buildings"]) {
+  ok((LIVE_DATA_KEYS as readonly string[]).includes(k), `${k} อยู่ในชุดข้อมูลสด (ชุดที่ openTerm วาง)`);
+}
+
+// ── ออกจากเทอมเก่าได้เมื่อข้อมูลสดมาครบเท่านั้น ───────────────────────────────
+eq(liveReloadComplete("ready", 0), true, "ครบทุกเส้น");
+eq(liveReloadComplete("ready", 1), false, "ล้มบางเส้น = จอเป็นของผสม ห้ามล้างแบนเนอร์");
+eq(liveReloadComplete("unreachable", 9), false, "ล้มหมด");
+eq(liveReloadComplete("loading", 0), false, "ยังไม่ได้ถามอะไร");
 
 console.log(`ALL PASS (${n})`);

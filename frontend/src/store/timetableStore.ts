@@ -23,7 +23,7 @@ import {
 } from "../utils/guidedMove";
 import { stateAfter, tally, type DataState } from "../utils/serverWake";
 import type { SheetSetup } from "../utils/printSheet";
-import { shouldPoll, type TermMeta } from "../utils/terms";
+import { dropLiveData, liveReloadComplete, shouldPoll, type TermMeta } from "../utils/terms";
 
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
@@ -111,9 +111,6 @@ async function quietRefresh(
   // timetable predates it. Dropping it loses nothing — the next poll asks again
   // — while applying it would undo what the person just did.
   if (writeGuard.stale(askedAt)) return;
-  // เปิดเทอมที่ปิดแล้วขึ้นจอระหว่างที่คำขอนี้อยู่บนอากาศ — ของที่ตอบมาคือเทอม
-  // ปัจจุบัน ถ้าวางลงไปจะทับเทอมเก่าที่ผู้ใช้กำลังดู
-  if (get().viewingTerm?.status === "closed") return;
   if (wouldWipeTheScreen(
         { slots: cur.slots.length, teachers: cur.teachers.length },
         { slots: slots.length, teachers: teachers.length })) {
@@ -289,6 +286,10 @@ interface TimetableStore {
   termsAvailable: boolean;
   termsReason:    string | null;
   viewingTerm:    TermMeta | null;
+  /** ข้อความไทยเมื่อออกจากเทอมเก่าไม่สำเร็จ — แบนเนอร์ยังอยู่ จอยังเป็นของเทอมเก่า */
+  viewingError:   string | null;
+  /** จำนวนเส้นที่ล้มในการ loadAll รอบล่าสุด — closeViewing ใช้ตัดสินว่าข้อมูลสดมาครบไหม */
+  loadFailures:   number;
   loadTerms:      () => Promise<void>;
   openTerm:       (id: number) => Promise<void>;
   closeViewing:   () => Promise<void>;
@@ -420,7 +421,29 @@ let cellLayoutTimer: ReturnType<typeof setTimeout> | null = null;
 let printLayoutTimer: ReturnType<typeof setTimeout> | null = null;
 let printSheetTimer: ReturnType<typeof setTimeout> | null = null;
 
-export const useTimetableStore = create<TimetableStore>((set, get) => ({
+/**
+ * ใครกำลังเขียนข้อมูลลงร้านโดยตั้งใจระหว่างที่เทอมที่ปิดอยู่บนจอ
+ * "archive" = openTerm วางสำเนาเทอมเก่า · "live" = closeViewing โหลดข้อมูลสดกลับมา
+ * ระดับโมดูลเหมือน pollTimer
+ */
+let landing: "archive" | "live" | null = null;
+
+export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
+  /**
+   * จุดเดียวที่ข้อมูลลงร้าน — กฎ: ระหว่างดูเทอมที่ปิด ข้อมูลสดห้ามเขียนลงร้าน
+   * ทุกตัวโหลด (loadAll, quietRefresh, loadSlots, retryLoad และของที่เพิ่มทีหลัง)
+   * ผ่านที่นี่หมด จึงไม่ต้องจำกฎเองทีละที่ ตัวที่ผ่านได้มีสองตัวคือ openTerm กับ
+   * closeViewing ซึ่งประกาศตัวผ่าน `landing`
+   */
+  const set = (
+    partial: Partial<TimetableStore> | ((st: TimetableStore) => Partial<TimetableStore>),
+  ): void => {
+    rawSet((st) => {
+      const next = typeof partial === "function" ? partial(st) : partial;
+      return dropLiveData(next, st.viewingTerm?.status === "closed" && landing === null);
+    });
+  };
+  return {
   departments:       [],
   buildings:         [],
   rooms:             [],
@@ -469,6 +492,8 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   termsAvailable:    true,
   termsReason:       null,
   viewingTerm:       null,
+  viewingError:      null,
+  loadFailures:      0,
 
   schoolConfig: {
     schoolName: "โรงเรียน",
@@ -765,6 +790,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         slots:        keep(slots,        st.slots),
         periods:      keep(periods, st.periods.length ? st.periods : DEFAULT_PERIODS),
         dataState:    state,
+        loadFailures: tally(results).failed,
       }));
       if (state !== "ready") return;    // เครื่องยังไม่ตื่น อย่าไปรบกวนต่อ
       // ถาดพักคาบโหลดแยก — เซิร์ฟเวอร์รุ่นเก่ายังไม่มีเส้นนี้ ปล่อยให้ถาดว่าง
@@ -934,15 +960,15 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
 
   startLiveSync: () => {
     get().stopLiveSync();
-    // กำลังดูเทอมที่ปิด — ซิงค์สดจะดึงเทอมปัจจุบันมาทับของเก่าที่เปิดดูอยู่
-    // ใช้ "ready" เพราะเงื่อนไขข้อมูลพร้อมของร้านอยู่ใน tick แยกต่างหาก
-    // (tick ต้องวิ่งตอนข้อมูลยังไม่พร้อมด้วย เพื่อปลุกการโหลดใหม่)
-    if (!shouldPoll(get().viewingTerm?.status === "closed", "ready")) return;
+    // ตัวจับเวลาสร้างได้เสมอ — tick ต้องวิ่งตอนข้อมูลยังไม่พร้อมด้วยเพื่อปลุกการ
+    // โหลดใหม่ ส่วนการ "ตัดสินว่าจะดึงข้อมูลสดมาทับไหม" ตรวจที่ mayRefresh ข้างล่าง
+    // (และด่านสุดท้ายคือ set ที่ไม่ยอมให้ข้อมูลสดลงร้านตอนดูเทอมที่ปิด)
+    const mayRefresh = (): boolean =>
+      shouldPoll(get().viewingTerm?.status === "closed", get().dataState);
     const tick = async () => {
       const st = get();
       // Never yank data out from under an interaction in progress.
       if (!st.liveSync) return;
-      if (!shouldPoll(st.viewingTerm?.status === "closed", "ready")) return;
       // An edit in flight is the third way the screen can be mid-change, beside
       // a drag and a solve. Refreshing across one is what made edits bounce.
       if (st.draggingSlot || st.isSolving || st.isLoading || writeGuard.busy) return;
@@ -986,6 +1012,7 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
         // counter now comes back with the data, so this is simply a new
         // numbering to adopt. quietRefresh above will not pull an empty
         // server over a full screen, which is the only risk worth guarding.
+        if (!mayRefresh()) return;                     // ดูเทอมที่ปิดอยู่ — ไม่ดึงทับ
         if (revision < prev) {
           set({ lastRevision: revision, syncState: "live" });
           holdingSince = 0;
@@ -1035,6 +1062,8 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     // หยุดซิงค์สดก่อนวางข้อมูล และตั้ง viewingTerm ในจังหวะเดียวกัน เพื่อไม่ให้มี
     // ช่วงที่คำขอซิงค์ที่ค้างอยู่วางเทอมปัจจุบันทับ (quietRefresh เช็ค viewingTerm)
     get().stopLiveSync();
+    landing = "archive";
+    try {
     set((st) => ({
       groups:       data.groups       ?? [],
       teachers:     data.teachers     ?? [],
@@ -1046,21 +1075,39 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       departments:  data.departments  ?? [],
       buildings:    data.buildings    ?? [],
       viewingTerm:  row,
+      viewingError: null,
     }));
+    } finally { landing = null; }
   },
 
   // ออกจากการดูเทอมเก่า — ดึงข้อมูลสดมาใหม่ ห้ามขอสำเนาของเทอมที่ใช้งาน (409)
+  //
+  // viewingTerm (แบนเนอร์) ถูกล้างหลังข้อมูลสดมาครบแล้วเท่านั้น: loadAll เก็บของ
+  // เดิมไว้เมื่อบางเส้นล้ม ถ้าล้างก่อน จอจะเป็นคาบของเทอมเก่าโดยไม่มีอะไรบอก
   closeViewing: async () => {
-    set({ viewingTerm: null });
-    await get().loadAll();
+    if (!get().viewingTerm) return;
+    landing = "live";
+    try {
+      await get().loadAll();
+    } catch {
+      /* ตัดสินจากผลด้านล่าง */
+    } finally { landing = null; }
+    if (!liveReloadComplete(get().dataState, get().loadFailures)) {
+      set({ viewingError:
+        "โหลดตารางปัจจุบันไม่สำเร็จ ตอนนี้ยังแสดงเทอมที่ปิดแล้วอยู่ ลองกดกลับอีกครั้ง" });
+      return;
+    }
+    set({ viewingTerm: null, viewingError: null });
     if (get().liveSync) get().startLiveSync();
   },
 
   makeNewTerm: async (year, semester) => {
     const r = await api.createTerm(year, semester);
     // ข้อมูลสดถูกล้างฝั่งเซิร์ฟเวอร์แล้ว ดึงมาใหม่ แล้วค่อยอ่านรายการเทอม
-    set({ viewingTerm: null });
-    await get().loadAll();
+    // ปุ่มสร้างเทอมใหม่อยู่บนหน้าที่ทำงานกับเทอมปัจจุบัน ไม่ใช่ตอนดูเทอมเก่า
+    // ถ้ายังดูเทอมเก่าอยู่ ให้ออกให้ถูกวิธี (แบนเนอร์อยู่จนกว่าข้อมูลสดมาครบ)
+    if (get().viewingTerm) await get().closeViewing();
+    else await get().loadAll();
     await get().loadTerms();
     if (get().liveSync) get().startLiveSync();
     return r;
@@ -1499,4 +1546,5 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
       set({ isSolving: false, solveProgress: null });
     }
   },
-}));
+  };
+});

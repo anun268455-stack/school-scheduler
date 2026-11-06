@@ -63,3 +63,37 @@ export function nextTerm(active: TermMeta | null): { year: number; semester: num
   if (active.semester === 1) return { year: active.year, semester: 2 };
   return { year: active.year + 1, semester: 1 };
 }
+
+/**
+ * ฟิลด์ในร้านที่เป็นข้อมูลสดจากเซิร์ฟเวอร์ — ชุดที่ต้องไม่ถูกเขียนทับตอนดูเทอมที่ปิด
+ * (เก้าชุดแรกคือสิ่งที่ openTerm วางลงไป ที่เหลือคือถาดและลานที่โหลดมาพร้อมกัน)
+ */
+export const LIVE_DATA_KEYS = [
+  "groups", "teachers", "subjects", "rooms", "requirements", "slots", "periods",
+  "departments", "buildings", "parked", "yardPicks", "yardList",
+] as const;
+
+/**
+ * กฎข้อเดียวของการดูเทอมเก่า: ระหว่างที่เทอมที่ปิดอยู่บนจอ ข้อมูลสดห้ามเขียนลงร้าน
+ *
+ * ตรวจที่จุดเดียวคือตอนเขียนลงร้าน ไม่ใช่ที่ผู้เรียกแต่ละราย — ผู้เรียกคนถัดไป
+ * จะไม่รู้ว่ามีกฎนี้ `block` เป็น true = ตัดฟิลด์ข้อมูลสดออก เหลือฟิลด์อื่น
+ * (isLoading, dataState ฯลฯ) ไว้ตามเดิม
+ */
+export function dropLiveData<T extends object>(next: T, block: boolean): Partial<T> {
+  if (!block) return next;
+  const dropped = new Set<string>(LIVE_DATA_KEYS);
+  const kept: Partial<T> = {};
+  for (const k of Object.keys(next) as (keyof T & string)[]) {
+    if (!dropped.has(k)) kept[k] = next[k];
+  }
+  return kept;
+}
+
+/**
+ * ออกจากเทอมเก่าได้ไหม — ได้ก็ต่อเมื่อโหลดข้อมูลสดมาครบทุกเส้น
+ * ("ready" แปลว่าสำเร็จอย่างน้อยหนึ่งเส้น ไม่ได้แปลว่าครบ จอจะเป็นของผสม)
+ */
+export function liveReloadComplete(dataState: DataState, failures: number): boolean {
+  return dataState === "ready" && failures === 0;
+}
