@@ -14164,6 +14164,70 @@ def terms_log():
                      "at": r[4].isoformat() if r[4] else None} for r in rows]}
 
 
+# ── สถิติย้อนหลังรายเทอม ─────────────────────────────────────────────────────
+def term_stats_of(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """สถิติของสำเนาหนึ่งเทอม ฟังก์ชันล้วน คีย์ที่หายถือว่าว่าง
+
+    by_teacher นับคาบที่ครูอยู่ในห้องทุกแบบ (ครูหลัก ครูสอนร่วม ครูผู้ดูแลกิจกรรม
+    ครูของวิชาในคาบเสรี) คนละหนึ่งครั้งต่อคาบ · by_department ใช้กลุ่มสาระของวิชาก่อน
+    ถ้าไม่มีใช้ของครูเจ้าของคาบ (เหมือนที่ใช้ในตัวจัดตาราง) ไม่รู้ = "ไม่ระบุ"
+    rooms_used / subjects_open = จำนวนห้อง / วิชา ที่มีคาบอ้างถึงอย่างน้อยหนึ่งคาบ
+    """
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+
+    def rows(key: str) -> list[dict[str, Any]]:
+        return [r for r in (snapshot.get(key) or []) if isinstance(r, dict)]
+
+    dept_name = {d.get("id"): d.get("name") for d in rows("departments")}
+    teacher_dept = {t.get("id"): t.get("department_id") for t in rows("teachers")}
+    subject_dept = {s.get("id"): s.get("department_id") for s in rows("subjects")}
+    slots = rows("slots")
+    by_department: dict[str, int] = {}
+    by_teacher: dict[int, int] = {}
+    rooms: set[int] = set()
+    subjects: set[int] = set()
+    for sl in slots:
+        dep = subject_dept.get(sl.get("subject_id")) or teacher_dept.get(sl.get("teacher_id"))
+        name = dept_name.get(dep) or "ไม่ระบุ"
+        by_department[name] = by_department.get(name, 0) + 1
+        for t in _slot_teacher_ids_all(sl):
+            by_teacher[t] = by_teacher.get(t, 0) + 1
+        rooms |= _int_ids(_slot_rooms(sl))
+        subjects |= _slot_subject_ids_all(sl)
+    return {"slots": len(slots), "by_department": by_department,
+            "by_teacher": by_teacher, "rooms_used": len(rooms),
+            "subjects_open": len(subjects)}
+
+
+@app.get("/api/terms/stats")
+def terms_stats():
+    """สถิติของทุกเทอม เก่าไปใหม่ อ่านอย่างเดียว ไม่แตะข้อมูลที่ใช้งานอยู่
+
+    เทอมที่ใช้งานอยู่คิดจากข้อมูลในหน่วยความจำ (สำเนาในฐานเป็นของตอนสร้างเทอม ไม่ใช่ของตอนนี้)
+    เทอมที่ปิดแล้วอ่านจากสำเนา ไฟล์ที่อ่านไม่ออกขึ้น error แทนตัวเลข ไม่ทำให้ทั้งรายการพัง
+    """
+    _require_db()
+    try:
+        terms = sorted(_terms_list(), key=lambda t: (t["year"], t["semester"], t["id"]))
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    out = []
+    for t in terms:
+        head = {"id": t["id"], "label": t["label"]}
+        try:
+            if t["status"] == "active":
+                snap = _snapshot()
+            else:
+                blob = _term_blob(t["id"])
+                snap = _unpack(blob) if blob is not None else None
+            if snap is None:
+                raise ValueError("no blob")
+            out.append({**head, **term_stats_of(snap)})
+        except Exception:                          # noqa: BLE001
+            out.append({**head, **term_stats_of({}), "error": "อ่านข้อมูลของเทอมนี้ไม่ได้"})
+    return {"terms": out}
+
+
 @app.get("/api/terms/{term_id}/data")
 def term_data(term_id: int):
     """The stored copy of one term, for the browser to show and print.

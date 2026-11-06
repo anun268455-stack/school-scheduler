@@ -967,6 +967,151 @@ def test_terms_routes_do_not_shadow_each_other_and_stay_write_safe():
                                       "/api/terms/3/unlock") is None
 
 
+# ── งานที่ 6: สถิติย้อนหลัง ─────────────────────────────────────────────────
+def test_stats_counts_periods_per_teacher_and_department():
+    snap = {
+        "departments": [{"id": 1, "name": "ภาษาไทย"}, {"id": 2, "name": "คณิตศาสตร์"}],
+        "teachers": [{"id": 10, "department_id": 1}, {"id": 11, "department_id": 2}],
+        "rooms": [{"id": 1}, {"id": 2}, {"id": 3}],
+        "subjects": [{"id": 100}, {"id": 101}],
+        "slots": [
+            {"id": 1, "teacher_id": 10, "room_id": 1, "subject_id": 100},
+            {"id": 2, "teacher_id": 10, "room_id": 1, "subject_id": 100},
+            {"id": 3, "teacher_id": 11, "room_id": 2, "subject_id": 101},
+        ],
+    }
+    out = mock_api.term_stats_of(snap)
+    assert out["slots"] == 3
+    assert out["by_teacher"][10] == 2
+    assert out["by_department"]["ภาษาไทย"] == 2
+    assert out["by_department"]["คณิตศาสตร์"] == 1
+    assert out["rooms_used"] == 2        # ห้อง 3 ไม่ถูกใช้
+    assert out["subjects_open"] == 2
+
+
+def test_stats_of_an_empty_or_partial_snapshot():
+    assert mock_api.term_stats_of({})["slots"] == 0
+    assert mock_api.term_stats_of({"slots": [{"id": 1}]})["slots"] == 1
+
+
+def test_stats_shape_and_missing_keys_everywhere():
+    out = mock_api.term_stats_of({})
+    assert out == {"slots": 0, "by_department": {}, "by_teacher": {},
+                   "rooms_used": 0, "subjects_open": 0}
+    for bad in (None, [], "x"):
+        assert mock_api.term_stats_of(bad)["slots"] == 0
+    # คีย์เป็น None / รายการมีของแปลก ๆ
+    out = mock_api.term_stats_of({"slots": [None, "x", {"teacher_id": 0}], "teachers": None,
+                                  "departments": None, "subjects": [None]})
+    assert out["slots"] == 1 and out["by_teacher"] == {}
+    assert out["by_department"] == {"ไม่ระบุ": 1}
+
+
+def test_stats_department_prefers_subject_then_teacher():
+    snap = {"departments": [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}],
+            "teachers": [{"id": 10, "department_id": 1}],
+            "subjects": [{"id": 5, "department_id": 2}, {"id": 6}],
+            "slots": [{"teacher_id": 10, "subject_id": 5},
+                      {"teacher_id": 10, "subject_id": 6}]}
+    assert mock_api.term_stats_of(snap)["by_department"] == {"B": 1, "A": 1}
+
+
+def test_stats_counts_every_teacher_and_room_a_period_names():
+    snap = {"slots": [
+        {"teacher_id": 1, "co_teacher_id": 2, "room_id": 7, "subject_id": 50},
+        {"teacher_id": 0, "activity_teacher_ids": [3, 4], "room_id": 8, "subject_id": 51},
+        {"teacher_id": 0, "is_elective": True, "room_id": None,
+         "elective_options": [{"teacher_id": 5, "room_id": 9, "subject_id": 52},
+                              {"teacher_id": 6, "room_id": 10, "subject_id": 53}]}]}
+    out = mock_api.term_stats_of(snap)
+    assert out["by_teacher"] == {1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1}
+    assert out["rooms_used"] == 4 and out["subjects_open"] == 4
+
+
+def test_stats_is_pure():
+    snap = {"slots": [{"teacher_id": 1, "room_id": 2}]}
+    import copy
+    before = copy.deepcopy(snap)
+    saved = mock_api._STORE_KIND
+    mock_api._STORE_KIND = "boom"      # ไม่แตะตัวแปรกลางหรือฐานข้อมูล
+    try:
+        mock_api.term_stats_of(snap)
+    finally:
+        mock_api._STORE_KIND = saved
+    assert snap == before
+
+
+def _stats_with_fake(terms, snapshot_live=None, unreadable=()):
+    names = ("_STORE_KIND", "_terms_list", "_term_blob", "_snapshot")
+    saved = {k: getattr(mock_api, k) for k in names}
+    mock_api._STORE_KIND = "postgres"
+    mock_api._terms_list = lambda: [
+        {"id": i, "year": y, "semester": sm, "label": f"{sm}/{y}", "status": st}
+        for i, y, sm, st, _ in terms]
+    blobs = {i: b for i, _, _, _, b in terms}
+    def blob(i):
+        if i in unreadable:
+            raise RuntimeError("SECRET")
+        return blobs[i]
+    mock_api._term_blob = blob
+    mock_api._snapshot = lambda: snapshot_live or {}
+    try:
+        return mock_api.terms_stats()
+    finally:
+        for k, v in saved.items():
+            setattr(mock_api, k, v)
+
+
+def test_terms_stats_endpoint_oldest_first_and_active_from_memory():
+    pk = mock_api._pack
+    out = _stats_with_fake(
+        [(3, 2569, 1, "active", pk({"slots": [{"id": 1}]})),
+         (2, 2568, 2, "closed", pk({"slots": [{"id": 1}, {"id": 2}]})),
+         (1, 2568, 1, "closed", pk({"slots": []}))],
+        snapshot_live={"slots": [{"id": 1}, {"id": 2}, {"id": 3}]})
+    got = [(t["id"], t["label"], t["slots"]) for t in out["terms"]]
+    assert got == [(1, "1/2568", 0), (2, "2/2568", 2), (3, "1/2569", 3)], got
+    for t in out["terms"]:
+        assert {"by_department", "by_teacher", "rooms_used", "subjects_open"} <= set(t)
+
+
+def test_terms_stats_endpoint_survives_a_corrupt_term():
+    pk = mock_api._pack
+    out = _stats_with_fake(
+        [(1, 2568, 1, "closed", b"junk"),
+         (2, 2568, 2, "closed", pk({"slots": [{"id": 1}]})),
+         (3, 2569, 1, "closed", pk({"slots": []}))], unreadable={3})
+    by = {t["id"]: t for t in out["terms"]}
+    ok("error" in by[1] and by[1]["slots"] == 0, "ไฟล์เสียขึ้น error")
+    ok(by[2]["slots"] == 1 and "error" not in by[2], "เทอมดียังคิดได้")
+    ok("error" in by[3] and "SECRET" not in str(out), "อ่านฐานพลาด ไม่รั่วข้อความ")
+
+
+def test_terms_stats_endpoint_refuses_without_database_and_db_failure():
+    mock_api._STORE_KIND = "file"
+    try:
+        mock_api.terms_stats()
+        assert False
+    except mock_api.HTTPException as e:
+        assert e.status_code == 400 and "ยังไม่ได้ต่อฐานข้อมูล" in e.detail
+    saved = (mock_api._STORE_KIND, mock_api._terms_list)
+    def boom():
+        raise RuntimeError("postgres://u:SECRET@h/db")
+    mock_api._STORE_KIND, mock_api._terms_list = "postgres", boom
+    try:
+        mock_api.terms_stats()
+        assert False
+    except mock_api.HTTPException as e:
+        ok(e.status_code == 503 and "SECRET" not in e.detail, "503 ภาษาไทย ไม่รั่วสตริงเชื่อมต่อ")
+    finally:
+        mock_api._STORE_KIND, mock_api._terms_list = saved
+
+
+def test_terms_stats_route_registered_and_write_safe():
+    paths = {(r[0].upper(), r[1]) for r in mock_api.app.routes}
+    assert ("GET", "/api/terms/stats") in paths
+
+
 for name, fn in list(globals().items()):
     if name.startswith("test_") and callable(fn):
         fn()
