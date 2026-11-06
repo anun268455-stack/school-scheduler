@@ -13234,6 +13234,19 @@ SCHOOL_CONFIG: dict[str, Any] = {
 }
 
 
+# เทอมที่ข้อมูลชุดนี้เป็นของ — แถวใน app_terms เป็นเจ้าของความจริง ตัวแปรนี้คือ
+# สำเนาที่ถืออยู่ในหน่วยความจำและติดไปกับ _snapshot()
+#
+# "status" ต้องอยู่ในนี้ด้วย: ตัวกันเขียนอ่านมันทุกคำขอเพื่อรู้ว่าเทอมปิดหรือยัง
+# และจะถามฐานข้อมูลทุกคำขอไม่ได้ ถ้าไม่มีคีย์นี้ .get("status") จะได้ None
+# ตัวกันก็ปล่อยให้เขียน แล้วเทอมที่ปิดไปแล้วจะถูกแก้ได้เงียบ ๆ
+# ค่า: "active" · "closed" · None (ยังไม่เคยสร้างเทอมเลย)
+CURRENT_TERM: dict[str, Any] = {
+    "id": None, "year": None, "semester": None, "label": None, "status": None,
+}
+_TERM_KEYS = ("id", "year", "semester", "label", "status")
+
+
 def _lower_homeroom_first() -> bool:
     v = (SCHOOL_CONFIG or {}).get("lower_homeroom_first")
     return True if v is None else bool(v)
@@ -13339,6 +13352,7 @@ def _snapshot() -> dict[str, Any]:
         "parked": [{**e, "rows": [dict(r) for r in e.get("rows") or []]}
                    for e in PARKED],
         "counters": _counters,
+        "current_term": dict(CURRENT_TERM),
     }
 
 
@@ -13381,6 +13395,14 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
 
     if data.get("school_config"):
         SCHOOL_CONFIG.update(dict(data["school_config"]))
+
+    # ไฟล์สำรองที่ทำก่อนมีระบบเทอมไม่มีคีย์นี้ — ต้องโหลดได้และทิ้งเทอมว่างไว้
+    # ไม่ใช่คงค่าเทอมเก่าที่ค้างอยู่ในหน่วยความจำ เพราะข้อมูลที่โหลดมาไม่ใช่ของเทอมนั้น
+    saved_term = data.get("current_term")
+    if not isinstance(saved_term, dict):
+        saved_term = {}
+    for key in _TERM_KEYS:
+        CURRENT_TERM[key] = saved_term.get(key)
 
     # The revision counter has to come back with the data.
     #
@@ -13687,6 +13709,103 @@ def _term_set_status(term_id: int, status: str) -> None:
         conn.commit()
 
 
+def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
+                 year: int, semester: int, label: str, new_blob: bytes) -> int:
+    """Close the running term and open the next one, in ONE transaction.
+
+    Two things the table forces. The old term's row already holds this
+    (year, semester), so closing it is an UPDATE of that row (its file gets the
+    final data) — inserting a "closed" copy would break UNIQUE (year, semester)
+    from the second term on. And only one row may be 'active' at a time, so the
+    old row is closed before the new one goes in. One commit: if the insert
+    fails, the old term is still active rather than the school having none.
+    """
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            if old_id is not None:
+                cur.execute(
+                    "UPDATE app_terms SET status = 'closed', data = %s, slots = %s, "
+                    "closed_at = now() WHERE id = %s", (old_blob, old_slots, old_id))
+            cur.execute(
+                "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+                "VALUES (%s, %s, %s, 'active', %s, 0, NULL) RETURNING id",
+                (year, semester, label, new_blob))
+            new_id = cur.fetchone()[0]
+        conn.commit()
+    return new_id
+
+
+def new_term_preview() -> dict[str, Any]:
+    """What a new term will start with and what will be cleared. Changes nothing."""
+    total = 0
+    for r in REQUIREMENTS:
+        try:
+            total += int(r.get("weekly_count") or 0)
+        except (TypeError, ValueError):
+            pass
+    return {"requirements": len(REQUIREMENTS), "teachers": len(TEACHERS),
+            "periods_total": total, "curricula": len(CURRICULA),
+            "slots_to_clear": len(SLOTS)}
+
+
+@app.get("/api/terms/preview")
+def terms_preview():
+    return new_term_preview()
+
+
+@app.post("/api/terms")
+def create_term(body: dict[str, Any]):
+    """Save the running term as a closed file, clear the lessons, open a new term."""
+    _require_db()
+    year = body.get("year") if isinstance(body, dict) else None
+    semester = body.get("semester") if isinstance(body, dict) else None
+    # bool is an int in Python; True is not a year.
+    if type(year) is not int or not 2500 <= year <= 2700:
+        raise HTTPException(400, "ปีการศึกษาต้องเป็นตัวเลข พ.ศ. 2500–2700")
+    if type(semester) is not int or semester not in (1, 2):
+        raise HTTPException(400, "ภาคเรียนต้องเป็น 1 หรือ 2")
+    label = term_label(year, semester)
+    try:
+        existing = _terms_list()
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    if any(t["year"] == year and t["semester"] == semester for t in existing):
+        raise HTTPException(409, f"มีเทอม {label} อยู่แล้ว")
+    # Send what is queued first, or the term file loses the last edits.
+    _flush_pending(blocking=True)
+    if _db_write_blocked():
+        raise HTTPException(
+            409, "เซิร์ฟเวอร์ยังไม่ยอมเขียนข้อมูลลงฐาน จึงสร้างเทอมใหม่ไม่ได้ — "
+                 "ยืนยันข้อมูลที่ถืออยู่ก่อน")
+
+    old = dict(CURRENT_TERM)
+    has_old = old.get("id") is not None
+    old_blob = _pack(_snapshot()) if has_old else None
+    old_slots = len(SLOTS)
+
+    # In-place, never `SLOTS = []`: curriculum.py holds a live alias to this list.
+    saved_slots = list(SLOTS)
+    saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    SLOTS.clear()
+    CURRENT_TERM.update({"id": None, "year": year, "semester": semester,
+                         "label": label, "status": "active"})
+    SCHOOL_CONFIG["term"], SCHOOL_CONFIG["year"] = str(semester), str(year)
+    try:
+        new_id = _term_rotate(old["id"] if has_old else None, old_blob, old_slots,
+                              year, semester, label, _pack(_snapshot()))
+    except Exception:                              # noqa: BLE001
+        # Nothing was committed: put the memory back as it was.
+        SLOTS.extend(saved_slots)
+        CURRENT_TERM.update(old)
+        SCHOOL_CONFIG.update(saved_cfg)
+        raise HTTPException(500, "สร้างเทอมใหม่ไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง")
+    CURRENT_TERM["id"] = new_id
+    _save_state()
+    return {"closed": _term_row(old["id"]) if has_old else None,
+            "active": _term_row(new_id)}
+
+
 @app.get("/api/terms")
 def list_terms():
     """Every saved term, newest first.
@@ -13788,6 +13907,15 @@ def _save_state_to_file() -> None:
         pass
 
 
+def _db_write_blocked() -> bool:
+    """True while _save_state() is refusing to write to the database.
+
+    One expression for the refusal itself, the /api/state/info report and
+    anything that must not write a row the live data would not follow.
+    """
+    return bool(_DB_HAD_DATA and globals().get("_STATE_SOURCE") not in ("snapshot", None))
+
+
 def _save_state() -> None:
     """Keep the data. Never let a failed save break a request.
 
@@ -13802,7 +13930,7 @@ def _save_state() -> None:
     if _STORE_KIND != "postgres":
         _save_state_to_file()
         return
-    if _DB_HAD_DATA and globals().get("_STATE_SOURCE") not in ("snapshot", None):
+    if _db_write_blocked():
         # Something is stored, and it is not what this process is holding.
         # Keep it on disk only; /api/state/info reports the refusal so the
         # school is told rather than left to find out.
@@ -15134,8 +15262,13 @@ def _clean_print_sheet(raw: Any) -> dict[str, Any]:
 
 @app.put("/api/school/config")
 def update_school_config(body: dict[str, Any]):
+    # เมื่อมีเทอมแล้ว แถวใน app_terms เป็นเจ้าของว่านี่คือเทอมไหน — ปีกับภาคเรียน
+    # ที่ส่งมาถูกเมินเงียบ ๆ (ไม่ยกข้อผิดพลาด) เปลี่ยนได้ที่หน้ารายการเทอมเท่านั้น
+    term_locked = CURRENT_TERM.get("id") is not None
     for k in ("schoolName", "term", "year", "directorName", "deputyName", "logoUrl",
               "max_consecutive", "prefer_consecutive", "min_last_period"):
+        if term_locked and k in ("term", "year"):
+            continue
         if k in body:
             SCHOOL_CONFIG[k] = body[k]
     # ขนาดตัวอักษรในช่องตาราง — เก็บไว้กับการตั้งค่าโรงเรียนเพื่อให้ทุกเครื่อง
@@ -15206,7 +15339,7 @@ def state_info():
         # is holding is the shipped data and the school's own copy is still
         # stored. Said out loud, because a server that quietly stops saving
         # looks exactly like one that is saving.
-        "write_blocked": bool(_DB_HAD_DATA and _STATE_SOURCE != "snapshot"),
+        "write_blocked": _db_write_blocked(),
         "counts": {
             "groups": len(_flat_groups()), "teachers": len(TEACHERS),
             "subjects": len(SUBJECTS), "rooms": len(ROOMS),

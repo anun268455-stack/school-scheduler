@@ -116,6 +116,288 @@ def test_terms_schema_columns_and_list_has_no_data():
        "รายการวัดขนาดด้วย length(data) ไม่โหลดก้อนข้อมูล")
 
 
+BLANK = {"id": None, "year": None, "semester": None, "label": None, "status": None}
+
+
+def test_preview_counts_what_the_new_term_will_hold():
+    mock_api.REQUIREMENTS[:] = [
+        {"id": 1, "weekly_count": 3}, {"id": 2, "weekly_count": 2},
+    ]
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}, {"id": 3}]
+    out = mock_api.new_term_preview()
+    assert out["requirements"] == 2
+    assert out["periods_total"] == 5
+    assert out["slots_to_clear"] == 3
+
+
+def test_preview_tolerates_missing_weekly_count():
+    mock_api.REQUIREMENTS[:] = [{"id": 1}, {"id": 2, "weekly_count": None},
+                                {"id": 3, "weekly_count": 4}]
+    assert mock_api.new_term_preview()["periods_total"] == 4
+
+
+def test_snapshot_carries_current_term():
+    mock_api.CURRENT_TERM.update({"id": 7, "year": 2569, "semester": 1, "label": "1/2569"})
+    snap = mock_api._snapshot()
+    assert snap["current_term"]["label"] == "1/2569"
+
+
+def test_current_term_has_status_key_for_the_write_guard():
+    assert set(mock_api.CURRENT_TERM) == {"id", "year", "semester", "label", "status"}
+    mock_api.CURRENT_TERM.update({**BLANK, "id": 7, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "closed"})
+    assert mock_api._snapshot()["current_term"]["status"] == "closed"
+    snap = mock_api._snapshot()
+    mock_api.CURRENT_TERM.update(BLANK)
+    mock_api._apply_snapshot(snap)
+    assert mock_api.CURRENT_TERM["status"] == "closed"
+
+
+def test_snapshot_current_term_is_a_copy():
+    mock_api.CURRENT_TERM.update({**BLANK, "id": 7})
+    snap = mock_api._snapshot()
+    mock_api.CURRENT_TERM["id"] = 8
+    assert snap["current_term"]["id"] == 7
+
+
+def test_apply_snapshot_restores_current_term():
+    mock_api.CURRENT_TERM.update({"id": None, "year": None, "semester": None, "label": None})
+    mock_api._apply_snapshot({"current_term":
+        {"id": 7, "year": 2569, "semester": 1, "label": "1/2569"}})
+    assert mock_api.CURRENT_TERM["year"] == 2569
+    assert mock_api.CURRENT_TERM["status"] is None   # ไฟล์เก่าไม่มีสถานะ ต้องไม่พัง
+
+
+def test_apply_snapshot_without_current_term_leaves_it_blank():
+    # ไฟล์สำรองเก่าที่ทำไว้ก่อนมีระบบเทอม ต้องโหลดได้ ไม่พัง
+    mock_api.CURRENT_TERM.update({"id": 7, "year": 2569, "semester": 1, "label": "1/2569"})
+    mock_api._apply_snapshot({})
+    assert mock_api.CURRENT_TERM["year"] is None
+    assert mock_api.CURRENT_TERM["status"] is None
+
+
+def test_apply_snapshot_with_garbage_current_term_leaves_it_blank():
+    for bad in (None, "x", 5, []):
+        mock_api.CURRENT_TERM.update({**BLANK, "id": 7, "status": "active"})
+        mock_api._apply_snapshot({"current_term": bad})
+        assert mock_api.CURRENT_TERM == BLANK
+
+
+def test_config_cannot_change_term_once_a_term_exists():
+    mock_api.CURRENT_TERM.update({"id": 7, "year": 2569, "semester": 1, "label": "1/2569"})
+    mock_api.SCHOOL_CONFIG.update({"term": "1", "year": "2569"})
+    mock_api.update_school_config({"term": "2", "year": "2570", "schoolName": "ทดสอบ"})
+    assert mock_api.SCHOOL_CONFIG["term"] == "1"      # ไม่ถูกเปลี่ยน
+    assert mock_api.SCHOOL_CONFIG["year"] == "2569"
+    assert mock_api.SCHOOL_CONFIG["schoolName"] == "ทดสอบ"   # ช่องอื่นยังแก้ได้
+
+
+def test_config_still_editable_before_any_term_exists():
+    mock_api.CURRENT_TERM.update({"id": None, "year": None, "semester": None, "label": None})
+    mock_api.update_school_config({"term": "2", "year": "2570"})
+    assert mock_api.SCHOOL_CONFIG["term"] == "2"
+    assert mock_api.SCHOOL_CONFIG["year"] == "2570"
+
+
+def test_create_term_rejects_bad_year_and_semester():
+    mock_api._STORE_KIND = "postgres"
+    for body in ({"year": 1999, "semester": 1}, {"year": 2569, "semester": 3},
+                 {"year": "สองพัน", "semester": 1}):
+        try:
+            mock_api.create_term(body)
+            assert False, f"ต้องปฏิเสธ {body}"
+        except Exception as exc:
+            assert "400" in repr(exc) or "ภาคเรียน" in str(exc) or "ปีการศึกษา" in str(exc)
+
+
+def test_create_term_rejects_more_bad_input():
+    mock_api._STORE_KIND = "postgres"
+    for body in ({}, {"year": 2569}, {"semester": 1}, {"year": 2701, "semester": 1},
+                 {"year": 2499, "semester": 1}, {"year": 2569.0, "semester": 1},
+                 {"year": "2569", "semester": 1}, {"year": True, "semester": 1},
+                 {"year": 2569, "semester": 0}, {"year": 2569, "semester": "1"},
+                 {"year": 2569, "semester": None}, {"year": 2569, "semester": True}):
+        try:
+            mock_api.create_term(body)
+            assert False, f"ต้องปฏิเสธ {body}"
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 400, (body, repr(exc))
+    mock_api._STORE_KIND = "file"
+
+
+def test_create_term_needs_database_first():
+    mock_api._STORE_KIND = "file"
+    try:
+        mock_api.create_term({"year": 2569, "semester": 1})
+        assert False
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 400
+        assert "ยังไม่ได้ต่อฐานข้อมูล" in str(exc.detail)
+
+
+def test_write_blocked_helper_matches_the_state_info_report():
+    saved = (mock_api._DB_HAD_DATA, mock_api._STATE_SOURCE)
+    try:
+        for had in (True, False):
+            for src in ("snapshot", "seed", "demo"):
+                mock_api._DB_HAD_DATA, mock_api._STATE_SOURCE = had, src
+                assert mock_api._db_write_blocked() == (had and src != "snapshot")
+                assert mock_api.state_info()["write_blocked"] == mock_api._db_write_blocked()
+    finally:
+        mock_api._DB_HAD_DATA, mock_api._STATE_SOURCE = saved
+
+
+class _FakeCur:
+    def __init__(self, log, rows):
+        self.log, self.rows = log, rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        self.log.append((" ".join(sql.split()), params))
+
+    def fetchone(self):
+        return (99,)
+
+
+class _FakeConn:
+    def __init__(self, log, fail_on=None):
+        self.log, self.fail_on = log, fail_on
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def cursor(self):
+        if self.fail_on:
+            log, fail = self.log, self.fail_on
+
+            class Failing(_FakeCur):
+                def execute(s, sql, params=None):
+                    if fail in sql:
+                        raise RuntimeError("postgresql://user:SECRET@host/db")
+                    super().execute(sql, params)
+            return Failing(self.log, None)
+        return _FakeCur(self.log, None)
+
+    def commit(self):
+        self.log.append(("COMMIT", None))
+
+
+def _with_fake_db(fn, fail_on=None, existing=()):
+    saved = {k: getattr(mock_api, k) for k in
+             ("_db_connect", "_terms_list", "_term_row", "_flush_pending", "_save_state",
+              "_STORE_KIND", "_DB_HAD_DATA", "_STATE_SOURCE")}
+    log: list = []
+    calls: list = []
+    mock_api._db_connect = lambda: _FakeConn(log, fail_on)
+    mock_api._terms_list = lambda: list(existing)
+    mock_api._term_row = lambda i: {"id": i}
+    mock_api._flush_pending = lambda blocking=False: calls.append(("flush", blocking))
+    mock_api._save_state = lambda: calls.append(("save", None))
+    mock_api._STORE_KIND = "postgres"
+    mock_api._DB_HAD_DATA, mock_api._STATE_SOURCE = False, "snapshot"
+    try:
+        return fn(log, calls)
+    finally:
+        for k, v in saved.items():
+            setattr(mock_api, k, v)
+
+
+def test_create_first_term_inserts_active_only_and_clears_slots():
+    mock_api.CURRENT_TERM.update(BLANK)
+    mock_api.SLOTS[:] = [{"id": 1}]
+    alias = mock_api.SLOTS
+
+    def run(log, calls):
+        out = mock_api.create_term({"year": 2569, "semester": 1})
+        sqls = [q for q, _ in log]
+        assert not any(q.startswith("UPDATE") for q in sqls), "ยังไม่มีเทอมเก่าให้ปิด"
+        assert any("INSERT INTO app_terms" in q for q in sqls)
+        assert calls == [("flush", True), ("save", None)]
+        assert out["closed"] is None and out["active"] == {"id": 99}
+    _with_fake_db(run)
+    assert mock_api.SLOTS is alias and alias == [], "ล้างในที่เดิม ไม่ผูกชื่อใหม่"
+    assert mock_api.CURRENT_TERM == {"id": 99, "year": 2569, "semester": 1,
+                                     "label": "1/2569", "status": "active"}
+    assert mock_api.SCHOOL_CONFIG["term"] == "1" and mock_api.SCHOOL_CONFIG["year"] == "2569"
+
+
+def test_create_second_term_closes_old_row_before_inserting_new_active():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}]
+
+    def run(log, calls):
+        out = mock_api.create_term({"year": 2569, "semester": 2})
+        kinds = [q.split()[0] for q, _ in log if not q.startswith("CREATE")]
+        # ปิดแถวเก่าก่อน (index ใช้งานได้แถวเดียว) แล้วค่อยแทรกแถวใหม่ ในธุรกรรมเดียว
+        assert kinds == ["UPDATE", "INSERT", "COMMIT"], kinds
+        upd = [p for q, p in log if q.startswith("UPDATE")][0]
+        assert upd[1] == 2 and upd[2] == 5, "แถวเก่าเก็บจำนวนคาบก่อนล้าง และแก้ตาม id"
+        assert out["closed"] == {"id": 5}
+    _with_fake_db(run, existing=[{"year": 2569, "semester": 1}])
+    assert mock_api.CURRENT_TERM["label"] == "2/2569" and mock_api.SLOTS == []
+
+
+def test_create_term_duplicate_is_409_and_changes_nothing():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+    mock_api.SLOTS[:] = [{"id": 1}]
+
+    def run(log, calls):
+        try:
+            mock_api.create_term({"year": 2569, "semester": 1})
+            assert False
+        except Exception as exc:
+            assert exc.status_code == 409 and "มีเทอม 1/2569 อยู่แล้ว" in exc.detail
+        assert log == [] and calls == []
+    _with_fake_db(run, existing=[{"year": 2569, "semester": 1}])
+    assert mock_api.SLOTS == [{"id": 1}]
+
+
+def test_create_term_refuses_while_database_writes_are_blocked():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+    mock_api.SLOTS[:] = [{"id": 1}]
+
+    def run(log, calls):
+        mock_api._DB_HAD_DATA, mock_api._STATE_SOURCE = True, "seed"
+        try:
+            mock_api.create_term({"year": 2569, "semester": 2})
+            assert False
+        except Exception as exc:
+            assert exc.status_code == 409 and "ยืนยันข้อมูลที่ถืออยู่ก่อน" in exc.detail
+        assert log == [] and ("flush", True) in calls
+    _with_fake_db(run)
+    assert mock_api.SLOTS == [{"id": 1}] and mock_api.CURRENT_TERM["id"] == 5
+
+
+def test_create_term_database_failure_restores_memory_and_hides_secret():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+    mock_api.SCHOOL_CONFIG.update({"term": "1", "year": "2569"})
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}]
+
+    def run(log, calls):
+        try:
+            mock_api.create_term({"year": 2569, "semester": 2})
+            assert False
+        except Exception as exc:
+            assert exc.status_code == 500 and "SECRET" not in str(exc.detail)
+        assert ("save", None) not in calls
+    _with_fake_db(run, fail_on="INSERT")
+    assert mock_api.SLOTS == [{"id": 1}, {"id": 2}]
+    assert mock_api.CURRENT_TERM["id"] == 5 and mock_api.CURRENT_TERM["status"] == "active"
+    assert mock_api.SCHOOL_CONFIG["term"] == "1" and mock_api.SCHOOL_CONFIG["year"] == "2569"
+
+
 for name, fn in list(globals().items()):
     if name.startswith("test_") and callable(fn):
         fn()
