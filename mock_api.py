@@ -9069,6 +9069,7 @@ def get_rooms():
 def create_room(body: dict[str, Any]):
     body["id"] = _next("room")
     body.setdefault("usable", True)
+    body.setdefault("active", True)
     body.setdefault("reserved_teacher_ids", [])
     ROOMS.append(body)
     return body
@@ -9112,6 +9113,8 @@ def update_room(i: int, body: dict[str, Any]):
 @app.delete("/api/rooms/{i}")
 def del_room(i: int):
     global ROOMS
+    _refuse_delete_if_in_closed_term(
+        "rooms", i, next((r.get("name") for r in ROOMS if r["id"] == i), None), "ห้อง")
     removed = _purge_room(i)
     ROOMS = [r for r in ROOMS if r["id"] != i]
     return {"removed": removed}
@@ -9125,6 +9128,7 @@ def bulk_create_rooms(body: list[dict[str, Any]]):
         row.setdefault("specialized_dept_id", None)
         row.setdefault("reserved_teacher_ids", [])
         row.setdefault("usable", True)
+        row.setdefault("active", True)
         ROOMS.append(row)
         created.append(row)
     return created
@@ -9484,6 +9488,7 @@ def get_teachers():
 @app.post("/api/teachers/")
 def create_teacher(body: dict[str, Any]):
     body["id"] = _next("teacher")
+    body.setdefault("active", True)
     TEACHERS.append(body)
     return body
 
@@ -9499,6 +9504,8 @@ def update_teacher(i: int, body: dict[str, Any]):
 @app.delete("/api/teachers/{i}")
 def del_teacher(i: int):
     global TEACHERS
+    _refuse_delete_if_in_closed_term(
+        "teachers", i, next((t.get("name") for t in TEACHERS if t["id"] == i), None), "ครู")
     removed = _purge_teacher(i)
     TEACHERS = [t for t in TEACHERS if t["id"] != i]
     return {"removed": removed}
@@ -9513,6 +9520,7 @@ def bulk_create_teachers(body: list[dict[str, Any]]):
         row.setdefault("outdoor_score", 5)
         row.setdefault("max_slots_per_day", 6)
         row.setdefault("max_outdoor_per_week", 2)
+        row.setdefault("active", True)
         TEACHERS.append(row)
         created.append(row)
     return created
@@ -9766,6 +9774,7 @@ def get_subjects():
 def create_subject(body: dict[str, Any]):
     body["id"] = _next("subject")
     body.setdefault("prefer_morning", False)
+    body.setdefault("active", True)
     SUBJECTS.append(body)
     return body
 
@@ -9781,6 +9790,8 @@ def update_subject(i: int, body: dict[str, Any]):
 @app.delete("/api/subjects/{i}")
 def del_subject(i: int):
     global SUBJECTS
+    _refuse_delete_if_in_closed_term(
+        "subjects", i, next((x.get("name") for x in SUBJECTS if x["id"] == i), None), "วิชา")
     removed = _purge_subject(i)
     SUBJECTS = [s for s in SUBJECTS if s["id"] != i]
     return {"removed": removed}
@@ -9794,6 +9805,7 @@ def bulk_create_subjects(body: list[dict[str, Any]]):
         row.setdefault("prefer_morning", False)
         row.setdefault("duration", 1)
         row.setdefault("fixed_room_id", None)
+        row.setdefault("active", True)
         SUBJECTS.append(row)
         created.append(row)
     return created
@@ -13739,6 +13751,40 @@ def _term_blob(term_id: int) -> bytes | None:
     return bytes(row[0]) if row else None
 
 
+# ดัชนี "ครู/ห้อง/วิชาที่เทอมที่ปิดแล้วยังใช้อยู่" — สร้างจากการแกะสำเนาทุกเทอมที่ปิด
+# (หลาย MB ต่อเทอม) จึงเก็บไว้ในตัวแปรนี้และล้างเมื่อมีอะไรเขียนลง app_terms
+# _ENTITY_INDEX_GEN นับรอบการล้าง: ดัชนีที่เริ่มสร้างก่อนการล้างจะไม่ถูกเก็บ
+# ไม่งั้นการสร้างที่ค้างอยู่ข้ามการสร้าง/ปลดล็อกเทอมจะเก็บของเก่าไว้ถาวร
+_ENTITY_INDEX: dict[str, set[int]] | None = None
+_ENTITY_INDEX_GEN = 0
+_ENTITY_INDEX_LOCK = _threading.Lock()
+
+
+def _invalidate_entity_index() -> None:
+    global _ENTITY_INDEX, _ENTITY_INDEX_GEN
+    with _ENTITY_INDEX_LOCK:
+        _ENTITY_INDEX_GEN += 1
+        _ENTITY_INDEX = None
+
+
+def _invalidates_entity_index(fn):
+    """ฟังก์ชันที่เขียน app_terms ต้องล้างดัชนีทุกครั้ง แม้เขียนไม่สำเร็จ
+
+    ล้างใน finally: การเขียนที่พังกลางทางอาจ commit ไปแล้วก็ได้ ล้างเกินไม่เสียหาย
+    (สร้างใหม่ครั้งถัดไป) แต่ไม่ล้างคือปล่อยให้ดัชนีเก่าอนุญาตให้ลบของที่ใช้อยู่
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def inner(*a, **k):
+        try:
+            return fn(*a, **k)
+        finally:
+            _invalidate_entity_index()
+    return inner
+
+
+@_invalidates_entity_index
 def _term_insert(year: int, semester: int, label: str, status: str,
                  blob: bytes, slots: int) -> int:
     _check_term_status(status)
@@ -13755,6 +13801,7 @@ def _term_insert(year: int, semester: int, label: str, status: str,
     return new_id
 
 
+@_invalidates_entity_index
 def _term_set_status(term_id: int, status: str) -> None:
     _check_term_status(status)
     with _db_connect() as conn:
@@ -13767,6 +13814,7 @@ def _term_set_status(term_id: int, status: str) -> None:
         conn.commit()
 
 
+@_invalidates_entity_index
 def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
                  year: int, semester: int, label: str, new_blob: bytes) -> int:
     """Close the running term and open the next one, in ONE transaction.
@@ -13797,6 +13845,7 @@ def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
     return new_id
 
 
+@_invalidates_entity_index
 def _term_swap_active(old_id: int | None, old_blob: bytes | None, old_slots: int,
                       new_id: int) -> None:
     """Close the running term and re-open a closed one, in ONE transaction.
@@ -13847,6 +13896,112 @@ def _term_log(term_id: int, action: str, detail: str) -> None:
             conn.commit()
     except Exception:                              # noqa: BLE001
         pass
+
+
+# ── กันลบครู ห้อง วิชา ที่เทอมเก่ายังใช้อยู่ ─────────────────────────────────
+# ลบแล้วคาบในเทอมที่ปิดจะอ้างถึงของที่ไม่มีแล้ว ให้ทำเครื่องหมาย "active": False
+# (ไม่ปฏิบัติงานแล้ว) แทน ช่อง active ที่หายไปในสำเนาเก่าถือว่าเป็น True เสมอ
+def _is_active(rec: dict[str, Any]) -> bool:
+    return bool((rec or {}).get("active", True))
+
+
+def _int_ids(values) -> set[int]:
+    """รหัสที่เป็นจำนวนเต็มจริง ไม่รวม 0/None/bool (0 = ยังไม่ได้เลือก)"""
+    return {v for v in values if type(v) is int and v}
+
+
+def _slot_teacher_ids_all(slot: dict[str, Any]) -> set[int]:
+    """ครูทุกคนที่คาบหนึ่งอ้างถึง — อ่านตรงจากคีย์ ไม่พึ่ง is_elective
+
+    teacher_id · co_teacher_id (ครูสอนร่วม) · activity_teacher_ids (ครูผู้ดูแลคาบกิจกรรม)
+    · elective_options[].teacher_id (ครูของแต่ละวิชาในคาบเสรี) — ชุดเดียวกับ
+    _slot_teachers แต่ไม่ผ่านเงื่อนไข is_elective เพราะสำเนาเก่าอาจไม่มีคีย์นั้น
+    """
+    out = {slot.get("teacher_id"), slot.get("co_teacher_id")}
+    out |= set(slot.get("activity_teacher_ids") or [])
+    out |= {o.get("teacher_id") for o in (slot.get("elective_options") or [])
+            if isinstance(o, dict)}
+    return _int_ids(out)
+
+
+def _slot_subject_ids_all(slot: dict[str, Any]) -> set[int]:
+    out = {slot.get("subject_id")}
+    out |= {o.get("subject_id") for o in (slot.get("elective_options") or [])
+            if isinstance(o, dict)}
+    return _int_ids(out)
+
+
+def _term_entity_index() -> dict[str, set[int]]:
+    """ครู/ห้อง/วิชาที่มีคาบอ้างถึงในเทอมที่ปิดแล้ว (เปิดไม่ได้ = ว่าง ไม่ยกข้อผิดพลาด)
+
+    เปิดทางให้ลบ (fail open) ทุกกรณีที่อ่านเทอมไม่ได้: ไม่มีฐานข้อมูล ต่อไม่ติด ไฟล์เสีย
+    คีย์หาย ผู้เรียกคือตัวกันลบเท่านั้น ถ้าที่นี่ยกข้อผิดพลาด เซิร์ฟเวอร์ที่ไม่มีฐานข้อมูล
+    จะลบครูไม่ได้เลย ทั้งที่ไม่มีเทอมปิดให้ปกป้อง ห้ามเพิ่ม raise ที่นี่
+    ไฟล์เสียหนึ่งไฟล์ถูกข้ามเฉพาะไฟล์นั้น ไม่บังเทอมอื่น
+    """
+    global _ENTITY_INDEX
+    try:
+        if _STORE_KIND != "postgres":
+            return {"teachers": set(), "rooms": set(), "subjects": set()}
+        with _ENTITY_INDEX_LOCK:
+            cached = _ENTITY_INDEX
+            gen = _ENTITY_INDEX_GEN
+        if cached is not None:
+            return {k: set(v) for k, v in cached.items()}
+        index: dict[str, set[int]] = {"teachers": set(), "rooms": set(), "subjects": set()}
+        complete = True
+        for term in _terms_list():
+            try:
+                if term.get("status") != "closed":
+                    continue
+                blob = _term_blob(term["id"])
+            except Exception:                      # noqa: BLE001
+                # อ่านจากฐานไม่ได้ (อาจชั่วคราว) — ข้ามเทอมนี้ และไม่เก็บแคช
+                # ไม่งั้นดัชนีที่ขาดเทอมไปจะค้างจนกว่าจะมีการล้าง
+                complete = False
+                continue
+            if blob is None:
+                continue
+            try:
+                snap = _unpack(blob)
+                t_ids: set[int] = set()
+                r_ids: set[int] = set()
+                s_ids: set[int] = set()
+                for slot in (snap.get("slots") or []):
+                    if not isinstance(slot, dict):
+                        continue
+                    t_ids |= _slot_teacher_ids_all(slot)
+                    r_ids |= _int_ids(_slot_rooms(slot))
+                    s_ids |= _slot_subject_ids_all(slot)
+                index["teachers"] |= t_ids
+                index["rooms"] |= r_ids
+                index["subjects"] |= s_ids
+            except Exception:                      # noqa: BLE001
+                # ไฟล์เสียแบบถาวร: ข้ามไฟล์นี้ แต่เก็บแคชได้ ไม่งั้นจะแกะไฟล์ทั้งหมดซ้ำทุกคำขอลบ
+                continue
+        if complete:
+            with _ENTITY_INDEX_LOCK:
+                if gen == _ENTITY_INDEX_GEN:
+                    _ENTITY_INDEX = {k: set(v) for k, v in index.items()}
+        return index
+    except Exception:                              # noqa: BLE001
+        return {"teachers": set(), "rooms": set(), "subjects": set()}
+
+
+def entity_delete_block(kind: str, entity_id: int, index: dict[str, set[int]],
+                        label: str) -> str | None:
+    """ข้อความไทยเมื่อห้ามลบ · None เมื่อลบได้ ฟังก์ชันล้วน"""
+    if entity_id in index.get(kind, set()):
+        return f"{label} มีคาบอยู่ในเทอมที่ปิดแล้ว ลบไม่ได้ — ให้ทำเครื่องหมายว่าไม่ปฏิบัติงานแล้วแทน"
+    return None
+
+
+def _refuse_delete_if_in_closed_term(kind: str, entity_id: int, name: str | None,
+                                     noun: str) -> None:
+    label = f"{noun} {name}" if name else f"{noun}รหัส {entity_id}"
+    msg = entity_delete_block(kind, entity_id, _term_entity_index(), label)
+    if msg:
+        raise HTTPException(409, msg)
 
 
 def new_term_preview() -> dict[str, Any]:
