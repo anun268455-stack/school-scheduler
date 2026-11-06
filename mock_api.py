@@ -102,9 +102,16 @@ def term_blocks_write(term: dict[str, Any] | None, method: str, path: str) -> st
     for safe in TERM_WRITE_SAFE_PATHS:
         if path == safe or (safe.endswith("/") and path.startswith(safe)):
             return None
-    if term is None or term.get("status") != "closed":
+    # เขียนแบบปิดไว้ก่อน (fail closed) โดยตั้งใจ: จะอนุญาตเขียนได้ต้องเป็นค่าที่รู้จัก
+    # คือ None (ยังไม่เคยสร้างเทอม) หรือ "active" เท่านั้น ค่าแปลกอื่น ๆ เช่น
+    # "Closed" · "closed " · สถานะใหม่ที่ใครเพิ่มทีหลัง จะถูกห้าม — ห้ามพลาดแล้วเห็นชัด
+    # และปลดล็อกได้ แต่อนุญาตพลาดคือเทอมที่โรงเรียนเชื่อว่าปิดสนิทถูกแก้เงียบ ๆ
+    # อย่า "ทำให้ง่ายขึ้น" กลับเป็น != "closed"
+    if term is None or term.get("status") in (None, "active"):
         return None
-    return f"เทอม {term['label']} ปิดแล้ว ดูและปริ้นได้เท่านั้น"
+    label = term.get("label")
+    name = f"เทอม {label}" if label else "เทอมปัจจุบัน"
+    return f"{name} ปิดแล้ว ดูและปริ้นได้เท่านั้น"
 
 
 @app.middleware("http")

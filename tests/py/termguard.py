@@ -48,6 +48,29 @@ def test_no_term_yet_allows_writes():
         assert mock_api.term_blocks_write(NONE_YET, m, "/api/slots/1") is None
 
 
+def test_unknown_status_fails_closed():
+    for bad in ("Closed", "closed ", "archived", "", "ACTIVE", "active "):
+        t = dict(CLOSED, status=bad)
+        for m in ("POST", "PUT", "PATCH", "DELETE"):
+            ok(mock_api.term_blocks_write(t, m, "/api/slots/1") is not None,
+               f"status {bad!r} {m} ต้องห้าม")
+        ok(mock_api.term_blocks_write(t, "GET", "/api/slots/1") is None, f"{bad!r} อ่านได้")
+        ok(mock_api.term_blocks_write(t, "POST", "/api/terms/3/unlock") is None,
+           f"{bad!r} ปลดล็อกต้องผ่าน")
+
+
+def test_missing_or_null_label_still_gives_thai_message():
+    no_key = {"id": 3, "year": 2568, "semester": 2, "status": "closed"}
+    null = dict(CLOSED, label=None)
+    for t in (no_key, null, dict(CLOSED, label="")):
+        msg = mock_api.term_blocks_write(t, "POST", "/api/slots/1")
+        ok(msg and "ปิดแล้ว" in msg and "None" not in msg, f"ข้อความไทยเมื่อไม่มี label: {msg!r}")
+    # ผ่าน middleware ต้องได้ 409 ไม่ใช่ข้อผิดพลาด
+    for t in (no_key, null):
+        resp, calls, _ = _run_raw(t)
+        ok(resp.status_code == 409 and calls["handler"] == 0, "label หาย ต้องได้ 409")
+
+
 def test_term_endpoints_stay_open_while_closed():
     # ไม่งั้นปลดล็อกไม่ได้เลย เพราะการปลดล็อกเองก็เป็น POST
     assert mock_api.term_blocks_write(CLOSED, "POST", "/api/terms") is None
@@ -97,6 +120,18 @@ def _run(term, method, path):
         mock_api._save_state = saved_save
         mock_api.REVISION["n"] = saved_rev
     return resp, calls, rev_moved
+
+
+def _run_raw(term):
+    """เหมือน _run แต่แทนที่ CURRENT_TERM ทั้งก้อน (ให้คีย์ที่หายหายจริง)"""
+    saved = dict(mock_api.CURRENT_TERM)
+    mock_api.CURRENT_TERM.clear()
+    mock_api.CURRENT_TERM.update(term)
+    try:
+        return _run(term, "POST", "/api/slots/1")
+    finally:
+        mock_api.CURRENT_TERM.clear()
+        mock_api.CURRENT_TERM.update(saved)
 
 
 def test_middleware_never_calls_handler_when_blocked():
