@@ -23,6 +23,7 @@ import {
 } from "../utils/guidedMove";
 import { stateAfter, tally, type DataState } from "../utils/serverWake";
 import type { SheetSetup } from "../utils/printSheet";
+import { shouldPoll, type TermMeta } from "../utils/terms";
 
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
@@ -110,6 +111,9 @@ async function quietRefresh(
   // timetable predates it. Dropping it loses nothing — the next poll asks again
   // — while applying it would undo what the person just did.
   if (writeGuard.stale(askedAt)) return;
+  // เปิดเทอมที่ปิดแล้วขึ้นจอระหว่างที่คำขอนี้อยู่บนอากาศ — ของที่ตอบมาคือเทอม
+  // ปัจจุบัน ถ้าวางลงไปจะทับเทอมเก่าที่ผู้ใช้กำลังดู
+  if (get().viewingTerm?.status === "closed") return;
   if (wouldWipeTheScreen(
         { slots: cur.slots.length, teachers: cur.teachers.length },
         { slots: slots.length, teachers: teachers.length })) {
@@ -276,6 +280,23 @@ interface TimetableStore {
   serverSavedAt:  number | null;
   serverSaving:   boolean;
   serverStoreError: string | null;
+  /**
+   * ภาคเรียน — `terms` คือรายการจากเซิร์ฟเวอร์ `viewingTerm` คือเทอมที่ปิดแล้วที่
+   * เปิดดูอยู่ในเบราว์เซอร์นี้ (null = ทำงานกับเทอมที่ใช้งานอยู่ตามปกติ)
+   * `termsAvailable` false = ยังไม่มีฐานข้อมูล แสดงเหตุผลแทนการโยน error
+   */
+  terms:          TermMeta[];
+  termsAvailable: boolean;
+  termsReason:    string | null;
+  viewingTerm:    TermMeta | null;
+  loadTerms:      () => Promise<void>;
+  openTerm:       (id: number) => Promise<void>;
+  closeViewing:   () => Promise<void>;
+  /**
+   * `save_error: null` ไม่ได้แปลว่าบันทึกแล้ว — แค่ต่อคิวเขียนไว้ ตัวตัดสินคือ
+   * /state/version (pending, saved_at, store, store_error) ที่ซิงค์สดอ่านอยู่
+   */
+  makeNewTerm:    (year: number, semester: number) => Promise<api.CreateTermResult>;
   setLiveSync:   (on: boolean) => void;
   startLiveSync: () => void;
   stopLiveSync:  () => void;
@@ -444,6 +465,10 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
   serverSavedAt:     null,
   serverSaving:      false,
   serverStoreError:  null,
+  terms:             [],
+  termsAvailable:    true,
+  termsReason:       null,
+  viewingTerm:       null,
 
   schoolConfig: {
     schoolName: "โรงเรียน",
@@ -909,10 +934,15 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
 
   startLiveSync: () => {
     get().stopLiveSync();
+    // กำลังดูเทอมที่ปิด — ซิงค์สดจะดึงเทอมปัจจุบันมาทับของเก่าที่เปิดดูอยู่
+    // ใช้ "ready" เพราะเงื่อนไขข้อมูลพร้อมของร้านอยู่ใน tick แยกต่างหาก
+    // (tick ต้องวิ่งตอนข้อมูลยังไม่พร้อมด้วย เพื่อปลุกการโหลดใหม่)
+    if (!shouldPoll(get().viewingTerm?.status === "closed", "ready")) return;
     const tick = async () => {
       const st = get();
       // Never yank data out from under an interaction in progress.
       if (!st.liveSync) return;
+      if (!shouldPoll(st.viewingTerm?.status === "closed", "ready")) return;
       // An edit in flight is the third way the screen can be mid-change, beside
       // a drag and a solve. Refreshing across one is what made edits bounce.
       if (st.draggingSlot || st.isSolving || st.isLoading || writeGuard.busy) return;
@@ -978,6 +1008,62 @@ export const useTimetableStore = create<TimetableStore>((set, get) => ({
     };
     void tick();
     pollTimer = setInterval(tick, POLL_MS) as unknown as number;
+  },
+
+  // ── ภาคเรียน ──────────────────────────────────────────────────────────────
+  loadTerms: async () => {
+    try {
+      const r = await api.fetchTerms();
+      set({ terms: r.terms, termsAvailable: r.available, termsReason: r.reason ?? null });
+    } catch (e) {
+      // ต่อเซิร์ฟเวอร์ไม่ได้ ไม่ใช่ "ไม่มีฐานข้อมูล" — คงรายการเดิมไว้
+      set({ termsReason: api.errorDetail(e, "อ่านรายการเทอมไม่สำเร็จ") });
+    }
+  },
+
+  // เปิดเทอมที่ปิดแล้วดูในเบราว์เซอร์นี้เท่านั้น เซิร์ฟเวอร์ไม่ถูกแตะ
+  openTerm: async (id) => {
+    let found = get().terms.find((t) => t.id === id);
+    if (!found) {
+      await get().loadTerms();
+      found = get().terms.find((t) => t.id === id);
+    }
+    // เทอมที่ใช้งานอยู่ไม่มีสำเนาให้เปิด (เซิร์ฟเวอร์ตอบ 409) — อย่าถามเลย
+    if (!found || found.status !== "closed") return;
+    const row: TermMeta = found;
+    const data = await api.fetchTermData(id);
+    // หยุดซิงค์สดก่อนวางข้อมูล และตั้ง viewingTerm ในจังหวะเดียวกัน เพื่อไม่ให้มี
+    // ช่วงที่คำขอซิงค์ที่ค้างอยู่วางเทอมปัจจุบันทับ (quietRefresh เช็ค viewingTerm)
+    get().stopLiveSync();
+    set((st) => ({
+      groups:       data.groups       ?? [],
+      teachers:     data.teachers     ?? [],
+      subjects:     data.subjects     ?? [],
+      rooms:        data.rooms        ?? [],
+      requirements: data.requirements ?? [],
+      slots:        data.slots        ?? [],
+      periods:      data.periods?.length ? data.periods : st.periods,
+      departments:  data.departments  ?? [],
+      buildings:    data.buildings    ?? [],
+      viewingTerm:  row,
+    }));
+  },
+
+  // ออกจากการดูเทอมเก่า — ดึงข้อมูลสดมาใหม่ ห้ามขอสำเนาของเทอมที่ใช้งาน (409)
+  closeViewing: async () => {
+    set({ viewingTerm: null });
+    await get().loadAll();
+    if (get().liveSync) get().startLiveSync();
+  },
+
+  makeNewTerm: async (year, semester) => {
+    const r = await api.createTerm(year, semester);
+    // ข้อมูลสดถูกล้างฝั่งเซิร์ฟเวอร์แล้ว ดึงมาใหม่ แล้วค่อยอ่านรายการเทอม
+    set({ viewingTerm: null });
+    await get().loadAll();
+    await get().loadTerms();
+    if (get().liveSync) get().startLiveSync();
+    return r;
   },
 
   // Add a single lesson to one cell (used by "click an empty cell to add").
