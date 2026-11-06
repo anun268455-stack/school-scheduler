@@ -84,8 +84,8 @@ export const DeptTeacherCodesModal: React.FC<Props> = ({ department, onClose }) 
       setNote(res.changed.length === 0
         ? "รหัสตรงกับที่ตั้งไว้อยู่แล้ว ไม่มีอะไรเปลี่ยน"
         : `บันทึกแล้ว — เปลี่ยนรหัส ${res.changed.length} คน จากทั้งหมด ${res.count} คน`);
-    } catch {
-      setNote("บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
+    } catch (e) {
+      setNote(api.blockedReason(e) ?? "บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
     } finally { setBusy(false); }
   };
 

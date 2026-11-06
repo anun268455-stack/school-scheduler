@@ -205,7 +205,7 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
       setEditing(null);
     } catch (e) {
       const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setErr(d ?? "บันทึกไม่สำเร็จ");
+      setErr(api.blockedReason(e) ?? d ?? "บันทึกไม่สำเร็จ");
     } finally { setBusy(false); }
   };
 
@@ -233,7 +233,7 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
       if (editing?.key === s.key) setEditing(null);
     } catch (e) {
       const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setErr(d ?? "ลบไม่สำเร็จ");
+      setErr(api.blockedReason(e) ?? d ?? "ลบไม่สำเร็จ");
     } finally { setBusy(false); }
   };
 

@@ -90,8 +90,8 @@ export const ClearTimetableModal: React.FC<Props> = ({ onClose }) => {
       });
       await loadSlots();
       onClose();
-    } catch {
-      setError("ล้างไม่สำเร็จ — ลองใหม่อีกครั้ง");
+    } catch (e) {
+      setError(api.blockedReason(e) ?? "ล้างไม่สำเร็จ — ลองใหม่อีกครั้ง");
       setBusy(false);
     }
   };

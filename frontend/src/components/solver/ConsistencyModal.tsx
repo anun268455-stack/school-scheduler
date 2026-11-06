@@ -46,8 +46,8 @@ export const ConsistencyModal: React.FC<{ onClose: () => void }> = ({ onClose })
                               .filter((f) => f.severity === "blocking")
                               .reduce((n, f) => n + f.count, 0) } : d));
       setDone(`ซ่อมแล้ว ${res.total} รายการ`);
-    } catch {
-      setErr("ซ่อมไม่สำเร็จ");
+    } catch (e) {
+      setErr(api.blockedReason(e) ?? "ซ่อมไม่สำเร็จ");
     } finally { setBusy(false); }
   };
 

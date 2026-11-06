@@ -16,7 +16,7 @@ import { buildSharesStudents, flattenGroups, compareNames } from "../../utils/gr
 import { myElectiveOption, slotTeacherNames, slotsForTeacher } from "../../utils/teacherSlots";
 import { optionsInRoom, roomNameForTeacher, slotUsesRoom } from "../../utils/electiveRooms";
 import {
-  normalizeSheet, pageLabel, sheetSigners, thaiDate,
+  fillTemplate, normalizeSheet, pageLabel, sheetHeading, sheetSigners, sheetVars, thaiDate,
   type SheetSetup, type Signer,
 } from "../../utils/printSheet";
 import { shortTeacher, teacherLine, withKhru } from "../../utils/teacherLabel";
@@ -74,6 +74,12 @@ interface PrintViewProps {
   periods:      Period[];
   schoolConfig: SchoolConfig;
   options:      PrintOptions;
+  /**
+   * ชื่อเทอมที่ขึ้นหัวใบพิมพ์ทุกใบ เช่น "1/2569" — ต้องเป็นเทอมที่กำลังดูอยู่
+   * (utils/terms.printTermName) ไม่ใช่เทอมที่ใช้งานอยู่ ไม่ส่ง = ใช้ term/year ใน
+   * ค่าตั้งโรงเรียนเหมือนเดิม
+   */
+  termName?:    string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -616,7 +622,9 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
 const SheetFooter: React.FC<{
   setup: SheetSetup; index: number; total: number; compact: boolean;
 }> = ({ setup, index, total, compact }) => {
-  const note = (setup.note ?? "").trim();
+  // {เทอม} ในหมายเหตุ → ชื่อเทอมที่ดูอยู่ ข้อความที่ไม่มีปีกกาผ่านตรง ๆ เหมือนเดิม
+  const rawNote = (setup.note ?? "").trim();
+  const note = rawNote.includes("{") ? fillTemplate(rawNote, sheetVars(setup)) : rawNote;
   const right = [
     setup.showDate ? `พิมพ์ ${thaiDate()}` : "",
     setup.showPageNumbers ? pageLabel(index, total) : "",
@@ -675,8 +683,10 @@ function RoomCell({ slots, m, roomId }: {
 // ── Main export ──────────────────────────────────────────────────────────────
 export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
   ({ slots, groups, teachers = [], rooms = [], departments = [], subjects = [],
-     periods, schoolConfig, options }, ref) => {
-    const termLabel = `ภาคเรียนที่ ${schoolConfig.term}/${schoolConfig.year}  โรงเรียน${schoolConfig.schoolName}`;
+     periods, schoolConfig, options, termName }, ref) => {
+    // หัวใบพิมพ์ทั้งสี่แบบ (ตารางเรียน ตารางครู ตารางห้อง ใบอัตรากำลัง) ใช้บรรทัดนี้
+    // ชื่อเทอมมาจาก termName ที่ App ส่งมาจากเทอมที่กำลังดูอยู่ (utils/printSheet.sheetHeading)
+    const termLabel = sheetHeading(termName, schoolConfig);
     // ผังบรรทัดของใบพิมพ์ — เก็บไว้กับการตั้งค่าโรงเรียน เหมือนผังบนจอ
     const m: Metrics = {
       ...METRICS[options.perPage],
@@ -686,7 +696,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
     const pick = new Set(options.selectedIds);
     // แบบฟอร์มใบพิมพ์ — ช่องลงชื่อ หมายเหตุ วันที่ เลขหน้า เก็บไว้กับค่าตั้ง
     // โรงเรียนเหมือนผังบรรทัด ยังไม่ได้ตั้ง = ใบเดิมทุกตัวอักษร (utils/printSheet)
-    const sheetSetup = normalizeSheet(schoolConfig.print_sheet);
+    const sheetSetup: SheetSetup = { ...normalizeSheet(schoolConfig.print_sheet), term: termName };
     // ใบตารางกับใบอัตรากำลังต้องการคนเซ็นคนละชุด อ่านจากแบบฟอร์มเดียวกันแต่
     // กรองคนละแบบ — โรงเรียนจะได้ไม่ต้องเข้าไปแก้สลับไปมาทุกครั้งที่เปลี่ยนใบ
     const signers = sheetSigners(sheetSetup, schoolConfig, "timetable");

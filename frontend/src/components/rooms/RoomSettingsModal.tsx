@@ -84,8 +84,8 @@ export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
         useTimetableStore.setState((s) => ({ rooms: [...s.rooms, created] }));
       }
       onClose();
-    } catch {
-      setError("บันทึกไม่สำเร็จ");
+    } catch (e) {
+      setError(api.blockedReason(e) ?? "บันทึกไม่สำเร็จ");
       setBusy(false);
     }
   };

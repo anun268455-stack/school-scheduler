@@ -22,6 +22,7 @@ import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { byTeacherCode } from "../../utils/teacherOrder";
+import { activeTerm, bannerView, TERM_PRINT_EVENT } from "../../utils/terms";
 import { stepTarget, stepPosition } from "../../utils/entityStep";
 import type { PrintMode, PrintOptions } from "../print/PrintView";
 import type { ViewMode } from "../../types";
@@ -152,7 +153,16 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     guideMode, setGuideMode,
     lockAll, unlockAll,
     liveSync, setLiveSync, syncState, dataState, remoteUpdates, isSolving, runSolver,
+    terms, viewingTerm, viewingError, closeViewing,
   } = useTimetableStore();
+
+  // แถบเทอมที่ปิด — ติดค้างตราบที่เทอมที่ปิดอยู่บนจอ ไม่หายเอง (ตัดสินที่ utils/terms.bannerView)
+  const banner = bannerView(viewingTerm, activeTerm(terms) ?? null, viewingError);
+  const [leaving, setLeaving] = useState(false);
+  const backToLive = async () => {
+    setLeaving(true);
+    try { await closeViewing(); } finally { setLeaving(false); }
+  };
 
   // ป้ายสถานะการติดต่อ — ตัวตัดสินอยู่ใน utils/serverWake เพื่อทดสอบได้
   const chip = syncChip(liveSync, syncState, dataState);
@@ -248,6 +258,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
     documentTitle: "ตารางเรียน",
     pageStyle: "@page { size: A4 portrait; margin: 8mm 10mm; } * { -webkit-print-color-adjust: exact; }",
   });
+
+  // ปุ่ม “ปริ้น” ในรายการเทอม: เปิดเทอมแล้วขอให้เปิดกล่องตัวเลือกการพิมพ์ที่นี่
+  useEffect(() => {
+    const open = () => { setPrintPreset(null); setShowPrintOpts(true); };
+    window.addEventListener(TERM_PRINT_EVENT, open);
+    return () => window.removeEventListener(TERM_PRINT_EVENT, open);
+  }, []);
 
   // Apply the chosen options, let React paint the new sheets, then print.
   const confirmPrint = (o: PrintOptions) => {
@@ -675,6 +692,37 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
       </div>
 
       <div className="ml-auto" />
+
+      {/* แถบเทอมที่ปิด — อยู่ในหัวที่ติดบนจอ ไม่มีตัวจับเวลา ไม่มีปุ่มปิด */}
+      {banner && (
+        <div role="status" className="basis-full w-full mt-1 px-3 rounded py-1.5 bg-amber-400 text-amber-950 text-xs border-t border-amber-600">
+          {banner.text && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <strong className="text-sm">{banner.text}</strong>
+              <span className="flex-1" />
+              <button
+                onClick={() => { setPrintPreset(null); setShowPrintOpts(true); }}
+                className="px-2 py-0.5 rounded bg-white/80 border border-amber-700 font-semibold hover:bg-white">
+                🖨 ปริ้นเทอมนี้
+              </button>
+              <button
+                onClick={() => void backToLive()} disabled={leaving}
+                className="px-2 py-0.5 rounded bg-amber-950 text-amber-50 font-semibold hover:bg-amber-900 disabled:opacity-50">
+                {leaving ? "กำลังกลับ…" : "กลับไปเทอมปัจจุบัน"}
+              </button>
+            </div>
+          )}
+          {banner.note && <div className="mt-0.5 text-[11px] text-amber-900">{banner.note}</div>}
+          {banner.error && (
+            <div className="mt-0.5 flex items-start gap-2 text-red-800 font-semibold">
+              <span className="flex-1">{banner.error}</span>
+              <button
+                onClick={() => useTimetableStore.setState({ viewingError: null })}
+                className="px-1 text-red-800 hover:text-red-950" title="ปิดข้อความนี้ (แถบเทอมยังอยู่)">✕</button>
+            </div>
+          )}
+        </div>
+      )}
       {showCheck && <ConsistencyModal onClose={() => setShowCheck(false)} />}
       {showPeriods && <PeriodCheckModal onClose={() => setShowPeriods(false)} />}
       {showCapacity && <CapacityModal onClose={() => setShowCapacity(false)} />}

@@ -12,7 +12,7 @@
  */
 import {
   allSigners, DEFAULT_SIGNER_ROLES, DEFAULT_WORKLOAD_SIGNER_ROLES, fillTemplate, pageLabel,
-  sheetSigners, signsOn, thaiDate, normalizeSheet, type SheetSetup,
+  sheetHeading, sheetVars, sheetSigners, signsOn, thaiDate, normalizeSheet, type SheetSetup,
 } from "../../frontend/src/utils/printSheet.ts";
 
 let n = 0;
@@ -161,5 +161,37 @@ eq(pageLabel(0, 1), "หน้า 1/1", "ใบเดียว");
 // พ.ศ. ไม่ใช่ ค.ศ. — ใบที่ส่งเขตใช้ พ.ศ.
 eq(thaiDate(new Date(2026, 10, 3)), "3 พฤศจิกายน 2569", "วันที่เป็นพุทธศักราช");
 eq(thaiDate(new Date(2026, 0, 1)), "1 มกราคม 2569", "ต้นปี");
+
+// ── ชื่อเทอมบนใบพิมพ์ (Task 9) ─────────────────────────────────────────────
+// แบบฟอร์มที่บันทึกไว้ก่อนมีช่องเทอม ต้องยังใช้ได้
+eq(normalizeSheet({}).term, undefined, "แบบฟอร์มเก่าไม่มีเทอม");
+eq("term" in normalizeSheet({}), false, "ไม่มีคีย์ term โผล่มาเลย (ใบเดิมเหมือนเดิมทุกตัวอักษร)");
+eq(normalizeSheet(undefined).term, undefined, "ไม่มีแบบฟอร์มเลย");
+eq(normalizeSheet({ term: "1/2569" }).term, "1/2569", "เก็บชื่อเทอมไว้");
+eq(normalizeSheet({ term: "  " }).term, undefined, "ว่างเปล่า = ไม่มี");
+eq(normalizeSheet({ term: 5 as unknown }).term, undefined, "ชนิดผิด = ไม่มี");
+eq(fillTemplate("ตารางเรียน ภาคเรียนที่ {เทอม}", { term: "1/2569" }),
+   "ตารางเรียน ภาคเรียนที่ 1/2569", "แทน {เทอม} ด้วยชื่อเทอม");
+eq(fillTemplate("ตารางเรียน {เทอม}", {}).includes("undefined"), false, "ไม่มีชื่อเทอมต้องไม่พิมพ์ undefined");
+eq(fillTemplate("ตารางเรียน {เทอม} จบ", {}), "ตารางเรียน จบ", "ไม่มีชื่อเทอม = ตัดออก ไม่เหลือช่องว่างซ้อน");
+eq(fillTemplate("{ เทอม }", { term: "2/2568" }), "2/2568", "ช่องว่างในปีกกาไม่เป็นไร");
+eq(fillTemplate("{เทอม}", { เทอม: "ก", term: "ข" }), "ก", "คีย์ไทยโดยตรงชนะ");
+eq(fillTemplate("{เทอม}", { term: undefined as unknown as string }), "", "ค่า undefined ไม่หลุดออกกระดาษ");
+
+// ชื่อเทอมมาจากเทอมที่กำลังดูอยู่ ไม่ใช่เทอมที่ใช้งานอยู่ (ข้อทดสอบ 17)
+{
+  const cfgNow = { term: "1", year: "2569", schoolName: "สตรีวิทยา" };   // ค่าตั้งของเทอมที่ใช้อยู่
+  const archive = sheetHeading("2/2568", cfgNow);
+  eq(archive, "ภาคเรียนที่ 2/2568  โรงเรียนสตรีวิทยา", "ใบของเทอมเก่าขึ้นชื่อเทอมเก่า");
+  eq(archive.includes("2569"), false, "ไม่มีชื่อเทอมปัจจุบันปนมา");
+  eq(sheetHeading(undefined, cfgNow), "ภาคเรียนที่ 1/2569  โรงเรียนสตรีวิทยา",
+     "ยังไม่มีระบบเทอม = ใบเดิมทุกตัวอักษร");
+  eq(sheetHeading("", cfgNow), "ภาคเรียนที่ 1/2569  โรงเรียนสตรีวิทยา", "ชื่อว่าง = ใช้ของเดิม");
+  eq(sheetHeading(undefined, {}).includes("undefined"), false, "ไม่มีอะไรเลยก็ไม่พิมพ์ undefined");
+}
+eq(sheetVars({ term: "1/2569" }), { term: "1/2569" }, "ส่งต่อให้ fillTemplate");
+eq(sheetVars({}), {}, "ไม่มีเทอม = ไม่มีตัวแทนค่า");
+eq(fillTemplate("เทอม {เทอม}", sheetVars(normalizeSheet({ note: "x" }))), "เทอม",
+   "แบบฟอร์มเก่าผ่านทั้งทางจนถึงกระดาษโดยไม่มี undefined");
 
 console.log(`ALL PASS (${n})`);

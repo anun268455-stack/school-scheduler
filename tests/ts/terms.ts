@@ -12,6 +12,7 @@ import {
   canRetryCreate, createLatch, createOutcome, departmentMatrix, formatBytes, newTermFormError,
   newTermWarning, previewRows, statsLines, TERMS_UNAVAILABLE, termDownloadName, termErrorText,
   termStatusText, unlockConfirmed, unlockNotice, lastEditText,
+  bannerView, FROZEN_CHIP_NOTE, isReadOnly, printTermName, termFieldsLocked,
 } from "../../frontend/src/utils/terms.ts";
 import {
   blockedReason, gateRequest, setWriteBlock, WriteBlocked,
@@ -296,6 +297,38 @@ ok(lastEditText({ status: "closed", closed_at: "2026-10-01T09:30:00Z" }).length 
   const u = createOutcome({ closed: { label: "1/2569", slots: 2735 }, active: { label: "2/2568" } }, "ปลดล็อก");
   ok(u.text.startsWith("ปลดล็อกเทอม 2/2568 แล้ว") && u.text.includes("ปิดแล้ว (2735 คาบ)"), "ผลของการปลดล็อก");
   ok(!u.text.includes("undefined") && !u.text.includes("บันทึกแล้ว"), "ไม่มี undefined และไม่ประกาศว่าบันทึกแล้ว");
+}
+
+// ── Task 9: อ่านอย่างเดียว · แถบ · ชื่อเทอมบนใบพิมพ์ ───────────────────────
+eq(isReadOnly(null, [ACTIVE, CLOSED]), false, "ไม่ได้เปิดเทอมเก่า = แก้ได้");
+eq(isReadOnly(null, []), false, "ยังไม่มีระบบเทอม = แก้ได้");
+eq(isReadOnly(CLOSED, [ACTIVE, CLOSED]), true, "เปิดเทอมที่ปิด = อ่านอย่างเดียว");
+eq(isReadOnly(ACTIVE, [ACTIVE, CLOSED]), false, "ดูเทอมที่ใช้งาน = แก้ได้");
+eq(isReadOnly(CLOSED, [CLOSED]), true, "เทอมที่ปิด และไม่มีเทอมที่ใช้งานเลย = อ่านอย่างเดียว");
+
+// ข้อทดสอบ 17: ใบพิมพ์ขึ้นชื่อเทอมที่ดูอยู่ ไม่ใช่เทอมที่ใช้งาน
+eq(printTermName(CLOSED, [ACTIVE, CLOSED]), "2/2568", "ดูเทอมเก่า = ชื่อเทอมเก่า");
+eq(printTermName(null, [ACTIVE, CLOSED]), "1/2569", "ไม่ได้ดูเทอมเก่า = เทอมที่ใช้งาน");
+eq(printTermName(null, []), undefined, "ไม่มีเทอมเลย = undefined");
+eq(printTermName(CLOSED, []), "2/2568", "ชื่อมาจากเทอมที่ดู แม้รายการเทอมยังไม่โหลด");
+eq(printTermName({ ...CLOSED, label: "  " }, [ACTIVE]), "1/2569", "ชื่อว่างเปล่าไม่ถูกใช้");
+
+eq(termFieldsLocked(true, [ACTIVE]), true, "มีเทอมแล้ว = ช่องภาคเรียน/ปีแก้ไม่ได้");
+eq(termFieldsLocked(true, []), false, "ยังไม่เคยสร้างเทอม = ยังแก้ได้");
+eq(termFieldsLocked(false, [ACTIVE]), false, "ไม่มีฐานข้อมูล = เซิร์ฟเวอร์ไม่ได้เพิกเฉย ยังแก้ได้");
+
+{
+  const b = bannerView(CLOSED, ACTIVE, null);
+  eq(b?.text, termBanner(CLOSED, ACTIVE), "ข้อความแถบมาจาก termBanner");
+  ok((b?.note ?? "").includes("ไม่ได้แปลว่าบันทึกไม่สำเร็จ"), "บอกว่าป้ายสถานะนิ่งโดยตั้งใจ");
+  eq(b?.note, FROZEN_CHIP_NOTE, "คำอธิบายป้ายนิ่ง");
+  eq(b?.error, null, "ไม่มีข้อผิดพลาด");
+  eq(bannerView(ACTIVE, ACTIVE, null), null, "เทอมที่ใช้งาน = ไม่มีแถบ");
+  eq(bannerView(null, ACTIVE, null), null, "ไม่ได้ดูเทอมเก่า = ไม่มีแถบ");
+  eq(bannerView(null, ACTIVE, "  "), null, "ข้อผิดพลาดว่างไม่ทำให้มีแถบ");
+  const e = bannerView(null, ACTIVE, "เปิดเทอมนี้ไม่สำเร็จ");
+  eq(e, { text: null, note: null, error: "เปิดเทอมนี้ไม่สำเร็จ" }, "ข้อผิดพลาดมีที่แสดงแม้ไม่ได้ดูเทอมเก่า");
+  eq(bannerView(CLOSED, ACTIVE, "กลับไม่สำเร็จ")?.error, "กลับไม่สำเร็จ", "แถบเทอมเก่าพร้อมข้อผิดพลาด");
 }
 
 console.log(`ALL PASS (${n})`);

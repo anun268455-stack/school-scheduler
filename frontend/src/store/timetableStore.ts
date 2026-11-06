@@ -542,8 +542,8 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
     set({ groups: stamp(groups) });
     try {
       await withWrite(() => api.updateGroup(groupId, { schedule_locked: want }));
-    } catch {
-      set({ groups, solverError: "บันทึกการล็อกห้องไม่สำเร็จ — ลองใหม่อีกครั้ง" });
+    } catch (e) {
+      set({ groups, solverError: api.blockedReason(e) ?? "บันทึกการล็อกห้องไม่สำเร็จ — ลองใหม่อีกครั้ง" });
     }
   },
 
@@ -961,8 +961,8 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
         await api.setYardPick(asked);
         yardLoadSeq++;
         set((st) => ({ yardPicks: applyPickResult(st.yardPicks, asked, null) }));
-      } catch {
-        set({ yardPicksError: "เอาหมุดออกไม่สำเร็จ — ลองใหม่อีกครั้ง" });
+      } catch (e) {
+        set({ yardPicksError: api.blockedReason(e) ?? "เอาหมุดออกไม่สำเร็จ — ลองใหม่อีกครั้ง" });
         return;
       }
     }

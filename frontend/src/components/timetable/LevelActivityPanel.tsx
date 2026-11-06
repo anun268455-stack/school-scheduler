@@ -198,8 +198,8 @@ export const LevelActivityPanel: React.FC = () => {
       useTimetableStore.setState((st) => ({ subjects: [...st.subjects, made] }));
       setForm((f) => ({ ...f, subject_id: String(made.id) }));
       setNewName(null);
-    } catch {
-      setError("สร้างกิจกรรมใหม่ไม่สำเร็จ");
+    } catch (e) {
+      setError(api.blockedReason(e) ?? "สร้างกิจกรรมใหม่ไม่สำเร็จ");
     } finally { setBusy(false); }
   };
 
@@ -269,7 +269,7 @@ export const LevelActivityPanel: React.FC = () => {
       setEditing(null);
     } catch (e) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(detail || (editing ? "แก้ไขคาบกิจกรรมไม่สำเร็จ" : "สร้างคาบกิจกรรมไม่สำเร็จ กรุณาลองใหม่"));
+      setError(api.blockedReason(e) || detail || (editing ? "แก้ไขคาบกิจกรรมไม่สำเร็จ" : "สร้างคาบกิจกรรมไม่สำเร็จ กรุณาลองใหม่"));
     } finally {
       setBusy(false);
     }

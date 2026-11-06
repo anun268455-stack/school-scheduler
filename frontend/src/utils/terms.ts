@@ -410,3 +410,53 @@ export function lastEditText(t: Pick<TermMeta, "status" | "closed_at">): string 
     day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
   });
 }
+
+// ── โหมดอ่านอย่างเดียวบนหน้าจอ และป้ายชื่อเทอมบนใบพิมพ์ ───────────────────────
+
+/** ตารางบนจอแก้ไม่ได้ไหม — ค่าของ prop readOnly ที่ส่งลงไปถึงทุกช่อง */
+export function isReadOnly(viewing: TermMeta | null, terms: TermMeta[]): boolean {
+  return !canEdit(viewing, activeTerm(terms) ?? null);
+}
+
+/**
+ * ช่องภาคเรียน/ปีในหน้าตั้งค่าแก้ไม่ได้ไหม — มีเทอมอยู่แล้ว = เซิร์ฟเวอร์ไม่รับสองช่องนี้
+ * (ถูกเพิกเฉย) หน้าจอจึงต้องเลิกทำเป็นว่าแก้ได้ ให้ไปเปลี่ยนที่หน้าเทอมแทน
+ */
+export function termFieldsLocked(available: boolean, terms: TermMeta[]): boolean {
+  return available && terms.length > 0;
+}
+
+/**
+ * ชื่อเทอมที่ใบพิมพ์ต้องขึ้น — เทอมที่ **กำลังดูอยู่** ไม่ใช่เทอมที่ใช้งานอยู่
+ * (สเปกข้อทดสอบ 17) ไม่ได้ดูเทอมเก่าอยู่ = เทอมที่ใช้งาน ไม่มีเทอมเลย = undefined
+ */
+export function printTermName(viewing: TermMeta | null, terms: TermMeta[]): string | undefined {
+  const v = viewing?.label?.trim();
+  if (v) return v;
+  const a = activeTerm(terms)?.label?.trim();
+  return a ? a : undefined;
+}
+
+/** บอกเรื่องป้ายสถานะการบันทึกที่นิ่งอยู่ — มิฉะนั้นจะดูเหมือนบันทึกไม่สำเร็จ */
+export const FROZEN_CHIP_NOTE =
+  "ป้ายสถานะการบันทึกด้านบนหยุดอัปเดตระหว่างดูเทอมที่ปิดแล้ว — ไม่ได้แปลว่าบันทึกไม่สำเร็จ "
+  + "เมื่อกลับไปเทอมปัจจุบันป้ายจะอัปเดตต่อเอง";
+
+export interface BannerView {
+  /** ข้อความหลักจาก termBanner() — null เมื่อไม่ได้ดูเทอมที่ปิด (มีแต่ข้อผิดพลาด) */
+  text: string | null;
+  /** คำอธิบายป้ายสถานะที่นิ่ง — มีเฉพาะตอนที่เทอมที่ปิดอยู่บนจอ */
+  note: string | null;
+  /** viewingError — ต้องมีที่แสดงเสมอ แม้ไม่ได้ดูเทอมที่ปิด (เปิดไม่สำเร็จ) */
+  error: string | null;
+}
+
+/** แถบที่ติดค้างบนหัวจอ — null = ไม่ต้องแสดงอะไรเลย */
+export function bannerView(
+  viewing: TermMeta | null, active: TermMeta | null, error: string | null,
+): BannerView | null {
+  const text = termBanner(viewing, active);
+  const err = error && error.trim() ? error : null;
+  if (text === null && err === null) return null;
+  return { text, note: text === null ? null : FROZEN_CHIP_NOTE, error: err };
+}

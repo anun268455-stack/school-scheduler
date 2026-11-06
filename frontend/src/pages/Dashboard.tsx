@@ -62,6 +62,7 @@ import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
 import { CurriculumPanel } from "../components/curriculum/CurriculumPanel";
 import { TermsPanel } from "../components/terms/TermsPanel";
 import { TermStatsPanel } from "../components/terms/TermStatsPanel";
+import { termFieldsLocked } from "../utils/terms";
 import { SearchableSelect, teacherOptions, roomOptions, groupOptions, subjectOptions } from "../components/common/SearchableSelect";
 import { TableSearch, matches } from "../components/common/TableSearch";
 
@@ -917,8 +918,8 @@ const SubjectsPanel: React.FC = () => {
       setBulkMsg(res.changed === 0
         ? `${res.matched} วิชานี้เป็น ${want ? "☀️ เช้า" : "🌙 ไม่ระบุ"} อยู่แล้ว ไม่มีอะไรเปลี่ยน`
         : `ตั้ง ${want ? "☀️ เช้า" : "🌙 ไม่ระบุ"} ให้ ${res.matched} วิชา — เปลี่ยนจริง ${res.changed} วิชา`);
-    } catch {
-      setBulkMsg("บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
+    } catch (e) {
+      setBulkMsg(api.blockedReason(e) ?? "บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
     } finally { setBulkBusy(false); }
   };
 
@@ -3332,6 +3333,10 @@ const AnalyticsPanel: React.FC = () => {
 // ─── School Settings Panel ────────────────────────────────────────────────────
 const SettingsPanel: React.FC = () => {
   const { schoolConfig, setSchoolConfig, loadAll } = useTimetableStore();
+  const terms = useTimetableStore((s) => s.terms);
+  const termsAvailable = useTimetableStore((s) => s.termsAvailable);
+  // มีเทอมแล้ว → เซิร์ฟเวอร์เพิกเฉยสองช่องนี้ หน้าจอจึงแก้ไม่ได้ ต้องไปเปลี่ยนที่หน้าเทอม
+  const termLocked = termFieldsLocked(termsAvailable, terms);
   const [saved, setSaved]   = useState(false);
   const [busy, setBusy]     = useState<string | null>(null);
   const [note, setNote]     = useState<string | null>(null);
@@ -3420,19 +3425,28 @@ const SettingsPanel: React.FC = () => {
             />
           </Field>
           <Field label="ภาคเรียนที่">
-            <select className={inputCls} value={schoolConfig.term} onChange={(e) => handle("term", e.target.value)}>
+            <select className={clsx(inputCls, termLocked && "bg-gray-100 text-gray-500 cursor-not-allowed")}
+              value={schoolConfig.term} disabled={termLocked}
+              onChange={(e) => handle("term", e.target.value)}>
               <option value="1">1</option>
               <option value="2">2</option>
             </select>
           </Field>
           <Field label="ปีการศึกษา (พ.ศ.)">
             <input
-              className={inputCls}
+              className={clsx(inputCls, termLocked && "bg-gray-100 text-gray-500 cursor-not-allowed")}
               value={schoolConfig.year}
+              readOnly={termLocked}
               onChange={(e) => handle("year", e.target.value)}
               placeholder="2568"
             />
           </Field>
+          {termLocked && (
+            <p className="col-span-2 -mt-2 text-[11px] text-gray-500">
+              ภาคเรียนและปีการศึกษาเปลี่ยนที่หน้า <strong>เทอม</strong> (⚙ จัดการ › เทอม)
+              ด้วยการสร้างเทอมใหม่ ไม่ได้แก้จากหน้านี้
+            </p>
+          )}
           <Field label="รองผู้อำนวยการกลุ่มบริหารวิชาการ">
             <input
               className={inputCls}

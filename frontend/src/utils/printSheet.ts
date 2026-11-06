@@ -79,6 +79,14 @@ export interface SheetSetup {
   showDate?: boolean;
   /** พิมพ์ "หน้า x/y" */
   showPageNumbers?: boolean;
+  /**
+   * ชื่อเทอมที่กำลังพิมพ์ เช่น "1/2569" — ไม่ได้เก็บกับแบบฟอร์ม ใบพิมพ์ใส่ให้ตอนพิมพ์
+   *
+   * ต้องเป็นเทอมที่ **กำลังดูอยู่** ไม่ใช่เทอมที่ใช้งานอยู่ (สเปกข้อทดสอบ 17): ปริ้นเทอม
+   * เก่าแล้วหัวกระดาษขึ้นชื่อเทอมปัจจุบัน คือใบที่ส่งเขตผิดทั้งปึก ไม่มีค่า = undefined
+   * (ไม่เคยสร้างเทอม) และต้องไม่พิมพ์คำว่า "undefined" ลงกระดาษ
+   */
+  term?: string;
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -96,6 +104,8 @@ export function normalizeSheet(raw: unknown): SheetSetup {
     showDate: r.showDate === true,
     showPageNumbers: r.showPageNumbers === true,
   };
+  // แบบฟอร์มที่บันทึกไว้ก่อนมีช่องนี้ไม่มี term → คงเป็น undefined (ไม่ใช่ "")
+  if (typeof r.term === "string" && r.term.trim()) out.term = r.term.trim();
   if (Array.isArray(r.signers)) {
     out.signers = r.signers
       .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
@@ -169,7 +179,9 @@ export function sheetSigners(
 /**
  * ใส่ค่าจริงลงในข้อความที่โรงเรียนเขียนไว้
  *
- * `{ห้อง}` `{ครู}` `{ภาคเรียน}` — ตัวแทนค่าที่ไม่รู้จักถูกตัดออกทั้งอัน ไม่ใช่
+ * `{ห้อง}` `{ครู}` `{ภาคเรียน}` `{เทอม}` — `{เทอม}` อ่านจากคีย์ `term` ของ vars
+ * (ชื่อเทอมที่กำลังดูอยู่ เช่น 1/2569) ไม่มีค่า = ตัดออกเหมือนตัวแทนค่าอื่น ไม่พิมพ์
+ * คำว่า undefined — ตัวแทนค่าที่ไม่รู้จักถูกตัดออกทั้งอัน ไม่ใช่
  * ปล่อยปีกกาติดไปบนกระดาษ เพราะใบที่ส่งเขตแล้วมีคำว่า `{ชั้น}` อยู่กลางหัวเรื่อง
  * คือใบที่ต้องพิมพ์ใหม่ทั้งปึก
  *
@@ -177,9 +189,33 @@ export function sheetSigners(
  */
 export function fillTemplate(text: string, vars: Record<string, string>): string {
   return (text ?? "")
-    .replace(/\{([^{}]*)\}/g, (_m, key: string) => vars[key.trim()] ?? "")
+    .replace(/\{([^{}]*)\}/g, (_m, key: string) => {
+      const k = key.trim();
+      return vars[k] ?? (k === "เทอม" ? vars.term : undefined) ?? "";
+    })
     .replace(/[ \t]{2,}/g, " ")
     .trim();
+}
+
+/** ตัวแทนค่าที่ได้จากแบบฟอร์มเอง (ตอนนี้คือชื่อเทอม) ไว้ส่งให้ fillTemplate */
+export function sheetVars(setup: SheetSetup): Record<string, string> {
+  return setup.term ? { term: setup.term } : {};
+}
+
+/**
+ * บรรทัดเทอมบนหัวใบพิมพ์ทุกใบ (ตารางเรียน ตารางครู ตารางห้อง ใบอัตรากำลัง)
+ *
+ * `termName` คือเทอมที่กำลังดูอยู่ ถ้ามีจะชนะค่า term/year ในค่าตั้งโรงเรียนเสมอ
+ * ไม่มี (ยังไม่เคยสร้างเทอม) ก็ใช้ของเดิมทุกตัวอักษร และไม่พิมพ์ "undefined"
+ */
+export function sheetHeading(
+  termName: string | undefined,
+  cfg: { term?: string; year?: string; schoolName?: string },
+): string {
+  const name = termName && termName.trim()
+    ? termName.trim()
+    : `${str(cfg.term)}/${str(cfg.year)}`;
+  return `ภาคเรียนที่ ${name}  โรงเรียน${str(cfg.schoolName)}`;
 }
 
 /** "หน้า 3/47" — นับจากหนึ่งเพราะคนนับจากหนึ่ง */
