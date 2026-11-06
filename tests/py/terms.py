@@ -290,14 +290,23 @@ class _FakeConn:
         self.log.append(("COMMIT", None))
 
 
-def _with_fake_db(fn, fail_on=None, existing=()):
+_FROM_MEMORY = object()
+
+
+def _with_fake_db(fn, fail_on=None, existing=(), active=_FROM_MEMORY):
     saved = {k: getattr(mock_api, k) for k in
-             ("_db_connect", "_terms_list", "_term_row", "_flush_pending", "_save_state",
+             ("_db_connect", "_term_active", "_terms_list", "_term_row", "_flush_pending", "_save_state",
               "_STORE_KIND", "_DB_HAD_DATA", "_STATE_SOURCE")}
     log: list = []
     calls: list = []
     mock_api._db_connect = lambda: _FakeConn(log, fail_on)
     mock_api._terms_list = lambda: list(existing)
+    if active is _FROM_MEMORY:
+        mock_api._term_active = lambda: (
+            {"id": mock_api.CURRENT_TERM["id"]}
+            if mock_api.CURRENT_TERM["id"] is not None else None)
+    else:
+        mock_api._term_active = lambda: active
     mock_api._term_row = lambda i: {"id": i}
     mock_api._flush_pending = lambda blocking=False: calls.append(("flush", blocking))
     mock_api._save_state = lambda: calls.append(("save", None))
@@ -320,7 +329,7 @@ def test_create_first_term_inserts_active_only_and_clears_slots():
         sqls = [q for q, _ in log]
         assert not any(q.startswith("UPDATE") for q in sqls), "ยังไม่มีเทอมเก่าให้ปิด"
         assert any("INSERT INTO app_terms" in q for q in sqls)
-        assert calls == [("flush", True), ("save", None)]
+        assert calls == [("flush", True), ("save", None), ("flush", True)]
         assert out["closed"] is None and out["active"] == {"id": 99}
     _with_fake_db(run)
     assert mock_api.SLOTS is alias and alias == [], "ล้างในที่เดิม ไม่ผูกชื่อใหม่"
@@ -441,18 +450,132 @@ def test_create_term_failure_restores_parked_and_status():
     mock_api.PARKED.clear()
 
 
-def test_create_term_reports_save_error_without_raising():
+def test_create_term_reports_save_error_in_fixed_thai_without_raising():
     mock_api.CURRENT_TERM.update(BLANK)
-    saved = mock_api._STORE_ERROR
+    saved = (mock_api._STORE_ERROR, mock_api._pending_blob)
 
     def run(log, calls):
-        mock_api._save_state = lambda: setattr(mock_api, "_STORE_ERROR", "OSError: x")
+        # asynchronous like the real one: only queues; the blocking flush after it fails
+        def fake_save():
+            mock_api._pending_blob = (b"x", 0)
+
+        def fake_flush(blocking=False):
+            calls.append(("flush", blocking))
+            if mock_api._pending_blob is not None and len(calls) > 1:
+                mock_api._STORE_ERROR = "OperationalError: postgresql://u:SECRET@h/d"
+        mock_api._save_state = fake_save
+        mock_api._flush_pending = fake_flush
         out = mock_api.create_term({"year": 2570, "semester": 1})
-        assert out["save_error"] == "OSError: x" and out["active"] == {"id": 99}
+        assert calls == [("flush", True), ("flush", True)], "ต้องล้างคิวอีกรอบหลังเข้าคิว"
+        assert out["save_error"] and "SECRET" not in out["save_error"]
+        assert "OperationalError" not in out["save_error"]
+        assert "สร้างเทอมใหม่แล้ว" in out["save_error"] and out["active"] == {"id": 99}
     try:
         _with_fake_db(run)
     finally:
-        mock_api._STORE_ERROR = saved
+        mock_api._STORE_ERROR, mock_api._pending_blob = saved
+
+
+def test_create_term_save_error_none_when_flush_lands():
+    mock_api.CURRENT_TERM.update(BLANK)
+    saved = (mock_api._STORE_ERROR, mock_api._pending_blob)
+    mock_api._STORE_ERROR = None
+
+    def run(log, calls):
+        out = mock_api.create_term({"year": 2570, "semester": 1})
+        assert out["save_error"] is None
+    try:
+        _with_fake_db(run)
+    finally:
+        mock_api._STORE_ERROR, mock_api._pending_blob = saved
+
+
+def test_pack_failure_restores_status_and_slots():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}]
+    mock_api.PARKED[:] = [{"id": 1, "rows": []}]
+    saved_pack = mock_api._pack
+
+    def boom(snap):
+        raise MemoryError("x")
+    for nth in (1, 2):          # the closing pack, then the new-term pack
+        n = [0]
+
+        def pack(snap, n=n, nth=nth):
+            n[0] += 1
+            if n[0] == nth:
+                raise MemoryError("x")
+            return b"x"
+        mock_api._pack = pack
+
+        def run(log, calls):
+            try:
+                mock_api.create_term({"year": 2569, "semester": 2})
+                assert False
+            except Exception as exc:
+                assert exc.status_code == 500
+            assert not any(q.startswith("UPDATE") for q, _ in log)
+        try:
+            _with_fake_db(run)
+        finally:
+            mock_api._pack = saved_pack
+        assert mock_api.CURRENT_TERM["status"] == "active" and mock_api.CURRENT_TERM["id"] == 5
+        assert mock_api.SLOTS == [{"id": 1}, {"id": 2}]
+        assert mock_api.PARKED == [{"id": 1, "rows": []}]
+    mock_api.PARKED.clear()
+
+
+def test_active_row_wins_when_memory_is_blank_the_wedge():
+    # a backup from before the term system blanked CURRENT_TERM; the table still has an active row
+    mock_api.CURRENT_TERM.update(BLANK)
+    mock_api.SLOTS[:] = [{"id": 1}]
+
+    def run(log, calls):
+        out = mock_api.create_term({"year": 2569, "semester": 2})
+        kinds = [q.split()[0] for q, _ in log if not q.startswith("CREATE")]
+        assert kinds == ["UPDATE", "INSERT", "COMMIT"], kinds
+        assert [p for q, p in log if q.startswith("UPDATE")][0][2] == 41, "ปิดแถวที่ฐานข้อมูลบอกว่า active"
+        assert out["closed"] == {"id": 41} and out["active"] == {"id": 99}
+    _with_fake_db(run, active={"id": 41, "year": 2569, "semester": 1})
+    assert mock_api.CURRENT_TERM["id"] == 99
+
+
+def test_active_row_wins_when_it_disagrees_with_memory():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+
+    def run(log, calls):
+        mock_api.create_term({"year": 2569, "semester": 2})
+        assert [p for q, p in log if q.startswith("UPDATE")][0][2] == 41
+    _with_fake_db(run, active={"id": 41})
+
+
+def test_no_active_row_means_nothing_to_close_even_if_memory_has_an_id():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+
+    def run(log, calls):
+        out = mock_api.create_term({"year": 2569, "semester": 2})
+        assert not any(q.startswith("UPDATE") for q, _ in log) and out["closed"] is None
+    _with_fake_db(run, active=None)
+
+
+def test_term_active_selects_the_active_row_only():
+    log: list = []
+
+    class Conn(_FakeConn):
+        def cursor(self):
+            c = _FakeCur(log, None)
+            c.fetchone = lambda: None
+            return c
+    saved = mock_api._db_connect
+    mock_api._db_connect = lambda: Conn(log)
+    try:
+        assert mock_api._term_active() is None
+    finally:
+        mock_api._db_connect = saved
+    assert any("WHERE status = 'active'" in q for q, _ in log)
 
 
 for name, fn in list(globals().items()):

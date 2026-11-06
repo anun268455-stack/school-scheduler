@@ -13671,6 +13671,17 @@ def _term_row(term_id: int) -> dict[str, Any] | None:
     return _term_dict(row) if row else None
 
 
+def _term_active() -> dict[str, Any] | None:
+    """The row the database says is active, or None. The only source of truth."""
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            cur.execute(f"SELECT {_TERM_COLUMNS} FROM app_terms WHERE status = 'active'")
+            row = cur.fetchone()
+        conn.commit()
+    return _term_dict(row) if row else None
+
+
 def _term_blob(term_id: int) -> bytes | None:
     with _db_connect() as conn:
         with conn.cursor() as cur:
@@ -13782,43 +13793,60 @@ def create_term(body: dict[str, Any]):
             409, "เซิร์ฟเวอร์ยังไม่ยอมเขียนข้อมูลลงฐาน จึงสร้างเทอมใหม่ไม่ได้ — "
                  "ยืนยันข้อมูลที่ถืออยู่ก่อน")
 
-    old = dict(CURRENT_TERM)
-    has_old = old.get("id") is not None
-    old_slots = len(SLOTS)
-    # The file being stored is a closed term, so it must say so: the status is
-    # set BEFORE packing. (The row stays authoritative for id and status.)
-    CURRENT_TERM["status"] = "closed"
-    old_blob = _pack(_snapshot()) if has_old else None
+    # The database, not memory, says which term is active: a restored old backup
+    # blanks CURRENT_TERM while the table still holds an active row, and trusting
+    # memory then would hit app_terms_one_active on every retry. Memory is only
+    # a cross-check; when the two disagree the row wins.
+    try:
+        active_row = _term_active()
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    has_old = active_row is not None
+    old_id = active_row["id"] if has_old else None
 
+    old = dict(CURRENT_TERM)
+    old_slots = len(SLOTS)
     # In-place, never `SLOTS = []`: curriculum.py holds a live alias to this list.
     saved_slots = list(SLOTS)
     saved_parked = list(PARKED)
     saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
-    SLOTS.clear()
-    PARKED.clear()      # lifted-out lessons point at last term's plan
-    CURRENT_TERM.update({"id": None, "year": year, "semester": semester,
-                         "label": label, "status": "active"})
-    SCHOOL_CONFIG["term"], SCHOOL_CONFIG["year"] = str(semester), str(year)
     try:
+        # The file being stored is a closed term, so it must say so: the status
+        # is set BEFORE packing. (The row stays authoritative for id and status.)
+        # Inside the try: if packing raises, the live term must not stay "closed".
+        CURRENT_TERM["status"] = "closed"
+        old_blob = _pack(_snapshot()) if has_old else None
+        SLOTS.clear()
+        PARKED.clear()      # lifted-out lessons point at last term's plan
+        CURRENT_TERM.update({"id": None, "year": year, "semester": semester,
+                             "label": label, "status": "active"})
+        SCHOOL_CONFIG["term"], SCHOOL_CONFIG["year"] = str(semester), str(year)
         # The new row's id is not known yet by construction (RETURNING id), so
         # this snapshot carries id None; readers take id and status from the row.
-        new_id = _term_rotate(old["id"] if has_old else None, old_blob, old_slots,
+        new_id = _term_rotate(old_id, old_blob, old_slots,
                               year, semester, label, _pack(_snapshot()))
     except Exception:                              # noqa: BLE001
-        # Nothing was committed: put the memory back as it was.
-        SLOTS.extend(saved_slots)
-        PARKED.extend(saved_parked)
+        # Nothing was committed: put the memory back as it was (in place, and
+        # idempotent whichever step failed).
+        SLOTS[:] = saved_slots
+        PARKED[:] = saved_parked
         CURRENT_TERM.update(old)
         SCHOOL_CONFIG.update(saved_cfg)
         raise HTTPException(500, "สร้างเทอมใหม่ไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง")
     CURRENT_TERM["id"] = new_id
     _save_state()
+    # _save_state only queues the blob; until it is sent, app_state would still
+    # hold the old term while app_terms says it is closed. Make it durable now.
+    _flush_pending(blocking=True)
     # The rotate has committed, so a save that has not landed is reported, not
-    # raised: raising would say "failed" about a term that was created. The
-    # screen should tell the school the term exists but the save is pending.
-    return {"closed": _term_row(old["id"]) if has_old else None,
+    # raised. Fixed text: _STORE_ERROR can carry connection details.
+    save_error = None
+    if _STORE_ERROR or _pending_blob is not None:
+        save_error = ("สร้างเทอมใหม่แล้ว แต่ข้อมูลยังบันทึกลงฐานข้อมูลไม่สำเร็จ "
+                      "ระบบจะลองบันทึกซ้ำ อย่าปิดหน้านี้จนกว่าจะบันทึกได้")
+    return {"closed": _term_row(old_id) if has_old else None,
             "active": _term_row(new_id),
-            "save_error": _STORE_ERROR}
+            "save_error": save_error}
 
 
 @app.get("/api/terms")
