@@ -9,6 +9,11 @@ import {
   writeAllowedWhileViewing, type TermMeta,
 } from "../../frontend/src/utils/terms.ts";
 import {
+  canRetryCreate, createLatch, createOutcome, departmentMatrix, formatBytes, newTermFormError,
+  newTermWarning, previewRows, statsLines, TERMS_UNAVAILABLE, termDownloadName, termErrorText,
+  termStatusText, unlockConfirmed, unlockNotice, lastEditText,
+} from "../../frontend/src/utils/terms.ts";
+import {
   blockedReason, gateRequest, setWriteBlock, WriteBlocked,
 } from "../../frontend/src/api/writeGate.ts";
 
@@ -167,6 +172,130 @@ const BLOCK_MSG = "กำลังดูเทอมที่ปิดแล้�
   eq(await refused({ method: "patch", url: "/timetable/slots/12" }), null, "ไม่ได้ดูเทอมปิด = ผ่านทุกอย่าง");
   setWriteBlock(null);
   eq(await refused({ method: "patch", url: "/timetable/slots/12" }), null, "ยังไม่ติดตัวตัดสิน = ผ่าน");
+}
+
+// ── Task 8: หน้ารายการเทอม ──────────────────────────────────────────────────
+eq(termStatusText("active"), "ใช้งานอยู่ · แก้ได้", "สถานะเทอมที่ใช้");
+eq(termStatusText("closed"), "ปิดแล้ว · อ่านอย่างเดียว", "สถานะเทอมที่ปิด");
+eq([formatBytes(0), formatBytes(900), formatBytes(2048), formatBytes(5 * 1024 * 1024 + 300000)],
+   ["0 B", "900 B", "2 KB", "5.3 MB"], "ขนาดไฟล์");
+eq(formatBytes(NaN), "–", "ขนาดที่อ่านไม่ได้ไม่ใช่ NaN");
+
+// หน้าต่างปลดล็อกต้องบอกว่าปิดเทอมที่ใช้อยู่ไปด้วย พร้อมชื่อและจำนวนคาบ
+{
+  const text = unlockNotice(CLOSED, ACTIVE).join("\n");
+  ok(text.includes("ปิดเทอมที่ใช้งานอยู่ตอนนี้"), "บอกว่าปิดเทอมที่ใช้อยู่ไปด้วย");
+  ok(text.includes("1/2569"), "ชื่อเทอมที่จะถูกปิด");
+  ok(text.includes("2735 คาบ"), "จำนวนคาบของเทอมที่จะถูกปิด");
+  ok(text.includes("2/2568"), "ชื่อเทอมที่จะเปิด");
+  ok(!text.includes("undefined") && !text.includes("null"), "ไม่มีคำว่า undefined/null");
+  const noCount = unlockNotice(CLOSED, { ...ACTIVE, slots: null }).join("\n");
+  ok(noCount.includes("1/2569") && !noCount.includes("null") && !noCount.includes("ลงคาบไว้"),
+     "ไม่รู้จำนวนคาบ = ไม่พิมพ์ตัวเลขมั่ว");
+  const noActive = unlockNotice(CLOSED, null).join("\n");
+  ok(!noActive.includes("ปิดเทอมที่ใช้งานอยู่ตอนนี้"), "ไม่มีเทอมที่ใช้อยู่ = ไม่อ้างถึง");
+}
+eq(unlockConfirmed(CLOSED, "2/2568"), true, "พิมพ์ชื่อตรง");
+eq(unlockConfirmed(CLOSED, "  2/2568 "), true, "ตัดช่องว่างหัวท้าย เหมือนเซิร์ฟเวอร์");
+eq(unlockConfirmed(CLOSED, "2/68"), false, "ไม่ตรง");
+eq(unlockConfirmed(CLOSED, ""), false, "ว่างไม่ผ่าน");
+
+// ── สร้างเทอมใหม่ ──────────────────────────────────────────────────────────
+{
+  const l = createLatch();
+  eq([l.take(), l.take(), l.take()], [true, false, false], "กลอนกดได้ครั้งเดียว");
+  eq(l.taken(), true, "จำได้ว่ากดแล้ว");
+  l.reset();
+  eq(l.take(), true, "reset แล้วกดได้อีก");
+}
+eq(canRetryCreate({ response: { status: 409 } }), true, "409 = ไม่ได้ทำอะไร กดซ้ำได้");
+eq(canRetryCreate({ response: { status: 400 } }), true, "400 กดซ้ำได้");
+eq(canRetryCreate({ response: { status: 500 } }), false, "500 บอกไม่ได้ว่าสร้างไปหรือยัง");
+eq(canRetryCreate({ response: { status: 503 } }), false, "503 ไม่ปลอดภัยพอ");
+eq(canRetryCreate(new Error("timeout")), false, "ไม่มี response = ไม่รู้ผล ห้ามกดซ้ำ");
+eq(termErrorText({ response: { status: 409, data: { detail: "มีเทอม 1/2569 อยู่แล้ว" } } }, "สำรอง"),
+   "มีเทอม 1/2569 อยู่แล้ว", "ข้อความไทยจากเซิร์ฟเวอร์");
+eq(termErrorText({ response: { status: 500, data: { detail: "boom" } } }, "สำรอง"), "สำรอง", "500 ใช้ข้อความสำรอง");
+eq(termErrorText({ response: { status: 409, data: { detail: [{ loc: 1 }] } } }, "สำรอง"), "สำรอง",
+   "detail ที่ไม่ใช่ข้อความ (422) ไม่ถูกพิมพ์");
+eq(termErrorText(new Error("x"), "สำรอง"), "สำรอง", "error ธรรมดา");
+eq(termErrorText(new Error("Request failed with status code 500"), "สำรอง"), "สำรอง", "ข้อความอังกฤษของ axios ไม่ถูกส่งต่อ");
+eq(termErrorText(new Error("ปลดล็อกเทอมแล้ว แต่โหลดไม่สำเร็จ"), "สำรอง"), "ปลดล็อกเทอมแล้ว แต่โหลดไม่สำเร็จ",
+   "Error ไทยที่ร้านโยนเองถึงผู้ใช้");
+eq(termErrorText(new WriteBlocked("กำลังดูเทอมที่ปิด"), "สำรอง"), "กำลังดูเทอมที่ปิด", "ข้อความของด่าน");
+
+// save_error: null ไม่ได้พิสูจน์ว่าบันทึกแล้ว
+{
+  const base = { closed: { label: "1/2569", slots: 2735 }, active: { label: "2/2569" },
+                 save_error: null, save_pending: false };
+  const clean = createOutcome(base);
+  ok(!clean.text.includes("บันทึกแล้ว"), "ไม่ประกาศว่าบันทึกแล้ว แม้ save_error เป็น null");
+  ok(clean.text.includes("ป้ายสถานะการบันทึก"), "ชี้ไปที่ป้ายสถานะ");
+  ok(clean.text.includes("2/2569") && clean.text.includes("2735 คาบ"), "บอกเทอมที่สร้างและเทอมที่ปิด");
+  const pending = createOutcome({ ...base, save_pending: true });
+  eq(pending.tone, "warn", "pending = เตือน");
+  ok(pending.text.includes("ระหว่างส่ง"), "บอกว่ายังไม่เสร็จ");
+  ok(!pending.text.includes("บันทึกแล้ว"), "pending ไม่พูดว่าบันทึกแล้ว");
+  const bad = createOutcome({ ...base, save_error: "ฐานข้อมูลปฏิเสธ" });
+  eq(bad.tone, "error", "save_error = ผิดพลาด");
+  ok(bad.text.includes("ฐานข้อมูลปฏิเสธ"), "แสดงเหตุผลของเซิร์ฟเวอร์");
+  const first = createOutcome({ ...base, closed: null });
+  ok(!first.text.includes("ถูกปิดแล้ว") && !first.text.includes("null"), "เทอมแรก ไม่มีเทอมที่ปิด");
+}
+
+eq(newTermFormError("2569", "2", [ACTIVE]), null, "ฟอร์มถูกต้อง");
+ok(newTermFormError("", "1", []) !== null, "ปีว่างไม่ผ่าน");
+ok(newTermFormError("25", "1", []) !== null, "ปีสั้นไม่ผ่าน");
+ok(newTermFormError("2569.5", "1", []) !== null, "ปีทศนิยมไม่ผ่าน");
+ok(newTermFormError("2569", "3", []) !== null, "ภาค 3 ไม่ผ่าน");
+eq(newTermFormError("2569", "1", [ACTIVE]), "มีเทอม 1/2569 อยู่แล้ว", "เทอมซ้ำ");
+
+{
+  const w = newTermWarning(ACTIVE);
+  ok(w.includes("1/2569") && w.includes("ถูกปิดและแก้ไม่ได้อีก") && w.includes("เริ่มจากว่าง"), "คำเตือนครบสามส่วน");
+  ok(!newTermWarning(null).includes("null"), "ไม่มีเทอมที่ใช้ ไม่พิมพ์ null");
+}
+{
+  const rows = previewRows({ requirements: 812, teachers: 143, periods_total: 3900, curricula: 14, slots_to_clear: 2735 });
+  eq(rows.map((r) => r.value), [812, 143, 3900, 14, 2735], "ตัวเลขตรงกับเซิร์ฟเวอร์");
+  ok(rows.every((r) => r.label.length > 0), "ทุกแถวมีป้าย");
+}
+eq(termDownloadName({ label: "2/2568" }), "ตารางเรียน-เทอม-2-2568.json", "ชื่อไฟล์ไม่มี /");
+ok(TERMS_UNAVAILABLE.includes("ฐานข้อมูล"), "ข้อความเมื่อไม่มีฐานข้อมูล");
+
+// ── สถิติย้อนหลัง ───────────────────────────────────────────────────────────
+{
+  const row = (id: number, label: string, slots: number, extra: object = {}) => ({
+    id, label, slots, by_department: { "คณิต": slots / 2, "ภาษาไทย": slots / 4 },
+    by_teacher: { "ก": 5, "ข": 6 }, rooms_used: 30, subjects_open: 100, ...extra });
+  // เซิร์ฟเวอร์ส่งเก่าไปใหม่ แต่ลำดับขาเข้าไม่ควรเป็นเงื่อนไข
+  const lines = statsLines([row(4, "1/2569", 2735), row(2, "1/2568", 2600), row(3, "2/2568", 2680)],
+                           [ACTIVE, CLOSED, OLDER]);
+  eq(lines.map((l) => l.label), ["1/2568", "2/2568", "1/2569"], "เรียงตามเวลา");
+  eq(lines.map((l) => l.slotsDelta), [null, 80, 55], "เปลี่ยนแปลงจากเทอมก่อน");
+  eq(lines[0].teachers, 2, "นับครูที่มีคาบ");
+  const withBad = statsLines([row(2, "1/2568", 2600), row(3, "2/2568", 0, { error: "อ่านข้อมูลของเทอมนี้ไม่ได้" }),
+                              row(4, "1/2569", 2735)], [ACTIVE, CLOSED, OLDER]);
+  eq(withBad[1].error, "อ่านข้อมูลของเทอมนี้ไม่ได้", "เทอมที่อ่านไม่ได้ขึ้นข้อความ");
+  eq(withBad.map((l) => l.slotsDelta), [null, null, null],
+     "ไม่คำนวณส่วนต่างข้ามเทอมที่อ่านไม่ได้ (ไม่แสดง +2735 ปลอม)");
+  const m = departmentMatrix([row(2, "1/2568", 100), row(3, "2/2568", 200)], [OLDER, CLOSED]);
+  eq(m.names, ["คณิต", "ภาษาไทย"], "ชื่อกลุ่มสาระ");
+  eq(m.byTerm.map((t) => t.counts), [[50, 25], [100, 50]], "จำนวนคาบแต่ละกลุ่มสาระ");
+  eq(statsLines([]), [], "ไม่มีเทอม");
+  const mb = departmentMatrix([row(2, "1/2568", 100), row(3, "2/2568", 0, { error: "x" })], [OLDER, CLOSED]);
+  eq(mb.byTerm.map((t) => t.bad), [false, true], "เทอมที่อ่านไม่ได้ถูกทำเครื่องหมาย (แสดง – ไม่ใช่ 0)");
+}
+
+eq(lastEditText({ status: "active", closed_at: null }), "กำลังใช้งาน", "เทอมที่ใช้อยู่");
+eq(lastEditText({ status: "closed", closed_at: null }), "–", "ไม่รู้เวลาปิด");
+eq(lastEditText({ status: "closed", closed_at: "ไม่ใช่วันที่" }), "ไม่ใช่วันที่", "วันที่อ่านไม่ออกไม่ล้ม");
+ok(lastEditText({ status: "closed", closed_at: "2026-10-01T09:30:00Z" }).length > 3, "เวลาปิดที่ถูกต้อง");
+
+{
+  const u = createOutcome({ closed: { label: "1/2569", slots: 2735 }, active: { label: "2/2568" } }, "ปลดล็อก");
+  ok(u.text.startsWith("ปลดล็อกเทอม 2/2568 แล้ว") && u.text.includes("ปิดแล้ว (2735 คาบ)"), "ผลของการปลดล็อก");
+  ok(!u.text.includes("undefined") && !u.text.includes("บันทึกแล้ว"), "ไม่มี undefined และไม่ประกาศว่าบันทึกแล้ว");
 }
 
 console.log(`ALL PASS (${n})`);

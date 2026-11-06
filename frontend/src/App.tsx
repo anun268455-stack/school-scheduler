@@ -25,7 +25,7 @@ function wantsSubstitute(): boolean {
 }
 
 type Page = "timetable" | DashPage;
-const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","yards","requirements","curriculum","electives","activities","periods","locks","settings","departments","analytics","help"];
+const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","yards","requirements","curriculum","electives","activities","periods","locks","settings","terms","departments","analytics","help"];
 
 export default function App() {
   // Decided before anything else: the two pages share data but no chrome, and
@@ -129,7 +129,7 @@ export default function App() {
           {(DASH_PAGES as string[]).includes(page) && (
             <div className="flex-1 overflow-y-auto p-5">
               <Suspense fallback={<div className="text-center text-gray-400 text-sm py-20">กำลังโหลด…</div>}>
-                <Dashboard page={page as DashPage} />
+                <Dashboard page={page as DashPage} onNav={(p) => setPage(p as Page)} />
               </Suspense>
             </div>
           )}

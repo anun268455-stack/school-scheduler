@@ -154,3 +154,259 @@ export function writeAllowedWhileViewing(method: string, url: string): boolean {
   const path = url.split("?")[0];
   return path === "/terms" || path.startsWith("/terms/");
 }
+
+// ── หน้าจอรายการเทอม / สร้างเทอมใหม่ / สถิติ ─────────────────────────────────
+// ตัดสินใจทุกอย่างที่นี่ ไม่ใช่ในคอมโพเนนต์ — คอมโพเนนต์ทดสอบไม่ได้ ฟังก์ชันล้วนทดสอบได้
+
+/** ข้อความเดียวของทั้งสามหน้าเมื่อไม่มีฐานข้อมูล — ไม่แสดงปุ่มใด ๆ ควบคู่ */
+export const TERMS_UNAVAILABLE =
+  "ยังไม่ได้ต่อฐานข้อมูล จึงใช้ระบบเทอมไม่ได้ — ต้องต่อฐานข้อมูลก่อน "
+  + "จึงจะดู สร้าง หรือเปรียบเทียบเทอมได้";
+
+export function termStatusText(status: TermStatus): string {
+  return status === "active" ? "ใช้งานอยู่ · แก้ได้" : "ปิดแล้ว · อ่านอย่างเดียว";
+}
+
+/** ขนาดไฟล์ของเทอม: "512 B" · "48 KB" · "1.4 MB" */
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "–";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * ข้อความเตือนในหน้าต่างปลดล็อก
+ *
+ * มีได้ทีละหนึ่งเทอมที่แก้ได้ การปลดล็อกเทอมเก่าจึงปิดเทอมที่ใช้อยู่ไปด้วย
+ * ต้องบอกชื่อเทอมนั้นและจำนวนคาบ ไม่งั้นคนที่ปลดล็อกเพื่อดูอะไรนิดเดียว
+ * จะมาเจอทีหลังว่างานของเทอมนี้ถูกปิดไปแล้ว
+ */
+export function unlockNotice(target: TermMeta, active: TermMeta | null): string[] {
+  const lines: string[] = [];
+  if (active !== null && active.id !== target.id) {
+    const periods = active.slots === null ? "" : ` (ลงคาบไว้ ${active.slots} คาบ)`;
+    lines.push(
+      `การปลดล็อกจะปิดเทอมที่ใช้งานอยู่ตอนนี้ คือเทอม ${active.label}${periods} ไปด้วย `
+      + "เพราะแก้ได้ทีละหนึ่งเทอมเท่านั้น");
+    lines.push(`เทอม ${active.label} จะกลายเป็นอ่านอย่างเดียวจนกว่าจะปลดล็อกกลับมา`);
+  }
+  lines.push(`เทอม ${target.label} จะกลับมาแก้ไขได้ และทุกคนที่ใช้ระบบอยู่จะเห็นข้อมูลของเทอมนี้`);
+  lines.push("ถ้าแค่อยากดูหรือปริ้นเทอมเก่า ให้กด “เปิดดู” แทน — ไม่ต้องปลดล็อก");
+  return lines;
+}
+
+/** พิมพ์ชื่อเทอมตรงหรือยัง — กฎเดียวกับเซิร์ฟเวอร์ (ตัดช่องว่างหัวท้าย) */
+export function unlockConfirmed(target: TermMeta, typed: string): boolean {
+  return typed.trim() === target.label;
+}
+
+/**
+ * กลอนกดครั้งเดียว — take() ได้ true แค่ครั้งแรก
+ *
+ * disabled จาก state ของ React มีผลหลังวาดใหม่ คลิกซ้อนสองครั้งในจังหวะเดียวกัน
+ * ยังผ่านได้ทั้งคู่ ตัวนี้เปลี่ยนทันทีที่ถูกเรียก
+ */
+export interface Latch { take(): boolean; reset(): void; taken(): boolean }
+
+export function createLatch(): Latch {
+  let t = false;
+  return {
+    take(): boolean { if (t) return false; t = true; return true; },
+    reset(): void { t = false; },
+    taken(): boolean { return t; },
+  };
+}
+
+/**
+ * ข้อผิดพลาดนี้แปลว่า "เซิร์ฟเวอร์ปฏิเสธก่อนทำอะไร" ไหม — กดยืนยันซ้ำได้อย่างปลอดภัย
+ *
+ * 400/409 มาจากการตรวจก่อนสร้าง ไม่มีอะไรเปลี่ยน ส่วนหมดเวลา เครือข่ายหลุด หรือ 5xx
+ * บอกไม่ได้ว่าเทอมถูกสร้างไปแล้วหรือยัง การกดซ้ำอาจปิดเทอมที่เพิ่งสร้าง จึงไม่ปล่อยให้กดอีก
+ */
+export function canRetryCreate(e: unknown): boolean {
+  const status = (e as { response?: { status?: number } })?.response?.status;
+  return status === 400 || status === 409;
+}
+
+/**
+ * ข้อความไทยที่ผู้ใช้ควรเห็น: ที่เซิร์ฟเวอร์ส่งมา (400/404/409/503) หรือที่ร้านโยนเอง
+ * (Error ภาษาไทยที่ไม่ได้มาจากเครือข่าย เช่นข้อความของด่านกันแก้ไข) มิฉะนั้นข้อความสำรอง
+ * ข้อความอังกฤษของ axios ("Request failed with status code 500") ไม่เคยถูกส่งต่อ
+ */
+export function termErrorText(e: unknown, fallback: string): string {
+  const r = (e as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
+  if (!r && e instanceof Error && /[\u0E00-\u0E7F]/.test(e.message)) return e.message;
+  const d = r?.data?.detail;
+  const ok = r?.status === 400 || r?.status === 404 || r?.status === 409 || r?.status === 503;
+  return ok && typeof d === "string" && d.trim() ? d : fallback;
+}
+
+/** ผลของการสร้างเทอม ในรูปที่ไม่ต้องพึ่ง axios */
+export interface CreateResultLike {
+  closed: { label: string; slots: number | null } | null;
+  active: { label: string };
+  save_error?: string | null;
+  save_pending?: boolean;
+}
+
+/**
+ * บอกผลการสร้างเทอม (หรือปลดล็อก — verb) โดยไม่พูดว่า "บันทึกแล้ว"
+ *
+ * `save_error: null` ไม่ได้พิสูจน์ว่าเขียนลงฐานข้อมูลแล้ว เซิร์ฟเวอร์แค่ใส่คิวไว้
+ * (`save_pending: true` = ยังอยู่ระหว่างส่ง) คำตอบจริงอยู่ที่ป้ายสถานะการบันทึกบนแถบ
+ * ด้านบน ซึ่งอ่านจาก /state/version
+ */
+export function createOutcome(
+  r: CreateResultLike, verb: "สร้าง" | "ปลดล็อก" = "สร้าง",
+): { tone: "info" | "warn" | "error"; text: string } {
+  const closed = r.closed
+    ? ` เทอม ${r.closed.label} ถูกปิดแล้ว (${r.closed.slots ?? 0} คาบ)`
+    : "";
+  const head = `${verb}เทอม ${r.active.label} แล้ว${closed}`;
+  if (r.save_error) {
+    return {
+      tone: "error",
+      text: `${head} แต่เซิร์ฟเวอร์รายงานว่าส่งลงฐานข้อมูลไม่สำเร็จ: ${r.save_error} `
+        + "— อย่าเพิ่งปิดหน้านี้ ดูป้ายสถานะการบันทึกบนแถบด้านบนจนกว่าจะกลับเป็นปกติ",
+    };
+  }
+  if (r.save_pending) {
+    return {
+      tone: "warn",
+      text: `${head} · ยังอยู่ระหว่างส่งลงฐานข้อมูล รอให้ป้ายสถานะการบันทึกบนแถบด้านบนเปลี่ยนเป็นเวลาล่าสุดก่อนปิดหน้านี้`,
+    };
+  }
+  return {
+    tone: "info",
+    text: `${head} · ให้ดูป้ายสถานะการบันทึกบนแถบด้านบนยืนยันอีกครั้งว่าส่งลงฐานข้อมูลเรียบร้อย`,
+  };
+}
+
+/** ตรวจช่องปี/ภาคเรียนในหน้าสร้างเทอม — ช่วงเดียวกับเซิร์ฟเวอร์ คืนข้อความไทยหรือ null */
+export function newTermFormError(
+  year: string, semester: string, existing: TermMeta[],
+): string | null {
+  const y = Number(year);
+  const s = Number(semester);
+  if (year.trim() === "" || !Number.isInteger(y) || y < 2500 || y > 2700) {
+    return "ปีการศึกษาต้องเป็นตัวเลข พ.ศ. 2500–2700";
+  }
+  if (s !== 1 && s !== 2) return "ภาคเรียนต้องเป็น 1 หรือ 2";
+  if (existing.some((t) => t.year === y && t.semester === s)) {
+    return `มีเทอม ${termLabel(y, s)} อยู่แล้ว`;
+  }
+  return null;
+}
+
+/** ผลจาก GET /terms/preview ที่หน้านี้ใช้ */
+export interface PreviewLike {
+  requirements: number;
+  teachers: number;
+  periods_total: number;
+  curricula: number;
+  slots_to_clear: number;
+}
+
+/**
+ * แถวของหน้าสรุปก่อนสร้าง — เฉพาะที่เซิร์ฟเวอร์ส่งมาจริง
+ * (ไม่มีตัวเลข "วิชาใหม่" หรือ "ชุดคาบเสรี" ในคำตอบของเซิร์ฟเวอร์ จึงไม่แสดง ไม่เดา)
+ */
+export function previewRows(p: PreviewLike): { label: string; value: number; note?: string }[] {
+  return [
+    { label: "แผนการสอน", value: p.requirements, note: "รายการ · ติดไปเทอมใหม่" },
+    { label: "ครู", value: p.teachers, note: "คน · ติดไปเทอมใหม่" },
+    { label: "คาบรวมตามแผน", value: p.periods_total, note: "คาบต่อสัปดาห์" },
+    { label: "หลักสูตร", value: p.curricula, note: "ชุด · ติดไปเทอมใหม่" },
+    { label: "คาบที่ลงตารางไว้ตอนนี้", value: p.slots_to_clear, note: "คาบ · จะถูกล้างในเทอมใหม่" },
+  ];
+}
+
+/** คำเตือนตัวหนาในหน้าสร้างเทอม — เทอมที่ใช้อยู่ถูกปิดและเทอมใหม่เริ่มจากตารางว่าง */
+export function newTermWarning(active: TermMeta | null): string {
+  const old = active === null ? "เทอมที่ใช้งานอยู่" : `เทอม ${active.label}`;
+  return `กดแล้ว${old}จะถูกปิดและแก้ไม่ได้อีก · คาบที่ลงไว้ทั้งหมดจะเริ่มจากว่างในเทอมใหม่`;
+}
+
+/** ชื่อไฟล์ดาวน์โหลดของเทอม — "/" ใช้ในชื่อไฟล์ไม่ได้ */
+export function termDownloadName(t: Pick<TermMeta, "label">): string {
+  return `ตารางเรียน-เทอม-${t.label.replace(/[\\/:*?"<>|]/g, "-")}.json`;
+}
+
+/** ผู้ฟังใน TopNavbar: เปิดกล่องตัวเลือกการพิมพ์ของเทอมที่เพิ่งเปิดดู (ปุ่ม “ปริ้น” ในรายการเทอม) */
+export const TERM_PRINT_EVENT = "term:print";
+
+/** หนึ่งแถวของ GET /terms/stats */
+export interface StatsRowLike {
+  id: number;
+  label: string;
+  slots: number;
+  by_department: Record<string, number>;
+  by_teacher: Record<string, number>;
+  rooms_used: number;
+  subjects_open: number;
+  error?: string;
+}
+
+export interface StatsLine {
+  id: number;
+  label: string;
+  slots: number;
+  teachers: number;
+  rooms: number;
+  subjects: number;
+  /** คาบที่เพิ่ม/ลดจากเทอมก่อนหน้า — null = เทอมแรก หรือเทอมนี้หรือเทอมก่อนอ่านไม่ได้ */
+  slotsDelta: number | null;
+  error: string | null;
+}
+
+/** เรียงเก่าไปใหม่ตามเวลา (ปี แล้วภาค) แล้วคำนวณการเปลี่ยนแปลงจากเทอมก่อนหน้า */
+export function statsLines(rows: StatsRowLike[], metas: TermMeta[] = []): StatsLine[] {
+  const when = new Map(metas.map((t) => [t.id, t.year * 10 + t.semester]));
+  const order = (r: StatsRowLike): number => when.get(r.id) ?? Number.MAX_SAFE_INTEGER;
+  const sorted = [...rows].sort((a, b) => order(a) - order(b) || a.id - b.id);
+  const out: StatsLine[] = [];
+  let prev: StatsLine | null = null;
+  for (const r of sorted) {
+    const bad = typeof r.error === "string" && r.error !== "";
+    const line: StatsLine = {
+      id: r.id, label: r.label, slots: r.slots ?? 0,
+      teachers: Object.keys(r.by_teacher ?? {}).length,
+      rooms: r.rooms_used ?? 0, subjects: r.subjects_open ?? 0,
+      slotsDelta: prev === null || bad || prev.error !== null ? null : (r.slots ?? 0) - prev.slots,
+      error: bad ? (r.error as string) : null,
+    };
+    out.push(line);
+    prev = line;
+  }
+  return out;
+}
+
+/** ตารางกลุ่มสาระ × เทอม: ชื่อกลุ่มสาระเรียงตามตัวอักษร และจำนวนคาบของแต่ละเทอม (ไม่มี = 0) */
+export function departmentMatrix(rows: StatsRowLike[], metas: TermMeta[] = []):
+  { names: string[]; byTerm: { label: string; bad: boolean; counts: number[] }[] } {
+  const lines = statsLines(rows, metas);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const names = [...new Set(rows.flatMap((r) => Object.keys(r.by_department ?? {})))]
+    .sort((a, b) => a.localeCompare(b, "th"));
+  return {
+    names,
+    byTerm: lines.map((l) => ({
+      label: l.label,
+      bad: l.error !== null,
+      counts: names.map((n) => byId.get(l.id)?.by_department?.[n] ?? 0),
+    })),
+  };
+}
+
+/** "แก้ครั้งสุดท้าย" ของแถวในรายการ: เทอมที่ปิดคือเวลาที่ปิด เทอมที่ใช้อยู่ยังแก้ได้เรื่อย ๆ */
+export function lastEditText(t: Pick<TermMeta, "status" | "closed_at">): string {
+  if (t.status === "active") return "กำลังใช้งาน";
+  const iso = t.closed_at;
+  if (!iso) return "–";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("th-TH", {
+    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}

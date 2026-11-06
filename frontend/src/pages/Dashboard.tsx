@@ -60,15 +60,17 @@ import { TeacherSettingsModal } from "../components/teachers/TeacherSettingsModa
 import { TeacherHandoverModal } from "../components/teachers/TeacherHandoverModal";
 import { LevelActivityPanel } from "../components/timetable/LevelActivityPanel";
 import { CurriculumPanel } from "../components/curriculum/CurriculumPanel";
+import { TermsPanel } from "../components/terms/TermsPanel";
+import { TermStatsPanel } from "../components/terms/TermStatsPanel";
 import { SearchableSelect, teacherOptions, roomOptions, groupOptions, subjectOptions } from "../components/common/SearchableSelect";
 import { TableSearch, matches } from "../components/common/TableSearch";
 
 export type DashPage =
   | "groups" | "teachers" | "subjects" | "rooms" | "yards"
-  | "requirements" | "curriculum" | "electives" | "activities" | "periods" | "locks" | "settings"
+  | "requirements" | "curriculum" | "electives" | "activities" | "periods" | "locks" | "settings" | "terms"
   | "departments" | "analytics" | "help";
 
-export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
+export const Dashboard: React.FC<{ page: DashPage; onNav?: (page: string) => void }> = ({ page, onNav }) => {
   const pageMap: Record<DashPage, React.ReactNode> = {
     groups:       <GroupsPanel />,
     teachers:     <TeachersPanel />,
@@ -82,6 +84,7 @@ export const Dashboard: React.FC<{ page: DashPage }> = ({ page }) => {
     periods:      <PeriodsPanel />,
     locks:        <BulkLockPanel />,
     settings:     <><SettingsPanel /><ToolSettingsPanel /></>,
+    terms:        <><TermsPanel onNav={onNav} /><TermStatsPanel /></>,
     departments:  <DepartmentsPanel />,
     analytics:    <AnalyticsPanel />,
     help:         <HelpPanel />,

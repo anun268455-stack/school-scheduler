@@ -298,6 +298,8 @@ interface TimetableStore {
    * /state/version (pending, saved_at, store, store_error) ที่ซิงค์สดอ่านอยู่
    */
   makeNewTerm:    (year: number, semester: number) => Promise<api.CreateTermResult>;
+  /** ปลดล็อกเทอมเก่า: เซิร์ฟเวอร์ปิดเทอมที่ใช้อยู่ไปด้วย แล้วดึงข้อมูลสดของเทอมที่เปิดมาแทนที่ */
+  unlockOldTerm:  (id: number, confirm: string) => Promise<api.UnlockTermResult>;
   setLiveSync:   (on: boolean) => void;
   startLiveSync: () => void;
   stopLiveSync:  () => void;
@@ -1184,6 +1186,22 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
         // เทอมถูกสร้างบนเซิร์ฟเวอร์แล้วจริง แต่จอยังเป็นเทอมเก่า — บอกตรง ๆ
         throw new Error(
           "สร้างเทอมใหม่แล้ว แต่โหลดตารางของเทอมใหม่ไม่สำเร็จ จอยังแสดงเทอมที่ปิดแล้วอยู่ ลองกดกลับอีกครั้ง");
+      }
+    } else await get().loadAll();
+    await get().loadTerms();
+    if (get().liveSync) get().startLiveSync();
+    return r;
+  },
+
+  unlockOldTerm: async (id, confirm) => {
+    const r = await api.unlockTerm(id, confirm);
+    // ข้อมูลสดบนเซิร์ฟเวอร์เปลี่ยนเป็นของเทอมที่ปลดล็อกแล้ว ดึงมาใหม่ให้จอตรงกัน
+    // ถ้าดูเทอมเก่าอยู่ ต้องออกด้วยวิธีเดียวกับตอนสร้างเทอมใหม่ (loadAll ถูกด่านตัดข้อมูลสด)
+    if (get().viewingTerm) {
+      await get().closeViewing();
+      if (get().viewingTerm) {
+        throw new Error(
+          "ปลดล็อกเทอมแล้ว แต่โหลดตารางใหม่ไม่สำเร็จ จอยังแสดงเทอมที่ปิดแล้วอยู่ ลองกดกลับอีกครั้ง");
       }
     } else await get().loadAll();
     await get().loadTerms();

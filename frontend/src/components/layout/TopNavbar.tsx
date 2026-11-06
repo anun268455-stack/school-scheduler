@@ -113,6 +113,7 @@ const CRUD_ITEMS = [
   { id: "departments", icon: "🏛", label: "กลุ่มสาระฯ",       divider: true  },
   { id: "analytics",  icon: "📊", label: "วิเคราะห์ตาราง",   divider: false },
   { id: "settings",   icon: "🏫", label: "ตั้งค่าโรงเรียน",  divider: false },
+  { id: "terms",      icon: "🗓", label: "เทอม",             divider: false },
   { id: "help",       icon: "📖", label: "คู่มือการใช้งาน", divider: true  },
 ];
 
