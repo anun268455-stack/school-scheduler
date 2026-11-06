@@ -13797,6 +13797,58 @@ def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
     return new_id
 
 
+def _term_swap_active(old_id: int | None, old_blob: bytes | None, old_slots: int,
+                      new_id: int) -> None:
+    """Close the running term and re-open a closed one, in ONE transaction.
+
+    The mirror of _term_rotate, but no row is inserted: the requested row
+    already exists and only its status changes, and its stored data must stay
+    exactly as it was. Same ordering the unique index forces: the old row is
+    closed (taking its final data) before the other becomes 'active'. If the
+    requested row is gone (rowcount 0) the transaction is abandoned, so the
+    school is never left with no active term.
+    """
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            if old_id is not None:
+                cur.execute(
+                    "UPDATE app_terms SET status = 'closed', data = %s, slots = %s, "
+                    "closed_at = now() WHERE id = %s", (old_blob, old_slots, old_id))
+            cur.execute(
+                "UPDATE app_terms SET status = 'active', closed_at = NULL "
+                "WHERE id = %s AND status = 'closed'", (new_id,))
+            if cur.rowcount != 1:
+                raise RuntimeError("term row to unlock not found or not closed")
+        conn.commit()
+
+
+# Who created, closed or unlocked which term, and when. No connection details,
+# no exception text: only a fixed Thai sentence written by this program.
+_TERM_LOG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_term_log (
+    id      bigserial PRIMARY KEY,
+    term_id bigint,
+    action  text NOT NULL,
+    detail  text NOT NULL,
+    at      timestamptz NOT NULL DEFAULT now()
+)
+"""
+
+
+def _term_log(term_id: int, action: str, detail: str) -> None:
+    """Record a term event. NEVER raises: a broken log must not stop a term change."""
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_TERM_LOG_SCHEMA)
+                cur.execute("INSERT INTO app_term_log (term_id, action, detail) "
+                            "VALUES (%s, %s, %s)", (term_id, action, detail))
+            conn.commit()
+    except Exception:                              # noqa: BLE001
+        pass
+
+
 def new_term_preview() -> dict[str, Any]:
     """What a new term will start with and what will be cleared. Changes nothing."""
     total = 0
@@ -13881,30 +13933,41 @@ def create_term(body: dict[str, Any]):
         SCHOOL_CONFIG.update(saved_cfg)
         raise HTTPException(500, "สร้างเทอมใหม่ไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง")
     CURRENT_TERM["id"] = new_id
+    # The rotate has committed. The log is a record of it, never a condition of it:
+    # _term_log swallows its own failures.
+    if has_old:
+        _term_log(old_id, "close", f"ปิดเทอม {active_row.get('label') or old_id} ({old_slots} คาบ)")
+    _term_log(new_id, "create", f"สร้างเทอม {label}")
     _save_state()
-    # _save_state only queues the blob; until it is sent, app_state would still
-    # hold the old term while app_terms says it is closed. Make it durable now.
-    flush_failed = False
-    try:
-        _flush_pending(blocking=True)
-    except Exception:                              # noqa: BLE001
-        # The rotate has committed: never raise from here, it would tell the
-        # school the term was not created when it was.
-        flush_failed = True
-    # save_error: None, or a fixed sentence once an error is actually known.
-    # None does NOT prove the write landed (the writer thread may already hold
-    # the blob); the save chip fed by /api/state/version is the authority, so
-    # save_pending is reported alongside. Fixed text: _STORE_ERROR can carry
-    # connection details.
-    save_error = None
-    if flush_failed or _STORE_ERROR:
-        save_error = ("สร้างเทอมใหม่แล้ว แต่ข้อมูลยังบันทึกลงฐานข้อมูลไม่สำเร็จ "
-                      "ระบบจะลองบันทึกซ้ำ อย่าปิดหน้านี้จนกว่าจะบันทึกได้")
-    save_pending = _pending_blob is not None
+    save_error, save_pending = _flush_after_term_change("สร้างเทอมใหม่แล้ว")
     return {"closed": _term_row(old_id) if has_old else None,
             "active": _term_row(new_id),
             "save_error": save_error,
             "save_pending": save_pending}
+
+
+def _flush_after_term_change(done: str) -> tuple[str | None, bool]:
+    """Make a committed term change durable; never raises. -> (save_error, save_pending)
+
+    _save_state only queues the blob; until it is sent, app_state would still
+    hold the old term while app_terms says otherwise. The change has committed,
+    so a failure here must not tell the school it did not happen.
+    save_error: None, or a fixed sentence once an error is actually known. None
+    does NOT prove the write landed (the writer thread may already hold the
+    blob); the save chip fed by /api/state/version is the authority, so
+    save_pending is reported alongside. Fixed text: _STORE_ERROR can carry
+    connection details.
+    """
+    flush_failed = False
+    try:
+        _flush_pending(blocking=True)
+    except Exception:                              # noqa: BLE001
+        flush_failed = True
+    save_error = None
+    if flush_failed or _STORE_ERROR:
+        save_error = (f"{done} แต่ข้อมูลยังบันทึกลงฐานข้อมูลไม่สำเร็จ "
+                      "ระบบจะลองบันทึกซ้ำ อย่าปิดหน้านี้จนกว่าจะบันทึกได้")
+    return save_error, _pending_blob is not None
 
 
 @app.get("/api/terms")
@@ -13922,6 +13985,139 @@ def list_terms():
     except Exception:                              # noqa: BLE001
         return {"available": False, "terms": [],
                 "reason": "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"}
+
+
+@app.get("/api/terms/log")
+def terms_log():
+    """Term events, newest first. Answers rather than raises, like the listing."""
+    if _STORE_KIND != "postgres":
+        return {"available": False, "log": [],
+                "reason": "ยังไม่ได้ต่อฐานข้อมูล จึงใช้ระบบเทอมไม่ได้"}
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_TERM_LOG_SCHEMA)
+                cur.execute("SELECT id, term_id, action, detail, at FROM app_term_log "
+                            "ORDER BY at DESC, id DESC LIMIT 500")
+                rows = cur.fetchall()
+            conn.commit()
+    except Exception:                              # noqa: BLE001
+        return {"available": False, "log": [],
+                "reason": "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"}
+    return {"available": True,
+            "log": [{"id": r[0], "term_id": r[1], "action": r[2], "detail": r[3],
+                     "at": r[4].isoformat() if r[4] else None} for r in rows]}
+
+
+@app.get("/api/terms/{term_id}/data")
+def term_data(term_id: int):
+    """The stored copy of one term, for the browser to show and print.
+
+    A pure read. It must NOT call _apply_snapshot or touch any module-level
+    data: viewing happens in the browser, and everyone else keeps being served
+    the live term. Mutating server state here would move every open browser in
+    the school to the old term at once.
+    """
+    _require_db()
+    try:
+        row = _term_row(term_id)
+        blob = _term_blob(term_id) if row else None
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    if row is None or blob is None:
+        raise HTTPException(404, "ไม่พบเทอมนี้")
+    try:
+        data = _unpack(blob)
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(500, "อ่านข้อมูลของเทอมนี้ไม่ได้")
+    # The row is authoritative for id and status: a blob is packed before its
+    # row's id exists (always None) and may say "active" for a closed term.
+    # Without this the browser would believe a closed term is editable.
+    data["current_term"] = {"id": row["id"], "year": row["year"],
+                            "semester": row["semester"], "label": row["label"],
+                            "status": row["status"]}
+    return data
+
+
+def unlock_check(term: dict[str, Any], typed: str) -> str | None:
+    """Thai reason an unlock is refused, or None when allowed. Pure."""
+    if term["status"] != "closed":
+        return "เทอมนี้ไม่ได้ปิดอยู่"
+    if typed.strip() != term["label"]:
+        return "พิมพ์ชื่อเทอมให้ตรงก่อน"
+    return None
+
+
+@app.post("/api/terms/{term_id}/unlock")
+def unlock_term(term_id: int, body: dict[str, Any]):
+    """Re-open a closed term (made by mistake): close the active one, load this one."""
+    _require_db()
+    typed = body.get("confirm") if isinstance(body, dict) else None
+    if not isinstance(typed, str):
+        raise HTTPException(400, "พิมพ์ชื่อเทอมให้ตรงก่อน")
+    try:
+        row = _term_row(term_id)
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    if row is None:
+        raise HTTPException(404, "ไม่พบเทอมนี้")
+    refused = unlock_check(row, typed)
+    if refused:
+        raise HTTPException(409 if row["status"] != "closed" else 400, refused)
+    # The running term's last edits must reach its own row before it is closed.
+    _flush_pending(blocking=True)
+    if _db_write_blocked():
+        raise HTTPException(
+            409, "เซิร์ฟเวอร์ยังไม่ยอมเขียนข้อมูลลงฐาน จึงปลดล็อกเทอมไม่ได้ — "
+                 "ยืนยันข้อมูลที่ถืออยู่ก่อน")
+    # The database, not memory, says which term is active (see create_term).
+    try:
+        active_row = _term_active()
+        new_blob = _term_blob(term_id)
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    if new_blob is None:
+        raise HTTPException(404, "ไม่พบเทอมนี้")
+    try:
+        new_data = _unpack(new_blob)
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(500, "อ่านข้อมูลของเทอมนี้ไม่ได้ ข้อมูลปัจจุบันยังอยู่ครบ")
+    has_old = active_row is not None
+    old_id = active_row["id"] if has_old else None
+
+    old = dict(CURRENT_TERM)
+    old_slots = len(SLOTS)
+    saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    try:
+        # The file stored for the closing term says so (row stays authoritative).
+        # Built on a copy: the live CURRENT_TERM is not touched until the swap.
+        snap = _snapshot()
+        snap["current_term"] = {**snap["current_term"], "status": "closed"}
+        old_blob = _pack(snap)
+        _apply_snapshot(new_data)
+        # From the row, not the blob: the blob's current_term has id None.
+        CURRENT_TERM.update({"id": row["id"], "year": row["year"],
+                             "semester": row["semester"], "label": row["label"],
+                             "status": "active"})
+        _term_swap_active(old_id, old_blob if has_old else None, old_slots, term_id)
+    except Exception:                              # noqa: BLE001
+        # Nothing was committed: put the running term back as it was.
+        try:
+            _apply_snapshot(_unpack(old_blob))
+        except Exception:                          # noqa: BLE001
+            pass
+        CURRENT_TERM.update(old)
+        SCHOOL_CONFIG.update(saved_cfg)
+        raise HTTPException(500, "ปลดล็อกเทอมไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง")
+    if has_old:
+        _term_log(old_id, "close", f"ปิดเทอม {active_row.get('label') or old_id} ({old_slots} คาบ)")
+    _term_log(term_id, "unlock", f"ปลดล็อกเทอม {row['label']}")
+    _save_state()
+    save_error, save_pending = _flush_after_term_change("ปลดล็อกเทอมแล้ว")
+    return {"closed": _term_row(old_id) if has_old else None,
+            "active": _term_row(term_id),
+            "save_error": save_error,
+            "save_pending": save_pending}
 
 
 # The newest snapshot waiting to go out, and the thread that sends it.

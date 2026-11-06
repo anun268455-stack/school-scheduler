@@ -250,6 +250,7 @@ def test_write_blocked_helper_matches_the_state_info_report():
 class _FakeCur:
     def __init__(self, log, rows):
         self.log, self.rows = log, rows
+        self.rowcount = 1
 
     def __enter__(self):
         return self
@@ -291,12 +292,13 @@ class _FakeConn:
 
 
 _FROM_MEMORY = object()
+LOGGED: list = []
 
 
 def _with_fake_db(fn, fail_on=None, existing=(), active=_FROM_MEMORY):
     saved = {k: getattr(mock_api, k) for k in
              ("_db_connect", "_term_active", "_terms_list", "_term_row", "_flush_pending", "_save_state",
-              "_STORE_KIND", "_DB_HAD_DATA", "_STATE_SOURCE")}
+              "_STORE_KIND", "_DB_HAD_DATA", "_STATE_SOURCE", "_term_log")}
     log: list = []
     calls: list = []
     mock_api._db_connect = lambda: _FakeConn(log, fail_on)
@@ -310,8 +312,10 @@ def _with_fake_db(fn, fail_on=None, existing=(), active=_FROM_MEMORY):
     mock_api._term_row = lambda i: {"id": i}
     mock_api._flush_pending = lambda blocking=False: calls.append(("flush", blocking))
     mock_api._save_state = lambda: calls.append(("save", None))
+    mock_api._term_log = lambda tid, action, detail: LOGGED.append((tid, action, detail))
     mock_api._STORE_KIND = "postgres"
     mock_api._DB_HAD_DATA, mock_api._STATE_SOURCE = False, "snapshot"
+    del LOGGED[:]
     try:
         return fn(log, calls)
     finally:
@@ -596,6 +600,343 @@ def test_term_active_selects_the_active_row_only():
     finally:
         mock_api._db_connect = saved
     assert any("WHERE status = 'active'" in q for q, _ in log)
+
+
+# ---------- Task 4: เปิดดูเทอมเก่า · ปลดล็อก · log ----------
+
+def test_unlock_requires_exact_label():
+    t = {"id": 3, "label": "2/2568", "status": "closed"}
+    assert mock_api.unlock_check(t, "2/2568") is None
+    assert mock_api.unlock_check(t, "  2/2568  ") is None
+    assert mock_api.unlock_check(t, "2/2569") is not None
+    assert mock_api.unlock_check(t, "") is not None
+
+
+def test_unlock_refuses_a_term_that_is_not_closed():
+    t = {"id": 4, "label": "1/2569", "status": "active"}
+    assert mock_api.unlock_check(t, "1/2569") == "เทอมนี้ไม่ได้ปิดอยู่"
+    assert mock_api.unlock_check({"id": 4, "label": "x", "status": "closed"}, "y") \
+        == "พิมพ์ชื่อเทอมให้ตรงก่อน"
+
+
+def test_term_data_endpoint_does_not_touch_server_state():
+    mock_api._STORE_KIND = "file"
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}]
+    before = list(mock_api.SLOTS)
+    try:
+        mock_api.term_data(999)
+    except Exception:
+        pass
+    assert mock_api.SLOTS == before
+
+
+def _term_data_with(row, blob):
+    saved = {k: getattr(mock_api, k) for k in ("_term_row", "_term_blob", "_apply_snapshot", "_STORE_KIND")}
+    applied = []
+    mock_api._STORE_KIND = "postgres"
+    mock_api._term_row = lambda i: row
+    mock_api._term_blob = lambda i: blob
+    mock_api._apply_snapshot = lambda d: applied.append(d)
+    cur_before = dict(mock_api.CURRENT_TERM)
+    slots_before = list(mock_api.SLOTS)
+    try:
+        out = mock_api.term_data(7)
+    finally:
+        for k, v in saved.items():
+            setattr(mock_api, k, v)
+    assert not applied, "ห้ามเรียก _apply_snapshot"
+    assert mock_api.CURRENT_TERM == cur_before and mock_api.SLOTS == slots_before
+    return out
+
+
+def test_term_data_takes_current_term_from_the_row_not_the_blob():
+    blob = mock_api._pack({"slots": [{"id": 5}],
+                           "current_term": {"id": None, "status": "active"}})
+    row = {"id": 7, "year": 2568, "semester": 2, "label": "2/2568", "status": "closed"}
+    out = _term_data_with(row, blob)
+    assert out["current_term"] == {"id": 7, "year": 2568, "semester": 2,
+                                   "label": "2/2568", "status": "closed"}
+    assert out["slots"] == [{"id": 5}]
+
+
+def test_term_data_overwrites_even_when_blob_has_no_current_term():
+    blob = mock_api._pack({"slots": []})
+    row = {"id": 7, "year": 2568, "semester": 2, "label": "2/2568", "status": "closed"}
+    assert _term_data_with(row, blob)["current_term"]["status"] == "closed"
+
+
+def _http(fn, *a):
+    try:
+        fn(*a)
+    except mock_api.HTTPException as exc:
+        return exc
+    return None
+
+
+def test_term_data_404_when_no_row_and_503_when_database_down():
+    saved = {k: getattr(mock_api, k) for k in ("_term_row", "_term_blob", "_STORE_KIND")}
+    mock_api._STORE_KIND = "postgres"
+    try:
+        mock_api._term_row = lambda i: None
+        exc = _http(mock_api.term_data, 9)
+        assert exc and exc.status_code == 404 and "ไม่พบเทอม" in exc.detail
+
+        def boom(i):
+            raise RuntimeError("postgresql://user:SECRET@host/db")
+        mock_api._term_row = boom
+        exc = _http(mock_api.term_data, 9)
+        assert exc and exc.status_code == 503 and "SECRET" not in exc.detail
+    finally:
+        for k, v in saved.items():
+            setattr(mock_api, k, v)
+
+
+def _unlock_setup(blob_term_id=None):
+    """memory = term 5 (active, 2 lessons); term 3 is closed and holds 1 lesson."""
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}]
+    mock_api.PARKED.clear()
+    return mock_api._pack({"slots": [{"id": 77}],
+                           "current_term": {"id": None, "year": 2568, "semester": 2,
+                                            "label": "2/2568", "status": "active"}})
+
+
+CLOSED3 = {"id": 3, "year": 2568, "semester": 2, "label": "2/2568", "status": "closed"}
+
+
+def _run_unlock(body, row=CLOSED3, active=None, blob=None, fail_on=None, extra=None):
+    blob = blob if blob is not None else _unlock_setup()
+    active = active if active is not None else {"id": 5, "label": "1/2569"}
+    saved_blob = mock_api._term_blob
+    mock_api._term_blob = lambda i: blob
+
+    def run(log, calls):
+        mock_api._term_row = lambda i: row if i == row["id"] else {"id": i}
+        if extra:
+            extra(log, calls)
+        try:
+            return mock_api.unlock_term(row["id"], body), log, calls
+        except mock_api.HTTPException as exc:
+            return exc, log, calls
+    try:
+        return _with_fake_db(run, active=active, fail_on=fail_on)
+    finally:
+        mock_api._term_blob = saved_blob
+
+
+def test_unlock_swaps_in_one_transaction_closing_active_first():
+    out, log, calls = _run_unlock({"confirm": " 2/2568 "})
+    kinds = [q.split()[0] for q, _ in log if not q.startswith("CREATE")]
+    assert kinds == ["UPDATE", "UPDATE", "COMMIT"], kinds
+    close, activate = [(q, p) for q, p in log if q.startswith("UPDATE")]
+    assert "status = 'closed'" in close[0] and close[1][1] == 2 and close[1][2] == 5, "ปิด active ในฐานข้อมูล พร้อมเก็บข้อมูลล่าสุด"
+    assert "status = 'active'" in activate[0] and activate[1] == (3,)
+    assert calls[0] == ("flush", True) and ("save", None) in calls
+    assert calls.index(("flush", True)) < calls.index(("save", None))
+    assert out["active"] == CLOSED3 and out["closed"] == {"id": 5}
+    assert mock_api.SLOTS == [{"id": 77}]
+    assert mock_api.CURRENT_TERM == {"id": 3, "year": 2568, "semester": 2,
+                                     "label": "2/2568", "status": "active"}, "จากแถว ไม่ใช่จากไฟล์ (id ในไฟล์เป็น None)"
+    assert LOGGED == [(5, "close", "ปิดเทอม 1/2569 (2 คาบ)"), (3, "unlock", "ปลดล็อกเทอม 2/2568")]
+
+
+def test_unlock_closing_blob_carries_the_old_lessons_and_says_closed():
+    out, log, calls = _run_unlock({"confirm": "2/2568"})
+    upd = [p for q, p in log if q.startswith("UPDATE") and "status = 'closed'" in q][0]
+    snap = mock_api._unpack(upd[0])
+    assert snap["slots"] == [{"id": 1}, {"id": 2}] and snap["current_term"]["status"] == "closed"
+
+
+def test_unlock_decides_from_the_database_not_from_current_term():
+    mock_api.CURRENT_TERM.update(BLANK)       # backup restore blanked it
+    blob = _unlock_setup()
+    mock_api.CURRENT_TERM.update(BLANK)
+    out, log, calls = _run_unlock({"confirm": "2/2568"}, active={"id": 41, "label": "x"}, blob=blob)
+    close = [p for q, p in log if q.startswith("UPDATE") and "status = 'closed'" in q][0]
+    assert close[2] == 41 and out["closed"] == {"id": 41}
+
+
+def test_unlock_with_no_active_row_only_activates():
+    blob = _unlock_setup()
+    saved = None
+
+    def run(log, calls):
+        mock_api._term_row = lambda i: CLOSED3 if i == 3 else {"id": i}
+        mock_api._term_blob = lambda i: blob
+        out = mock_api.unlock_term(3, {"confirm": "2/2568"})
+        kinds = [q.split()[0] for q, _ in log if not q.startswith("CREATE")]
+        assert kinds == ["UPDATE", "COMMIT"] and out["closed"] is None
+    saved = mock_api._term_blob
+    try:
+        _with_fake_db(run, active=None)
+    finally:
+        mock_api._term_blob = saved
+
+
+def test_unlock_refusals_change_nothing():
+    for body, row, code in (({"confirm": "2/2569"}, CLOSED3, 400),
+                            ({"confirm": 5}, CLOSED3, 400),
+                            ({}, CLOSED3, 400),
+                            ({"confirm": "1/2569"}, {**CLOSED3, "status": "active", "label": "1/2569"}, 409)):
+        out, log, calls = _run_unlock(body, row=row)
+        assert isinstance(out, mock_api.HTTPException) and out.status_code == code, (body, out)
+        assert not log and not calls, "ยังไม่แตะฐานข้อมูลหรือคิวบันทึก"
+        assert mock_api.SLOTS == [{"id": 1}, {"id": 2}] and mock_api.CURRENT_TERM["id"] == 5
+
+
+def test_unlock_404_for_unknown_term():
+    saved = {k: getattr(mock_api, k) for k in ("_term_row", "_STORE_KIND")}
+    mock_api._STORE_KIND = "postgres"
+    mock_api._term_row = lambda i: None
+    try:
+        exc = _http(mock_api.unlock_term, 9, {"confirm": "x"})
+    finally:
+        for k, v in saved.items():
+            setattr(mock_api, k, v)
+    assert exc and exc.status_code == 404
+
+
+def test_unlock_needs_database_and_refuses_while_writes_blocked():
+    mock_api._STORE_KIND = "file"
+    exc = _http(mock_api.unlock_term, 3, {"confirm": "x"})
+    assert exc and exc.status_code == 400
+
+    def run(log, calls):
+        mock_api._DB_HAD_DATA, mock_api._STATE_SOURCE = True, "seed"
+        mock_api._term_row = lambda i: CLOSED3
+        exc = _http(mock_api.unlock_term, 3, {"confirm": "2/2568"})
+        assert exc and exc.status_code == 409 and not log
+        assert mock_api.SLOTS == [{"id": 1}, {"id": 2}]
+    _unlock_setup()
+    _with_fake_db(run, active={"id": 5})
+
+
+def test_unlock_database_failure_restores_memory_and_hides_secret():
+    out, log, calls = _run_unlock({"confirm": "2/2568"}, fail_on="UPDATE app_terms SET status = 'active'")
+    assert isinstance(out, mock_api.HTTPException) and out.status_code == 500
+    assert "SECRET" not in out.detail and "postgresql" not in out.detail
+    assert "COMMIT" not in [q for q, _ in log], "ไม่ commit"
+    assert mock_api.SLOTS == [{"id": 1}, {"id": 2}]
+    assert mock_api.CURRENT_TERM == {"id": 5, "year": 2569, "semester": 1,
+                                     "label": "1/2569", "status": "active"}
+    assert not LOGGED and ("save", None) not in calls
+
+
+def test_unlock_row_vanishing_aborts_without_commit():
+    def extra(log, calls):
+        class C(_FakeCur):
+            pass
+    saved = _FakeCur.__init__
+
+    def init(self, log, rows):
+        saved(self, log, rows)
+        self.rowcount = 0
+    _FakeCur.__init__ = init
+    try:
+        out, log, calls = _run_unlock({"confirm": "2/2568"})
+    finally:
+        _FakeCur.__init__ = saved
+    assert out.status_code == 500 and "COMMIT" not in [q for q, _ in log]
+    assert mock_api.SLOTS == [{"id": 1}, {"id": 2}] and mock_api.CURRENT_TERM["id"] == 5
+
+
+def test_unlock_corrupt_blob_is_500_before_anything_changes():
+    _unlock_setup()
+    out, log, calls = _run_unlock({"confirm": "2/2568"}, blob=b"not gzip")
+    assert out.status_code == 500 and not log
+    assert mock_api.SLOTS == [{"id": 1}, {"id": 2}]
+
+
+def test_create_term_writes_close_and_create_log_rows():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+    mock_api.SLOTS[:] = [{"id": 1}]
+
+    def run(log, calls):
+        mock_api.create_term({"year": 2569, "semester": 2})
+        assert LOGGED == [(5, "close", "ปิดเทอม 5 (1 คาบ)"), (99, "create", "สร้างเทอม 2/2569")]
+    _with_fake_db(run, active={"id": 5})
+
+
+def test_term_log_schema_and_insert_columns():
+    s = mock_api._TERM_LOG_SCHEMA
+    for col in ("app_term_log", "id      bigserial", "term_id bigint", "action  text",
+                "detail  text", "at      timestamptz NOT NULL DEFAULT now()"):
+        assert col in s, col
+    log: list = []
+    saved = mock_api._db_connect
+    mock_api._db_connect = lambda: _FakeConn(log)
+    try:
+        mock_api._term_log(3, "unlock", "ปลดล็อกเทอม 2/2568")
+    finally:
+        mock_api._db_connect = saved
+    ins = [(q, p) for q, p in log if q.startswith("INSERT INTO app_term_log")]
+    assert ins and ins[0][1] == (3, "unlock", "ปลดล็อกเทอม 2/2568") and ("COMMIT", None) in log
+
+
+def test_term_log_never_raises_and_a_broken_log_cannot_stop_create_term():
+    saved = mock_api._db_connect
+    mock_api._db_connect = lambda: (_ for _ in ()).throw(RuntimeError("postgresql://u:SECRET@h/d"))
+    try:
+        assert mock_api._term_log(1, "create", "x") is None
+    finally:
+        mock_api._db_connect = saved
+    # the real _term_log, with only the log table broken, inside a real create_term
+    mock_api.CURRENT_TERM.update(BLANK)
+    mock_api.SLOTS[:] = []
+
+    def run(log, calls):
+        mock_api._term_log = _REAL_TERM_LOG
+        out = mock_api.create_term({"year": 2570, "semester": 1})
+        assert out["active"] == {"id": 99} and mock_api.CURRENT_TERM["id"] == 99
+    _REAL_TERM_LOG = mock_api._term_log
+    _with_fake_db(run, fail_on="app_term_log", existing=[])
+
+
+def test_terms_log_endpoint_newest_first_and_degrades():
+    mock_api._STORE_KIND = "file"
+    assert mock_api.terms_log()["available"] is False
+    import datetime as dt
+    rows = [(2, 3, "unlock", "d2", dt.datetime(2026, 11, 6)), (1, 3, "create", "d1", None)]
+
+    class Cur(_FakeCur):
+        def fetchall(self):
+            return rows
+    class Conn(_FakeConn):
+        def cursor(self):
+            return Cur(self.log, None)
+    log: list = []
+    saved = mock_api._db_connect
+    mock_api._STORE_KIND = "postgres"
+    mock_api._db_connect = lambda: Conn(log)
+    try:
+        out = mock_api.terms_log()
+    finally:
+        mock_api._db_connect = saved
+        mock_api._STORE_KIND = "file"
+    assert out["available"] and [r["id"] for r in out["log"]] == [2, 1]
+    assert any("ORDER BY at DESC" in q for q, _ in log)
+
+    def boom():
+        raise RuntimeError("SECRET")
+    mock_api._STORE_KIND = "postgres"
+    mock_api._db_connect = boom
+    try:
+        out = mock_api.terms_log()
+    finally:
+        mock_api._db_connect = saved
+        mock_api._STORE_KIND = "file"
+    assert out["available"] is False and "SECRET" not in str(out)
+
+
+def test_terms_routes_do_not_shadow_each_other_and_stay_write_safe():
+    paths = {(r[0].upper(), r[1]) for r in mock_api.app.routes}
+    for want in (("GET", "/api/terms/log"), ("GET", "/api/terms/{term_id}/data"),
+                 ("POST", "/api/terms/{term_id}/unlock")):
+        assert want in paths, want
+    assert mock_api.term_blocks_write({"status": "closed", "label": "2/2568"}, "POST",
+                                      "/api/terms/3/unlock") is None
 
 
 for name, fn in list(globals().items()):
