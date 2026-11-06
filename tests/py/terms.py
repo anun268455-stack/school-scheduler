@@ -1112,6 +1112,50 @@ def test_terms_stats_route_registered_and_write_safe():
     assert ("GET", "/api/terms/stats") in paths
 
 
+def test_stats_scout_activity_across_classes_counts_supervisor_once():
+    # ลูกเสือ: บล็อกกิจกรรมเดียว วางใน 14 ห้อง ใช้ activity_key เดียว ครูผู้ดูแลชุดเดียว
+    snap = {"departments": [{"id": 1, "name": "กิจกรรม"}],
+            "subjects": [{"id": 9, "department_id": 1}],
+            "slots": [{"id": i, "group_id": i, "day": 3, "period": 5, "subject_id": 9,
+                       "is_activity_block": True, "activity_key": "ACT-3-5-1",
+                       "activity_teacher_ids": [70, 71], "teacher_id": 0}
+                      for i in range(1, 15)]}
+    out = mock_api.term_stats_of(snap)
+    assert out["by_teacher"] == {70: 1, 71: 1}, out["by_teacher"]
+    assert out["slots"] == 14                     # ช่องที่ลงแล้ว นับตรง ๆ
+    assert out["by_department"] == {"กิจกรรม": 1}
+
+
+def test_stats_two_separate_scout_lessons_count_twice():
+    snap = {"slots": [
+        {"group_id": 1, "day": 3, "period": 5, "activity_key": "ACT-A", "activity_teacher_ids": [70]},
+        {"group_id": 2, "day": 3, "period": 5, "activity_key": "ACT-A", "activity_teacher_ids": [70]},
+        {"group_id": 1, "day": 4, "period": 5, "activity_key": "ACT-B", "activity_teacher_ids": [70]}]}
+    assert mock_api.term_stats_of(snap)["by_teacher"] == {70: 2}
+
+
+def test_stats_elective_window_across_classes_counts_teacher_once():
+    # คาบเสรี: ช่องต่อห้อง 10 ห้อง ไม่มี pool id (key = ELEC:วัน:คาบ) และแบบมี pool id
+    cell = lambda g, **k: {"group_id": g, "day": 2, "period": 4, "is_elective": True,
+                           "teacher_id": 0, "elective_options": [
+                               {"teacher_id": 80, "room_id": 5, "subject_id": 60},
+                               {"teacher_id": 81, "room_id": 6, "subject_id": 61}], **k}
+    by_class = {"slots": [cell(g) for g in range(1, 11)]}
+    out = mock_api.term_stats_of(by_class)
+    assert out["by_teacher"] == {80: 1, 81: 1}, out["by_teacher"]
+    assert out["slots"] == 10 and out["rooms_used"] == 2
+    pooled = {"slots": [cell(g, elective_pool_id=7) for g in range(1, 11)]}
+    assert mock_api.term_stats_of(pooled)["by_teacher"] == {80: 1, 81: 1}
+    # คาบเสรีอีกชั่วโมงหนึ่ง = อีกบทเรียน
+    both = {"slots": by_class["slots"] + [dict(cell(1), period=5)]}
+    assert mock_api.term_stats_of(both)["by_teacher"] == {80: 2, 81: 2}
+
+
+def test_stats_ordinary_lessons_still_count_each():
+    snap = {"slots": [{"group_id": g, "day": 1, "period": 1, "teacher_id": 5} for g in (1, 2)]}
+    assert mock_api.term_stats_of(snap)["by_teacher"] == {5: 2}
+
+
 for name, fn in list(globals().items()):
     if name.startswith("test_") and callable(fn):
         fn()

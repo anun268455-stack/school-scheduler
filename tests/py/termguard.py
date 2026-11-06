@@ -470,6 +470,39 @@ def test_delete_endpoints_refuse_with_409_when_closed_term_uses_it():
         mock_api.SUBJECTS[:] = snap_s
 
 
+def test_active_is_coerced_to_a_real_boolean():
+    for v in (False, "false", "False", " FALSE ", "", 0, None, "0", "no"):
+        ok(mock_api._coerce_active(v) is False, f"{v!r} ต้องเป็น False")
+    for v in (True, "true", "TRUE", 1, "1", "yes"):
+        ok(mock_api._coerce_active(v) is True, f"{v!r} ต้องเป็น True")
+    for bad in ("abc", [], {}):
+        e = _expect_409(lambda: mock_api._coerce_active(bad))
+        ok(e is not None and e.status_code == 400, f"{bad!r} ต้อง 400")
+
+
+def test_put_and_create_store_coerced_active():
+    saved = (list(mock_api.TEACHERS), list(mock_api.ROOMS), list(mock_api.SUBJECTS))
+    try:
+        t = mock_api.create_teacher({"name": "x", "active": "false"})
+        r = mock_api.create_room({"name": "x", "active": 0})
+        s = mock_api.create_subject({"name": "x", "active": "true"})
+        ok(t["active"] is False and r["active"] is False and s["active"] is True, "create แปลงเป็น bool")
+        for put, rec in ((mock_api.update_teacher, t), (mock_api.update_room, r),
+                         (mock_api.update_subject, s)):
+            for v, want in (("false", False), ("", False), (0, False), (None, False),
+                            (True, True), ("true", True), (1, True)):
+                put(rec["id"], {"active": v})
+                ok(rec["active"] is want, f"{put.__name__} {v!r} -> {rec['active']!r}")
+        e = _expect_409(lambda: mock_api.update_teacher(t["id"], {"active": "abc", "name": "จะไม่ถูกแก้"}))
+        ok(e is not None and e.status_code == 400 and t["name"] == "x", "ค่าแปลกถูกปฏิเสธก่อนแก้อะไร")
+        b = mock_api.bulk_create_teachers([{"name": "b", "active": "false"}, {"name": "c"}])
+        ok(b[0]["active"] is False and b[1]["active"] is True, "bulk แปลงและมีค่าเริ่มต้น")
+    finally:
+        mock_api.TEACHERS[:] = saved[0]
+        mock_api.ROOMS[:] = saved[1]
+        mock_api.SUBJECTS[:] = saved[2]
+
+
 def test_delete_teacher_still_works_without_database():
     mock_api._STORE_KIND = "file"
     t = mock_api.create_teacher({"name": "ลบได้"})

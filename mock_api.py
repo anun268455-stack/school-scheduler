@@ -9069,7 +9069,7 @@ def get_rooms():
 def create_room(body: dict[str, Any]):
     body["id"] = _next("room")
     body.setdefault("usable", True)
-    body.setdefault("active", True)
+    body["active"] = _coerce_active(body.get("active", True))
     body.setdefault("reserved_teacher_ids", [])
     ROOMS.append(body)
     return body
@@ -9101,6 +9101,7 @@ def _refresh_names_for(*, teacher_id=None, room_id=None, subject_id=None,
 
 @app.put("/api/rooms/{i}")
 def update_room(i: int, body: dict[str, Any]):
+    body = _body_with_active(body)
     for r in ROOMS:
         if r["id"] == i:
             r.update(body)
@@ -9128,7 +9129,7 @@ def bulk_create_rooms(body: list[dict[str, Any]]):
         row.setdefault("specialized_dept_id", None)
         row.setdefault("reserved_teacher_ids", [])
         row.setdefault("usable", True)
-        row.setdefault("active", True)
+        row["active"] = _coerce_active(row.get("active", True))
         ROOMS.append(row)
         created.append(row)
     return created
@@ -9488,12 +9489,13 @@ def get_teachers():
 @app.post("/api/teachers/")
 def create_teacher(body: dict[str, Any]):
     body["id"] = _next("teacher")
-    body.setdefault("active", True)
+    body["active"] = _coerce_active(body.get("active", True))
     TEACHERS.append(body)
     return body
 
 @app.put("/api/teachers/{i}")
 def update_teacher(i: int, body: dict[str, Any]):
+    body = _body_with_active(body)
     for t in TEACHERS:
         if t["id"] == i:
             t.update(body)
@@ -9520,7 +9522,7 @@ def bulk_create_teachers(body: list[dict[str, Any]]):
         row.setdefault("outdoor_score", 5)
         row.setdefault("max_slots_per_day", 6)
         row.setdefault("max_outdoor_per_week", 2)
-        row.setdefault("active", True)
+        row["active"] = _coerce_active(row.get("active", True))
         TEACHERS.append(row)
         created.append(row)
     return created
@@ -9774,12 +9776,13 @@ def get_subjects():
 def create_subject(body: dict[str, Any]):
     body["id"] = _next("subject")
     body.setdefault("prefer_morning", False)
-    body.setdefault("active", True)
+    body["active"] = _coerce_active(body.get("active", True))
     SUBJECTS.append(body)
     return body
 
 @app.put("/api/subjects/{i}")
 def update_subject(i: int, body: dict[str, Any]):
+    body = _body_with_active(body)
     for s in SUBJECTS:
         if s["id"] == i:
             s.update(body)
@@ -9805,7 +9808,7 @@ def bulk_create_subjects(body: list[dict[str, Any]]):
         row.setdefault("prefer_morning", False)
         row.setdefault("duration", 1)
         row.setdefault("fixed_room_id", None)
-        row.setdefault("active", True)
+        row["active"] = _coerce_active(row.get("active", True))
         SUBJECTS.append(row)
         created.append(row)
     return created
@@ -13905,6 +13908,35 @@ def _is_active(rec: dict[str, Any]) -> bool:
     return bool((rec or {}).get("active", True))
 
 
+_ACTIVE_TRUE = frozenset({"true", "1", "yes", "on"})
+_ACTIVE_FALSE = frozenset({"false", "0", "no", "off", "", "null", "none"})
+
+
+def _coerce_active(v: Any) -> bool:
+    """ค่า active จากหน้าเว็บ → bool จริง · "false" ต้องไม่กลายเป็นจริง
+
+    ค่าที่แปลไม่ออก (เช่น "abc", list) ปฏิเสธ 400 ดีกว่าเดาแล้วปลดครูออกเงียบ ๆ
+    """
+    if v is None or isinstance(v, bool):
+        return bool(v)
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        t = v.strip().lower()
+        if t in _ACTIVE_TRUE:
+            return True
+        if t in _ACTIVE_FALSE:
+            return False
+    raise HTTPException(400, "ค่า active ต้องเป็นจริงหรือเท็จ")
+
+
+def _body_with_active(body: dict[str, Any]) -> dict[str, Any]:
+    """สำเนา body ที่ active เป็น bool จริง (แปลก่อนแก้ข้อมูล จะได้ 400 โดยไม่แก้ครึ่งทาง)"""
+    if isinstance(body, dict) and "active" in body:
+        return {**body, "active": _coerce_active(body["active"])}
+    return body
+
+
 def _int_ids(values) -> set[int]:
     """รหัสที่เป็นจำนวนเต็มจริง ไม่รวม 0/None/bool (0 = ยังไม่ได้เลือก)"""
     return {v for v in values if type(v) is int and v}
@@ -14169,8 +14201,15 @@ def term_stats_of(snapshot: dict[str, Any]) -> dict[str, Any]:
     """สถิติของสำเนาหนึ่งเทอม ฟังก์ชันล้วน คีย์ที่หายถือว่าว่าง
 
     by_teacher นับคาบที่ครูอยู่ในห้องทุกแบบ (ครูหลัก ครูสอนร่วม ครูผู้ดูแลกิจกรรม
-    ครูของวิชาในคาบเสรี) คนละหนึ่งครั้งต่อคาบ · by_department ใช้กลุ่มสาระของวิชาก่อน
-    ถ้าไม่มีใช้ของครูเจ้าของคาบ (เหมือนที่ใช้ในตัวจัดตาราง) ไม่รู้ = "ไม่ระบุ"
+    ครูของวิชาในคาบเสรี) คนละหนึ่งครั้งต่อคาบ และบทเรียนที่ใช้ร่วมหลายห้อง
+    (_shared_lesson_key: คาบกิจกรรม/คาบเสรี) นับครั้งเดียวต่อครู ไม่งั้นครูลูกเสือ
+    ที่มีชื่อใน 14 ห้องจะถูกนับเป็น 14 คาบ · คาบที่ไม่มี key นับทีละคาบ
+
+    slots = จำนวนช่องที่ลงแล้ว นับทุกช่องตรง ๆ ไม่ dedup
+    by_department เป็นตัวเลขภาระงาน จึง dedup แบบเดียวกัน: บทเรียนร่วมหนึ่งบทนับ
+    หนึ่งครั้งต่อกลุ่มสาระ (ผลรวมของมันจึงอาจน้อยกว่า slots)
+    กลุ่มสาระใช้ของวิชาก่อน ถ้าไม่มีใช้ของครูเจ้าของคาบ (เหมือนที่ใช้ในตัวจัดตาราง)
+    ไม่รู้ = "ไม่ระบุ"
     rooms_used / subjects_open = จำนวนห้อง / วิชา ที่มีคาบอ้างถึงอย่างน้อยหนึ่งคาบ
     """
     snapshot = snapshot if isinstance(snapshot, dict) else {}
@@ -14186,11 +14225,22 @@ def term_stats_of(snapshot: dict[str, Any]) -> dict[str, Any]:
     by_teacher: dict[int, int] = {}
     rooms: set[int] = set()
     subjects: set[int] = set()
+    seen_t: set[tuple] = set()
+    seen_d: set[tuple] = set()
     for sl in slots:
+        key = _shared_lesson_key(sl)
+        # กลุ่มสาระ: วิชาก่อน ถ้าไม่มีใช้ของครูเจ้าของคาบ ไม่รู้ = "ไม่ระบุ"
         dep = subject_dept.get(sl.get("subject_id")) or teacher_dept.get(sl.get("teacher_id"))
         name = dept_name.get(dep) or "ไม่ระบุ"
-        by_department[name] = by_department.get(name, 0) + 1
+        if key is None or (name, key) not in seen_d:
+            by_department[name] = by_department.get(name, 0) + 1
+            if key is not None:
+                seen_d.add((name, key))
         for t in _slot_teacher_ids_all(sl):
+            if key is not None:
+                if (t, key) in seen_t:
+                    continue
+                seen_t.add((t, key))
             by_teacher[t] = by_teacher.get(t, 0) + 1
         rooms |= _int_ids(_slot_rooms(sl))
         subjects |= _slot_subject_ids_all(sl)
