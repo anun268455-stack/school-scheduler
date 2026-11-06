@@ -13586,11 +13586,11 @@ def _db_history_blob(hid: int) -> bytes | None:
     return bytes(row[0]) if row else None
 
 
-# One saved copy per academic term. The active term is not stored here: it
-# lives in the module-level variables and in app_state, exactly as before.
-# This table holds the terms the school has closed (and the one it is in, as
-# a row whose data is refreshed when it is closed), so a past term can be
-# opened read-only without disturbing the live one.
+# One saved copy per academic term. The active term has a row here too, from
+# the moment it is created; its live data is still the module-level variables
+# and app_state, and its row's data is only refreshed when the term is closed
+# (which is why closing is an UPDATE of that row, not an insert). Closed rows
+# let a past term be opened read-only without disturbing the live one.
 #
 # Two rules are enforced by the database on purpose, not left to the code in
 # front of it: UNIQUE (year, semester), so two clicks on "new term" cannot
@@ -13719,6 +13719,9 @@ def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
     from the second term on. And only one row may be 'active' at a time, so the
     old row is closed before the new one goes in. One commit: if the insert
     fails, the old term is still active rather than the school having none.
+
+    The row is authoritative for `id` and `status`: the `current_term` inside
+    either stored blob must not be trusted for those two fields.
     """
     with _db_connect() as conn:
         with conn.cursor() as cur:
@@ -13781,29 +13784,41 @@ def create_term(body: dict[str, Any]):
 
     old = dict(CURRENT_TERM)
     has_old = old.get("id") is not None
-    old_blob = _pack(_snapshot()) if has_old else None
     old_slots = len(SLOTS)
+    # The file being stored is a closed term, so it must say so: the status is
+    # set BEFORE packing. (The row stays authoritative for id and status.)
+    CURRENT_TERM["status"] = "closed"
+    old_blob = _pack(_snapshot()) if has_old else None
 
     # In-place, never `SLOTS = []`: curriculum.py holds a live alias to this list.
     saved_slots = list(SLOTS)
+    saved_parked = list(PARKED)
     saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
     SLOTS.clear()
+    PARKED.clear()      # lifted-out lessons point at last term's plan
     CURRENT_TERM.update({"id": None, "year": year, "semester": semester,
                          "label": label, "status": "active"})
     SCHOOL_CONFIG["term"], SCHOOL_CONFIG["year"] = str(semester), str(year)
     try:
+        # The new row's id is not known yet by construction (RETURNING id), so
+        # this snapshot carries id None; readers take id and status from the row.
         new_id = _term_rotate(old["id"] if has_old else None, old_blob, old_slots,
                               year, semester, label, _pack(_snapshot()))
     except Exception:                              # noqa: BLE001
         # Nothing was committed: put the memory back as it was.
         SLOTS.extend(saved_slots)
+        PARKED.extend(saved_parked)
         CURRENT_TERM.update(old)
         SCHOOL_CONFIG.update(saved_cfg)
         raise HTTPException(500, "สร้างเทอมใหม่ไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง")
     CURRENT_TERM["id"] = new_id
     _save_state()
+    # The rotate has committed, so a save that has not landed is reported, not
+    # raised: raising would say "failed" about a term that was created. The
+    # screen should tell the school the term exists but the save is pending.
     return {"closed": _term_row(old["id"]) if has_old else None,
-            "active": _term_row(new_id)}
+            "active": _term_row(new_id),
+            "save_error": _STORE_ERROR}
 
 
 @app.get("/api/terms")

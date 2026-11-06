@@ -398,6 +398,63 @@ def test_create_term_database_failure_restores_memory_and_hides_secret():
     assert mock_api.SCHOOL_CONFIG["term"] == "1" and mock_api.SCHOOL_CONFIG["year"] == "2569"
 
 
+def test_closing_blob_says_closed_and_clears_parked():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+    mock_api.SLOTS[:] = [{"id": 1}]
+    parked = mock_api.PARKED
+    parked[:] = [{"id": 1, "rows": []}]
+    packed: list = []
+    saved_pack = mock_api._pack
+
+    def run(log, calls):
+        mock_api._pack = lambda snap: packed.append(
+            (dict(snap["current_term"]), list(snap["parked"]))) or b"x"
+        out = mock_api.create_term({"year": 2569, "semester": 2})
+        assert out["save_error"] is None
+        kinds = [q.split()[0] for q, _ in log if not q.startswith("CREATE")]
+        assert kinds.index("UPDATE") < kinds.index("INSERT"), "ปิดแถวเก่าก่อนแทรกแถวใหม่"
+    try:
+        _with_fake_db(run, existing=[{"year": 2569, "semester": 1}])
+    finally:
+        mock_api._pack = saved_pack
+    assert packed[0][0]["status"] == "closed" and packed[0][1] == [{"id": 1, "rows": []}]
+    assert packed[1][0]["status"] == "active" and packed[1][0]["id"] is None
+    assert packed[1][1] == []
+    assert mock_api.PARKED is parked and parked == []
+
+
+def test_create_term_failure_restores_parked_and_status():
+    mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
+                                  "label": "1/2569", "status": "active"})
+    mock_api.PARKED[:] = [{"id": 1, "rows": []}]
+
+    def run(log, calls):
+        try:
+            mock_api.create_term({"year": 2569, "semester": 2})
+            assert False
+        except Exception as exc:
+            assert exc.status_code == 500
+    _with_fake_db(run, fail_on="INSERT")
+    assert mock_api.PARKED == [{"id": 1, "rows": []}]
+    assert mock_api.CURRENT_TERM["status"] == "active"
+    mock_api.PARKED.clear()
+
+
+def test_create_term_reports_save_error_without_raising():
+    mock_api.CURRENT_TERM.update(BLANK)
+    saved = mock_api._STORE_ERROR
+
+    def run(log, calls):
+        mock_api._save_state = lambda: setattr(mock_api, "_STORE_ERROR", "OSError: x")
+        out = mock_api.create_term({"year": 2570, "semester": 1})
+        assert out["save_error"] == "OSError: x" and out["active"] == {"id": 99}
+    try:
+        _with_fake_db(run)
+    finally:
+        mock_api._STORE_ERROR = saved
+
+
 for name, fn in list(globals().items()):
     if name.startswith("test_") and callable(fn):
         fn()
