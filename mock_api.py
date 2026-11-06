@@ -14021,10 +14021,20 @@ def term_data(term_id: int):
     _require_db()
     try:
         row = _term_row(term_id)
-        blob = _term_blob(term_id) if row else None
+        # The active row's stored copy is whatever was packed when the term was
+        # created; the live data is in memory. Serving it would show last
+        # rotation's timetable as the current one, so it is refused, and the
+        # blob is not even read.
+        blob = _term_blob(term_id) if row and row["status"] == "closed" else None
     except Exception:                              # noqa: BLE001
         raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
-    if row is None or blob is None:
+    if row is None:
+        raise HTTPException(404, "ไม่พบเทอมนี้")
+    if row["status"] != "closed":
+        raise HTTPException(
+            409, "นี่คือเทอมที่ใช้งานอยู่ และแสดงอยู่บนหน้าจอแล้ว — "
+                 "ดูได้จากหน้าตารางตามปกติ ไม่ต้องเปิดจากสำเนาที่เก็บไว้")
+    if blob is None:
         raise HTTPException(404, "ไม่พบเทอมนี้")
     try:
         data = _unpack(blob)

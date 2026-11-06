@@ -673,6 +673,34 @@ def _http(fn, *a):
     return None
 
 
+def test_term_data_refuses_the_active_term_with_409_and_no_snapshot():
+    blob = mock_api._pack({"slots": [{"id": 5}]})
+    mock_api._STORE_KIND = "postgres"
+    for status in ("active", "Closed", None):
+        row = {"id": 4, "year": 2569, "semester": 1, "label": "1/2569", "status": status}
+        saved = {k: getattr(mock_api, k) for k in ("_term_row", "_term_blob", "_apply_snapshot", "_STORE_KIND")}
+        read = []
+        mock_api._term_row = lambda i, r=row: r
+        mock_api._term_blob = lambda i: read.append(i) or blob
+        mock_api._apply_snapshot = lambda d: read.append("apply")
+        mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}]
+        cur_before = dict(mock_api.CURRENT_TERM)
+        try:
+            result = None
+            try:
+                result = mock_api.term_data(4)
+            except mock_api.HTTPException as exc:
+                err = exc
+        finally:
+            for k, v in saved.items():
+                setattr(mock_api, k, v)
+        assert result is None, "ห้ามมีสำเนาในคำตอบ"
+        assert err.status_code == 409 and "เทอมที่ใช้งานอยู่" in err.detail, status
+        assert read == [], "ไม่อ่านก้อนข้อมูลและไม่แตะ _apply_snapshot"
+        assert mock_api.SLOTS == [{"id": 1}, {"id": 2}] and mock_api.CURRENT_TERM == cur_before
+    mock_api._STORE_KIND = "file"
+
+
 def test_term_data_404_when_no_row_and_503_when_database_down():
     saved = {k: getattr(mock_api, k) for k in ("_term_row", "_term_blob", "_STORE_KIND")}
     mock_api._STORE_KIND = "postgres"
