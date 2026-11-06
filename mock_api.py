@@ -6,6 +6,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from typing import Any, Callable
 import copy as _copy
 import random
@@ -78,8 +79,39 @@ def _nothing_changed() -> None:
         flag.append(True)
 
 
+# path ที่เขียนได้เสมอ แม้เทอมปัจจุบันปิดอยู่ — ไม่งั้นปลดล็อกไม่ได้ (การปลดล็อก
+# เองก็คือ POST) และกู้ข้อมูลกลับไม่ได้ ตัวที่ลงท้ายด้วย "/" ครอบ path ลูกด้วย
+# เช่น "/api/terms/" ครอบ "/api/terms/3/unlock"
+TERM_WRITE_SAFE_PATHS: frozenset[str] = frozenset({
+    "/api/terms", "/api/terms/", "/api/restore", "/api/state/adopt",
+    "/api/state/history/",
+})
+
+
+def term_blocks_write(term: dict[str, Any] | None, method: str, path: str) -> str | None:
+    """ข้อความไทยบอกเหตุผลเมื่อห้ามเขียน · None เมื่อเขียนได้
+
+    ฟังก์ชันล้วน: ไม่อ่านตัวแปรกลางเลย ผู้เรียกส่ง CURRENT_TERM เข้ามา
+    ยังไม่เคยสร้างเทอม (status เป็น None) = ไม่ห้ามอะไร โปรแกรมทำงานเหมือนเดิม
+    """
+    if method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    for safe in TERM_WRITE_SAFE_PATHS:
+        if path == safe or (safe.endswith("/") and path.startswith(safe)):
+            return None
+    if term is None or term.get("status") != "closed":
+        return None
+    return f"เทอม {term['label']} ปิดแล้ว ดูและปริ้นได้เท่านั้น"
+
+
 @app.middleware("http")
 async def _bump_revision(request, call_next):
+    # ตรวจก่อนเรียก handler เสมอ: ถ้าปล่อยให้ handler ทำงานแล้วค่อยปฏิเสธ
+    # ข้อมูลในหน่วยความจำถูกแก้ไปแล้ว แค่ไม่ได้เซฟ — เทอมที่ปิดจะถูกแก้จริง
+    # อ่าน CURRENT_TERM ในหน่วยความจำ ไม่ถามฐานข้อมูล (ทุกคำขอเขียนผ่านตรงนี้)
+    blocked = term_blocks_write(CURRENT_TERM, request.method, request.url.path)
+    if blocked is not None:
+        return JSONResponse(status_code=409, content={"detail": blocked})
     unchanged: list[bool] = []
     _NOTHING_CHANGED.set(unchanged)
     response = await call_next(request)
