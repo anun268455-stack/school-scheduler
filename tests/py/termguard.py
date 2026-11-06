@@ -110,6 +110,13 @@ def test_middleware_never_calls_handler_when_blocked():
            f"{m}: ข้อความไทยบอกเทอม")
 
 
+def test_blocked_response_carries_cors_header():
+    # คำตอบที่คืนก่อน call_next ไม่ผ่าน CORSMiddleware ต้องมีหัวข้อเอง
+    # ไม่งั้นเบราว์เซอร์ข้ามโดเมนอ่าน 409 ไม่ได้
+    resp, _, _ = _run(CLOSED, "POST", "/api/slots/1")
+    ok(resp.headers.get("Access-Control-Allow-Origin") == "*", "409 ต้องมี CORS origin *")
+
+
 def test_middleware_lets_active_term_write():
     resp, calls, moved = _run(ACTIVE, "POST", "/api/slots/")
     assert calls["handler"] == 1 and resp.status_code == 200

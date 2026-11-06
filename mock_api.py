@@ -86,6 +86,9 @@ TERM_WRITE_SAFE_PATHS: frozenset[str] = frozenset({
     "/api/terms", "/api/terms/", "/api/restore", "/api/state/adopt",
     "/api/state/history/",
 })
+# ทุก route เขียนใต้ "/api/terms/" ได้ตลอดโดยตั้งใจ ดังนั้นอะไรที่เพิ่มใต้ path นี้
+# ต้องปลอดภัยที่จะเรียกตอนเทอมปัจจุบันปิดอยู่ (ถ้าลิสต์ทีละ path ตัวถัดไปที่เพิ่ม
+# จะถูกล็อกเงียบ ๆ และปลดล็อกเทอมไม่ได้)
 
 
 def term_blocks_write(term: dict[str, Any] | None, method: str, path: str) -> str | None:
@@ -111,7 +114,12 @@ async def _bump_revision(request, call_next):
     # อ่าน CURRENT_TERM ในหน่วยความจำ ไม่ถามฐานข้อมูล (ทุกคำขอเขียนผ่านตรงนี้)
     blocked = term_blocks_write(CURRENT_TERM, request.method, request.url.path)
     if blocked is not None:
-        return JSONResponse(status_code=409, content={"detail": blocked})
+        # ตั้งหัวข้อ CORS เอง: คำตอบนี้ออกจากชั้นนอกสุดโดยไม่ผ่าน CORSMiddleware
+        # (ต้องคืนก่อน call_next) ถ้าไม่ใส่ หน้าเว็บบน GitHub Pages ที่เรียกข้ามไป
+        # Render จะอ่านคำตอบไม่ได้ และผู้ใช้เห็นแค่ "เครือข่ายผิดพลาด" แทนข้อความไทย
+        # ค่า "*" ตรงกับ allow_origins=["*"] ด้านบน — ถ้าแก้นโยบาย CORS ต้องแก้ที่นี่ด้วย
+        return JSONResponse(status_code=409, content={"detail": blocked},
+                            headers={"Access-Control-Allow-Origin": "*"})
     unchanged: list[bool] = []
     _NOTHING_CHANGED.set(unchanged)
     response = await call_next(request)
