@@ -68,6 +68,8 @@ interface PrintViewProps {
   rooms?:       Room[];
   departments?: Department[];
   subjects?:    Subject[];
+  /** ไม่ได้ใช้แล้วหลังใบอัตรากำลังเลิกรายงานคาบที่ลงไม่ได้ — คงช่องไว้
+   *  เพราะที่เรียกยังส่งมา และไม่มีเหตุให้ต้องไปแก้ทุกที่พร้อมกัน */
   requirements?: LessonRequirement[];
   periods:      Period[];
   schoolConfig: SchoolConfig;
@@ -673,7 +675,7 @@ function RoomCell({ slots, m, roomId }: {
 // ── Main export ──────────────────────────────────────────────────────────────
 export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
   ({ slots, groups, teachers = [], rooms = [], departments = [], subjects = [],
-     requirements = [], periods, schoolConfig, options }, ref) => {
+     periods, schoolConfig, options }, ref) => {
     const termLabel = `ภาคเรียนที่ ${schoolConfig.term}/${schoolConfig.year}  โรงเรียน${schoolConfig.schoolName}`;
     // ผังบรรทัดของใบพิมพ์ — เก็บไว้กับการตั้งค่าโรงเรียน เหมือนผังบนจอ
     const m: Metrics = {
@@ -685,7 +687,10 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
     // แบบฟอร์มใบพิมพ์ — ช่องลงชื่อ หมายเหตุ วันที่ เลขหน้า เก็บไว้กับค่าตั้ง
     // โรงเรียนเหมือนผังบรรทัด ยังไม่ได้ตั้ง = ใบเดิมทุกตัวอักษร (utils/printSheet)
     const sheetSetup = normalizeSheet(schoolConfig.print_sheet);
-    const signers = sheetSigners(sheetSetup, schoolConfig);
+    // ใบตารางกับใบอัตรากำลังต้องการคนเซ็นคนละชุด อ่านจากแบบฟอร์มเดียวกันแต่
+    // กรองคนละแบบ — โรงเรียนจะได้ไม่ต้องเข้าไปแก้สลับไปมาทุกครั้งที่เปลี่ยนใบ
+    const signers = sheetSigners(sheetSetup, schoolConfig, "timetable");
+    const workSigners = sheetSigners(sheetSetup, schoolConfig, "workload");
 
     // Build one block per class / teacher, in the requested order.
     const blocks: React.ReactNode[] = [];
@@ -847,10 +852,11 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
         {options.mode === "workload" ? (
           <WorkloadReport
             teachers={teachers} departments={departments} groups={groups}
-            subjects={subjects} requirements={requirements} slots={slots}
+            subjects={subjects} slots={slots}
             schoolName={schoolConfig.schoolName} termLabel={termLabel}
             selectedIds={options.selectedIds} sort={options.sort}
             countActivities={options.countActivities !== false}
+            signers={workSigners}
           />
         ) : sheets.length > 0 ? (
           sheets.map((sheet, i) => (

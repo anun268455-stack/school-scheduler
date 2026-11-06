@@ -16,8 +16,8 @@ import {
   type CellLayout, type CellPartKey,
 } from "../utils/cellLayout";
 import {
-  MAX_SIGNERS, normalizeSheet, pageLabel, sheetSigners, thaiDate,
-  type SheetSetup, type Signer,
+  allSigners, MAX_SIGNERS, normalizeSheet, pageLabel, signsOn, thaiDate,
+  type SheetDoc, type SheetSetup, type Signer,
 } from "../utils/printSheet";
 import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject, LessonRequirement, ElectivePool } from "../types";
 import { DAYS, periodLabel } from "../types";
@@ -3850,13 +3850,32 @@ const SheetFormEditor: React.FC = () => {
   const setup = useMemo(() => normalizeSheet(schoolConfig.print_sheet),
                         [schoolConfig.print_sheet]);
   // ที่แสดงบนจอ = ที่จะพิมพ์ รวมถึงตอนที่ยังไม่ได้ตั้งอะไร (สองช่องเดิม)
-  const signers = sheetSigners(setup, schoolConfig);
+  // ทุกคน ไม่กรองด้วยชนิดใบ — หน้านี้บันทึกทั้งรายการกลับลงไป ถ้าเห็นไม่ครบ
+  // คนที่ไม่เห็นจะถูกบันทึกทับหายไปเงียบ ๆ (utils/printSheet.allSigners)
+  const signers = allSigners(setup, schoolConfig);
   const custom = setup.signers !== undefined;
+  /** ตัวอย่างท้ายใบกำลังดูใบชนิดไหนอยู่ */
+  const [preview, setPreview] = useState<SheetDoc>("timetable");
+  const shown = signers.filter((s) => signsOn(s, preview));
 
   const write = (next: Partial<SheetSetup>) => setPrintSheet({ ...setup, ...next });
   const writeSigners = (list: Signer[]) => write({ signers: list });
   const edit = (i: number, patch: Partial<Signer>) =>
     writeSigners(signers.map((s, k) => (k === i ? { ...s, ...patch } : s)));
+
+  /**
+   * ติ๊ก/ไม่ติ๊กว่าผู้เซ็นคนนี้ขึ้นบนใบชนิดนั้นไหม
+   *
+   * ค่าที่เก็บคือ "รายการใบที่ขึ้น" ซึ่งไม่ระบุแปลว่าทุกใบ การเอาติ๊กออกจากใบ
+   * หนึ่งจึงต้องกลายเป็นการระบุอีกใบหนึ่งให้ชัด ไม่ใช่ลบค่าทิ้ง (ซึ่งจะกลับไป
+   * เป็นทุกใบ) และการเอาออกทั้งสองใบ เก็บเป็นรายการเปล่าไม่ได้ด้วยเหตุผล
+   * เดียวกัน — จึงเหลือไว้ใบเดียวเสมอ ถ้าไม่อยากให้ใครเซ็นเลยให้ลบแถวทิ้ง
+   */
+  const toggleDoc = (s: Signer, doc: SheetDoc): SheetDoc[] => {
+    const now: SheetDoc[] = s.on?.length ? s.on : ["timetable", "workload"];
+    const next = now.includes(doc) ? now.filter((d) => d !== doc) : [...now, doc];
+    return next.length ? next : [doc === "timetable" ? "workload" : "timetable"];
+  };
   const move = (i: number, by: number) => {
     const to = i + by;
     if (to < 0 || to >= signers.length) return;
@@ -3885,7 +3904,7 @@ const SheetFormEditor: React.FC = () => {
 
       <div className="space-y-1.5 mb-2">
         {signers.map((s, i) => (
-          <div key={i} className="flex items-center gap-1.5">
+          <div key={i} className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[10px] text-gray-400 w-4 shrink-0 text-right">{i + 1}.</span>
             <input
               value={s.name}
@@ -3897,8 +3916,23 @@ const SheetFormEditor: React.FC = () => {
               value={s.role}
               onChange={(e) => edit(i, { role: e.target.value })}
               placeholder="ตำแหน่ง"
-              className="flex-1 min-w-0 border border-gray-200 rounded px-2 py-1 text-xs"
+              className="flex-1 min-w-[10rem] border border-gray-200 rounded px-2 py-1 text-xs"
             />
+            {/* ขึ้นบนใบไหนบ้าง — ใบอัตรากำลังกับใบตารางต้องการคนเซ็นคนละชุด
+                ติ๊กไว้ครั้งเดียว ไม่ต้องเข้ามาแก้สลับไปมาทุกครั้งที่เปลี่ยนใบ */}
+            {(["timetable", "workload"] as const).map((doc) => (
+              <label key={doc}
+                className={clsx("flex items-center gap-1 text-[10px] px-1.5 py-1 rounded border cursor-pointer select-none",
+                  signsOn(s, doc)
+                    ? "bg-indigo-50 border-indigo-200 text-indigo-800"
+                    : "bg-white border-gray-200 text-gray-400")}
+                title={doc === "timetable" ? "ขึ้นบนใบตารางเรียน ตารางสอน ตารางการใช้ห้อง"
+                                           : "ขึ้นบนใบอัตรากำลังการสอน"}>
+                <input type="checkbox" checked={signsOn(s, doc)}
+                  onChange={() => edit(i, { on: toggleDoc(s, doc) })} />
+                {doc === "timetable" ? "ใบตาราง" : "อัตรากำลัง"}
+              </label>
+            ))}
             <button onClick={() => move(i, -1)} disabled={i === 0}
               className="text-xs text-gray-400 hover:text-gray-700 disabled:opacity-20 px-1"
               title="เลื่อนไปทางซ้าย">↑</button>
@@ -3960,17 +3994,31 @@ const SheetFormEditor: React.FC = () => {
       </div>
 
       {/* ── ตัวอย่าง ────────────────────────────────────────────────── */}
-      <p className="text-[10px] text-gray-400 mt-4 mb-1">ตัวอย่างท้ายใบ</p>
+      <div className="flex items-center gap-2 mt-4 mb-1">
+        <span className="text-[10px] text-gray-400">ตัวอย่างท้ายใบ</span>
+        {(["timetable", "workload"] as const).map((doc) => (
+          <button key={doc} onClick={() => setPreview(doc)}
+            className={clsx("text-[10px] px-2 py-0.5 rounded border",
+              preview === doc
+                ? "bg-indigo-50 border-indigo-300 text-indigo-800 font-medium"
+                : "bg-white border-gray-200 text-gray-500 hover:border-gray-300")}>
+            {doc === "timetable" ? "ใบตาราง" : "ใบอัตรากำลัง"}
+          </button>
+        ))}
+      </div>
       <div className="border border-dashed border-gray-300 rounded bg-gray-50/60 px-3 py-3">
         <div className="flex"
-          style={{ justifyContent: signers.length <= 2 ? "space-between" : "space-around" }}>
-          {signers.map((s, i) => (
+          style={{ justifyContent: shown.length <= 2 ? "space-between" : "space-around" }}>
+          {shown.map((s, i) => (
             <div key={i} className="text-center text-[9px] text-gray-700 leading-tight">
-              <div>ลงชื่อ{signers.length > 3 ? "........" : "..................."}</div>
+              <div>ลงชื่อ{shown.length > 3 ? "........" : "..................."}</div>
               {s.name && <div>({s.name})</div>}
               <div>{s.role || <span className="text-gray-300">ตำแหน่ง</span>}</div>
             </div>
           ))}
+          {shown.length === 0 && (
+            <span className="text-[9px] text-gray-400">ใบนี้ไม่มีช่องลงชื่อ</span>
+          )}
         </div>
         {((setup.note ?? "").trim() || setup.showDate || setup.showPageNumbers) && (
           <div className="flex justify-between gap-3 mt-2 text-[8px] text-gray-500">

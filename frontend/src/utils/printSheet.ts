@@ -22,9 +22,27 @@
  * ออกจาก `[]` ("ตั้งว่าไม่ต้องมีใครเซ็น") ให้ชัด
  */
 
-/** ข้อความใต้เส้นลงชื่อ ที่เคยเขียนตรึงไว้ในใบพิมพ์ */
+/**
+ * ใบพิมพ์มีสองชนิด และคนเซ็นไม่เหมือนกัน
+ *
+ *   "อัตรากำลังอยากได้ลายเซ็นแค่รอง ผอ. ส่วนตารางเรียนต้องการลายเซ็นสองคน
+ *    ไม่อยากให้เปลี่ยนไปเปลี่ยนมา"
+ *
+ * ของเดิมมีรายการผู้เซ็นชุดเดียวใช้ร่วมกัน พอจะพิมพ์อีกใบก็ต้องเข้าไปแก้ แล้วแก้
+ * กลับตอนพิมพ์ใบแรกอีกครั้ง — ซึ่งนอกจากเสียเวลาแล้วยังพลาดง่าย: ใบที่พิมพ์ด้วย
+ * ชุดผู้เซ็นของอีกใบ ดูไม่ออกจนกว่าจะถึงมือคนเซ็น
+ */
+export type SheetDoc = "timetable" | "workload";
+
+/** ข้อความใต้เส้นลงชื่อของใบตาราง ที่เคยเขียนตรึงไว้ใน PrintView */
 export const DEFAULT_SIGNER_ROLES = [
   "รองผู้อำนวยการกลุ่มบริหารวิชาการ",
+  "ผู้อำนวยการโรงเรียน",
+] as const;
+
+/** ของใบอัตรากำลัง ซึ่งเคยเขียนตรึงไว้คนละที่และคนละคน */
+export const DEFAULT_WORKLOAD_SIGNER_ROLES = [
+  "หัวหน้ากลุ่มสาระการเรียนรู้",
   "ผู้อำนวยการโรงเรียน",
 ] as const;
 
@@ -36,6 +54,14 @@ export interface Signer {
   name: string;
   /** ตำแหน่ง บรรทัดล่างสุด */
   role: string;
+  /**
+   * ขึ้นบนใบไหนบ้าง — ไม่ระบุ = ทุกใบ
+   *
+   * "ไม่ระบุ" ต้องแปลว่าทุกใบ ไม่ใช่ไม่ขึ้นเลย เพราะผู้เซ็นที่ตั้งไว้ก่อนมีช่องนี้
+   * ย่อมไม่มีค่าในช่องนี้ ถ้าตีความว่าไม่ขึ้น ลายเซ็นที่โรงเรียนตั้งไว้แล้วจะ
+   * หายจากใบทั้งหมดพร้อมกันตอนอัปเดต
+   */
+  on?: SheetDoc[];
 }
 
 /**
@@ -74,7 +100,17 @@ export function normalizeSheet(raw: unknown): SheetSetup {
     out.signers = r.signers
       .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
       .slice(0, MAX_SIGNERS)
-      .map((s) => ({ name: str(s.name), role: str(s.role) }));
+      .map((s) => {
+        const signer: Signer = { name: str(s.name), role: str(s.role) };
+        if (Array.isArray(s.on)) {
+          // เก็บเฉพาะชื่อใบที่รู้จัก — ค่าที่อ่านไม่ออกถูกทิ้ง ไม่ใช่ทำให้ทั้ง
+          // แถวหาย ส่วนรายการเปล่าแปลว่า "ทุกใบ" เหมือนไม่ได้ระบุ
+          const on = s.on.filter(
+            (d): d is SheetDoc => d === "timetable" || d === "workload");
+          if (on.length) signer.on = [...new Set(on)];
+        }
+        return signer;
+      });
   }
   return out;
 }
@@ -86,14 +122,44 @@ export interface ExecNames {
 }
 
 /**
- * ผู้เซ็นที่จะพิมพ์ลงใบนี้
+ * ผู้เซ็นทั้งหมดสำหรับหน้าแก้ไข — ไม่กรองด้วยชนิดใบ
  *
- * ยังไม่ได้ตั้ง = สองช่องเดิมทุกตัวอักษร โดยดึงชื่อจากหน้าตั้งค่าเหมือนเดิม
+ * ใช้คู่กับหน้าตั้งค่า ซึ่งต้องเห็นทุกคนเพื่อแก้ ไม่ใช่เห็นเฉพาะคนที่ขึ้นใบใด
+ * ใบหนึ่ง — เพราะหน้านั้นบันทึกทั้งรายการกลับลงไป ถ้าเห็นไม่ครบ คนที่ไม่เห็น
+ * จะถูกบันทึกทับหายไปเงียบ ๆ ทันทีที่แก้อะไรก็ตามในหน้านั้น
+ *
+ * ยังไม่ได้ตั้ง = ตั้งต้นด้วยสองช่องของใบตาราง ซึ่งเป็นสิ่งที่หน้านั้นเคยแสดง
+ */
+export function allSigners(setup: SheetSetup, exec: ExecNames): Signer[] {
+  return setup.signers ?? sheetSigners(setup, exec, "timetable");
+}
+
+/** ผู้เซ็นคนนี้ขึ้นบนใบชนิดนี้ไหม */
+export function signsOn(s: Signer, doc: SheetDoc): boolean {
+  // ไม่ระบุ หรือระบุมาเป็นรายการเปล่า = ทุกใบ
+  return !s.on || s.on.length === 0 || s.on.includes(doc);
+}
+
+/**
+ * ผู้เซ็นที่จะพิมพ์ลงใบชนิดนี้
+ *
+ * ยังไม่ได้ตั้ง = ของเดิมของใบชนิดนั้นทุกตัวอักษร — ซึ่งไม่เหมือนกันสองใบ:
+ * ใบตารางเคยเป็น รอง ผอ. + ผอ. ส่วนใบอัตรากำลังเคยเป็น หัวหน้ากลุ่มสาระ + ผอ.
+ * (เขียนตรึงไว้คนละไฟล์) โรงเรียนที่ยังไม่เคยเข้าไปตั้งอะไรจึงได้ใบเดิมทั้งคู่
+ *
  * ตั้งไว้แล้ว = ตามที่ตั้ง รวมถึง "ตั้งว่าไม่มีใครเซ็น" ซึ่งต้องไม่เด้งกลับเป็น
  * สองช่อง ไม่งั้นการลบผู้เซ็นออกหมดจะทำไม่ได้เลย
  */
-export function sheetSigners(setup: SheetSetup, exec: ExecNames): Signer[] {
-  if (setup.signers) return setup.signers;
+export function sheetSigners(
+  setup: SheetSetup, exec: ExecNames, doc: SheetDoc = "timetable",
+): Signer[] {
+  if (setup.signers) return setup.signers.filter((s) => signsOn(s, doc));
+  if (doc === "workload") {
+    return [
+      { name: "", role: DEFAULT_WORKLOAD_SIGNER_ROLES[0] },
+      { name: "", role: DEFAULT_WORKLOAD_SIGNER_ROLES[1] },
+    ];
+  }
   return [
     { name: str(exec.deputyName),   role: DEFAULT_SIGNER_ROLES[0] },
     { name: str(exec.directorName), role: DEFAULT_SIGNER_ROLES[1] },

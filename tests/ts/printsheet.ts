@@ -11,8 +11,8 @@
  * เราเพิ่มความสามารถให้มัน
  */
 import {
-  DEFAULT_SIGNER_ROLES, fillTemplate, pageLabel, sheetSigners, thaiDate,
-  normalizeSheet, type SheetSetup,
+  allSigners, DEFAULT_SIGNER_ROLES, DEFAULT_WORKLOAD_SIGNER_ROLES, fillTemplate, pageLabel,
+  sheetSigners, signsOn, thaiDate, normalizeSheet, type SheetSetup,
 } from "../../frontend/src/utils/printSheet.ts";
 
 let n = 0;
@@ -72,6 +72,73 @@ eq(sheetSigners(junk, cfg), [{ name: "", role: "" }, { name: "", role: "ผอ."
    "แถวเสียถูกทิ้ง ที่เหลือแปลงเป็นข้อความ");
 ok(normalizeSheet({ signers: new Array(20).fill({ name: "ก", role: "ข" }) }).signers!.length <= 6,
    "มีเพดานจำนวนผู้เซ็น ไม่งั้นใบพิมพ์เสียรูป");
+
+// ── ใบคนละชนิด คนเซ็นคนละชุด ────────────────────────────────────────────────
+//
+//   "อัตรากำลังอยากได้ลายเซ็นแค่รอง ผอ. ส่วนตารางเรียนต้องการลายเซ็นสองคน
+//    ไม่อยากให้เปลี่ยนไปเปลี่ยนมา"
+
+// ยังไม่ได้ตั้ง = ของเดิมของใบชนิดนั้น ซึ่งไม่เหมือนกันสองใบ
+eq(sheetSigners(normalizeSheet(undefined), cfg, "timetable").map((s) => s.role),
+   [...DEFAULT_SIGNER_ROLES], "ใบตาราง: ของเดิม");
+eq(sheetSigners(normalizeSheet(undefined), cfg, "workload").map((s) => s.role),
+   [...DEFAULT_WORKLOAD_SIGNER_ROLES],
+   "ใบอัตรากำลัง: ของเดิมคนละชุด (เคยเขียนตรึงไว้คนละไฟล์)");
+eq(sheetSigners(normalizeSheet(undefined), cfg).map((s) => s.role),
+   [...DEFAULT_SIGNER_ROLES], "ไม่ระบุชนิด = ใบตาราง");
+
+// ตั้งแล้วเลือกได้ว่าใครขึ้นใบไหน
+const split: SheetSetup = normalizeSheet({
+  signers: [
+    { name: "ก", role: "หัวหน้างานตารางสอน", on: ["timetable"] },
+    { name: "ข", role: "รองผู้อำนวยการ" },                      // ไม่ระบุ = ทุกใบ
+    { name: "ค", role: "ผู้อำนวยการโรงเรียน", on: ["timetable"] },
+  ],
+});
+eq(sheetSigners(split, cfg, "timetable").map((s) => s.name), ["ก", "ข", "ค"],
+   "ใบตารางได้ครบสามคน");
+eq(sheetSigners(split, cfg, "workload").map((s) => s.name), ["ข"],
+   "ใบอัตรากำลังได้คนเดียว — ไม่ต้องเข้าไปแก้สลับไปมาอีก");
+
+// "ไม่ระบุ" ต้องแปลว่าทุกใบ ไม่ใช่ไม่ขึ้นเลย — ผู้เซ็นที่ตั้งไว้ก่อนมีช่องนี้
+// ย่อมไม่มีค่าในช่องนี้ ถ้าตีความผิด ลายเซ็นที่ตั้งไว้แล้วจะหายทั้งหมดตอนอัปเดต
+ok(signsOn({ name: "x", role: "y" }, "timetable"), "ไม่ระบุ = ขึ้นใบตาราง");
+ok(signsOn({ name: "x", role: "y" }, "workload"), "ไม่ระบุ = ขึ้นใบอัตรากำลัง");
+ok(signsOn({ name: "x", role: "y", on: [] }, "workload"), "รายการเปล่า = ทุกใบ");
+ok(!signsOn({ name: "x", role: "y", on: ["timetable"] }, "workload"), "ระบุแล้วก็ตามนั้น");
+
+// ค่าที่อ่านไม่ออกในช่องนี้ ถูกทิ้งเฉพาะค่านั้น ไม่ทำให้ทั้งแถวหาย
+const junkOn = normalizeSheet({
+  signers: [{ name: "ง", role: "ผอ.", on: ["timetable", "เอ๊ะ", 5, "timetable"] }],
+});
+eq(junkOn.signers![0].on, ["timetable"], "เก็บเฉพาะชื่อใบที่รู้จัก และไม่ซ้ำ");
+eq(junkOn.signers![0].name, "ง", "แถวยังอยู่");
+eq(normalizeSheet({ signers: [{ name: "จ", role: "ผอ.", on: "timetable" }] })
+     .signers![0].on, undefined, "ค่าที่ไม่ใช่รายการ = ไม่ระบุ = ทุกใบ");
+eq(normalizeSheet({ signers: [{ name: "ฉ", role: "ผอ.", on: ["เอ๊ะ"] }] })
+     .signers![0].on, undefined, "ไม่เหลือชื่อใบที่รู้จักเลย = ทุกใบ ไม่ใช่ไม่ขึ้น");
+
+// หน้าตั้งค่าต้องเห็น "ทุกคน" ไม่ใช่เฉพาะคนที่ขึ้นใบใดใบหนึ่ง
+//
+// หน้านั้นบันทึกทั้งรายการกลับลงไป ถ้าดึงรายชื่อมาด้วยตัวกรองของใบตาราง
+// ผู้เซ็นที่ตั้งไว้เฉพาะใบอัตรากำลังจะหายจากจอ แล้วถูกบันทึกทับหายไปจริง ๆ
+// ทันทีที่แก้อะไรก็ตามในหน้านั้น
+eq(allSigners(split, cfg).map((s) => s.name), ["ก", "ข", "ค"],
+   "หน้าตั้งค่าเห็นครบทุกคน แม้คนที่ไม่ได้ขึ้นใบตาราง");
+eq(allSigners(normalizeSheet({ signers: [{ name: "ซ", role: "รอง", on: ["workload"] }] }), cfg)
+     .map((s) => s.name), ["ซ"],
+   "คนที่ตั้งไว้เฉพาะใบอัตรากำลัง ต้องไม่หายจากหน้าตั้งค่า");
+eq(allSigners(normalizeSheet(undefined), cfg).map((s) => s.role),
+   [...DEFAULT_SIGNER_ROLES], "ยังไม่ได้ตั้ง = ตั้งต้นด้วยสองช่องของใบตาราง");
+eq(allSigners(normalizeSheet({ signers: [] }), cfg), [],
+   "ตั้งว่าไม่มีใครเซ็น ก็ต้องเห็นว่าไม่มี ไม่ใช่เด้งกลับเป็นสองช่อง");
+
+// ลบทุกคนออกจากใบหนึ่ง แต่ยังอยู่บนอีกใบ
+const onlyWork = normalizeSheet({
+  signers: [{ name: "ช", role: "รอง ผอ.", on: ["workload"] }],
+});
+eq(sheetSigners(onlyWork, cfg, "timetable"), [], "ใบตารางไม่มีใครเซ็นได้");
+eq(sheetSigners(onlyWork, cfg, "workload").length, 1, "แต่ใบอัตรากำลังยังมี");
 
 // ── ข้อความของโรงเรียนเอง พร้อมตัวแทนค่า ────────────────────────────────────
 const vars = { ห้อง: "ม.1/1", ครู: "กุลจิรา", ภาคเรียน: "1", ปีการศึกษา: "2568", โรงเรียน: "สตรีวิทยา" };

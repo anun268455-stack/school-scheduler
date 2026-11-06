@@ -14,10 +14,11 @@
  */
 import React from "react";
 import type {
-  Department, LessonRequirement, StudentGroup, Subject, Teacher, TimetableSlot,
+  Department, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../../types";
 import { flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { workloadRows, type WorkloadRow } from "../../utils/workloadRows";
+import type { Signer } from "../../utils/printSheet";
 
 /** "ม.4/2" → "4/2": the "ม." is on every row and tells the reader nothing. */
 const shortClass = (n: string | null | undefined) =>
@@ -27,7 +28,6 @@ interface TeacherBlock {
   teacher: Teacher;
   rows: WorkloadRow[];
   total: number;
-  missing: number;
 }
 
 export interface WorkloadProps {
@@ -35,7 +35,6 @@ export interface WorkloadProps {
   departments: Department[];
   groups: StudentGroup[];
   subjects: Subject[];
-  requirements: LessonRequirement[];
   slots: TimetableSlot[];
   schoolName: string;
   termLabel: string;
@@ -49,10 +48,17 @@ export interface WorkloadProps {
    * school counts it as teaching load, so the report says which it did.
    */
   countActivities?: boolean;
+  /**
+   * ผู้เซ็นท้ายใบ — มาจากแบบฟอร์มใบพิมพ์ กรองมาแล้วว่าใครขึ้นใบอัตรากำลัง
+   *
+   * ส่งเข้ามาแทนที่จะอ่านเอง เพราะ PrintView อ่านแบบฟอร์มอยู่แล้วหนึ่งครั้ง
+   * และใบตารางกับใบอัตรากำลังต้องอ่านจากชุดเดียวกัน
+   */
+  signers: Signer[];
 }
 
 export const WorkloadReport: React.FC<WorkloadProps> = ({
-  teachers, departments, groups, subjects, requirements, slots: allSlots,
+  teachers, departments, groups, subjects, slots: allSlots, signers,
   schoolName, termLabel, selectedIds, countActivities = true,
 }) => {
   // Dropped once, here, rather than at each of the places that count a slot —
@@ -78,32 +84,15 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
     classOf: (s) => shortClass(s.group_name ?? gName(s.group_id)),
   });
 
-  /**
-   * Periods asked for but never placed — said plainly rather than hidden.
-   *
-   * นับจากบรรทัดที่จะพิมพ์จริง ไม่ใช่นับจากตารางซ้ำอีกรอบ เพราะถ้านับคนละวิธี
-   * สองที่ ใบจะบอกว่า "รวม 19 คาบ" แล้วบรรทัดล่างบอกว่า "ยังลงไม่ได้ 1 คาบ"
-   * ทั้งที่ลงครบแล้ว — ซึ่งจะเกิดกับวิชาเสรีทันที เพราะวิธีนับเก่าข้ามมันไป
-   */
-  const missingFor = (t: Teacher, rows: WorkloadRow[]) => {
-    const want = new Map<number, number>();
-    for (const r of requirements) {
-      if (r.teacher_id !== t.id) continue;
-      want.set(r.subject_id, (want.get(r.subject_id) ?? 0) + r.weekly_count);
-    }
-    const got = new Map(rows.map((r) => [r.subjectId, r.periods]));
-    let missing = 0;
-    for (const [sid, n] of want) missing += Math.max(0, n - (got.get(sid) ?? 0));
-    return missing;
-  };
-
+  // เคยมีบรรทัด "* ยังลงตารางไม่ได้ N คาบ" ใต้ชื่อครู — โรงเรียนให้เอาออก
+  //
+  // ตัวเลขนั้นเทียบคาบที่ลงได้กับจำนวนที่ขอไว้ในหลักสูตร ซึ่งเป็นคนละเรื่องกับ
+  // สิ่งที่ใบอัตรากำลังรายงาน (ภาระงานที่สอนอยู่จริง) และการเอาตัวเลขของอีกเรื่อง
+  // ไปวางใต้ชื่อคน ทำให้ใบที่ส่งต่อถูกอ่านผิดได้ ส่วนข้อมูลนั้นยังดูได้จากป้าย
+  // "คาบไม่พอ" บนแถบเครื่องมือ ซึ่งเป็นที่ของมันอยู่แล้ว
   const blockFor = (t: Teacher): TeacherBlock => {
     const rows = rowsFor(t);
-    return {
-      teacher: t, rows,
-      total: rows.reduce((n, r) => n + r.periods, 0),
-      missing: missingFor(t, rows),
-    };
+    return { teacher: t, rows, total: rows.reduce((n, r) => n + r.periods, 0) };
   };
 
   // Teachers with no department still have to appear somewhere, so they get a
@@ -230,11 +219,6 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
                         {b.teacher.code ? `รหัส ${b.teacher.code}` : ""}
                         {b.total ? `  ·  รวม ${b.total} คาบ` : ""}
                       </div>
-                      {b.missing > 0 && (
-                        <div style={{ fontSize: "8pt", marginTop: "1px" }}>
-                          * ยังลงตารางไม่ได้ {b.missing} คาบ
-                        </div>
-                      )}
                     </td>
                   );
                   if (b.rows.length === 0) {
@@ -292,19 +276,27 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
               </tbody>
             </table>
 
-            <div className="wl-sign" style={{
-              marginTop: "5mm", display: "flex", justifyContent: "space-between",
-              fontSize: "9.5pt",
-            }}>
-              <div className="wl-sign" style={{ textAlign: "center", minWidth: "40%" }}>
-                <div>ลงชื่อ................................</div>
-                <div>หัวหน้ากลุ่มสาระการเรียนรู้</div>
+            {/* ผู้เซ็นมาจากแบบฟอร์มใบพิมพ์ ซึ่งเลือกได้ว่าใครขึ้นใบไหน —
+                ใบอัตรากำลังกับใบตารางต้องการคนละชุด และของเดิมต้องเข้าไปแก้
+                สลับไปมาทุกครั้งที่เปลี่ยนใบที่จะพิมพ์ (utils/printSheet) */}
+            {signers.length > 0 && (
+              <div className="wl-sign" style={{
+                marginTop: "5mm", display: "flex",
+                justifyContent: signers.length <= 2 ? "space-between" : "space-around",
+                fontSize: "9.5pt",
+              }}>
+                {signers.map((s, i) => (
+                  <div key={i} className="wl-sign" style={{
+                    textAlign: "center",
+                    minWidth: signers.length <= 2 ? "40%" : `${Math.floor(92 / signers.length)}%`,
+                  }}>
+                    <div>ลงชื่อ{signers.length > 3 ? "................" : "................................"}</div>
+                    {s.name && <div>({s.name})</div>}
+                    <div>{s.role}</div>
+                  </div>
+                ))}
               </div>
-              <div className="wl-sign" style={{ textAlign: "center", minWidth: "40%" }}>
-                <div>ลงชื่อ................................</div>
-                <div>ผู้อำนวยการโรงเรียน</div>
-              </div>
-            </div>
+            )}
           </div>
         );
       })}
