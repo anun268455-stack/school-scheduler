@@ -66,34 +66,73 @@ export function nextTerm(active: TermMeta | null): { year: number; semester: num
 
 /**
  * ฟิลด์ในร้านที่เป็นข้อมูลสดจากเซิร์ฟเวอร์ — ชุดที่ต้องไม่ถูกเขียนทับตอนดูเทอมที่ปิด
- * (เก้าชุดแรกคือสิ่งที่ openTerm วางลงไป ที่เหลือคือถาดและลานที่โหลดมาพร้อมกัน)
+ * (เก้าชุดแรกคือสิ่งที่ openTerm วางลงไป ถัดมาคือถาดและลานที่โหลดมาพร้อมกัน
+ * และ schoolConfig ซึ่งใบพิมพ์อ่านชื่อผู้อำนวยการ ภาคเรียน ปี จากตรงนี้)
  */
 export const LIVE_DATA_KEYS = [
   "groups", "teachers", "subjects", "rooms", "requirements", "slots", "periods",
-  "departments", "buildings", "parked", "yardPicks", "yardList",
+  "departments", "buildings", "parked", "yardPicks", "yardList", "schoolConfig",
 ] as const;
+
+/**
+ * ตัวนับว่า "ใครกำลังได้รับอนุญาตให้เขียนข้อมูลลงร้าน" และ "มีงานเปลี่ยนเทอมค้างอยู่ไหม"
+ *
+ * ใช้ตัวเลขตั๋ว (token) ไม่ใช่ boolean: สองงานที่ซ้อนกันต้องไม่ล้างของกันและกัน
+ * enter, enter, leave ยังต้องถือว่าอนุญาตอยู่ และคนที่ไม่ใช่เจ้าของตั๋วคืนตั๋วไม่ได้
+ */
+export interface TermLanding {
+  /** ขอเข้า ได้ตั๋วหนึ่งใบ */
+  enter(): number;
+  /** คืนตั๋ว — ถ้าไม่ใช่ตั๋วที่ถืออยู่ ไม่เกิดอะไรขึ้น คืน false */
+  leave(token: number): boolean;
+  /** จำนวนตั๋วที่ถืออยู่ */
+  held(): number;
+  /** ขอเข้าเมื่อไม่มีใครถืออยู่เท่านั้น มิฉะนั้น null (ใช้ปฏิเสธงานที่ซ้อนกัน) */
+  tryEnter(): number | null;
+}
+
+export function createLanding(): TermLanding {
+  let next = 1;
+  const tokens = new Set<number>();
+  return {
+    enter(): number { const t = next++; tokens.add(t); return t; },
+    leave(token: number): boolean { return tokens.delete(token); },
+    held(): number { return tokens.size; },
+    tryEnter(): number | null {
+      if (tokens.size > 0) return null;
+      const t = next++; tokens.add(t); return t;
+    },
+  };
+}
+
+/**
+ * ข้อมูลสดต้องถูกกันไว้ตอนนี้ไหม — กำลังดูเทอมที่ปิด และไม่มีงานที่ได้รับอนุญาตถืออยู่
+ */
+export function blocksLiveWrite(
+  viewing: Pick<TermMeta, "status"> | null, landing: TermLanding,
+): boolean {
+  return viewing?.status === "closed" && landing.held() === 0;
+}
 
 /**
  * กฎข้อเดียวของการดูเทอมเก่า: ระหว่างที่เทอมที่ปิดอยู่บนจอ ข้อมูลสดห้ามเขียนลงร้าน
  *
  * ตรวจที่จุดเดียวคือตอนเขียนลงร้าน ไม่ใช่ที่ผู้เรียกแต่ละราย — ผู้เรียกคนถัดไป
  * จะไม่รู้ว่ามีกฎนี้ `block` เป็น true = ตัดฟิลด์ข้อมูลสดออก เหลือฟิลด์อื่น
- * (isLoading, dataState ฯลฯ) ไว้ตามเดิม
+ * (isLoading, dataState ฯลฯ) ไว้ตามเดิม `onDrop` ถูกเรียกพร้อมชื่อฟิลด์ที่ถูกตัด
+ * เพื่อให้นักพัฒนาที่เขียนแล้วค่าหายหาสาเหตุเจอในไม่กี่วินาที
  */
-export function dropLiveData<T extends object>(next: T, block: boolean): Partial<T> {
+export function dropLiveData<T extends object>(
+  next: T, block: boolean, onDrop?: (keys: string[]) => void,
+): Partial<T> {
   if (!block) return next;
   const dropped = new Set<string>(LIVE_DATA_KEYS);
   const kept: Partial<T> = {};
+  const lost: string[] = [];
   for (const k of Object.keys(next) as (keyof T & string)[]) {
-    if (!dropped.has(k)) kept[k] = next[k];
+    if (dropped.has(k)) lost.push(k);
+    else kept[k] = next[k];
   }
+  if (lost.length > 0 && onDrop) onDrop(lost);
   return kept;
-}
-
-/**
- * ออกจากเทอมเก่าได้ไหม — ได้ก็ต่อเมื่อโหลดข้อมูลสดมาครบทุกเส้น
- * ("ready" แปลว่าสำเร็จอย่างน้อยหนึ่งเส้น ไม่ได้แปลว่าครบ จอจะเป็นของผสม)
- */
-export function liveReloadComplete(dataState: DataState, failures: number): boolean {
-  return dataState === "ready" && failures === 0;
 }

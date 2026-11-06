@@ -14,6 +14,25 @@ const BASE_URL = import.meta.env.VITE_API_URL
 const api = axios.create({ baseURL: BASE_URL, timeout: 180_000 });
 
 /**
+ * ด่านขาออก: ตอนดูเทอมที่ปิดอยู่ในเบราว์เซอร์ เซิร์ฟเวอร์ยังเปิดเทอมปัจจุบันอยู่
+ * และไม่รู้ว่าเบราว์เซอร์นี้กำลังดูอะไร — คำขอแก้ไขใด ๆ จึงไปแก้ตารางจริงโดยจอไม่
+ * บอกอะไรเลย ร้านติดตัวตัดสินนี้ไว้ที่นี่ที่เดียว ทุกเส้นทาง (ลาก คีย์บอร์ด ปุ่ม
+ * หรือโค้ดที่เพิ่มทีหลัง) ผ่านด่านเดียวกัน คืนข้อความไทยที่ตัดสินแล้วหรือ null
+ */
+let writeBlock: (() => string | null) | null = null;
+export const setWriteBlock = (fn: (() => string | null) | null): void => { writeBlock = fn; };
+
+api.interceptors.request.use((config) => {
+  const method = (config.method ?? "get").toLowerCase();
+  const url = config.url ?? "";
+  // อ่านได้เสมอ และเส้นเทอม (/terms…) เป็นของระบบเทอมเอง ไม่ใช่การแก้ตาราง
+  if (method === "get" || method === "head" || url.startsWith("/terms")) return config;
+  const why = writeBlock ? writeBlock() : null;
+  if (why) return Promise.reject(new Error(why));
+  return config;
+});
+
+/**
  * สร้างตาราง รอได้นานกว่าคำขออื่น
  *
  * "ถ้ามันนานก็ปล่อยให้นานไปเลย อยากให้มันเสร็จ"
@@ -1495,6 +1514,7 @@ export interface TermSnapshot {
   periods?: Period[];
   departments?: Department[];
   buildings?: Building[];
+  school_config?: Partial<SchoolConfig>;
   current_term?: Pick<TermMeta, "id" | "year" | "semester" | "label" | "status">;
 }
 

@@ -23,7 +23,9 @@ import {
 } from "../utils/guidedMove";
 import { stateAfter, tally, type DataState } from "../utils/serverWake";
 import type { SheetSetup } from "../utils/printSheet";
-import { dropLiveData, liveReloadComplete, shouldPoll, type TermMeta } from "../utils/terms";
+import {
+  blocksLiveWrite, createLanding, dropLiveData, shouldPoll, type TermMeta,
+} from "../utils/terms";
 
 // ── Live-sync internals ───────────────────────────────────────────────────────
 /** How often to ask the server "did anything change?" (tiny request). */
@@ -288,8 +290,6 @@ interface TimetableStore {
   viewingTerm:    TermMeta | null;
   /** ข้อความไทยเมื่อออกจากเทอมเก่าไม่สำเร็จ — แบนเนอร์ยังอยู่ จอยังเป็นของเทอมเก่า */
   viewingError:   string | null;
-  /** จำนวนเส้นที่ล้มในการ loadAll รอบล่าสุด — closeViewing ใช้ตัดสินว่าข้อมูลสดมาครบไหม */
-  loadFailures:   number;
   loadTerms:      () => Promise<void>;
   openTerm:       (id: number) => Promise<void>;
   closeViewing:   () => Promise<void>;
@@ -422,11 +422,29 @@ let printLayoutTimer: ReturnType<typeof setTimeout> | null = null;
 let printSheetTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * ใครกำลังเขียนข้อมูลลงร้านโดยตั้งใจระหว่างที่เทอมที่ปิดอยู่บนจอ
- * "archive" = openTerm วางสำเนาเทอมเก่า · "live" = closeViewing โหลดข้อมูลสดกลับมา
+ * ตั๋วเขียนข้อมูลลงร้านระหว่างที่เทอมที่ปิดอยู่บนจอ — ถือเฉพาะตอนวางข้อมูลชุดเดียว
+ * (openTerm วางสำเนาเทอมเก่า · closeViewing วางข้อมูลสด) เป็นตัวนับ ไม่ใช่ boolean
  * ระดับโมดูลเหมือน pollTimer
  */
-let landing: "archive" | "live" | null = null;
+const landing = createLanding();
+/** งานเปลี่ยนเทอม (openTerm/closeViewing) ที่ค้างอยู่ — อีกงานหนึ่งเริ่มซ้อนไม่ได้ */
+const termOps = createLanding();
+/** ข้อมูลสดทั้งชุด — ล้มเส้นเดียวคือล้มทั้งชุด (closeViewing ต้องการแบบทั้งหมดหรือไม่เลย) */
+const fetchLiveBundle = () => Promise.all([
+  api.fetchDepartments(),  api.fetchBuildings(), api.fetchRooms(),
+  api.fetchGroups(),       api.fetchTeachers(),  api.fetchSubjects(),
+  api.fetchRequirements(), api.fetchSlots(),     api.fetchPeriods(),
+  api.fetchSchoolConfig(),
+]);
+/** ค่าตั้งโรงเรียนของเทอมปัจจุบัน เก็บไว้ตอนเปิดเทอมเก่า เพื่อคืนตอนกลับ */
+let liveSchoolConfig: SchoolConfig | null = null;
+
+const BLANK_SCHOOL_CONFIG: SchoolConfig = {
+  schoolName: "โรงเรียน",
+  term: "1",
+  year: "2568",
+  directorName: "",
+};
 
 export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
   /**
@@ -440,7 +458,12 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
   ): void => {
     rawSet((st) => {
       const next = typeof partial === "function" ? partial(st) : partial;
-      return dropLiveData(next, st.viewingTerm?.status === "closed" && landing === null);
+      return dropLiveData(
+        next, blocksLiveWrite(st.viewingTerm, landing),
+        import.meta.env.DEV
+          ? (keys) => console.warn(
+              `[เทอม] กำลังดูเทอมที่ปิดแล้ว จึงไม่เขียนข้อมูลสดลงร้าน: ${keys.join(", ")}`)
+          : undefined);
     });
   };
   return {
@@ -493,14 +516,8 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
   termsReason:       null,
   viewingTerm:       null,
   viewingError:      null,
-  loadFailures:      0,
 
-  schoolConfig: {
-    schoolName: "โรงเรียน",
-    term: "1",
-    year: "2568",
-    directorName: "",
-  },
+  schoolConfig: BLANK_SCHOOL_CONFIG,
   // Kept on the server so both editors see the same settings and a refresh
   // does not lose them. Applied locally first so typing stays responsive.
   toggleClassLock: async (groupId) => {
@@ -790,7 +807,6 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
         slots:        keep(slots,        st.slots),
         periods:      keep(periods, st.periods.length ? st.periods : DEFAULT_PERIODS),
         dataState:    state,
-        loadFailures: tally(results).failed,
       }));
       if (state !== "ready") return;    // เครื่องยังไม่ตื่น อย่าไปรบกวนต่อ
       // ถาดพักคาบโหลดแยก — เซิร์ฟเวอร์รุ่นเก่ายังไม่มีเส้นนี้ ปล่อยให้ถาดว่าง
@@ -1050,64 +1066,121 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
 
   // เปิดเทอมที่ปิดแล้วดูในเบราว์เซอร์นี้เท่านั้น เซิร์ฟเวอร์ไม่ถูกแตะ
   openTerm: async (id) => {
-    let found = get().terms.find((t) => t.id === id);
-    if (!found) {
-      await get().loadTerms();
-      found = get().terms.find((t) => t.id === id);
-    }
-    // เทอมที่ใช้งานอยู่ไม่มีสำเนาให้เปิด (เซิร์ฟเวอร์ตอบ 409) — อย่าถามเลย
-    if (!found || found.status !== "closed") return;
-    const row: TermMeta = found;
-    const data = await api.fetchTermData(id);
-    // หยุดซิงค์สดก่อนวางข้อมูล และตั้ง viewingTerm ในจังหวะเดียวกัน เพื่อไม่ให้มี
-    // ช่วงที่คำขอซิงค์ที่ค้างอยู่วางเทอมปัจจุบันทับ (quietRefresh เช็ค viewingTerm)
-    get().stopLiveSync();
-    landing = "archive";
+    // งานเปลี่ยนเทอมซ้อนกันไม่ได้ (กดซ้ำ หรือกดเปิดระหว่างที่กำลังกลับ)
+    const op = termOps.tryEnter();
+    if (op === null) return;
     try {
-    set((st) => ({
-      groups:       data.groups       ?? [],
-      teachers:     data.teachers     ?? [],
-      subjects:     data.subjects     ?? [],
-      rooms:        data.rooms        ?? [],
-      requirements: data.requirements ?? [],
-      slots:        data.slots        ?? [],
-      periods:      data.periods?.length ? data.periods : st.periods,
-      departments:  data.departments  ?? [],
-      buildings:    data.buildings    ?? [],
-      viewingTerm:  row,
-      viewingError: null,
-    }));
-    } finally { landing = null; }
+      let found = get().terms.find((t) => t.id === id);
+      if (!found) {
+        await get().loadTerms();
+        found = get().terms.find((t) => t.id === id);
+      }
+      // เทอมที่ใช้งานอยู่ไม่มีสำเนาให้เปิด (เซิร์ฟเวอร์ตอบ 409) — อย่าถามเลย
+      if (!found || found.status !== "closed") {
+        set({ viewingError: "เทอมนี้ไม่ใช่เทอมที่ปิดแล้ว หรือไม่พบในรายการ ลองโหลดรายการเทอมใหม่" });
+        return;
+      }
+      const row: TermMeta = found;
+      let data: api.TermSnapshot;
+      try {
+        data = await api.fetchTermData(id);
+      } catch (e) {
+        // รายการเทอมที่ค้างอยู่อาจเก่า (เช่นเพิ่งปลดล็อก แล้วเทอมนี้กลับเป็นเทอมที่ใช้งาน → 409)
+        set({ viewingError: api.errorDetail(e, "เปิดเทอมนี้ไม่สำเร็จ") });
+        void get().loadTerms();
+        return;
+      }
+      // สำเนาที่ไม่มีผังคาบ: ถ้าวาดบนผังคาบของเทอมปัจจุบัน คาบจะไปตกผิดช่อง
+      // และพิมพ์ออกมาได้ จึงไม่เปิดเลยดีกว่าเปิดแบบผิด
+      if (!data.periods?.length) {
+        set({ viewingError: "เทอมนี้ไม่มีผังคาบเก็บไว้ จึงเปิดดูไม่ได้ (ถ้าเปิด จะวางคาบบนผังของเทอมปัจจุบันซึ่งผิด)" });
+        return;
+      }
+      const periods = data.periods;
+      // หยุดซิงค์สดก่อนวางข้อมูล และวางพร้อมตั้ง viewingTerm ในครั้งเดียว
+      get().stopLiveSync();
+      // ค่าตั้งโรงเรียนของเทอมนั้นเอง (ใบพิมพ์ต้องขึ้นชื่อและภาคเรียนของเทอมที่เปิด)
+      // ฐานคือค่าว่าง ไม่ใช่ของเทอมปัจจุบัน ไม่งั้นชื่อ ผอ. ปัจจุบันจะไปอยู่บนใบเก่า
+      const archiveConfig: SchoolConfig = {
+        ...BLANK_SCHOOL_CONFIG, ...(data.school_config ?? {}),
+        term: String(row.semester), year: String(row.year),
+      };
+      if (!get().viewingTerm) liveSchoolConfig = get().schoolConfig;
+      const pass = landing.enter();
+      try {
+        set({
+          groups:       data.groups       ?? [],
+          teachers:     data.teachers     ?? [],
+          subjects:     data.subjects     ?? [],
+          rooms:        data.rooms        ?? [],
+          requirements: data.requirements ?? [],
+          slots:        data.slots        ?? [],
+          periods,
+          departments:  data.departments  ?? [],
+          buildings:    data.buildings    ?? [],
+          // ถาดพักคาบและลานเป็นของเทอมปัจจุบัน อ้างรหัสห้องเรียนของอีกเทอม
+          parked:       [],
+          yardPicks:    [],
+          yardList:     [],
+          schoolConfig: archiveConfig,
+          viewingTerm:  row,
+          viewingError: null,
+        });
+      } finally { landing.leave(pass); }
+    } finally { termOps.leave(op); }
   },
 
   // ออกจากการดูเทอมเก่า — ดึงข้อมูลสดมาใหม่ ห้ามขอสำเนาของเทอมที่ใช้งาน (409)
   //
-  // viewingTerm (แบนเนอร์) ถูกล้างหลังข้อมูลสดมาครบแล้วเท่านั้น: loadAll เก็บของ
-  // เดิมไว้เมื่อบางเส้นล้ม ถ้าล้างก่อน จอจะเป็นคาบของเทอมเก่าโดยไม่มีอะไรบอก
+  // ทำแบบอะตอมมิก: ดึงทุกเส้นให้ครบก่อน แล้ววางครั้งเดียวพร้อมล้างแบนเนอร์ ถ้าเส้นใด
+  // เส้นหนึ่งล้ม ไม่มีอะไรถูกเขียนเลย จอยังเป็นเทอมเก่าทั้งหมดจริง ๆ ไม่ใช่ของผสม
+  // (loadAll ใช้ไม่ได้ที่นี่: มันวางเส้นที่สำเร็จทันที และเก็บของเดิมไว้ตรงเส้นที่ล้ม)
   closeViewing: async () => {
     if (!get().viewingTerm) return;
-    landing = "live";
+    const op = termOps.tryEnter();
+    if (op === null) return;
     try {
-      await get().loadAll();
-    } catch {
-      /* ตัดสินจากผลด้านล่าง */
-    } finally { landing = null; }
-    if (!liveReloadComplete(get().dataState, get().loadFailures)) {
-      set({ viewingError:
-        "โหลดตารางปัจจุบันไม่สำเร็จ ตอนนี้ยังแสดงเทอมที่ปิดแล้วอยู่ ลองกดกลับอีกครั้ง" });
-      return;
-    }
-    set({ viewingTerm: null, viewingError: null });
-    if (get().liveSync) get().startLiveSync();
+      let live: Awaited<ReturnType<typeof fetchLiveBundle>>;
+      try {
+        live = await fetchLiveBundle();
+      } catch {
+        set({ viewingError:
+          "โหลดตารางปัจจุบันไม่สำเร็จ จึงยังไม่ได้ออกจากเทอมที่ปิดแล้ว (จอยังเป็นเทอมนั้นทั้งหมด) ลองกดกลับอีกครั้ง" });
+        return;
+      }
+      const [departments, buildings, rooms, groups, teachers, subjects,
+             requirements, slots, periods, config] = live;
+      const pass = landing.enter();
+      try {
+        set((st) => ({
+          departments, buildings, rooms, groups, teachers, subjects, requirements, slots,
+          periods: periods.length ? periods : DEFAULT_PERIODS,
+          schoolConfig: { ...(liveSchoolConfig ?? st.schoolConfig), ...config },
+          dataState: "ready",
+          viewingTerm: null,
+          viewingError: null,
+        }));
+      } finally { landing.leave(pass); }
+      liveSchoolConfig = null;
+      // ถาดและลานโหลดแยกเหมือน loadAll — ตอนนี้ viewingTerm เป็น null แล้วจึงลงร้านได้
+      void get().loadParked();
+      void get().loadYardPicks();
+      if (get().liveSync) get().startLiveSync();
+    } finally { termOps.leave(op); }
   },
 
   makeNewTerm: async (year, semester) => {
     const r = await api.createTerm(year, semester);
     // ข้อมูลสดถูกล้างฝั่งเซิร์ฟเวอร์แล้ว ดึงมาใหม่ แล้วค่อยอ่านรายการเทอม
-    // ปุ่มสร้างเทอมใหม่อยู่บนหน้าที่ทำงานกับเทอมปัจจุบัน ไม่ใช่ตอนดูเทอมเก่า
     // ถ้ายังดูเทอมเก่าอยู่ ให้ออกให้ถูกวิธี (แบนเนอร์อยู่จนกว่าข้อมูลสดมาครบ)
-    if (get().viewingTerm) await get().closeViewing();
-    else await get().loadAll();
+    if (get().viewingTerm) {
+      await get().closeViewing();
+      if (get().viewingTerm) {
+        // เทอมถูกสร้างบนเซิร์ฟเวอร์แล้วจริง แต่จอยังเป็นเทอมเก่า — บอกตรง ๆ
+        throw new Error(
+          "สร้างเทอมใหม่แล้ว แต่โหลดตารางของเทอมใหม่ไม่สำเร็จ จอยังแสดงเทอมที่ปิดแล้วอยู่ ลองกดกลับอีกครั้ง");
+      }
+    } else await get().loadAll();
     await get().loadTerms();
     if (get().liveSync) get().startLiveSync();
     return r;
@@ -1548,3 +1621,9 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
   },
   };
 });
+
+// ตอนดูเทอมที่ปิด คำขอแก้ไขทุกชนิดถูกปฏิเสธที่ด่านขาออกของ client (ดู api/client.ts)
+api.setWriteBlock(() =>
+  useTimetableStore.getState().viewingTerm?.status === "closed"
+    ? "กำลังดูเทอมที่ปิดแล้ว แก้ไขไม่ได้ กลับไปเทอมปัจจุบันก่อน"
+    : null);

@@ -5,7 +5,7 @@
  * ดึงเทอมปัจจุบันมาทับของเก่าที่เปิดดูอยู่ แล้วจอเด้งกลับโดยไม่มีอะไรฟ้อง
  */
 import {
-  activeTerm, canEdit, dropLiveData, LIVE_DATA_KEYS, liveReloadComplete, nextTerm, shouldPoll, sortTerms, termBanner, termLabel,
+  activeTerm, blocksLiveWrite, canEdit, createLanding, dropLiveData, LIVE_DATA_KEYS, nextTerm, shouldPoll, sortTerms, termBanner, termLabel,
   type TermMeta,
 } from "../../frontend/src/utils/terms.ts";
 
@@ -77,10 +77,48 @@ for (const k of ["groups", "teachers", "subjects", "rooms", "requirements", "slo
   ok((LIVE_DATA_KEYS as readonly string[]).includes(k), `${k} อยู่ในชุดข้อมูลสด (ชุดที่ openTerm วาง)`);
 }
 
-// ── ออกจากเทอมเก่าได้เมื่อข้อมูลสดมาครบเท่านั้น ───────────────────────────────
-eq(liveReloadComplete("ready", 0), true, "ครบทุกเส้น");
-eq(liveReloadComplete("ready", 1), false, "ล้มบางเส้น = จอเป็นของผสม ห้ามล้างแบนเนอร์");
-eq(liveReloadComplete("unreachable", 9), false, "ล้มหมด");
-eq(liveReloadComplete("loading", 0), false, "ยังไม่ได้ถามอะไร");
+ok((LIVE_DATA_KEYS as readonly string[]).includes("schoolConfig"),
+   "schoolConfig อยู่ในชุดข้อมูลสด (ใบพิมพ์เทอมเก่าต้องไม่ได้ชื่อ ผอ. ปัจจุบัน)");
+for (const k of ["parked", "yardPicks", "yardList"]) {
+  ok((LIVE_DATA_KEYS as readonly string[]).includes(k), `${k} อยู่ในชุดข้อมูลสด`);
+}
+let told: string[] = [];
+dropLiveData({ slots: [], schoolConfig: {}, isLoading: false }, true, (k) => { told = k; });
+eq(told, ["slots", "schoolConfig"], "onDrop บอกชื่อฟิลด์ที่ถูกตัด");
+told = [];
+dropLiveData({ isLoading: false }, true, (k) => { told = k; });
+eq(told, [], "ไม่มีอะไรถูกตัด ไม่เรียก onDrop");
+dropLiveData({ slots: [] }, false, (k) => { told = k; });
+eq(told, [], "ไม่ได้กัน ไม่เรียก onDrop");
+
+// ── ตั๋วเขียนข้อมูล: ซ้อนกันต้องไม่ล้างของกัน ─────────────────────────────────
+{
+  const L = createLanding();
+  eq(L.held(), 0, "เริ่มต้นไม่มีตั๋ว");
+  eq(blocksLiveWrite(CLOSED, L), true, "ดูเทอมปิดและไม่มีตั๋ว = กัน");
+  eq(blocksLiveWrite(ACTIVE, L), false, "ดูเทอมที่ใช้งาน = ไม่กัน");
+  eq(blocksLiveWrite(null, L), false, "ไม่มีระบบเทอม = ไม่กัน");
+  const a = L.enter();
+  eq(blocksLiveWrite(CLOSED, L), false, "มีตั๋วหนึ่งใบ = ผ่าน");
+  const b = L.enter();
+  ok(a !== b, "ตั๋วไม่ซ้ำกัน");
+  L.leave(a);
+  eq(blocksLiveWrite(CLOSED, L), false, "enter/enter/leave ยังต้องผ่านอยู่ (ตั๋วของ b)");
+  eq(L.held(), 1, "เหลือหนึ่งใบ");
+  eq(L.leave(a), false, "คืนตั๋วซ้ำไม่ได้");
+  eq(L.leave(9999), false, "คนที่ไม่ใช่เจ้าของคืนตั๋วไม่ได้");
+  eq(blocksLiveWrite(CLOSED, L), false, "คืนผิดเจ้าของไม่ปลดกัน/ไม่ทำให้ผ่านน้อยลง");
+  eq(L.leave(b), true, "เจ้าของคืนได้");
+  eq(blocksLiveWrite(CLOSED, L), true, "คืนครบแล้วกันอีกครั้ง");
+}
+{
+  const L = createLanding();
+  const first = L.tryEnter();
+  ok(first !== null, "tryEnter ครั้งแรกได้");
+  eq(L.tryEnter(), null, "งานที่สองซ้อนไม่ได้ (กดกลับสองครั้ง / เปิดระหว่างกลับ)");
+  eq(L.held(), 1, "ครั้งที่ปฏิเสธไม่เพิ่มตั๋ว");
+  L.leave(first as number);
+  ok(L.tryEnter() !== null, "คืนแล้วเริ่มงานใหม่ได้");
+}
 
 console.log(`ALL PASS (${n})`);
