@@ -13570,9 +13570,12 @@ def _db_history_blob(hid: int) -> bytes | None:
 # a row whose data is refreshed when it is closed), so a past term can be
 # opened read-only without disturbing the live one.
 #
-# X is enforced by the database on purpose: two clicks
-# on "new term" must not be able to leave two rows for the same term, whatever
-# the code above it checks.
+# Two rules are enforced by the database on purpose, not left to the code in
+# front of it: UNIQUE (year, semester), so two clicks on "new term" cannot
+# leave two rows for the same term; and the partial unique index below, so
+# there can never be two rows with status 'active' (two browsers each holding
+# a different editable term). Closed rows are not limited, the index only
+# looks at 'active'.
 _TERMS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_terms (
     id        bigserial PRIMARY KEY,
@@ -13587,7 +13590,23 @@ CREATE TABLE IF NOT EXISTS app_terms (
     UNIQUE (year, semester)
 )
 """
+_TERMS_ONE_ACTIVE = """
+CREATE UNIQUE INDEX IF NOT EXISTS app_terms_one_active
+    ON app_terms (status) WHERE status = 'active'
+"""
+TERM_STATUSES = frozenset({"active", "closed"})
 _TERM_COLUMNS = "id, year, semester, label, status, slots, opened_at, closed_at, length(data)"
+
+
+def _terms_schema(cur) -> None:
+    """Create the table and its one-active-row index; safe to run every time."""
+    cur.execute(_TERMS_SCHEMA)
+    cur.execute(_TERMS_ONE_ACTIVE)
+
+
+def _check_term_status(status: str) -> None:
+    if status not in TERM_STATUSES:
+        raise ValueError(f"สถานะเทอมไม่ถูกต้อง: {status!r}")
 
 
 def term_label(year: int, semester: int) -> str:
@@ -13612,7 +13631,7 @@ def _terms_list() -> list[dict[str, Any]]:
     """The terms, newest first — enough to choose one, not to load it."""
     with _db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(_TERMS_SCHEMA)
+            _terms_schema(cur)
             cur.execute(f"SELECT {_TERM_COLUMNS} FROM app_terms "
                         "ORDER BY year DESC, semester DESC, id DESC")
             rows = cur.fetchall()
@@ -13623,7 +13642,7 @@ def _terms_list() -> list[dict[str, Any]]:
 def _term_row(term_id: int) -> dict[str, Any] | None:
     with _db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(_TERMS_SCHEMA)
+            _terms_schema(cur)
             cur.execute(f"SELECT {_TERM_COLUMNS} FROM app_terms WHERE id = %s", (term_id,))
             row = cur.fetchone()
         conn.commit()
@@ -13633,7 +13652,7 @@ def _term_row(term_id: int) -> dict[str, Any] | None:
 def _term_blob(term_id: int) -> bytes | None:
     with _db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(_TERMS_SCHEMA)
+            _terms_schema(cur)
             cur.execute("SELECT data FROM app_terms WHERE id = %s", (term_id,))
             row = cur.fetchone()
         conn.commit()
@@ -13642,9 +13661,10 @@ def _term_blob(term_id: int) -> bytes | None:
 
 def _term_insert(year: int, semester: int, label: str, status: str,
                  blob: bytes, slots: int) -> int:
+    _check_term_status(status)
     with _db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(_TERMS_SCHEMA)
+            _terms_schema(cur)
             cur.execute(
                 "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s, "
@@ -13656,9 +13676,10 @@ def _term_insert(year: int, semester: int, label: str, status: str,
 
 
 def _term_set_status(term_id: int, status: str) -> None:
+    _check_term_status(status)
     with _db_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(_TERMS_SCHEMA)
+            _terms_schema(cur)
             cur.execute(
                 "UPDATE app_terms SET status = %s, "
                 "closed_at = CASE WHEN %s = 'closed' THEN now() ELSE NULL END "
