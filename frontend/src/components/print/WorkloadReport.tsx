@@ -17,21 +17,15 @@ import type {
   Department, LessonRequirement, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../../types";
 import { flattenGroups, compareNames } from "../../utils/groupHierarchy";
-import { slotsForTeacher } from "../../utils/teacherSlots";
+import { workloadRows, type WorkloadRow } from "../../utils/workloadRows";
 
 /** "ม.4/2" → "4/2": the "ม." is on every row and tells the reader nothing. */
 const shortClass = (n: string | null | undefined) =>
   String(n ?? "").replace(/^ม\.?\s*/, "");
 
-interface SubjectRow {
-  subjectCode: string;
-  classes: string[];
-  periods: number;
-}
-
 interface TeacherBlock {
   teacher: Teacher;
-  rows: SubjectRow[];
+  rows: WorkloadRow[];
   total: number;
   missing: number;
 }
@@ -73,40 +67,31 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
   const pick = new Set(selectedIds);
   const chosen = teachers.filter((t) => pick.size === 0 || pick.has(t.id));
 
-  /** One row per subject this teacher actually teaches, classes merged. */
-  const rowsFor = (t: Teacher): SubjectRow[] => {
-    const by = new Map<number, SubjectRow>();
-    for (const s of slotsForTeacher(slots, t.id)) {
-      const sid = s.subject_id;
-      if (sid == null) continue;
-      const row = by.get(sid) ?? {
-        subjectCode: subj(sid)?.code ?? s.subject_code ?? "",
-        classes: [], periods: 0,
-      };
-      const cls = shortClass(s.group_name ?? gName(s.group_id));
-      if (cls && !row.classes.includes(cls)) row.classes.push(cls);
-      row.periods += 1;
-      by.set(sid, row);
-    }
-    const rows = [...by.values()];
-    const natural = (a: string, b: string) =>
-      a.localeCompare(b, undefined, { numeric: true });
-    for (const r of rows) r.classes.sort(natural);
-    return rows.sort((a, b) => a.subjectCode.localeCompare(b.subjectCode));
-  };
+  /**
+   * One row per subject this teacher actually teaches, classes merged.
+   *
+   * กฎที่ยากสองข้อ (คาบเสรีไม่มีวิชาของตัวเอง · คาบกิจกรรมไม่มีชั้นที่มีความหมาย)
+   * อยู่ใน utils/workloadRows ซึ่งทดสอบได้ตรง ๆ โดยไม่ต้องมีหน้าจอ
+   */
+  const rowsFor = (t: Teacher): WorkloadRow[] => workloadRows(slots, t.id, {
+    codeOf:  (id) => subj(id)?.code ?? undefined,
+    classOf: (s) => shortClass(s.group_name ?? gName(s.group_id)),
+  });
 
-  /** Periods asked for but never placed — said plainly rather than hidden. */
-  const missingFor = (t: Teacher) => {
+  /**
+   * Periods asked for but never placed — said plainly rather than hidden.
+   *
+   * นับจากบรรทัดที่จะพิมพ์จริง ไม่ใช่นับจากตารางซ้ำอีกรอบ เพราะถ้านับคนละวิธี
+   * สองที่ ใบจะบอกว่า "รวม 19 คาบ" แล้วบรรทัดล่างบอกว่า "ยังลงไม่ได้ 1 คาบ"
+   * ทั้งที่ลงครบแล้ว — ซึ่งจะเกิดกับวิชาเสรีทันที เพราะวิธีนับเก่าข้ามมันไป
+   */
+  const missingFor = (t: Teacher, rows: WorkloadRow[]) => {
     const want = new Map<number, number>();
     for (const r of requirements) {
       if (r.teacher_id !== t.id) continue;
       want.set(r.subject_id, (want.get(r.subject_id) ?? 0) + r.weekly_count);
     }
-    const got = new Map<number, number>();
-    for (const s of slotsForTeacher(slots, t.id)) {
-      if (s.subject_id == null) continue;
-      got.set(s.subject_id, (got.get(s.subject_id) ?? 0) + 1);
-    }
+    const got = new Map(rows.map((r) => [r.subjectId, r.periods]));
     let missing = 0;
     for (const [sid, n] of want) missing += Math.max(0, n - (got.get(sid) ?? 0));
     return missing;
@@ -117,7 +102,7 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
     return {
       teacher: t, rows,
       total: rows.reduce((n, r) => n + r.periods, 0),
-      missing: missingFor(t),
+      missing: missingFor(t, rows),
     };
   };
 
@@ -151,6 +136,10 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
   const TD: React.CSSProperties = {
     border: "1px solid #000", padding: "3px 6px", fontSize: "10pt",
     verticalAlign: "top", lineHeight: 1.35,
+    // ไม่มีอะไรได้รับอนุญาตให้วาดออกนอกช่องของตัวเอง ตารางนี้กว้างคงที่
+    // (tableLayout: fixed) ข้อความที่ยาวเกินจึงไปทับช่องข้าง ๆ แทนที่จะขึ้น
+    // บรรทัดใหม่ — และภาษาไทยไม่มีช่องว่างระหว่างคำให้เบราว์เซอร์ตัด
+    overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word",
   };
   const mid: React.CSSProperties = { ...TD, verticalAlign: "middle" };
   /** The rule that opens a teacher's block, so rows group by eye. */
@@ -202,13 +191,17 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
               width: "100%", borderCollapse: "collapse", tableLayout: "fixed",
               border: "1.4px solid #000",
             }}>
+              {/* ความกว้างถูกเกลี่ยใหม่หลังจากคาบเสรีกับคาบกิจกรรมเข้ามาอยู่ใน
+                  คอลัมน์รหัสวิชา ("ปฏิบัติเครื่องดนตรีไทย" ไม่ใช่ "ค21102")
+                  และหลังจากคาบเสรีพาชั้นเรียนมาทั้งหน้าต่าง — สองคอลัมน์นั้น
+                  ต้องการที่เพิ่ม ส่วนช่องหมายเหตุที่เว้นไว้ให้เขียนมือ เล็กลงได้ */}
               <colgroup>
-                <col style={{ width: "30px" }} />
-                <col style={{ width: "190px" }} />
-                <col style={{ width: "92px" }} />
+                <col style={{ width: "26px" }} />
+                <col style={{ width: "170px" }} />
+                <col style={{ width: "110px" }} />
                 <col />
-                <col style={{ width: "46px" }} />
-                <col style={{ width: "150px" }} />
+                <col style={{ width: "40px" }} />
+                <col style={{ width: "120px" }} />
               </colgroup>
               <thead>
                 <tr>
@@ -264,10 +257,13 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
                           </td>
                         )}
                         {i === 0 && nameCell}
-                        <td style={cell({
-                          ...TD, textAlign: "center", whiteSpace: "nowrap",
-                        })}>
-                          {r.subjectCode}
+                        {/* ชื่อกิจกรรมยาวกว่ารหัสวิชามาก ("สาธารณประโยชน์" เทียบกับ
+                            "ค21102") ของเดิมตั้ง nowrap ไว้ในคอลัมน์กว้างคงที่
+                            ข้อความจึงล้นออกไปทับคอลัมน์ชั้นที่สอนบนกระดาษ
+                            ภาษาไทยไม่มีช่องว่างระหว่างคำ จึงต้องอนุญาตให้ตัดคำได้
+                            ไม่งั้นมันไม่ยอมขึ้นบรรทัดใหม่เลย */}
+                        <td style={cell({ ...TD, textAlign: "center" })}>
+                          {r.code}
                         </td>
                         <td style={cell(TD)}>{r.classes.join(", ")}</td>
                         <td style={cell({ ...TD, textAlign: "center", fontWeight: 700 })}>

@@ -24,7 +24,7 @@ rm -f "$ROOT/data_state.json"
 
 for f in "$HERE"/ts/*.ts; do
   [ -e "$f" ] || continue
-  out=$(cd "$(dirname "$f")" && node "$(basename "$f")" 2>&1)
+  out=$(cd "$HERE" && node --import ./register.mjs "$f" 2>&1)
   if echo "$out" | grep -q "ALL PASS"; then pass=$((pass+1)); echo "ok   ts/$(basename "$f")"
   else fail=$((fail+1)); echo "FAIL ts/$(basename "$f")"; echo "$out" | tail -20 | sed 's/^/     /'; fi
 done
