@@ -33,3 +33,7 @@ data_state.json
 # ผลพลอยได้จากการรัน tsc ของชุดทดสอบที่เดินตาม import เข้ามาถึงไฟล์จริง
 # ถ้า commit ไป ตัวรวมไฟล์อาจหยิบไปใช้แทนตัว .ts ได้
 frontend/src/**/*.js
+
+# worktrees สำหรับงานที่แยกออกมาทำ (ไม่ต้องเก็บเข้า repo)
+.worktrees/
+.superpowers/
