@@ -112,6 +112,8 @@ export const NewTermModal: React.FC<Props> = ({ onClose, onCreated }) => {
       </div>
 
       <div className="px-5 py-4 space-y-4 overflow-y-auto">
+        {/* วิชาใหม่ที่ต้องสร้าง และชุดคาบเสรี: ตัวเลขสองตัวนี้ในสเปกส่วนที่ 8 มาจากรอบอัตรากำลัง
+            (Plan 2 ข้อมูลที่ Plan 3 ส่งเข้ามา) ยังไม่มีบนเซิร์ฟเวอร์ จึงเพิ่มที่นี่ตอนทำ Plan 3 */}
         <div>
           <p className="text-xs font-semibold text-gray-500 mb-1.5">เทอมใหม่จะเริ่มต้นด้วย</p>
           {preview ? (

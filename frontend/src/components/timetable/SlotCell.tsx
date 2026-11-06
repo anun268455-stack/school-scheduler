@@ -105,7 +105,8 @@ export const SlotCell: React.FC<SlotCellProps> = ({
       ) : (
         <Layer slot={slots[0]} problem={probs.get(slots[0].id) ?? null}
           onLock={onLock} onDelete={onDelete} onPark={onPark} onMoveOptions={onMoveOptions} onSwapRoom={onSwapRoom}
-          onOpenElective={onOpenElective} onRescue={onRescue} compact={compact} />
+          onOpenElective={onOpenElective} onRescue={onRescue} compact={compact}
+          readOnly={readOnly} />
       )}
     </div>
   );
@@ -122,9 +123,11 @@ interface LayerProps {
   onSwapRoom?: (slot: TimetableSlot) => void;
   onOpenElective?: (slot: TimetableSlot) => void;
   onRescue?: (slot: TimetableSlot) => void;
+  /** เทอมที่ปิดแล้ว — ไม่วาดปุ่มแก้ใด ๆ */
+  readOnly?: boolean;
 }
 
-const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue }) => {
+const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue, readOnly }) => {
   // สอนร่วม and a คาบกิจกรรม duty roster both put more than one teacher in the
   // room. The line truncates, so the count goes in a badge that cannot.
   const names = slotTeacherNames(slot);
