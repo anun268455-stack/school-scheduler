@@ -24,7 +24,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      # lint กับ build ใช้ Node 20 ให้ตรงกับ deploy.yml เป๊ะ ๆ
+      # ไม่งั้นด่านนี้จะตรวจคนละสภาพแวดล้อมกับที่ขึ้นเว็บจริง ซึ่งไร้ประโยชน์
+      - name: Setup Node.js 20 (ให้ตรงกับ deploy.yml)
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -47,6 +49,14 @@ jobs:
         env:
           VITE_BASE_URL: /${{ github.event.repository.name }}/
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+      # ตัวทดสอบฝั่ง TypeScript รันไฟล์ .ts ตรง ๆ ด้วย node ซึ่งต้อง Node 22 ขึ้นไป
+      # (Node 20 ตอบ ERR_UNKNOWN_FILE_EXTENSION) จึงสลับมาเฉพาะขั้นนี้ หลัง build เสร็จแล้ว
+      # ดู tests/README.md
+      - name: Setup Node.js 22 (ตัวทดสอบต้องใช้)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: ตัวทดสอบของโปรแกรม
         run: bash tests/run.sh
