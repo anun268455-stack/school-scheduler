@@ -311,7 +311,9 @@ eq(printTermName(CLOSED, [ACTIVE, CLOSED]), "2/2568", "ดูเทอมเก�
 eq(printTermName(null, [ACTIVE, CLOSED]), "1/2569", "ไม่ได้ดูเทอมเก่า = เทอมที่ใช้งาน");
 eq(printTermName(null, []), undefined, "ไม่มีเทอมเลย = undefined");
 eq(printTermName(CLOSED, []), "2/2568", "ชื่อมาจากเทอมที่ดู แม้รายการเทอมยังไม่โหลด");
-eq(printTermName({ ...CLOSED, label: "  " }, [ACTIVE]), "1/2569", "ชื่อว่างเปล่าไม่ถูกใช้");
+eq(printTermName({ ...CLOSED, label: "  " }, [ACTIVE]), undefined,
+   "เทอมที่ดูไม่มีชื่อ = ไม่พิมพ์ชื่อ ห้ามใช้ชื่อเทอมที่ใช้งานแทน (ข้อ 17)");
+eq(printTermName({ ...CLOSED, label: "" }, [ACTIVE, CLOSED]), undefined, "ชื่อว่างจริง ๆ ก็เช่นกัน");
 
 eq(termFieldsLocked(true, [ACTIVE]), true, "มีเทอมแล้ว = ช่องภาคเรียน/ปีแก้ไม่ได้");
 eq(termFieldsLocked(true, []), false, "ยังไม่เคยสร้างเทอม = ยังแก้ได้");

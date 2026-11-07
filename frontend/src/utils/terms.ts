@@ -185,7 +185,7 @@ export function formatBytes(n: number): string {
 export function unlockNotice(target: TermMeta, active: TermMeta | null): string[] {
   const lines: string[] = [];
   if (active !== null && active.id !== target.id) {
-    const periods = active.slots === null ? "" : ` (ลงคาบไว้ ${active.slots} คาบ)`;
+    const periods = active.slots === null ? "" : ` (ลงคาบไว้ ${active.slots} คาบ ตามที่เก็บไว้ล่าสุด ไม่ใช่ตัวเลขสด)`;
     lines.push(
       `การปลดล็อกจะปิดเทอมที่ใช้งานอยู่ตอนนี้ คือเทอม ${active.label}${periods} ไปด้วย `
       + "เพราะแก้ได้ทีละหนึ่งเทอมเท่านั้น");
@@ -431,8 +431,12 @@ export function termFieldsLocked(available: boolean, terms: TermMeta[]): boolean
  * (สเปกข้อทดสอบ 17) ไม่ได้ดูเทอมเก่าอยู่ = เทอมที่ใช้งาน ไม่มีเทอมเลย = undefined
  */
 export function printTermName(viewing: TermMeta | null, terms: TermMeta[]): string | undefined {
-  const v = viewing?.label?.trim();
-  if (v) return v;
+  // กำลังดูเทอมที่ปิด: ชื่อของเทอมนั้นหรือไม่มีชื่อเลย ห้ามถอยไปใช้ชื่อเทอมที่ใช้งานอยู่
+  // (ใบของเทอมเก่าที่ขึ้นชื่อเทอมปัจจุบัน คือความล้มเหลวของข้อทดสอบ 17 พอดี)
+  if (viewing !== null) {
+    const v = viewing.label?.trim();
+    return v ? v : undefined;
+  }
   const a = activeTerm(terms)?.label?.trim();
   return a ? a : undefined;
 }

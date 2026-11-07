@@ -22,7 +22,7 @@ import { PrintOptionsModal } from "../print/PrintOptionsModal";
 import { useDismissOnOutside } from "../common/ModalShell";
 import { SearchableSelect } from "../common/SearchableSelect";
 import { byTeacherCode } from "../../utils/teacherOrder";
-import { activeTerm, bannerView, TERM_PRINT_EVENT } from "../../utils/terms";
+import { activeTerm, bannerView, isReadOnly, TERM_PRINT_EVENT } from "../../utils/terms";
 import { stepTarget, stepPosition } from "../../utils/entityStep";
 import type { PrintMode, PrintOptions } from "../print/PrintView";
 import type { ViewMode } from "../../types";
@@ -158,6 +158,15 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
 
   // แถบเทอมที่ปิด — ติดค้างตราบที่เทอมที่ปิดอยู่บนจอ ไม่หายเอง (ตัดสินที่ utils/terms.bannerView)
   const banner = bannerView(viewingTerm, activeTerm(terms) ?? null, viewingError);
+  // ค่าเดียวกับที่ตารางได้ (App ส่ง readOnly ให้ TimetableGrid) — ปุ่มที่เขียนข้อมูลต้องกดไม่ได้
+  // ระหว่างดูเทอมที่ปิด ไม่ใช่ปล่อยให้กดแล้วเจอ error ที่ไม่รู้สาเหตุ
+  const readOnly = isReadOnly(viewingTerm, terms);
+  // โหมดที่เปิดค้างไว้ก่อนเข้าเทอมเก่า ปิดให้ทั้งหมดตอนเข้า: ถ้าแค่ disable ปุ่ม โหมดที่ตั้งไว้จะ
+  // ติดค้างและโผล่กลับมาตอนกลับเทอมปัจจุบัน (แถบของโหมดซ่อนอยู่ที่ตาราง แต่ค่ายังเป็นจริง)
+  useEffect(() => {
+    if (!readOnly) return;
+    setManualMode(false); setGuideMode(false); setPreLockMode(false); setYardPickMode(false);
+  }, [readOnly, setManualMode, setGuideMode, setPreLockMode, setYardPickMode]);
   const [leaving, setLeaving] = useState(false);
   const backToLive = async () => {
     setLeaving(true);
@@ -466,7 +475,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
                     ปฏิเสธการย้ายที่ทำให้ชนกัน แล้วหน้าจอคืนคาบกลับที่เดิม */}
                 <button
                   onClick={() => { setManualMode(!manualMode); setShowTools(false); }}
-                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors",
+                  disabled={readOnly}
+                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
                     manualMode ? "bg-indigo-600 text-white" : "text-gray-200 hover:bg-gray-700")}>
                   ✋
                   <span className="flex-1">โหมดจัดเอง — วางได้แม้จะชนกัน</span>
@@ -477,7 +487,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
                     ทีละขั้น ยังไม่แตะตารางจนกดลงมือทำทั้งชุด */}
                 <button
                   onClick={() => { setGuideMode(!guideMode); setShowTools(false); }}
-                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors",
+                  disabled={readOnly}
+                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
                     guideMode ? "bg-indigo-700 text-white" : "text-gray-200 hover:bg-gray-700")}>
                   🧩
                   <span className="flex-1">โหมดนำทางการจัดคาบ — เลือกทางเองทีละขั้น</span>
@@ -485,7 +496,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
                 </button>
                 <button
                   onClick={() => { setPreLockMode(!preLockMode); setShowTools(false); }}
-                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors",
+                  disabled={readOnly}
+                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
                     preLockMode ? "bg-amber-600 text-white" : "text-gray-200 hover:bg-gray-700")}>
                   {preLockMode ? "🔒" : "🔓"}
                   <span className="flex-1">โหมดล็อก — คลิกคาบเพื่อล็อก</span>
@@ -495,18 +507,19 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
                     as it goes; the timetable follows at the next สร้างตาราง. */}
                 <button
                   onClick={() => { setYardPickMode(!yardPickMode); setShowTools(false); }}
-                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors",
+                  disabled={readOnly}
+                  className={clsx("w-full flex items-center gap-2 px-4 py-2 text-sm text-left transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
                     yardPickMode ? "bg-teal-600 text-white" : "text-gray-200 hover:bg-gray-700")}>
                   📌
                   <span className="flex-1">โหมดเลือกคาบเรียนลาน</span>
                   {yardPickMode && <span className="text-[10px]">กำลังเปิด</span>}
                 </button>
-                <button onClick={() => { lockAll(); setShowTools(false); }}
-                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+                <button onClick={() => { lockAll(); setShowTools(false); }} disabled={readOnly}
+                  className="disabled:opacity-40 disabled:cursor-not-allowed w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
                   🔒 <span>ล็อกทุกคาบ</span>
                 </button>
-                <button onClick={() => { unlockAll(); setShowTools(false); }}
-                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
+                <button onClick={() => { unlockAll(); setShowTools(false); }} disabled={readOnly}
+                  className="disabled:opacity-40 disabled:cursor-not-allowed w-full flex items-center gap-2 px-4 py-2 text-sm text-left text-gray-200 hover:bg-gray-700">
                   🔓 <span>ปลดล็อกทุกคาบ</span>
                 </button>
                 <div className="border-t border-gray-700 my-1" />
@@ -608,18 +621,19 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
             <ActionItem
               icon="⚡" label="สร้างตาราง" tone="text-indigo-300"
               hint={isSolving ? "กำลังจัดอยู่ — เปิดดูความคืบหน้า" : "จัดใหม่ทั้งโรงเรียน"}
+              disabled={readOnly}
               onClick={() => { setShowActions(false); setShowSolver(true); }}
             />
             <ActionItem
               icon="✅" label="จัดให้เสร็จ" tone="text-emerald-300"
               hint="จัดใหม่ทั้งโรงเรียน แล้วไล่ปิดคาบว่างกลางวันให้หมดเท่าที่ทำได้ — คาบที่หาห้องไม่ได้จะขึ้นกรอบแดงให้หาห้องเอง"
-              disabled={isSolving}
+              disabled={isSolving || readOnly}
               onClick={() => { setShowActions(false); void runSolver({ closeGapsHard: true }); }}
             />
             <ActionItem
               icon="🔧" label="แก้เฉพาะห้องที่เลือก" tone="text-amber-300"
               hint="จัดใหม่เฉพาะห้องที่ติ๊ก ห้องอื่นอยู่ที่เดิมทุกคาบ"
-              disabled={isSolving}
+              disabled={isSolving || readOnly}
               onClick={() => { setShowActions(false); setShowRepair(true); }}
             />
 
@@ -628,12 +642,13 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
             <ActionItem
               icon="⚖️" label="เกลี่ยคาบครู" tone="text-sky-300"
               hint="ครูไม่มีคาบมากเกินไปในวันเดียว และไม่สอนติดกันยาวเกินจำเป็น — ตารางนักเรียนมีคาบเท่าเดิมในช่องเดิม"
-              disabled={isSolving}
+              disabled={isSolving || readOnly}
               onClick={() => { setShowActions(false); setShowBalance(true); }}
             />
             <ActionItem
               icon="🏫" label="วิเคราะห์ห้อง" tone="text-teal-300"
               hint="คาบไหนเรียนลานหรือไม่มีห้อง ทั้งที่ห้องว่างอยู่ในชั่วโมงนั้น"
+              disabled={readOnly}
               onClick={() => { setShowActions(false); setShowRoomAudit(true); }}
             />
             {/* ปุ่มตรวจคาบ — "ทั้งหมดนี้อาจจะทำเป็นปุ่มตรวจคาบ นานก็ได้"
@@ -642,6 +657,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
             <ActionItem
               icon="🧪" label="ลองจัดใหม่ด้วยเครื่องตัวใหม่" tone="text-fuchsia-300"
               hint="จัดตารางใหม่ทั้งโรงเรียนตั้งแต่ต้น แล้วบอกว่าได้ดีกว่าที่ใช้อยู่ตรงไหน — ตารางที่ใช้อยู่ไม่ถูกแตะ"
+              disabled={readOnly}
               onClick={() => { setShowActions(false); setShowPropose(true); }}
             />
             {/* จัดคาบของครูคนนี้ — เฉพาะตอนเปิดตารางของครูอยู่ เพราะทำงานกับ
@@ -650,6 +666,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
               <ActionItem
                 icon="🧭" label="จัดคาบครูคนนี้" tone="text-violet-300"
                 hint="คาบของครูคนนี้แต่ละคาบย้ายไปไหนได้ ต้องสลับกับคาบไหน"
+                disabled={readOnly}
                 onClick={() => { setShowActions(false); setShowPlan(true); }}
               />
             )}

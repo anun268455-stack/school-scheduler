@@ -45,11 +45,20 @@ export const TermsUnavailable: React.FC = () => (
 // ── หน้าต่างปลดล็อก ───────────────────────────────────────────────────────────
 const UnlockDialog: React.FC<{
   target: TermMeta;
-  active: TermMeta | null;
   onClose: () => void;
   onDone: (text: string, tone: "info" | "warn" | "error") => void;
-}> = ({ target, active, onClose, onDone }) => {
+}> = ({ target, onClose, onDone }) => {
   const unlockOldTerm = useTimetableStore((s) => s.unlockOldTerm);
+  const loadTerms = useTimetableStore((s) => s.loadTerms);
+  // เทอมที่ใช้อยู่อ่านจากร้านตอนนี้ ไม่ใช่ค่าที่หน้ารายการโหลดไว้ตอนเปิดหน้า: มีหลายคนใช้พร้อมกัน
+  // จำนวนคาบที่เตือนว่าจะถูกปิดต้องเป็นของล่าสุดที่เซิร์ฟเวอร์มี
+  const active = useTimetableStore((s) => activeTerm(s.terms) ?? null);
+  const [refreshing, setRefreshing] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    loadTerms().finally(() => { if (alive) setRefreshing(false); });
+    return () => { alive = false; };
+  }, [loadTerms]);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -74,6 +83,7 @@ const UnlockDialog: React.FC<{
         <h3 className="text-base font-bold text-gray-800">ปลดล็อกเทอม {target.label}</h3>
       </div>
       <div className="px-5 py-4 space-y-3 overflow-y-auto">
+        {refreshing && <p className="text-xs text-gray-400">กำลังอ่านจำนวนคาบล่าสุดของเทอมที่ใช้อยู่…</p>}
         <ul className="space-y-1.5">
           {unlockNotice(target, active).map((line, i) => (
             <li key={i} className={clsx("text-sm flex gap-2",
@@ -102,7 +112,7 @@ const UnlockDialog: React.FC<{
           className="px-3 py-1.5 text-sm text-gray-600 rounded hover:bg-gray-100 disabled:opacity-40">
           ยกเลิก
         </button>
-        <button onClick={() => void go()} disabled={busy || !unlockConfirmed(target, typed)}
+        <button onClick={() => void go()} disabled={busy || refreshing || !unlockConfirmed(target, typed)}
           className="px-3 py-1.5 text-sm bg-red-600 text-white rounded font-semibold hover:bg-red-700 disabled:opacity-40">
           {busy ? "กำลังปลดล็อก…" : "ปลดล็อกเทอมนี้"}
         </button>
@@ -139,7 +149,6 @@ export const TermsPanel: React.FC<Props> = ({ onNav }) => {
 
   useEffect(() => { void reload(); }, [reload]);
 
-  const active = activeTerm(terms) ?? null;
   const rows = sortTerms(terms);
 
   const open = async (t: TermMeta, thenPrint: boolean) => {
@@ -308,7 +317,6 @@ export const TermsPanel: React.FC<Props> = ({ onNav }) => {
       {unlocking && (
         <UnlockDialog
           target={unlocking}
-          active={active}
           onClose={() => setUnlocking(null)}
           onDone={(text, tone) => { setUnlocking(null); setNote({ text, tone }); }}
         />
