@@ -13717,7 +13717,7 @@ def _term_number(value: Any) -> int | None:
         return value
     if isinstance(value, str):
         t = value.strip()
-        if t.isdigit():
+        if t.isdecimal():
             return int(t)
     return None
 
@@ -14534,8 +14534,11 @@ def unlock_term(term_id: int, body: dict[str, Any]):
     # it. Same treatment as create_term — give the running term a 'closed' row
     # in the same transaction, and refuse here, before anything is applied,
     # when it cannot be given one.
+    # ไม่ใส่เงื่อนไข _nothing_a_term_change_would_destroy() ตรงนี้ โดยตั้งใจ (ต่างจาก create_term):
+    # _apply_snapshot เขียนทับทั้งครู ห้อง แผนการสอน หลักสูตร และ GROUPS/SCHOOL_CONFIG/CURRENT_TERM
+    # แม้ SLOTS กับ PARKED จะว่างอยู่ ดังนั้นต้องเก็บเทอมเดิมหรือปฏิเสธเสมอ อย่าลบหรือทำให้สองจุดเหมือนกัน
     archive = None
-    if not has_old and not _nothing_a_term_change_would_destroy():
+    if not has_old:
         try:
             existing = _terms_list()
         except Exception:                          # noqa: BLE001

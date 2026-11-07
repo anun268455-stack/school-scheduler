@@ -490,6 +490,31 @@ def test_create_first_term_refuses_when_year_and_semester_are_unknowable():
     assert mock_api.SLOTS == [{"id": 1}, {"id": 2}, {"id": 3}], "ไม่ล้างสักคาบ"
 
 
+def test_superscript_digits_in_school_config_are_refused_with_409_not_value_error():
+    # "²".isdigit() เป็นจริง แต่ int("²") ยก ValueError → เดิมได้ HTTP 500 เปล่า ๆ
+    # ต้องเป็น 409 ภาษาไทย เหมือนกรณีอ่านปี/ภาคไม่ได้ทุกกรณี
+    mock_api.CURRENT_TERM.update(BLANK)
+    saved = {k: mock_api.SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}, {"id": 3}]
+    try:
+        for cfg in ({"term": "1", "year": "²⁵⁶⁸"}, {"term": "¹", "year": "2568"}):
+            mock_api.SCHOOL_CONFIG.update(cfg)
+
+            def run(log, calls, cfg=cfg):
+                try:
+                    mock_api.create_term({"year": 2569, "semester": 1})
+                    assert False, f"ต้องปฏิเสธ {cfg}"
+                except mock_api.HTTPException as exc:
+                    assert exc.status_code == 409, (cfg, exc.status_code)
+                    assert "บอกไม่ได้ว่าตารางที่ลงไว้ตอนนี้" in exc.detail, cfg
+                assert not any(q.startswith(("INSERT", "UPDATE")) for q, _ in log), cfg
+                assert mock_api.SLOTS == [{"id": 1}, {"id": 2}, {"id": 3}], cfg
+            _with_fake_db(run)
+    finally:
+        mock_api.SCHOOL_CONFIG.update(saved)
+    assert mock_api.SLOTS == [{"id": 1}, {"id": 2}, {"id": 3}], "ไม่ล้างสักคาบ"
+
+
 def test_create_first_term_on_a_fresh_server_archives_nothing():
     # ยังไม่มีคาบและไม่มีคาบพักเลย (เครื่องที่เพิ่งติดตั้ง) — ไม่มีอะไรจะเสีย
     # จึงไม่ต้องแทรกแถวเปล่า ๆ และต้องไม่ปฏิเสธ แม้บอกไม่ได้ว่าเป็นเทอมไหน
@@ -1064,6 +1089,39 @@ def test_unlock_with_no_active_row_refuses_rather_than_lose_the_running_term():
             mock_api._term_blob = saved
             mock_api.SCHOOL_CONFIG.update(saved_cfg)
     assert mock_api.SLOTS == [{"id": 1}, {"id": 2}]
+
+
+def test_unlock_with_no_periods_still_refuses_when_the_running_term_is_unknown():
+    # ไม่มีคาบเลยทั้ง SLOTS และ PARKED แต่ครูกับห้องถูกกรอกไว้แล้ว (โรงเรียนที่กำลังตั้งค่า)
+    # _apply_snapshot เขียนทับทั้งหมด ไม่ใช่แค่คาบ — "ไม่มีคาบ" จึงไม่ใช่ "ไม่มีอะไรจะเสีย"
+    # ต้องปฏิเสธก่อนเขียนอะไร ไม่ใช่ปล่อยผ่านเพราะสองรายการว่าง
+    blob = _unlock_setup()
+    kept = {"TEACHERS": list(mock_api.TEACHERS), "ROOMS": list(mock_api.ROOMS)}
+    saved_cfg = {k: mock_api.SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    saved_blob = mock_api._term_blob
+    mock_api.SLOTS.clear()
+    mock_api.PARKED.clear()
+    mock_api.TEACHERS[:] = [{"id": 501, "name": "ครูทดสอบ"}]
+    mock_api.ROOMS[:] = [{"id": 502, "name": "ห้องทดสอบ"}]
+    mock_api.CURRENT_TERM.update(BLANK)
+    mock_api.SCHOOL_CONFIG.update({"term": "", "year": ""})
+    mock_api._term_blob = lambda i: blob
+
+    def run(log, calls):
+        mock_api._term_row = lambda i: CLOSED3 if i == 3 else {"id": i}
+        exc = _http(mock_api.unlock_term, 3, {"confirm": "2/2568"})
+        assert exc and exc.status_code == 409, exc
+        assert "บอกไม่ได้ว่าตารางที่ลงไว้ตอนนี้" in exc.detail, exc.detail
+        assert not any(q.startswith(("INSERT", "UPDATE", "COMMIT")) for q, _ in log), log
+        assert mock_api.TEACHERS == [{"id": 501, "name": "ครูทดสอบ"}], "ครูยังอยู่ครบ"
+        assert mock_api.ROOMS == [{"id": 502, "name": "ห้องทดสอบ"}], "ห้องยังอยู่ครบ"
+    try:
+        _with_fake_db(run, active=None)
+    finally:
+        mock_api._term_blob = saved_blob
+        mock_api.SCHOOL_CONFIG.update(saved_cfg)
+        mock_api.TEACHERS[:] = kept["TEACHERS"]
+        mock_api.ROOMS[:] = kept["ROOMS"]
 
 
 def test_unlock_refusals_change_nothing():
