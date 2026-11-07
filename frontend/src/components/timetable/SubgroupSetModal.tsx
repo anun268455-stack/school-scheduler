@@ -190,12 +190,12 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
           const sb = subjects.find((x) => x.id === sid);
           if (!sb || (sb.duration ?? 1) === want) continue;
           const updated = await api.updateSubject(sid, { duration: want });
-          useTimetableStore.setState((st) => ({
+          useTimetableStore.getState().patch((st) => ({
             subjects: st.subjects.map((x) => (x.id === sid ? { ...x, ...updated } : x)),
           }));
         }
       }
-      useTimetableStore.setState({ requirements: await api.fetchRequirements() });
+      useTimetableStore.getState().patch({ requirements: await api.fetchRequirements() });
       // "ตั้งค่าแล้วแต่ทำไมไม่เห็นอัปเดตข้อมูลเลย" — เพราะเซ็ตเป็นแผนการสอน
       // ไม่ใช่ตาราง ตารางที่มีอยู่ไม่ขยับจนกดสร้างตาราง เดิมข้อความบันทึกไม่ได้
       // บอกไว้ คนที่เพิ่งตั้งจึงไปเปิดตารางแล้วเห็นของเดิม
@@ -225,7 +225,7 @@ export const SubgroupSetModal = ({ onClose, initialParentId }: Props) => {
       for (const id of savedRowIds(s)) {
         await api.updateRequirement(id, { ...UNLINK_SET_PATCH });
       }
-      useTimetableStore.setState({ requirements: await api.fetchRequirements() });
+      useTimetableStore.getState().patch({ requirements: await api.fetchRequirements() });
       setNote(`ลบเซ็ต "${s.name}" แล้ว — ${s.rows.length} วิชายังอยู่ในแผนการสอน `
         + "เหมือนเดิม แค่ไม่ต้องเรียนพร้อมกันอีกต่อไป "
         + "(ถ้าจะลบวิชาออกจริงๆ ให้ไปลบที่หน้ารายวิชาของห้องนั้น) "

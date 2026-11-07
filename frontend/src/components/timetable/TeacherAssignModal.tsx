@@ -135,7 +135,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
     setBusy(true); setError(null);
     try {
       const updated = await api.updateSubject(subjectId, { duration });
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         subjects: st.subjects.map((x) => (x.id === subjectId ? { ...x, ...updated } : x)),
       }));
     } catch (e) {
@@ -150,7 +150,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
     setBusy(true);
     try {
       const updated = await api.updateSubject(subjectId, { is_elective: on });
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         subjects: st.subjects.map((x) => (x.id === subjectId ? { ...x, ...updated } : x)),
       }));
     } finally { setBusy(false); }
@@ -237,7 +237,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
 
   const refresh = async () => {
     const updated = await api.fetchRequirements();
-    useTimetableStore.setState({ requirements: updated });
+    useTimetableStore.getState().patch({ requirements: updated });
   };
 
   const addClass = async (groupId: number) => {

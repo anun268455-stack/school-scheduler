@@ -195,7 +195,7 @@ export const LevelActivityPanel: React.FC = () => {
         code: `ACT${String(Date.now()).slice(-4)}`,
         type: "common", duration: 1, is_activity: true, department_id: null,
       });
-      useTimetableStore.setState((st) => ({ subjects: [...st.subjects, made] }));
+      useTimetableStore.getState().patch((st) => ({ subjects: [...st.subjects, made] }));
       setForm((f) => ({ ...f, subject_id: String(made.id) }));
       setNewName(null);
     } catch (e) {

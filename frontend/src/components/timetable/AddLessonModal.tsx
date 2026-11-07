@@ -232,7 +232,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
           department_id: null,
           is_activity: false,
         });
-        useTimetableStore.setState((s) => ({ subjects: [...s.subjects, created] }));
+        useTimetableStore.getState().patch((s) => ({ subjects: [...s.subjects, created] }));
         useSubjectId = created.id;
       }
       if (useSubjectId == null) { setError("กรุณาเลือกวิชา"); return; }

@@ -347,6 +347,8 @@ interface TimetableStore {
   /** ลองโหลดใหม่หลังต่อเซิร์ฟเวอร์ไม่ติด — เว้นระยะให้เอง */
   retryLoad: (force?: boolean) => Promise<void>;
   loadSlots: () => Promise<void>;
+  /** เขียนร้านโดยไม่ข้ามด่านเทอมที่ปิด — คอมโพเนนต์ใช้ตัวนี้แทน setState */
+  patch: (partial: Partial<TimetableStore> | ((st: TimetableStore) => Partial<TimetableStore>)) => void;
   /** Never throws: a server that cannot answer leaves yardPicksError set. */
   loadYardPicks: () => Promise<void>;
   loadParked:  () => Promise<void>;
@@ -459,6 +461,8 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
    * ทุกตัวโหลด (loadAll, quietRefresh, loadSlots, retryLoad และของที่เพิ่มทีหลัง)
    * ผ่านที่นี่หมด จึงไม่ต้องจำกฎเองทีละที่ ตัวที่ผ่านได้มีสองตัวคือ openTerm กับ
    * closeViewing ซึ่งประกาศตัวผ่าน `landing`
+   * คอมโพเนนต์ต้องเขียนผ่าน action `patch` เท่านั้น ห้ามใช้ `setState` เพราะ
+   * `setState` ของ zustand ข้ามตัวห่อนี้ไปเลยและจะเขียนข้อมูลสดลงร้านได้
    */
   const set = (
     partial: Partial<TimetableStore> | ((st: TimetableStore) => Partial<TimetableStore>),
@@ -856,6 +860,8 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
   loadSlots: async () => {
     await loadFresh(() => api.fetchSlots(), (slots) => set({ slots }), writeGuard);
   },
+
+  patch: (partial) => { set(partial); },
 
   loadParked: async () => {
     try {

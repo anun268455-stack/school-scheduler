@@ -247,7 +247,7 @@ export const SubjectAssignModal: React.FC<SubjectAssignModalProps> = ({ subject,
       if (fresh.length) await api.bulkCreateRequirements(fresh);
 
       const updated = await api.fetchRequirements();
-      useTimetableStore.setState({ requirements: updated });
+      useTimetableStore.getState().patch({ requirements: updated });
       onClose();
     } catch (e) {
       // A class whose curriculum leaves this subject out is refused with a
