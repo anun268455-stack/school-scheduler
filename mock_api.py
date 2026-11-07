@@ -13706,6 +13706,49 @@ def term_label(year: int, semester: int) -> str:
     return f"{semester}/{year}"
 
 
+def _term_number(value: Any) -> int | None:
+    """ตัวเลขเทอม/ปี จากค่าที่อาจเป็นข้อความ -> int หรือ None เมื่อบอกไม่ได้
+
+    SCHOOL_CONFIG เก็บ "term" กับ "year" เป็นข้อความ ("1", "2568") ส่วน
+    CURRENT_TERM เก็บเป็นจำนวนเต็ม ทั้งสองที่ต้องอ่านได้ด้วยตัวเดียวกัน
+    bool เป็น int ในไพทอน — True ไม่ใช่ปีการศึกษา จึงเช็ค type ตรง ๆ
+    """
+    if type(value) is int:
+        return value
+    if isinstance(value, str):
+        t = value.strip()
+        if t.isdigit():
+            return int(t)
+    return None
+
+
+def running_term_identity(current: dict[str, Any] | None,
+                          config: dict[str, Any] | None) -> dict[str, Any] | None:
+    """เทอมที่ข้อมูลในหน่วยความจำ "เป็นของ" -> {year, semester, label} หรือ None
+
+    ใช้เมื่อ app_terms ยังไม่มีแถว active ให้ปิด แต่ตารางที่ลงไว้ต้องมีที่เก็บ
+    CURRENT_TERM มาก่อน (เป็นสำเนาของแถวที่เคยมี) ช่องไหนว่างค่อยถอยไปเอาจาก
+    SCHOOL_CONFIG ซึ่งคือบันทึกของโรงเรียนเองว่ากำลังอยู่เทอมไหน — เป็นแหล่งที่
+    ถูกต้องที่สุดเมื่อยังไม่เคยมีแถวเทอมเลย
+
+    คืน None เมื่อบอกไม่ได้จริง ๆ (ผู้เรียกต้องปฏิเสธ ไม่ใช่เดาปีแล้วเก็บผิดที่)
+    ฟังก์ชันบริสุทธิ์: ไม่อ่านตัวแปรรวม ไม่แก้อะไร
+    """
+    current = current or {}
+    config = config or {}
+    year = _term_number(current.get("year"))
+    if year is None:
+        year = _term_number(config.get("year"))
+    semester = _term_number(current.get("semester"))
+    if semester is None:
+        semester = _term_number(config.get("term"))
+    if year is None or semester is None:
+        return None
+    if not 2500 <= year <= 2700 or semester not in (1, 2):
+        return None
+    return {"year": year, "semester": semester, "label": term_label(year, semester)}
+
+
 def _require_db() -> None:
     """For the endpoints that write a term. The listing never raises."""
     if _STORE_KIND != "postgres":
@@ -13828,15 +13871,30 @@ def _term_set_status(term_id: int, status: str) -> None:
 
 @_invalidates_entity_index
 def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
-                 year: int, semester: int, label: str, new_blob: bytes) -> int:
+                 year: int, semester: int, label: str, new_blob: bytes,
+                 old_year: int | None = None, old_semester: int | None = None,
+                 old_label: str | None = None) -> tuple[int | None, int]:
     """Close the running term and open the next one, in ONE transaction.
 
-    Two things the table forces. The old term's row already holds this
-    (year, semester), so closing it is an UPDATE of that row (its file gets the
-    final data) — inserting a "closed" copy would break UNIQUE (year, semester)
-    from the second term on. And only one row may be 'active' at a time, so the
-    old row is closed before the new one goes in. One commit: if the insert
-    fails, the old term is still active rather than the school having none.
+    -> (id of the row the old term ended up in, id of the new active row)
+
+    Two paths, because the table has to be told which one applies.
+
+    · The old term ALREADY HAS A ROW (old_id). That row holds this
+      (year, semester), so closing it is an UPDATE of that row (its file gets
+      the final data) — inserting a second "closed" copy would break
+      UNIQUE (year, semester).
+    · The old term has NO ROW AT ALL (old_id is None, old_year/old_semester
+      given). This is the school's very first term: app_terms is empty, so
+      there is nothing to UPDATE and the running term has to be INSERTed as a
+      'closed' row right here, in this same transaction, or its lessons are
+      thrown away by the caller's SLOTS.clear() and stored nowhere. The caller
+      is responsible for refusing before anything is cleared when this row
+      would collide with an existing (year, semester).
+
+    Either way only one row may be 'active' at a time, so the old term's row is
+    settled before the new one goes in. One commit: if the second insert fails,
+    the old term is still the active one rather than the school having none.
 
     The row is authoritative for `id` and `status`: the `current_term` inside
     either stored blob must not be trusted for those two fields.
@@ -13844,44 +13902,71 @@ def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
     with _db_connect() as conn:
         with conn.cursor() as cur:
             _terms_schema(cur)
+            closed_id = old_id
             if old_id is not None:
                 cur.execute(
                     "UPDATE app_terms SET status = 'closed', data = %s, slots = %s, "
                     "closed_at = now() WHERE id = %s", (old_blob, old_slots, old_id))
+            elif old_year is not None and old_semester is not None:
+                cur.execute(
+                    "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+                    "VALUES (%s, %s, %s, 'closed', %s, %s, now()) RETURNING id",
+                    (old_year, old_semester,
+                     old_label or term_label(old_year, old_semester),
+                     old_blob, old_slots))
+                closed_id = cur.fetchone()[0]
             cur.execute(
                 "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
                 "VALUES (%s, %s, %s, 'active', %s, 0, NULL) RETURNING id",
                 (year, semester, label, new_blob))
             new_id = cur.fetchone()[0]
         conn.commit()
-    return new_id
+    return closed_id, new_id
 
 
 @_invalidates_entity_index
 def _term_swap_active(old_id: int | None, old_blob: bytes | None, old_slots: int,
-                      new_id: int) -> None:
+                      new_id: int, old_year: int | None = None,
+                      old_semester: int | None = None,
+                      old_label: str | None = None) -> int | None:
     """Close the running term and re-open a closed one, in ONE transaction.
 
-    The mirror of _term_rotate, but no row is inserted: the requested row
-    already exists and only its status changes, and its stored data must stay
-    exactly as it was. Same ordering the unique index forces: the old row is
-    closed (taking its final data) before the other becomes 'active'. If the
-    requested row is gone (rowcount 0) the transaction is abandoned, so the
-    school is never left with no active term.
+    -> the id of the row the old term ended up in, or None when it had none
+    and no (old_year, old_semester) was given to make one.
+
+    The mirror of _term_rotate: the REQUESTED row already exists and only its
+    status changes, and its stored data must stay exactly as it was. The
+    running term is settled the same two ways as there — an UPDATE of its own
+    row, or, when no row is active (old_id is None), an INSERT of a 'closed'
+    row for it, because _apply_snapshot is about to write the requested term's
+    lessons over live memory and the running term would otherwise be gone.
+    Same ordering the unique index forces: the old term is settled before the
+    other becomes 'active'. If the requested row is gone (rowcount 0) the
+    transaction is abandoned, so the school is never left with no active term.
     """
     with _db_connect() as conn:
         with conn.cursor() as cur:
             _terms_schema(cur)
+            closed_id = old_id
             if old_id is not None:
                 cur.execute(
                     "UPDATE app_terms SET status = 'closed', data = %s, slots = %s, "
                     "closed_at = now() WHERE id = %s", (old_blob, old_slots, old_id))
+            elif old_year is not None and old_semester is not None:
+                cur.execute(
+                    "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+                    "VALUES (%s, %s, %s, 'closed', %s, %s, now()) RETURNING id",
+                    (old_year, old_semester,
+                     old_label or term_label(old_year, old_semester),
+                     old_blob, old_slots))
+                closed_id = cur.fetchone()[0]
             cur.execute(
                 "UPDATE app_terms SET status = 'active', closed_at = NULL "
                 "WHERE id = %s AND status = 'closed'", (new_id,))
             if cur.rowcount != 1:
                 raise RuntimeError("term row to unlock not found or not closed")
         conn.commit()
+    return closed_id
 
 
 # Who created, closed or unlocked which term, and when. No connection details,
@@ -14058,6 +14143,55 @@ def new_term_preview() -> dict[str, Any]:
             "slots_to_clear": len(SLOTS)}
 
 
+def _nothing_a_term_change_would_destroy() -> bool:
+    """ไม่มีอะไรจะเสียจริง ๆ ไหม ถ้าเปลี่ยนเทอมตอนนี้
+
+    มีแค่สองอย่างที่ถูกล้างหรือเขียนทับ: SLOTS (คาบที่ลงตาราง) กับ PARKED
+    (คาบที่ยกออกมาพัก) ที่เหลือ — ครู วิชา แผนการสอน หลักสูตร — ติดไปเทอมใหม่
+    ทั้งหมด ไม่ได้หายไปไหน
+
+    เครื่องที่เพิ่งติดตั้งยังไม่มีคาบเลย จึงไม่ต้องแทรกแถวเทอมเปล่า ๆ ไว้
+    (ซึ่งจะจองคู่ (ปี, ภาคเรียน) นั้นทิ้งไว้เปล่า ๆ) และไม่ต้องปฏิเสธการสร้าง
+    เทอมแรกด้วยเหตุผลที่ยังไม่มีของจะเสีย
+    """
+    return not SLOTS and not PARKED
+
+
+def _archive_target_or_refuse(requested: tuple[int, int] | None,
+                              existing: list[dict[str, Any]],
+                              what: str) -> dict[str, Any]:
+    """แถวที่เทอมที่กำลังใช้งานอยู่จะถูกเก็บลงไป เมื่อ app_terms ไม่มีแถว active
+
+    บนเครื่องจริง app_terms ว่างเปล่า (ไม่เคยสร้างเทอมเลย) การกด "สร้างเทอมใหม่"
+    ครั้งแรกจึงไม่มีแถวให้ปิด — ถ้าปล่อยผ่าน คาบทั้งเทอมจะถูกล้างโดยไม่ถูกเก็บ
+    ที่ไหนเลย ฟังก์ชันนี้หาแถวปลายทางให้ หรือปฏิเสธ 409 เมื่อหาไม่ได้
+
+    **ต้องเรียกก่อน SLOTS.clear() ทุกครั้ง** การปฏิเสธหลังล้างคือบั๊กเดิมทั้งดุ้น
+    """
+    archive = running_term_identity(CURRENT_TERM, SCHOOL_CONFIG)
+    n = len(SLOTS)
+    if archive is None:
+        raise HTTPException(
+            409, f"ยังไม่มีเทอมใดถูกบันทึกไว้ และระบบบอกไม่ได้ว่าตารางที่ลงไว้ตอนนี้ "
+                 f"({n} คาบ) เป็นของเทอมไหน จึง{what}ไม่ได้ เพราะตารางเดิมจะไม่มี"
+                 "ที่เก็บ — กรุณาตั้งปีการศึกษาและภาคเรียนในหน้าตั้งค่าให้ถูกต้องก่อน")
+    label = archive["label"]
+    pair = (archive["year"], archive["semester"])
+    if requested is not None and pair == requested:
+        raise HTTPException(
+            409, f"ตารางที่ลงไว้ตอนนี้ ({n} คาบ) เป็นของเทอม {label} และยังไม่เคยถูก"
+                 f"บันทึกเป็นเทอม ถ้า{what} {label} ซ้ำชื่อเดิม ตารางเดิมจะไม่มีที่เก็บ "
+                 "— เลือกปีการศึกษาหรือภาคเรียนให้ต่างจากเทอมที่กำลังใช้อยู่")
+    if any(t.get("year") == archive["year"] and t.get("semester") == archive["semester"]
+           for t in existing):
+        raise HTTPException(
+            409, f"ตารางที่ลงไว้ตอนนี้ ({n} คาบ) เป็นของเทอม {label} ซึ่งยังไม่เคยถูก"
+                 f"บันทึกเป็นเทอม แต่มีเทอม {label} เก็บไว้ในรายการแล้ว จึง{what}ไม่ได้ "
+                 "เพราะตารางเดิมจะไม่มีที่เก็บ — ตรวจรายการเทอม และปีการศึกษา"
+                 "กับภาคเรียนในหน้าตั้งค่าก่อน")
+    return archive
+
+
 @app.get("/api/terms/preview")
 def terms_preview():
     return new_term_preview()
@@ -14099,6 +14233,18 @@ def create_term(body: dict[str, Any]):
     has_old = active_row is not None
     old_id = active_row["id"] if has_old else None
 
+    # No active row — the school's very first term, which is what the live
+    # server is sitting on. The running timetable has no row of its own, so it
+    # gets one INSERTed as 'closed' inside the rotate, and every reason that
+    # can fail is checked HERE, before a single lesson is cleared: refusing
+    # after SLOTS.clear() is the data loss this exists to stop.
+    archive = None
+    if not has_old and not _nothing_a_term_change_would_destroy():
+        archive = _archive_target_or_refuse(
+            (year, semester), existing, "สร้างเทอมใหม่")
+    old_label = ((active_row.get("label") or old_id) if has_old
+                 else (archive["label"] if archive else None))
+
     old = dict(CURRENT_TERM)
     old_slots = len(SLOTS)
     # In-place, never `SLOTS = []`: curriculum.py holds a live alias to this list.
@@ -14110,7 +14256,14 @@ def create_term(body: dict[str, Any]):
         # is set BEFORE packing. (The row stays authoritative for id and status.)
         # Inside the try: if packing raises, the live term must not stay "closed".
         CURRENT_TERM["status"] = "closed"
-        old_blob = _pack(_snapshot()) if has_old else None
+        if archive is not None:
+            # CURRENT_TERM may be blank (nothing ever named this term); the file
+            # about to be stored has to say which term it is. Inside the try, so
+            # the restore below (CURRENT_TERM.update(old)) puts it all back.
+            CURRENT_TERM.update({"year": archive["year"],
+                                 "semester": archive["semester"],
+                                 "label": archive["label"]})
+        old_blob = _pack(_snapshot())
         SLOTS.clear()
         PARKED.clear()      # lifted-out lessons point at last term's plan
         CURRENT_TERM.update({"id": None, "year": year, "semester": semester,
@@ -14118,8 +14271,11 @@ def create_term(body: dict[str, Any]):
         SCHOOL_CONFIG["term"], SCHOOL_CONFIG["year"] = str(semester), str(year)
         # The new row's id is not known yet by construction (RETURNING id), so
         # this snapshot carries id None; readers take id and status from the row.
-        new_id = _term_rotate(old_id, old_blob, old_slots,
-                              year, semester, label, _pack(_snapshot()))
+        closed_id, new_id = _term_rotate(
+            old_id, old_blob, old_slots, year, semester, label, _pack(_snapshot()),
+            old_year=archive["year"] if archive else None,
+            old_semester=archive["semester"] if archive else None,
+            old_label=archive["label"] if archive else None)
     except Exception:                              # noqa: BLE001
         # Nothing was committed: put the memory back as it was (in place, and
         # idempotent whichever step failed).
@@ -14131,12 +14287,12 @@ def create_term(body: dict[str, Any]):
     CURRENT_TERM["id"] = new_id
     # The rotate has committed. The log is a record of it, never a condition of it:
     # _term_log swallows its own failures.
-    if has_old:
-        _term_log(old_id, "close", f"ปิดเทอม {active_row.get('label') or old_id} ({old_slots} คาบ)")
+    if closed_id is not None:
+        _term_log(closed_id, "close", f"ปิดเทอม {old_label} ({old_slots} คาบ)")
     _term_log(new_id, "create", f"สร้างเทอม {label}")
     _save_state()
     save_error, save_pending = _flush_after_term_change("สร้างเทอมใหม่แล้ว")
-    return {"closed": _term_row(old_id) if has_old else None,
+    return {"closed": _term_row(closed_id) if closed_id is not None else None,
             "active": _term_row(new_id),
             "save_error": save_error,
             "save_pending": save_pending}
@@ -14373,6 +14529,22 @@ def unlock_term(term_id: int, body: dict[str, Any]):
     has_old = active_row is not None
     old_id = active_row["id"] if has_old else None
 
+    # Rows exist but none is active: the running timetable has no row of its
+    # own, and _apply_snapshot below is about to write this term's lessons over
+    # it. Same treatment as create_term — give the running term a 'closed' row
+    # in the same transaction, and refuse here, before anything is applied,
+    # when it cannot be given one.
+    archive = None
+    if not has_old and not _nothing_a_term_change_would_destroy():
+        try:
+            existing = _terms_list()
+        except Exception:                          # noqa: BLE001
+            raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+        archive = _archive_target_or_refuse(
+            (row["year"], row["semester"]), existing, "ปลดล็อกเทอม")
+    old_label = ((active_row.get("label") or old_id) if has_old
+                 else (archive["label"] if archive else None))
+
     old = dict(CURRENT_TERM)
     old_slots = len(SLOTS)
     saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
@@ -14381,13 +14553,22 @@ def unlock_term(term_id: int, body: dict[str, Any]):
         # Built on a copy: the live CURRENT_TERM is not touched until the swap.
         snap = _snapshot()
         snap["current_term"] = {**snap["current_term"], "status": "closed"}
+        if archive is not None:
+            # CURRENT_TERM may be blank; the stored file has to name its term.
+            snap["current_term"].update({"year": archive["year"],
+                                         "semester": archive["semester"],
+                                         "label": archive["label"]})
         old_blob = _pack(snap)
         _apply_snapshot(new_data)
         # From the row, not the blob: the blob's current_term has id None.
         CURRENT_TERM.update({"id": row["id"], "year": row["year"],
                              "semester": row["semester"], "label": row["label"],
                              "status": "active"})
-        _term_swap_active(old_id, old_blob if has_old else None, old_slots, term_id)
+        closed_id = _term_swap_active(
+            old_id, old_blob, old_slots, term_id,
+            old_year=archive["year"] if archive else None,
+            old_semester=archive["semester"] if archive else None,
+            old_label=archive["label"] if archive else None)
     except Exception:                              # noqa: BLE001
         # Nothing was committed: put the running term back as it was.
         try:
@@ -14397,12 +14578,12 @@ def unlock_term(term_id: int, body: dict[str, Any]):
         CURRENT_TERM.update(old)
         SCHOOL_CONFIG.update(saved_cfg)
         raise HTTPException(500, "ปลดล็อกเทอมไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง")
-    if has_old:
-        _term_log(old_id, "close", f"ปิดเทอม {active_row.get('label') or old_id} ({old_slots} คาบ)")
+    if closed_id is not None:
+        _term_log(closed_id, "close", f"ปิดเทอม {old_label} ({old_slots} คาบ)")
     _term_log(term_id, "unlock", f"ปลดล็อกเทอม {row['label']}")
     _save_state()
     save_error, save_pending = _flush_after_term_change("ปลดล็อกเทอมแล้ว")
-    return {"closed": _term_row(old_id) if has_old else None,
+    return {"closed": _term_row(closed_id) if closed_id is not None else None,
             "active": _term_row(term_id),
             "save_error": save_error,
             "save_pending": save_pending}

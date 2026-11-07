@@ -323,23 +323,232 @@ def _with_fake_db(fn, fail_on=None, existing=(), active=_FROM_MEMORY):
             setattr(mock_api, k, v)
 
 
-def test_create_first_term_inserts_active_only_and_clears_slots():
+# ─── ครั้งแรกสุด: app_terms ว่างเปล่า (บนเครื่องจริงเป็นอย่างนี้) ───────────────
+# เดิมโค้ดล้าง SLOTS โดยไม่เก็บอะไรเลย = ตารางทั้งเทอมหาย ตัวทดสอบชุดนี้บังคับว่า
+# เทอมที่กำลังใช้งานต้องถูกแทรกเป็นแถว closed ที่ถือคาบเดิมไว้ ก่อนล้าง
+
+class _SeqCur(_FakeCur):
+    """คืน id ไม่ซ้ำกันต่อ RETURNING แต่ละครั้ง — แยกแถว closed กับแถว active ออกจากกัน"""
+
+    def __init__(self, log, rows, seq=None):
+        super().__init__(log, rows)
+        self.seq = seq
+
+    def fetchone(self):
+        return (self.seq.pop(0),) if self.seq else (99,)
+
+
+class _SeqConn(_FakeConn):
+    def __init__(self, log, seq):
+        super().__init__(log, None)
+        self.seq = seq
+
+    def cursor(self):
+        return _SeqCur(self.log, None, self.seq)
+
+
+def _term_inserts(log):
+    """(sql, params) ของทุก INSERT INTO app_terms ตามลำดับที่สั่งจริง"""
+    return [(q, p) for q, p in log if q.startswith("INSERT INTO app_terms")]
+
+
+def _memory_is_an_unsaved_term(year="2567", term="2"):
+    """หน่วยความจำถือตารางของเทอมที่ยังไม่เคยถูกบันทึกเป็นแถว (สภาพเครื่องจริง)
+
+    CURRENT_TERM ว่าง และ SCHOOL_CONFIG เป็นตัวบอกว่าเป็นเทอมไหน ต้องตั้งให้ชัด
+    ไม่ปล่อยให้ค่าที่ตัวทดสอบก่อนหน้าทิ้งไว้ไปชนกับเทอมที่กำลังขอสร้าง
+    """
     mock_api.CURRENT_TERM.update(BLANK)
-    mock_api.SLOTS[:] = [{"id": 1}]
+    mock_api.SCHOOL_CONFIG.update({"term": term, "year": year})
+
+
+def test_create_first_term_archives_the_running_term_then_clears_slots():
+    # ยังไม่มีแถวเทอมเลย แต่มีคาบลงไว้แล้ว → ต้องแทรกแถว closed ที่ถือคาบเหล่านั้น
+    mock_api.CURRENT_TERM.update({"id": None, "year": 2568, "semester": 2,
+                                  "label": "2/2568", "status": None})
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}, {"id": 3}]
     alias = mock_api.SLOTS
 
     def run(log, calls):
+        mock_api._db_connect = lambda: _SeqConn(log, [41, 99])
         out = mock_api.create_term({"year": 2569, "semester": 1})
-        sqls = [q for q, _ in log]
-        assert not any(q.startswith("UPDATE") for q in sqls), "ยังไม่มีเทอมเก่าให้ปิด"
-        assert any("INSERT INTO app_terms" in q for q in sqls)
+        kinds = [q.split()[0] for q, _ in log if not q.startswith("CREATE")]
+        assert kinds == ["INSERT", "INSERT", "COMMIT"], kinds
+        assert not any(q.startswith("UPDATE") for q, _ in log), "ไม่มีแถวเก่าให้ UPDATE"
+        ins = _term_inserts(log)
+        assert len(ins) == 2, ins
+        # แถวแรก = เทอมที่กำลังใช้งาน เก็บเป็น closed พร้อมจำนวนคาบก่อนล้าง
+        assert "'closed'" in ins[0][0] and "closed_at = now()" not in ins[0][0]
+        assert "now()) RETURNING id" in ins[0][0], "closed_at ต้องถูกตั้งตอนแทรก"
+        assert ins[0][1][:3] == (2568, 2, "2/2568"), ins[0][1]
+        assert ins[0][1][4] == 3, "แถว closed ต้องถือจำนวนคาบของเทอมที่กำลังปิด"
+        closed_snap = mock_api._unpack(ins[0][1][3])
+        assert closed_snap["slots"] == [{"id": 1}, {"id": 2}, {"id": 3}], "คาบเดิมอยู่ในสำเนา"
+        assert closed_snap["current_term"]["status"] == "closed"
+        assert closed_snap["current_term"]["label"] == "2/2568"
+        # แถวที่สอง = เทอมใหม่ active เริ่มจากว่าง
+        assert "'active'" in ins[1][0] and ins[1][1][:3] == (2569, 1, "1/2569")
+        assert mock_api._unpack(ins[1][1][3])["slots"] == []
         assert calls == [("flush", True), ("save", None), ("flush", True)]
-        assert out["closed"] is None and out["active"] == {"id": 99}
+        assert out["closed"] == {"id": 41} and out["active"] == {"id": 99}
+        assert LOGGED == [(41, "close", "ปิดเทอม 2/2568 (3 คาบ)"),
+                          (99, "create", "สร้างเทอม 1/2569")]
     _with_fake_db(run)
     assert mock_api.SLOTS is alias and alias == [], "ล้างในที่เดิม ไม่ผูกชื่อใหม่"
     assert mock_api.CURRENT_TERM == {"id": 99, "year": 2569, "semester": 1,
                                      "label": "1/2569", "status": "active"}
     assert mock_api.SCHOOL_CONFIG["term"] == "1" and mock_api.SCHOOL_CONFIG["year"] == "2569"
+
+
+def test_create_first_term_takes_year_and_semester_from_school_config():
+    # CURRENT_TERM ว่าง (ไม่เคยมีเทอม) โรงเรียนบันทึกไว้แค่ใน SCHOOL_CONFIG — และ
+    # เก็บเป็นข้อความ ต้องแปลงเป็นตัวเลขก่อนลงแถว
+    mock_api.CURRENT_TERM.update(BLANK)
+    mock_api.SCHOOL_CONFIG.update({"term": "1", "year": "2568"})
+    mock_api.SLOTS[:] = [{"id": 7}, {"id": 8}]
+
+    def run(log, calls):
+        mock_api._db_connect = lambda: _SeqConn(log, [12, 99])
+        out = mock_api.create_term({"year": 2568, "semester": 2})
+        ins = _term_inserts(log)
+        assert ins[0][1][:3] == (2568, 1, "1/2568"), "ปี/ภาคเรียนมาจาก SCHOOL_CONFIG"
+        assert type(ins[0][1][0]) is int and type(ins[0][1][1]) is int, "ต้องเป็นตัวเลข ไม่ใช่ข้อความ"
+        assert ins[0][1][4] == 2
+        assert mock_api._unpack(ins[0][1][3])["slots"] == [{"id": 7}, {"id": 8}]
+        assert out["closed"] == {"id": 12}
+    _with_fake_db(run)
+    assert mock_api.SLOTS == []
+
+
+def test_create_first_term_refuses_when_it_would_collide_with_the_new_term():
+    # ขอสร้างเทอมเดียวกับเทอมที่กำลังใช้อยู่ (ซึ่งยังไม่มีแถว) → เก็บของเดิมไม่ได้
+    # ต้องปฏิเสธ 409 **ก่อน** ล้าง ไม่ใช่ล้างแล้วค่อยพบว่าเก็บไม่ได้
+    mock_api.CURRENT_TERM.update(BLANK)
+    mock_api.SCHOOL_CONFIG.update({"term": "2", "year": "2568"})
+    mock_api.SLOTS[:] = [{"id": i} for i in range(1, 2701)]
+    before = len(mock_api.SLOTS)
+
+    def run(log, calls):
+        try:
+            mock_api.create_term({"year": 2568, "semester": 2})
+            assert False, "ต้องปฏิเสธ"
+        except mock_api.HTTPException as exc:
+            assert exc.status_code == 409, exc.status_code
+            assert "2/2568" in exc.detail and "2700 คาบ" in exc.detail
+            assert "SECRET" not in exc.detail
+        assert not any(q.startswith(("INSERT", "UPDATE", "COMMIT")) for q, _ in log), log
+        assert len(mock_api.SLOTS) == before, "ห้ามล้างก่อนปฏิเสธ"
+    _with_fake_db(run)
+    assert len(mock_api.SLOTS) == before == 2700
+    assert mock_api.CURRENT_TERM == BLANK, "ไม่แตะ CURRENT_TERM เลย"
+    assert mock_api.SCHOOL_CONFIG["term"] == "2" and mock_api.SCHOOL_CONFIG["year"] == "2568"
+    mock_api.SLOTS.clear()
+
+
+def test_create_first_term_refuses_when_the_archive_row_already_exists():
+    # ไม่มีแถว active แต่มีแถวของเทอมที่หน่วยความจำบอกว่ากำลังใช้อยู่แล้ว
+    mock_api.CURRENT_TERM.update({"id": None, "year": 2568, "semester": 2,
+                                  "label": "2/2568", "status": None})
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}]
+
+    def run(log, calls):
+        try:
+            mock_api.create_term({"year": 2569, "semester": 1})
+            assert False, "ต้องปฏิเสธ"
+        except mock_api.HTTPException as exc:
+            assert exc.status_code == 409 and "2/2568" in exc.detail
+        assert not any(q.startswith(("INSERT", "UPDATE")) for q, _ in log)
+        assert mock_api.SLOTS == [{"id": 1}, {"id": 2}]
+    _with_fake_db(run, active=None,
+                  existing=[{"year": 2568, "semester": 2, "label": "2/2568"}])
+    assert mock_api.SLOTS == [{"id": 1}, {"id": 2}]
+
+
+def test_create_first_term_refuses_when_year_and_semester_are_unknowable():
+    mock_api.CURRENT_TERM.update(BLANK)
+    saved = {k: mock_api.SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}, {"id": 3}]
+    try:
+        for cfg in ({"term": "", "year": ""}, {"term": "1", "year": "ไม่รู้"},
+                    {"term": None, "year": None}, {"term": "3", "year": "2568"},
+                    {"term": "1", "year": "1999"}):
+            mock_api.SCHOOL_CONFIG.update(cfg)
+
+            def run(log, calls):
+                try:
+                    mock_api.create_term({"year": 2569, "semester": 1})
+                    assert False, f"ต้องปฏิเสธ {cfg}"
+                except mock_api.HTTPException as exc:
+                    assert exc.status_code == 409, (cfg, exc.status_code)
+                    assert "บอกไม่ได้ว่าตารางที่ลงไว้ตอนนี้" in exc.detail, cfg
+                    assert "หน้าตั้งค่า" in exc.detail
+                assert not any(q.startswith(("INSERT", "UPDATE")) for q, _ in log), cfg
+                assert mock_api.SLOTS == [{"id": 1}, {"id": 2}, {"id": 3}], cfg
+            _with_fake_db(run)
+    finally:
+        mock_api.SCHOOL_CONFIG.update(saved)
+    assert mock_api.SLOTS == [{"id": 1}, {"id": 2}, {"id": 3}], "ไม่ล้างสักคาบ"
+
+
+def test_create_first_term_on_a_fresh_server_archives_nothing():
+    # ยังไม่มีคาบและไม่มีคาบพักเลย (เครื่องที่เพิ่งติดตั้ง) — ไม่มีอะไรจะเสีย
+    # จึงไม่ต้องแทรกแถวเปล่า ๆ และต้องไม่ปฏิเสธ แม้บอกไม่ได้ว่าเป็นเทอมไหน
+    mock_api.CURRENT_TERM.update(BLANK)
+    saved = {k: mock_api.SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    mock_api.SCHOOL_CONFIG.update({"term": "", "year": ""})
+    mock_api.SLOTS.clear()
+    mock_api.PARKED.clear()
+
+    def run(log, calls):
+        out = mock_api.create_term({"year": 2569, "semester": 1})
+        ins = _term_inserts(log)
+        assert len(ins) == 1 and "'active'" in ins[0][0], ins
+        assert out["closed"] is None and out["active"] == {"id": 99}
+    try:
+        _with_fake_db(run)
+    finally:
+        mock_api.SCHOOL_CONFIG.update(saved)
+
+
+def test_a_single_parked_lesson_is_enough_to_demand_an_archive_row():
+    # คาบที่ยกออกมาพักก็ถูกล้างเหมือนกัน หนึ่งใบก็ต้องมีที่เก็บ
+    mock_api.CURRENT_TERM.update(BLANK)
+    saved = {k: mock_api.SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    mock_api.SCHOOL_CONFIG.update({"term": "", "year": ""})
+    mock_api.SLOTS.clear()
+    mock_api.PARKED[:] = [{"id": 1, "rows": []}]
+
+    def run(log, calls):
+        try:
+            mock_api.create_term({"year": 2569, "semester": 1})
+            assert False, "ต้องปฏิเสธ"
+        except mock_api.HTTPException as exc:
+            assert exc.status_code == 409 and "บอกไม่ได้ว่าตารางที่ลงไว้ตอนนี้" in exc.detail
+        assert not any(q.startswith(("INSERT", "UPDATE")) for q, _ in log)
+        assert mock_api.PARKED == [{"id": 1, "rows": []}], "คาบพักยังอยู่"
+    try:
+        _with_fake_db(run)
+    finally:
+        mock_api.SCHOOL_CONFIG.update(saved)
+        mock_api.PARKED.clear()
+
+
+def test_running_term_identity_is_pure_and_prefers_current_term():
+    f = mock_api.running_term_identity
+    assert f({"year": 2569, "semester": 2}, {"term": "1", "year": "2568"}) == {
+        "year": 2569, "semester": 2, "label": "2/2569"}
+    assert f(BLANK, {"term": "1", "year": "2568"}) == {
+        "year": 2568, "semester": 1, "label": "1/2568"}
+    assert f({"year": 2569, "semester": None}, {"term": "2", "year": "2500"}) == {
+        "year": 2569, "semester": 2, "label": "2/2569"}, "ถอยไปเอาทีละช่อง"
+    for bad in ({}, {"term": "0", "year": "2568"}, {"term": "1", "year": "2800"},
+                {"term": "1.5", "year": "2568"}, {"term": True, "year": True},
+                {"term": "-1", "year": "2568"}, {"term": " 1 ", "year": "25x8"}):
+        assert f(None, bad) is None, bad
+    assert f(None, {"term": " 2 ", "year": " 2568 "})["label"] == "2/2568", "ตัดช่องว่าง"
+    cfg = {"term": "1", "year": "2568"}
+    f({"year": None}, cfg)
+    assert cfg == {"term": "1", "year": "2568"}, "ไม่แก้ของที่รับเข้ามา"
 
 
 def test_create_second_term_closes_old_row_before_inserting_new_active():
@@ -455,7 +664,7 @@ def test_create_term_failure_restores_parked_and_status():
 
 
 def test_create_term_reports_save_error_in_fixed_thai_without_raising():
-    mock_api.CURRENT_TERM.update(BLANK)
+    _memory_is_an_unsaved_term()
     saved = (mock_api._STORE_ERROR, mock_api._pending_blob)
 
     def run(log, calls):
@@ -481,7 +690,7 @@ def test_create_term_reports_save_error_in_fixed_thai_without_raising():
 
 
 def test_create_term_flush_raising_after_commit_still_reports_created_term():
-    mock_api.CURRENT_TERM.update(BLANK)
+    _memory_is_an_unsaved_term()
     saved = (mock_api._STORE_ERROR, mock_api._pending_blob)
 
     def run(log, calls):
@@ -503,7 +712,7 @@ def test_create_term_flush_raising_after_commit_still_reports_created_term():
 
 
 def test_create_term_save_error_none_when_flush_lands():
-    mock_api.CURRENT_TERM.update(BLANK)
+    _memory_is_an_unsaved_term()
     saved = (mock_api._STORE_ERROR, mock_api._pending_blob)
     mock_api._STORE_ERROR = None
 
@@ -575,14 +784,24 @@ def test_active_row_wins_when_it_disagrees_with_memory():
     _with_fake_db(run, active={"id": 41})
 
 
-def test_no_active_row_means_nothing_to_close_even_if_memory_has_an_id():
+def test_no_active_row_still_archives_the_running_term_in_a_new_row():
+    # ฐานข้อมูลบอกว่าไม่มีแถว active แต่หน่วยความจำยังมี id ค้างอยู่ (เช่นแถวถูกลบมือ)
+    # ห้าม UPDATE id ที่ฐานข้อมูลไม่ยอมรับ แต่ก็ห้ามทิ้งคาบ — ต้องแทรกแถว closed ให้
     mock_api.CURRENT_TERM.update({"id": 5, "year": 2569, "semester": 1,
                                   "label": "1/2569", "status": "active"})
+    mock_api.SLOTS[:] = [{"id": 1}, {"id": 2}]
 
     def run(log, calls):
+        mock_api._db_connect = lambda: _SeqConn(log, [61, 99])
         out = mock_api.create_term({"year": 2569, "semester": 2})
-        assert not any(q.startswith("UPDATE") for q, _ in log) and out["closed"] is None
+        assert not any(q.startswith("UPDATE") for q, _ in log), "ไม่มีแถวให้ UPDATE"
+        ins = _term_inserts(log)
+        assert len(ins) == 2 and "'closed'" in ins[0][0], ins
+        assert ins[0][1][:3] == (2569, 1, "1/2569") and ins[0][1][4] == 2
+        assert mock_api._unpack(ins[0][1][3])["slots"] == [{"id": 1}, {"id": 2}]
+        assert out["closed"] == {"id": 61}, "เทอมเดิมถูกเก็บ ไม่ใช่หายไป"
     _with_fake_db(run, active=None)
+    assert mock_api.SLOTS == []
 
 
 def test_term_active_selects_the_active_row_only():
@@ -785,21 +1004,66 @@ def test_unlock_decides_from_the_database_not_from_current_term():
     assert close[2] == 41 and out["closed"] == {"id": 41}
 
 
-def test_unlock_with_no_active_row_only_activates():
-    blob = _unlock_setup()
-    saved = None
+def test_unlock_with_no_active_row_archives_the_running_term_first():
+    # ไม่มีแถว active: ตารางที่อยู่บนจอต้องถูกเก็บเป็นแถว closed **ก่อน**
+    # _apply_snapshot เขียนตารางของเทอมที่ขอปลดล็อกทับ ไม่ใช่หายไปเฉย ๆ
+    blob = _unlock_setup()                      # memory = 1/2569, 2 คาบ
+    saved = mock_api._term_blob
 
     def run(log, calls):
+        mock_api._db_connect = lambda: _SeqConn(log, [55])
         mock_api._term_row = lambda i: CLOSED3 if i == 3 else {"id": i}
         mock_api._term_blob = lambda i: blob
         out = mock_api.unlock_term(3, {"confirm": "2/2568"})
         kinds = [q.split()[0] for q, _ in log if not q.startswith("CREATE")]
-        assert kinds == ["UPDATE", "COMMIT"] and out["closed"] is None
-    saved = mock_api._term_blob
+        assert kinds == ["INSERT", "UPDATE", "COMMIT"], kinds
+        ins = _term_inserts(log)
+        assert len(ins) == 1 and "'closed'" in ins[0][0]
+        assert ins[0][1][:3] == (2569, 1, "1/2569"), ins[0][1]
+        assert ins[0][1][4] == 2, "แถวถือจำนวนคาบของเทอมที่กำลังปิด"
+        snap = mock_api._unpack(ins[0][1][3])
+        assert snap["slots"] == [{"id": 1}, {"id": 2}], "คาบเดิมถูกเก็บไว้จริง"
+        assert snap["current_term"]["status"] == "closed"
+        assert snap["current_term"]["label"] == "1/2569"
+        act = [(q, p) for q, p in log if q.startswith("UPDATE")][0]
+        assert "status = 'active'" in act[0] and act[1] == (3,)
+        assert out["closed"] == {"id": 55} and out["active"] == CLOSED3
+        assert LOGGED == [(55, "close", "ปิดเทอม 1/2569 (2 คาบ)"),
+                          (3, "unlock", "ปลดล็อกเทอม 2/2568")]
     try:
         _with_fake_db(run, active=None)
     finally:
         mock_api._term_blob = saved
+    assert mock_api.SLOTS == [{"id": 77}], "ตารางของเทอมที่ปลดล็อกถูกนำมาใช้"
+
+
+def test_unlock_with_no_active_row_refuses_rather_than_lose_the_running_term():
+    # เก็บแถวให้เทอมที่กำลังใช้อยู่ไม่ได้ → ปฏิเสธก่อน _apply_snapshot
+    saved = mock_api._term_blob
+    saved_cfg = {k: mock_api.SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    for cfg, current, code_in in (
+            # ปี/ภาคเรียนในหน่วยความจำตรงกับเทอมที่ขอปลดล็อก → แทรกแถวซ้ำไม่ได้
+            ({"term": "2", "year": "2568"}, BLANK, "2/2568"),
+            # บอกไม่ได้เลยว่าเป็นเทอมไหน
+            ({"term": "", "year": ""}, BLANK, "บอกไม่ได้ว่าตารางที่ลงไว้ตอนนี้")):
+        blob = _unlock_setup()
+        mock_api.CURRENT_TERM.update(current)
+        mock_api.SCHOOL_CONFIG.update(cfg)
+
+        def run(log, calls, blob=blob, code_in=code_in):
+            mock_api._term_row = lambda i: CLOSED3 if i == 3 else {"id": i}
+            mock_api._term_blob = lambda i: blob
+            exc = _http(mock_api.unlock_term, 3, {"confirm": "2/2568"})
+            assert exc and exc.status_code == 409, (cfg, exc)
+            assert code_in in exc.detail, (cfg, exc.detail)
+            assert not any(q.startswith(("INSERT", "UPDATE", "COMMIT")) for q, _ in log)
+            assert mock_api.SLOTS == [{"id": 1}, {"id": 2}], "ตารางเดิมยังอยู่ครบ"
+        try:
+            _with_fake_db(run, active=None)
+        finally:
+            mock_api._term_blob = saved
+            mock_api.SCHOOL_CONFIG.update(saved_cfg)
+    assert mock_api.SLOTS == [{"id": 1}, {"id": 2}]
 
 
 def test_unlock_refusals_change_nothing():
@@ -911,7 +1175,7 @@ def test_term_log_never_raises_and_a_broken_log_cannot_stop_create_term():
     finally:
         mock_api._db_connect = saved
     # the real _term_log, with only the log table broken, inside a real create_term
-    mock_api.CURRENT_TERM.update(BLANK)
+    _memory_is_an_unsaved_term()
     mock_api.SLOTS[:] = []
 
     def run(log, calls):
