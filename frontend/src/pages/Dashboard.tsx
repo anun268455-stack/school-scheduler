@@ -177,7 +177,7 @@ const GROUP_LEVELS = ["M1","M2","M3","M4","M5","M6","ห้องเวียน
 async function applyHomeroom(changes: { groupId: number; teacherIds: number[] }[]) {
   await Promise.all(changes.map(async (c) => {
     await api.updateGroup(c.groupId, { homeroom_teacher_ids: c.teacherIds });
-    useTimetableStore.setState((st) => ({
+    useTimetableStore.getState().patch((st) => ({
       groups: patchGroupTree(st.groups, c.groupId, {
         homeroom_teacher_ids: c.teacherIds,
         homeroom_teacher_id: c.teacherIds[0] ?? null,
@@ -253,7 +253,7 @@ const GroupsPanel: React.FC = () => {
   const toggleGroupYard = async (g: StudentGroup) => {
     const next = g.allow_outdoor == null ? false : g.allow_outdoor === false ? true : null;
     const updated = await api.updateGroup(g.id, { allow_outdoor: next });
-    useTimetableStore.setState((st) => ({
+    useTimetableStore.getState().patch((st) => ({
       groups: st.groups.map((x) =>
         x.id === g.id
           ? { ...x, ...updated, children: x.children ?? [] }
@@ -281,7 +281,7 @@ const GroupsPanel: React.FC = () => {
         // Left unsaid, nothing is sent: the server keeps its own default.
         ...stayPatch(form.stay_in_homeroom, null),
       });
-      useTimetableStore.setState((s) => ({ groups: [...s.groups, { ...created, children: created.children ?? [] }] }));
+      useTimetableStore.getState().patch((s) => ({ groups: [...s.groups, { ...created, children: created.children ?? [] }] }));
       setForm({ name: "", level: "M1", size: 40, parent_id: "", homeroom_room_id: "", homeroom_teacher_id: "", stay_in_homeroom: "" as StayChoice });
     } catch (e) {
       setCreateErr(api.errorDetail(e, "เพิ่มห้องเรียนไม่สำเร็จ — ลองใหม่อีกครั้ง"));
@@ -305,7 +305,7 @@ const GroupsPanel: React.FC = () => {
       });
       // The whole tree, not just its top: a sub-class is a row here too, and
       // its new badge has to appear without a reload.
-      useTimetableStore.setState((s) => ({
+      useTimetableStore.getState().patch((s) => ({
         groups: patchGroupTree(s.groups, id, {
           ...updated, stay_in_homeroom: stayAfterSave(updated, editForm.stay_in_homeroom),
         }),
@@ -496,7 +496,7 @@ const GroupsPanel: React.FC = () => {
                           📋 ตรวจวิชา
                         </button>
                         <button onClick={() => { setEditErr(null); setEditing(g.id); setEditForm({ name: g.name, level: g.level ?? "M1", size: g.size, parent_id: g.parent_id ? String(g.parent_id) : "", homeroom_room_id: g.homeroom_room_id ? String(g.homeroom_room_id) : "", homeroom_teacher_id: g.homeroom_teacher_id ? String(g.homeroom_teacher_id) : "", stay_in_homeroom: stayChoiceOf(g.stay_in_homeroom) }); }} className={btnEdit}>แก้ไข</button>
-                        <button onClick={async () => { await api.deleteGroup(g.id); useTimetableStore.setState((s) => ({ groups: s.groups.filter((x) => x.id !== g.id) })); }} className={btnDanger}>ลบ</button>
+                        <button onClick={async () => { await api.deleteGroup(g.id); useTimetableStore.getState().patch((s) => ({ groups: s.groups.filter((x) => x.id !== g.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
                   </>
@@ -594,7 +594,7 @@ const TeachersPanel: React.FC = () => {
       department_id: form.department_id ? Number(form.department_id) : null,
       fixed_room_id: form.fixed_room_id ? Number(form.fixed_room_id) : null,
     });
-    useTimetableStore.setState((s) => ({ teachers: [...s.teachers, created] }));
+    useTimetableStore.getState().patch((s) => ({ teachers: [...s.teachers, created] }));
     setForm({ code: "", name: "", department_id: "", fixed_room_id: "", outdoor_score: 5, max_slots_per_day: 6, max_outdoor_per_week: 2 });
   };
 
@@ -605,7 +605,7 @@ const TeachersPanel: React.FC = () => {
       department_id: editForm.department_id ? Number(editForm.department_id) : null,
       fixed_room_id: editForm.fixed_room_id ? Number(editForm.fixed_room_id) : null,
     });
-    useTimetableStore.setState((s) => ({ teachers: s.teachers.map((t) => t.id === id ? { ...t, ...updated } : t) }));
+    useTimetableStore.getState().patch((s) => ({ teachers: s.teachers.map((t) => t.id === id ? { ...t, ...updated } : t) }));
     setEditing(null); setEditForm(null);
   };
 
@@ -751,7 +751,7 @@ const TeachersPanel: React.FC = () => {
                           </button>
                           <button onClick={() => setSettingsFor(t.id)}
                             className="px-2 py-1 text-xs bg-indigo-50 text-indigo-600 rounded hover:bg-indigo-100 border border-indigo-200">⚙ ตั้งค่า</button>
-                          <button onClick={async () => { await api.deleteTeacher(t.id); useTimetableStore.setState((s) => ({ teachers: s.teachers.filter((x) => x.id !== t.id) })); }} className={btnDanger}>ลบ</button>
+                          <button onClick={async () => { await api.deleteTeacher(t.id); useTimetableStore.getState().patch((s) => ({ teachers: s.teachers.filter((x) => x.id !== t.id) })); }} className={btnDanger}>ลบ</button>
                         </div>
                       </td>
                     </>
@@ -846,11 +846,11 @@ const SubjectsPanel: React.FC = () => {
   /** Flip "teach this one in the morning" straight from the table. */
   const toggleMorning = async (s: Subject) => {
     const next = !s.prefer_morning;
-    useTimetableStore.setState((st) => ({
+    useTimetableStore.getState().patch((st) => ({
       subjects: st.subjects.map((x) => x.id === s.id ? { ...x, prefer_morning: next } : x),
     }));
     await api.updateSubject(s.id, { prefer_morning: next }).catch(() => {
-      useTimetableStore.setState((st) => ({   // put it back if the server refused
+      useTimetableStore.getState().patch((st) => ({   // put it back if the server refused
         subjects: st.subjects.map((x) => x.id === s.id ? { ...x, prefer_morning: !next } : x),
       }));
     });
@@ -866,7 +866,7 @@ const SubjectsPanel: React.FC = () => {
       allow_outdoor: outdoorValue(form.allow_outdoor),
       room_rule: form.room_rule || null,
     });
-    useTimetableStore.setState((s) => ({ subjects: [...s.subjects, created] }));
+    useTimetableStore.getState().patch((s) => ({ subjects: [...s.subjects, created] }));
     setForm({ code: "", name: "", type: "common", duration: 1, department_id: "", is_activity: false, is_elective: false, fixed_room_id: "", prefer_morning: false, allow_outdoor: "" as "" | "yes" | "no", room_rule: "" as "" | "subject" | "homeroom" });
   };
 
@@ -884,7 +884,7 @@ const SubjectsPanel: React.FC = () => {
       allow_outdoor: outdoorValue(editForm.allow_outdoor),
       room_rule: editForm.room_rule || null,
     });
-    useTimetableStore.setState((s) => ({ subjects: s.subjects.map((x) => x.id === id ? { ...x, ...updated } : x) }));
+    useTimetableStore.getState().patch((s) => ({ subjects: s.subjects.map((x) => x.id === id ? { ...x, ...updated } : x) }));
     setEditing(null); setEditForm(null);
   };
 
@@ -911,7 +911,7 @@ const SubjectsPanel: React.FC = () => {
           : { department_id: Number(bulkTarget) }),
       });
       const updated = new Map(res.subjects.map((r) => [r.id, r.prefer_morning]));
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         subjects: st.subjects.map((x) =>
           updated.has(x.id) ? { ...x, prefer_morning: updated.get(x.id)! } : x),
       }));
@@ -1235,7 +1235,7 @@ const SubjectsPanel: React.FC = () => {
                                 </button>
                                 <div className="border-t border-gray-100 my-1" />
                                 <button
-                                  onClick={async () => { setRowMenu(null); await api.deleteSubject(s.id); useTimetableStore.setState((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }}
+                                  onClick={async () => { setRowMenu(null); await api.deleteSubject(s.id); useTimetableStore.getState().patch((st) => ({ subjects: st.subjects.filter((x) => x.id !== s.id) })); }}
                                   className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left text-red-600 hover:bg-red-50">
                                   🗑 <span>ลบวิชานี้</span>
                                 </button>
@@ -1289,13 +1289,13 @@ const RoomsPanel: React.FC = () => {
   /** Take a room out of the timetable, or put it back — one click from the row. */
   const toggleUsable = async (r: Room) => {
     const usable = r.usable === false;
-    useTimetableStore.setState((s) => ({
+    useTimetableStore.getState().patch((s) => ({
       rooms: s.rooms.map((x) => (x.id === r.id ? { ...x, usable } : x)),
     }));
     try {
       await api.updateRoom(r.id, { usable });
     } catch {
-      useTimetableStore.setState((s) => ({
+      useTimetableStore.getState().patch((s) => ({
         rooms: s.rooms.map((x) => (x.id === r.id ? { ...x, usable: !usable } : x)),
       }));
     }
@@ -1403,7 +1403,7 @@ const RoomsPanel: React.FC = () => {
                       <button
                         onClick={async () => {
                           await api.deleteRoom(r.id);
-                          useTimetableStore.setState((s) => ({ rooms: s.rooms.filter((x) => x.id !== r.id) }));
+                          useTimetableStore.getState().patch((s) => ({ rooms: s.rooms.filter((x) => x.id !== r.id) }));
                         }}
                         className={btnDanger}>ลบ</button>
                     </div>
@@ -1640,7 +1640,7 @@ const RequirementsPanel: React.FC = () => {
       });
       return;
     }
-    useTimetableStore.setState((s) => ({ requirements: [...s.requirements, created] }));
+    useTimetableStore.getState().patch((s) => ({ requirements: [...s.requirements, created] }));
     await mirrorPairing(created);
     setForm({ group_id: "", subject_id: "", teacher_id: "", weekly_count: 1,
               parallel_group_key: "", co_teacher_id: "" });
@@ -1670,7 +1670,7 @@ const RequirementsPanel: React.FC = () => {
       o.co_teacher_id == null);
     if (!mate) return;
     const back = await api.updateRequirement(mate.id, { co_teacher_id: row.teacher_id });
-    useTimetableStore.setState((st) => ({
+    useTimetableStore.getState().patch((st) => ({
       requirements: st.requirements.map((r) => r.id === mate.id ? { ...r, ...back } : r),
     }));
   };
@@ -1696,7 +1696,7 @@ const RequirementsPanel: React.FC = () => {
       });
       return;
     }
-    useTimetableStore.setState((s) => ({ requirements: s.requirements.map((r) => r.id === id ? { ...r, ...updated } : r) }));
+    useTimetableStore.getState().patch((s) => ({ requirements: s.requirements.map((r) => r.id === id ? { ...r, ...updated } : r) }));
     await mirrorPairing(updated);
     setEditing(null); setEditForm(null);
     // ── สอนร่วมที่เพิ่งใส่ทีหลัง ────────────────────────────────────────
@@ -1781,7 +1781,7 @@ const RequirementsPanel: React.FC = () => {
           weekly_count: b.weekly_count, parallel_group_key: b.parallel_group_key ?? null,
           co_teacher_id: a.teacher_id },
       ]));
-      useTimetableStore.setState({ requirements: await api.fetchRequirements() });
+      useTimetableStore.getState().patch({ requirements: await api.fetchRequirements() });
     } finally { setPairing(false); }
   };
 
@@ -2041,7 +2041,7 @@ const RequirementsPanel: React.FC = () => {
                   <td className="px-3 py-2">
                     <div className="flex gap-1">
                       <button onClick={() => { setReqErr(null); setEditing(r.id); setEditForm({ group_id: String(r.group_id), subject_id: String(r.subject_id), teacher_id: String(r.teacher_id), weekly_count: r.weekly_count, parallel_group_key: r.parallel_group_key ?? "", co_teacher_id: r.co_teacher_id ? String(r.co_teacher_id) : "" }); }} className={btnEdit}>แก้ไข</button>
-                      <button onClick={async () => { await api.deleteRequirement(r.id); useTimetableStore.setState((s) => ({ requirements: s.requirements.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
+                      <button onClick={async () => { await api.deleteRequirement(r.id); useTimetableStore.getState().patch((s) => ({ requirements: s.requirements.filter((x) => x.id !== r.id) })); }} className={btnDanger}>ลบ</button>
                     </div>
                   </td>
                 </tr>
@@ -2435,7 +2435,7 @@ const PeriodsPanel: React.FC = () => {
     // No period number to type: the server works it out from the time, so a
     // new row cannot land on a number that already means something else.
     const created = await api.createPeriod({ ...form, auto_number: true } as Partial<Period>);
-    useTimetableStore.setState((s) => ({ periods: [...s.periods, created] }));
+    useTimetableStore.getState().patch((s) => ({ periods: [...s.periods, created] }));
     const len = Math.max(10, Math.abs(
       Number(form.end_time.split(":")[0]) * 60 + Number(form.end_time.split(":")[1])
       - Number(form.start_time.split(":")[0]) * 60 - Number(form.start_time.split(":")[1])));
@@ -2446,7 +2446,7 @@ const PeriodsPanel: React.FC = () => {
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
     const updated = await api.updatePeriod(id, editForm);
-    useTimetableStore.setState((s) => ({ periods: s.periods.map((p) => p.id === id ? { ...p, ...updated } : p) }));
+    useTimetableStore.getState().patch((s) => ({ periods: s.periods.map((p) => p.id === id ? { ...p, ...updated } : p) }));
     setEditing(null);
     setEditForm(null);
   };
@@ -2636,7 +2636,7 @@ const PeriodsPanel: React.FC = () => {
                     <td className="px-3 py-2 flex gap-1">
                       <button onClick={() => { setEditing(p.id); setEditForm({ label: p.label, start_time: p.start_time, end_time: p.end_time, type: p.type, applies_to: p.applies_to }); }}
                         className={btnEdit}>แก้ไข</button>
-                      <button onClick={async () => { await api.deletePeriod(p.id); useTimetableStore.setState((s) => ({ periods: s.periods.filter((x) => x.id !== p.id) })); }} className={btnDanger}>ลบ</button>
+                      <button onClick={async () => { await api.deletePeriod(p.id); useTimetableStore.getState().patch((s) => ({ periods: s.periods.filter((x) => x.id !== p.id) })); }} className={btnDanger}>ลบ</button>
                     </td>
                   </>
                 )}
@@ -2823,14 +2823,14 @@ const DepartmentsPanel: React.FC = () => {
 
   const handleCreate = async () => {
     const created = await api.createDepartment({ name: form.name });
-    useTimetableStore.setState((s) => ({ departments: [...s.departments, created] }));
+    useTimetableStore.getState().patch((s) => ({ departments: [...s.departments, created] }));
     setForm({ name: "" });
   };
 
   const handleUpdate = async (id: number) => {
     if (!editForm) return;
     const updated = await api.updateDepartment(id, editForm);
-    useTimetableStore.setState((s) => ({ departments: s.departments.map((d) => d.id === id ? { ...d, ...updated } : d) }));
+    useTimetableStore.getState().patch((s) => ({ departments: s.departments.map((d) => d.id === id ? { ...d, ...updated } : d) }));
     setEditing(null); setEditForm(null);
   };
 
@@ -2895,7 +2895,7 @@ const DepartmentsPanel: React.FC = () => {
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
                         <button onClick={() => { setEditing(d.id); setEditForm({ name: d.name }); }} className={btnEdit}>แก้ไข</button>
-                        <button onClick={async () => { await api.deleteDepartment(d.id); useTimetableStore.setState((s) => ({ departments: s.departments.filter((x) => x.id !== d.id) })); }} className={btnDanger}>ลบ</button>
+                        <button onClick={async () => { await api.deleteDepartment(d.id); useTimetableStore.getState().patch((s) => ({ departments: s.departments.filter((x) => x.id !== d.id) })); }} className={btnDanger}>ลบ</button>
                       </div>
                     </td>
                   </>
@@ -3012,7 +3012,7 @@ const AnalyticsPanel: React.FC = () => {
           weekly_count: b.weekly_count, parallel_group_key: b.parallel_group_key ?? null,
           co_teacher_id: a.teacher_id },
       ]));
-      useTimetableStore.setState({ requirements: await api.fetchRequirements() });
+      useTimetableStore.getState().patch({ requirements: await api.fetchRequirements() });
     } finally { setPairing(false); }
   };
 

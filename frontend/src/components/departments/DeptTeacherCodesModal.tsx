@@ -73,7 +73,7 @@ export const DeptTeacherCodesModal: React.FC<Props> = ({ department, onClose }) 
       });
       // Fold the new codes back into the page rather than reloading the lot.
       const fresh = new Map(res.teachers.map((t) => [t.id, t]));
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         teachers: st.teachers.map((t) => {
           const f = fresh.get(t.id);
           return f ? { ...t, code: f.code, dept_order: f.dept_order } : t;

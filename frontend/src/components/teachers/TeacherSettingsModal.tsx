@@ -70,7 +70,7 @@ export const TeacherSettingsModal: React.FC<Props> = ({
     };
     try {
       const updated = await api.updateTeacher(teacher.id, { advanced_settings: body });
-      useTimetableStore.setState((s) => ({
+      useTimetableStore.getState().patch((s) => ({
         teachers: s.teachers.map((t) => (t.id === teacher.id ? { ...t, ...updated } : t)),
       }));
       onClose();

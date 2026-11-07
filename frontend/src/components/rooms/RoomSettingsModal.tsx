@@ -76,12 +76,12 @@ export const RoomSettingsModal: React.FC<Props> = ({ room, onClose }) => {
     try {
       if (room) {
         const updated = await api.updateRoom(room.id, body);
-        useTimetableStore.setState((s) => ({
+        useTimetableStore.getState().patch((s) => ({
           rooms: s.rooms.map((x) => (x.id === room.id ? { ...x, ...updated } : x)),
         }));
       } else {
         const created = await api.createRoom(body);
-        useTimetableStore.setState((s) => ({ rooms: [...s.rooms, created] }));
+        useTimetableStore.getState().patch((s) => ({ rooms: [...s.rooms, created] }));
       }
       onClose();
     } catch (e) {

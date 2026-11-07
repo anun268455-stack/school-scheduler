@@ -463,6 +463,7 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
    * closeViewing ซึ่งประกาศตัวผ่าน `landing`
    * คอมโพเนนต์ต้องเขียนผ่าน action `patch` เท่านั้น ห้ามใช้ `setState` เพราะ
    * `setState` ของ zustand ข้ามตัวห่อนี้ไปเลยและจะเขียนข้อมูลสดลงร้านได้
+   * ตอนนี้ไม่มีคอมโพเนนต์ใดเขียนร้านตรงอีกแล้ว ทุกการเขียนไหลผ่าน `patch` นี้ จึงเป็นจริงทั้งระบบ
    */
   const set = (
     partial: Partial<TimetableStore> | ((st: TimetableStore) => Partial<TimetableStore>),

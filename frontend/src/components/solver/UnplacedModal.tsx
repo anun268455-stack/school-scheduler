@@ -73,7 +73,7 @@ export const UnplacedModal: React.FC<{ onClose: () => void }> = ({ onClose }) =>
     setBusy(true);
     try {
       const updated = await api.updateSubject(subjectId, { allow_outdoor: true });
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         subjects: st.subjects.map((x) => (x.id === subjectId ? { ...x, ...updated } : x)),
       }));
       load();

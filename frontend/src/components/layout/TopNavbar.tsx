@@ -734,7 +734,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ printRef, onCrudNav, curre
             <div className="mt-0.5 flex items-start gap-2 text-red-800 font-semibold">
               <span className="flex-1">{banner.error}</span>
               <button
-                onClick={() => useTimetableStore.setState({ viewingError: null })}
+                onClick={() => useTimetableStore.getState().patch({ viewingError: null })}
                 className="px-1 text-red-800 hover:text-red-950" title="ปิดข้อความนี้ (แถบเทอมยังอยู่)">✕</button>
             </div>
           )}
