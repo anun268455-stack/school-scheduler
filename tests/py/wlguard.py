@@ -166,10 +166,15 @@ class _Conn:
 
 def test_wl_db_commits_on_clean_exit_and_not_on_error():
     log: list[str] = []
-    with patched(_STORE_KIND="postgres", _db_connect=lambda: _Conn(log)):
+    with patched(_STORE_KIND="postgres", _db_connect=lambda: _Conn(log), _WL_SCHEMA_READY=False):
         with mock_api._wl_db():
             pass
         ok("commit" in log and "execute" in log, "บล็อกจบปกติต้อง commit และสร้างตาราง")
+        ok(mock_api._WL_SCHEMA_READY is True, "สร้างสำเร็จแล้วต้องตั้งธง")
+        log.clear()
+        with mock_api._wl_db():
+            pass
+        ok("execute" not in log, "ธงตั้งแล้วต้องไม่สร้างตารางซ้ำ")
         log.clear()
         try:
             with mock_api._wl_db():
@@ -186,6 +191,17 @@ def test_wl_db_commits_on_clean_exit_and_not_on_error():
         except ValueError:
             pass
         ok("commit" not in log, "ข้อผิดพลาดอื่นต้องไม่ commit")
+
+
+def test_schema_flag_not_set_when_first_block_fails():
+    log: list[str] = []
+    with patched(_STORE_KIND="postgres", _db_connect=lambda: _Conn(log), _WL_SCHEMA_READY=False):
+        try:
+            with mock_api._wl_db():
+                raise HTTPException(401, "x")
+        except HTTPException:
+            pass
+        ok(mock_api._WL_SCHEMA_READY is False, "บล็อกแรกล้ม = ถูกย้อนกลับ ห้ามตั้งธง")
 
 
 def test_schema_has_four_tables_and_one_per_group_indexes():

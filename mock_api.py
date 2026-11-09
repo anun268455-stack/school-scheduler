@@ -3,7 +3,7 @@ Mock API v3 — working mock solver + bulk import + periods CRUD + bulk lock.
 Run: python mock_api.py
 """
 from __future__ import annotations
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -16,6 +16,9 @@ import json as _json
 import datetime as _dt
 import time as _time
 import contextlib as _contextlib
+import hashlib as _hashlib
+import hmac as _hmac
+import secrets as _secrets
 from collections import Counter, defaultdict
 from contextvars import ContextVar
 import substitution as _SUB
@@ -13741,7 +13744,8 @@ CREATE TABLE IF NOT EXISTS wl_codes (
     salt          bytea NOT NULL,
     hash          bytea NOT NULL,
     active        boolean NOT NULL DEFAULT true,
-    created_at    timestamptz NOT NULL DEFAULT now()
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    CHECK ((role = 'admin') = (department_id IS NULL))
 );
 CREATE TABLE IF NOT EXISTS wl_sessions (
     token_hash bytea PRIMARY KEY,
@@ -13781,6 +13785,12 @@ def _wl_schema(cur) -> None:
     cur.execute(_WL_SCHEMA)
 
 
+# DDL ชุดนี้เป็นหลายคำสั่ง = ไปกลับ Neon หลายรอบ จึงรันแค่ครั้งแรกที่สำเร็จของแต่ละ process
+# ตั้งธงหลัง commit เท่านั้น: DDL ของ Postgres อยู่ในธุรกรรม ถ้าบล็อกแรกล้มแล้วย้อนกลับ
+# ตารางก็หายไปด้วย การตั้งธงก่อนจะทำให้คำขอถัดไปข้ามการสร้างตารางที่ไม่มีอยู่จริง
+_WL_SCHEMA_READY: bool = False
+
+
 def wl_db_error_detail() -> str:
     """ข้อความไทยเมื่อเว็บลงอัตรากำลังต่อฐานข้อมูลไม่ได้ — ใช้ร่วมกันทุก route"""
     return "ต่อฐานข้อมูลไม่ได้ จึงใช้เว็บลงอัตรากำลังไม่ได้ในตอนนี้ ลองใหม่อีกครั้งภายหลัง"
@@ -13803,18 +13813,339 @@ def _wl_db():
     # `with conn` ของ psycopg ย้อนกลับเมื่อบล็อกยกข้อผิดพลาด แล้วปิดการเชื่อมต่อเสมอ
     with conn:
         with conn.cursor() as cur:
-            try:
-                _wl_schema(cur)
-            except Exception:
-                raise HTTPException(503, wl_db_error_detail()) from None
+            if not _WL_SCHEMA_READY:
+                try:
+                    _wl_schema(cur)
+                except Exception:
+                    raise HTTPException(503, wl_db_error_detail()) from None
             yield cur
         conn.commit()
+    _set_wl_schema_ready()
+
+
+def _set_wl_schema_ready() -> None:
+    global _WL_SCHEMA_READY
+    _WL_SCHEMA_READY = True
 
 
 @app.get("/api/workload/health")
 def wl_health() -> dict[str, Any]:
-    with _wl_db():
-        return {"db": True}
+    with _wl_db() as cur:
+        # ยังไม่มีรหัส admin ที่ใช้ได้ = หน้าเว็บต้องพาไปตั้งรหัสใบแรก (ดู wl_setup)
+        cur.execute("SELECT 1 FROM wl_codes WHERE role = 'admin' AND active LIMIT 1")
+        return {"db": True, "needs_setup": cur.fetchone() is None}
+
+
+# ── เว็บลงอัตรากำลัง: รหัสเข้า · session · route ล็อกอิน ─────────────────────────
+# รหัสเข้าเก็บเป็นแฮชเท่านั้น ไม่มี route ใดคืนรหัสจริง ไม่ log และไม่ใส่ในข้อความผิดพลาด
+# ทุกการเทียบความลับใช้ hmac.compare_digest
+WL_CODE_MIN_LEN: int = 6
+WL_HASH_ROUNDS: int = 200_000
+WL_SESSION_HOURS: int = 12
+WL_BAD_CODE: str = "รหัสไม่ถูกต้อง"
+WL_NEED_LOGIN: str = "ยังไม่ได้เข้าสู่ระบบ หรือหมดเวลาแล้ว กรุณาใส่รหัสเข้าใหม่"
+WL_ADMIN_ONLY: str = "เฉพาะผู้ดูแลระบบ (admin) เท่านั้น"
+
+
+def wl_hash(code: str, salt: bytes) -> bytes:
+    return _hashlib.pbkdf2_hmac("sha256", code.encode(), bytes(salt), WL_HASH_ROUNDS)
+
+
+def wl_normalize_code(raw: str) -> str:
+    """ตัดช่องว่างหัวท้าย (ผู้ใช้พิมพ์/วางแล้วติดช่องว่าง) แต่ไม่แปลงตัวพิมพ์"""
+    return raw.strip()
+
+
+def wl_check_code(raw: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """คืนแถวรหัสที่เปิดอยู่และตรงกับ raw หรือ None · รหัสว่างไม่ผ่านเด็ดขาด"""
+    code = wl_normalize_code(raw)
+    if not code:
+        return None
+    for row in rows:
+        if not row.get("active"):
+            continue
+        if _hmac.compare_digest(wl_hash(code, row["salt"]), bytes(row["hash"])):
+            return row
+    return None
+
+
+def wl_code_taken(code: str, other_rows: list[dict[str, Any]]) -> bool:
+    """รหัสนี้ซ้ำกับแถวใดหรือไม่ — นับแถวที่ปิดอยู่ด้วย
+
+    wl_check_code คืนแถวแรกที่ตรง ถ้าสองกลุ่มใช้รหัสเดียวกัน หัวหน้ากลุ่มหลังจะเข้าเป็นกลุ่มแรก
+    และแถวที่ปิดอยู่ก็นับ เพราะตอนเปิดกลับมาไม่มีรหัสจริงให้ตรวจซ้ำอีก
+    """
+    code = wl_normalize_code(code)
+    if not code:
+        return False
+    return any(_hmac.compare_digest(wl_hash(code, r["salt"]), bytes(r["hash"]))
+               for r in other_rows)
+
+
+# แฮชของ token ไม่ใช้ PBKDF2: token สุ่ม 256 บิตจาก token_urlsafe(32) เดาไม่ได้อยู่แล้ว
+# ต้องค้นด้วยคีย์หลัก token_hash ได้ (ตารางไม่มี salt) และ PBKDF2 200,000 รอบทุกคำขอ
+# จะกิน CPU ของ Render free ทุกครั้งที่กดอะไร · wl_hash ใช้กับ "รหัสเข้า" เท่านั้น
+def wl_token_hash(token: str) -> bytes:
+    return _hashlib.sha256(token.encode()).digest()
+
+
+def wl_bearer_token(header: str | None) -> str:
+    """token จากหัวข้อ Authorization: Bearer ... · ไม่มี/รูปผิดคืน "" (Bearer ไม่สนตัวพิมพ์)"""
+    if not isinstance(header, str):
+        return ""
+    parts = header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return ""
+    return parts[1]
+
+
+def wl_session_open(code_id: int, rows: list[dict[str, Any]]) -> str:
+    """ออก token ใหม่ ต่อท้าย rows ด้วยแถวที่เก็บแฮชของ token · ไม่ลบแถวเก่า
+
+    หนึ่งกลุ่มสาระมีรหัสเดียวแต่ใช้พร้อมกันหลายเครื่องได้ ออกใบที่สองต้องไม่เตะใบแรกออก
+    """
+    token = _secrets.token_urlsafe(32)
+    rows.append({"token_hash": wl_token_hash(token), "code_id": code_id,
+                 "expires_at": _dt.datetime.now(_dt.timezone.utc)
+                 + _dt.timedelta(hours=WL_SESSION_HOURS)})
+    return token
+
+
+def wl_session_find(token: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not token:
+        return None
+    want = wl_token_hash(token)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for row in rows:
+        if _hmac.compare_digest(want, bytes(row["token_hash"])) and row["expires_at"] > now:
+            return row
+    return None
+
+
+def wl_session_role(token: str, cur) -> dict[str, Any] | None:
+    """อ่านตาราง แล้วให้ wl_session_find ตัดสินเรื่องหมดอายุ · รหัสที่ถูกปิดใช้ session ไม่ได้ทันที"""
+    if not token:
+        return None
+    cur.execute(
+        "SELECT s.token_hash, s.code_id, c.role, c.department_id, c.label, s.expires_at "
+        "FROM wl_sessions s JOIN wl_codes c ON c.id = s.code_id "
+        "WHERE s.token_hash = %s AND c.active", (wl_token_hash(token),))
+    rows = [{"token_hash": bytes(r[0]), "code_id": r[1], "role": r[2],
+             "department_id": r[3], "label": r[4], "expires_at": r[5]}
+            for r in cur.fetchall()]
+    hit = wl_session_find(token, rows)
+    if hit is None:
+        return None
+    return {k: hit[k] for k in ("code_id", "role", "department_id", "label", "token_hash")}
+
+
+def wl_require_session(request: Request, cur) -> dict[str, Any]:
+    sess = wl_session_role(wl_bearer_token(request.headers.get("authorization")), cur)
+    if sess is None:
+        raise HTTPException(401, WL_NEED_LOGIN)
+    return sess
+
+
+def wl_require_admin(request: Request, cur) -> dict[str, Any]:
+    sess = wl_require_session(request, cur)
+    if sess["role"] != "admin":
+        raise HTTPException(403, WL_ADMIN_ONLY)
+    return sess
+
+
+def wl_validate_new_code(raw: Any) -> str:
+    """รหัสใหม่ที่ผ่านกติกา (ตัดช่องว่างแล้วยาว >= WL_CODE_MIN_LEN) · ใช้ที่จุดตั้งรหัสเท่านั้น"""
+    code = wl_normalize_code(raw) if isinstance(raw, str) else ""
+    if len(code) < WL_CODE_MIN_LEN:
+        raise HTTPException(400, f"รหัสต้องยาวอย่างน้อย {WL_CODE_MIN_LEN} ตัวอักษร (ไม่นับช่องว่างหัวท้าย)")
+    return code
+
+
+def wl_validate_role_dept(role: Any, department_id: Any) -> None:
+    if role == "admin":
+        if department_id is not None:
+            raise HTTPException(400, "รหัส admin ต้องไม่ระบุกลุ่มสาระ")
+    elif role == "head":
+        # bool เป็น int ในไพทอน — True ไม่ใช่รหัสกลุ่มสาระ
+        if type(department_id) is not int or not any(d["id"] == department_id for d in DEPARTMENTS):
+            raise HTTPException(400, "รหัสหัวหน้ากลุ่มสาระต้องระบุกลุ่มสาระที่มีอยู่จริง")
+    else:
+        raise HTTPException(400, "บทบาทต้องเป็น admin หรือ head")
+
+
+def wl_setup_allowed(env_value: str | None, given: object) -> bool:
+    """ตัวแปรที่ไม่ได้ตั้งต้องไม่มีทางผ่าน แม้ส่งค่าว่างมา"""
+    if not isinstance(env_value, str) or not env_value.strip():
+        return False
+    if not isinstance(given, str) or not given.strip():
+        return False
+    return _hmac.compare_digest(env_value.strip().encode(), given.strip().encode())
+
+
+def _wl_code_rows(cur, exclude_id: int | None = None) -> list[dict[str, Any]]:
+    cur.execute("SELECT id, role, department_id, label, salt, hash, active FROM wl_codes ORDER BY id")
+    return [{"id": r[0], "role": r[1], "department_id": r[2], "label": r[3],
+             "salt": bytes(r[4]), "hash": bytes(r[5]), "active": r[6]}
+            for r in cur.fetchall() if r[0] != exclude_id]
+
+
+def _wl_body(body: Any) -> dict[str, Any]:
+    return body if isinstance(body, dict) else {}
+
+
+@app.post("/api/workload/login")
+def wl_login(body: dict[str, Any]) -> dict[str, Any]:
+    raw = _wl_body(body).get("code")
+    if not isinstance(raw, str):
+        raise HTTPException(401, WL_BAD_CODE)
+    with _wl_db() as cur:
+        row = wl_check_code(raw, _wl_code_rows(cur))
+        if row is None:
+            raise HTTPException(401, WL_BAD_CODE)
+        cur.execute("DELETE FROM wl_sessions WHERE expires_at <= now()")
+        new: list[dict[str, Any]] = []
+        token = wl_session_open(row["id"], new)
+        cur.execute("INSERT INTO wl_sessions (token_hash, code_id, expires_at) VALUES (%s, %s, %s)",
+                    (new[0]["token_hash"], row["id"], new[0]["expires_at"]))
+        return {"token": token, "role": row["role"],
+                "department_id": row["department_id"], "label": row["label"]}
+
+
+@app.post("/api/workload/logout")
+def wl_logout(request: Request) -> dict[str, Any]:
+    token = wl_bearer_token(request.headers.get("authorization"))
+    if token:
+        with _wl_db() as cur:
+            cur.execute("DELETE FROM wl_sessions WHERE token_hash = %s", (wl_token_hash(token),))
+    return {"ok": True}
+
+
+@app.get("/api/workload/me")
+def wl_me(request: Request) -> dict[str, Any]:
+    with _wl_db() as cur:
+        s = wl_require_session(request, cur)
+        return {"role": s["role"], "department_id": s["department_id"], "label": s["label"]}
+
+
+def _wl_is_unique_violation(e: Exception) -> bool:
+    return getattr(e, "sqlstate", None) == "23505"
+
+
+def _wl_insert_code(cur, role: str, department_id: int | None, label: str, code: str) -> int:
+    salt = _secrets.token_bytes(16)
+    try:
+        cur.execute("INSERT INTO wl_codes (role, department_id, label, salt, hash) "
+                    "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (role, department_id, label, salt, wl_hash(code, salt)))
+    except Exception as e:  # noqa: BLE001
+        # ดัชนี unique เป็นด่านสุดท้ายเมื่อสองคำขอชนกัน — ตอบ 409 ไม่ใช่ 500
+        if _wl_is_unique_violation(e):
+            raise HTTPException(409, "กลุ่มนี้มีรหัสอยู่แล้ว ให้ใช้การตั้งรหัสใหม่แทน") from None
+        raise
+    return cur.fetchone()[0]
+
+
+def _wl_drop_sessions(cur, code_id: int, keep_hash: bytes | None = None) -> None:
+    """เตะ session ของรหัสนี้ออกทั้งหมด ยกเว้นของผู้เรียก (admin เปลี่ยนรหัสตัวเองต้องไม่เด้งออก)"""
+    if keep_hash is None:
+        cur.execute("DELETE FROM wl_sessions WHERE code_id = %s", (code_id,))
+    else:
+        cur.execute("DELETE FROM wl_sessions WHERE code_id = %s AND token_hash <> %s",
+                    (code_id, keep_hash))
+
+
+@app.post("/api/workload/setup")
+def wl_setup(body: dict[str, Any]) -> dict[str, Any]:
+    """ตั้งรหัส admin ใบแรก หรือกู้เมื่อลืม — ด้วยรหัสตั้งค่าใน WORKLOAD_SETUP_CODE ของเซิร์ฟเวอร์"""
+    b = _wl_body(body)
+    env = _os.environ.get("WORKLOAD_SETUP_CODE")
+    if not isinstance(env, str) or not env.strip():
+        raise HTTPException(403, "ยังไม่ได้ตั้งรหัสตั้งค่าที่เซิร์ฟเวอร์ — ให้ตั้งตัวแปร "
+                                 "WORKLOAD_SETUP_CODE ในหน้า Environment ของ Render ก่อน แล้วลองใหม่")
+    if not wl_setup_allowed(env, b.get("setup_code")):
+        raise HTTPException(403, "รหัสตั้งค่าไม่ถูกต้อง")
+    code = wl_validate_new_code(b.get("code"))
+    with _wl_db() as cur:
+        rows = _wl_code_rows(cur)
+        admin = next((r for r in rows if r["role"] == "admin"), None)
+        if wl_code_taken(code, [r for r in rows if r is not admin]):
+            raise HTTPException(409, "รหัสนี้ถูกใช้อยู่แล้ว เลือกรหัสอื่น")
+        if admin is None:
+            admin_id = _wl_insert_code(cur, "admin", None, "ผู้ดูแลระบบ", code)
+        else:
+            admin_id = admin["id"]
+            salt = _secrets.token_bytes(16)
+            cur.execute("UPDATE wl_codes SET salt = %s, hash = %s, active = true WHERE id = %s",
+                        (salt, wl_hash(code, salt), admin_id))
+        _wl_drop_sessions(cur, admin_id)
+        return {"ok": True}
+
+
+@app.get("/api/workload/codes")
+def wl_codes_list(request: Request) -> list[dict[str, Any]]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        return [{k: r[k] for k in ("id", "role", "department_id", "label", "active")}
+                for r in _wl_code_rows(cur)]
+
+
+@app.post("/api/workload/codes")
+def wl_codes_create(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    b = _wl_body(body)
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        role, dept = b.get("role"), b.get("department_id")
+        wl_validate_role_dept(role, dept)
+        label = b.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise HTTPException(400, "ต้องระบุชื่อเรียกของรหัสนี้")
+        code = wl_validate_new_code(b.get("code"))
+        rows = _wl_code_rows(cur)
+        if any(r["role"] == role and r["department_id"] == dept for r in rows):
+            raise HTTPException(409, "กลุ่มนี้มีรหัสอยู่แล้ว ให้ใช้การตั้งรหัสใหม่แทน")
+        if wl_code_taken(code, rows):
+            raise HTTPException(409, "รหัสนี้ถูกใช้อยู่แล้ว เลือกรหัสอื่น")
+        return {"id": _wl_insert_code(cur, role, dept, label.strip(), code)}
+
+
+@app.put("/api/workload/codes/{code_id}")
+def wl_codes_update(code_id: int, request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    b = _wl_body(body)
+    with _wl_db() as cur:
+        me = wl_require_admin(request, cur)
+        extra = [k for k in b if k not in ("code", "label", "active")]
+        if extra:
+            raise HTTPException(400, f"แก้ช่อง {extra[0]} ไม่ได้ (แก้ได้เฉพาะ code, label, active)")
+        rows = _wl_code_rows(cur)
+        row = next((r for r in rows if r["id"] == code_id), None)
+        if row is None:
+            raise HTTPException(404, "ไม่พบรหัสนี้")
+        sets: list[str] = []
+        args: list[Any] = []
+        kick = False
+        if "label" in b:
+            if not isinstance(b["label"], str) or not b["label"].strip():
+                raise HTTPException(400, "ต้องระบุชื่อเรียกของรหัสนี้")
+            sets.append("label = %s"); args.append(b["label"].strip())
+        if "active" in b:
+            if not isinstance(b["active"], bool):
+                raise HTTPException(400, "active ต้องเป็นจริงหรือเท็จ")
+            if row["role"] == "admin" and not b["active"]:
+                raise HTTPException(400, "ปิดรหัส admin ไม่ได้ เพราะจะไม่มีใครเข้าระบบได้")
+            sets.append("active = %s"); args.append(b["active"])
+            kick = kick or not b["active"]
+        if "code" in b:
+            code = wl_validate_new_code(b["code"])
+            if wl_code_taken(code, [r for r in rows if r["id"] != code_id]):
+                raise HTTPException(409, "รหัสนี้ถูกใช้อยู่แล้ว เลือกรหัสอื่น")
+            salt = _secrets.token_bytes(16)
+            sets += ["salt = %s", "hash = %s"]; args += [salt, wl_hash(code, salt)]
+            kick = True
+        if sets:
+            cur.execute(f"UPDATE wl_codes SET {', '.join(sets)} WHERE id = %s", (*args, code_id))
+        if kick:
+            _wl_drop_sessions(cur, code_id, keep_hash=me["token_hash"])
+        return {"ok": True}
 
 
 def _check_term_status(status: str) -> None:
