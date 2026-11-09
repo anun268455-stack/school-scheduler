@@ -1,5 +1,8 @@
 import axios, { AxiosError } from "axios";
 import { parseSession, SESSION_KEY, statusText, thaiDetail, type Session } from "./auth";
+import type {
+  Department, ImportCounts, SubjectCreate, SubjectPatch, TeacherCreate, TeacherPatch, WlSubject, WlTeacher,
+} from "./types";
 
 // ที่อยู่เซิร์ฟเวอร์แบบเดียวกับเว็บตาราง (frontend/src/api/client.ts)
 const BASE_URL = import.meta.env.VITE_API_URL
@@ -105,4 +108,58 @@ export async function me(): Promise<Me> {
   const res = await http.get("/workload/me");
   const d = res.data;
   return { role: d.role, departmentId: d.department_id ?? null, label: d.label };
+}
+
+// ---- ทะเบียนครูและวิชา ----
+// body ที่ส่งไปมีชนิดจำกัดแค่ช่องที่เว็บนี้เป็นเจ้าของ (types.ts) — ช่องเงื่อนไขของเครื่องจัดคาบพิมพ์ไม่ผ่านคอมไพล์
+
+export async function listTeachers(): Promise<WlTeacher[]> {
+  const res = await http.get("/workload/teachers");
+  return res.data as WlTeacher[];
+}
+
+export async function createTeacher(body: TeacherCreate): Promise<WlTeacher> {
+  const res = await http.post("/workload/teachers", body);
+  return res.data as WlTeacher;
+}
+
+export async function updateTeacher(id: number, body: TeacherPatch): Promise<WlTeacher> {
+  const res = await http.put(`/workload/teachers/${id}`, body);
+  return res.data as WlTeacher;
+}
+
+export async function listSubjects(): Promise<WlSubject[]> {
+  const res = await http.get("/workload/subjects");
+  return res.data as WlSubject[];
+}
+
+export async function createSubject(body: SubjectCreate): Promise<WlSubject> {
+  const res = await http.post("/workload/subjects", body);
+  return res.data as WlSubject;
+}
+
+export async function updateSubject(id: number, body: SubjectPatch): Promise<WlSubject> {
+  const res = await http.put(`/workload/subjects/${id}`, body);
+  return res.data as WlSubject;
+}
+
+function counts(d: any): ImportCounts {
+  return { created: Number(d?.created) || 0, linked: Number(d?.linked) || 0, skipped: Number(d?.skipped) || 0 };
+}
+
+// GET = ดูก่อนเฉย ๆ ไม่เขียนอะไร · POST = เขียนจริง (ต้องมาจากปุ่มยืนยันเท่านั้น)
+export async function importPreview(): Promise<ImportCounts> {
+  const res = await http.get("/workload/teachers/import-from-scheduler");
+  return counts(res.data);
+}
+
+export async function importRun(): Promise<ImportCounts> {
+  const res = await http.post("/workload/teachers/import-from-scheduler");
+  return counts(res.data);
+}
+
+// ทะเบียนกลุ่มสาระเป็นของเว็บตาราง เว็บนี้ยืมอ่านอย่างเดียว (ห้ามเรียก route เขียนใด ๆ นอก /workload/)
+export async function listDepartments(): Promise<Department[]> {
+  const res = await http.get("/departments/");
+  return (res.data as any[]).map((d) => ({ id: d.id, name: d.name }));
 }

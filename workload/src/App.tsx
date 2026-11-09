@@ -4,6 +4,8 @@ import {
 } from "./api";
 import { canManageRegistry, parseSession, type Session } from "./auth";
 import LoginPage from "./pages/LoginPage";
+import SubjectsPage from "./pages/SubjectsPage";
+import TeachersPage from "./pages/TeachersPage";
 
 const ROLE_TEXT = { admin: "ผู้ดูแลระบบ", head: "หัวหน้ากลุ่มสาระ" } as const;
 
@@ -12,6 +14,8 @@ export default function App() {
   // มี session เก็บไว้ = ต้องยืนยันกับเซิร์ฟเวอร์ก่อนเชื่อ (รหัสอาจถูกปิดไปแล้ว)
   const [checking, setChecking] = useState<boolean>(() => loadSession() !== null);
   const [notice, setNotice] = useState<string | null>(null);
+  // สลับหน้าด้วย state (ไม่ใช้ react-router โดยตั้งใจ) — Task 7 จะเพิ่ม "รหัสเข้า"
+  const [page, setPage] = useState<"teachers" | "subjects">("teachers");
 
   useEffect(() => {
     setSessionExpiredHandler((message) => {
@@ -68,6 +72,7 @@ export default function App() {
       // ออกจากหน้านี้ได้เสมอ แม้เซิร์ฟเวอร์ไม่ตอบ (session ฝั่งเซิร์ฟเวอร์หมดเองใน 12 ชั่วโมง)
     }
     clearSession();
+    setPage("teachers"); // ล็อกอินครั้งหน้าเริ่มที่หน้าแรกเสมอ
     setSession(null);
   };
 
@@ -95,10 +100,23 @@ export default function App() {
           ออกจากระบบ
         </button>
       </header>
-      <main className="mx-auto max-w-3xl p-6">
+      {canManageRegistry(session) && (
+        <nav className="flex gap-2 bg-gray-50 px-6 py-2" aria-label="เมนูผู้ดูแลระบบ">
+          {([["teachers", "ทะเบียนครู"], ["subjects", "ทะเบียนวิชา"]] as const).map(([key, text]) => (
+            <button
+              key={key}
+              onClick={() => setPage(key)}
+              aria-current={page === key ? "page" : undefined}
+              className={`rounded px-3 py-1 ${page === key ? "bg-blue-600 text-white" : "border border-gray-300"}`}
+            >
+              {text}
+            </button>
+          ))}
+        </nav>
+      )}
+      <main className="mx-auto max-w-5xl p-6">
         {canManageRegistry(session) ? (
-          // ที่ว่างรอ Task 6 — จะแทนที่ด้วยหน้าทะเบียน
-          <p>เข้าสู่ระบบในฐานะผู้ดูแลระบบแล้ว (หน้าทะเบียนครูและวิชากำลังจะมา)</p>
+          page === "teachers" ? <TeachersPage /> : <SubjectsPage />
         ) : (
           <p>ยังไม่มีรอบอัตรากำลังที่เปิดอยู่</p>
         )}
