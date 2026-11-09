@@ -1,10 +1,10 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { createSubject, listDepartments, listSubjects, updateSubject } from "../api";
-import { groupByDepartment, sortSubjects } from "../registry";
+import { buildSubjectBody, changedFields, sortSubjects } from "../registry";
 import type { Department, SubjectIdentity, SubjectPatch, WlSubject } from "../types";
-import { useRegistryList, useSaving } from "../useRegistryList";
+import { useDepartmentGroups, useRegistryList, useSaving, useWriteErrors } from "../useRegistryList";
 import {
-  DepartmentGroups, DepartmentSelect, InactiveSwitch, inputClass, NeverSentBadge, RegistryStatus,
+  DepartmentGroups, DepartmentSelect, InactiveSwitch, inputClass, NeverSentBadge, RegistryFrame, RowError,
 } from "./registryParts";
 
 // ค่า type สองค่าของวิชา: "คู่ขนาน" ตามที่ frontend/ เรียก (Dashboard.tsx "รหัสคู่ขนาน") · "common" ที่นั่นไม่มีชื่อไทย จึงใช้ "ปกติ"
@@ -58,110 +58,109 @@ function identityOf(s: WlSubject): SubjectIdentity {
 export default function SubjectsPage() {
   const subjects = useRegistryList(listSubjects);
   const depts = useRegistryList(listDepartments);
-  const { saving, error, setError, run } = useSaving();
+  const { saving, run } = useSaving();
+  const { addError, setAddError, rowError, setRowError } = useWriteErrors();
   const [editingId, setEditingId] = useState<number | null>(null);
 
-  const loading = subjects.loading || depts.loading;
-  const loadError = subjects.error ?? depts.error;
-  const groups = useMemo(
-    () => groupByDepartment(sortSubjects(subjects.rows), depts.rows),
-    [subjects.rows, depts.rows],
-  );
+  const loaded = subjects.loaded && depts.loaded;
+  const groups = useDepartmentGroups(subjects.rows, sortSubjects, depts.rows);
   const activeCount = subjects.rows.filter((s) => s.active).length;
 
-  const patch = (id: number, body: SubjectPatch) =>
-    run(async () => {
-      subjects.upsert(await updateSubject(id, body));
-    });
+  const patch = (id: number, body: SubjectPatch) => {
+    setRowError(null);
+    return run(
+      async () => {
+        subjects.upsert(await updateSubject(id, body));
+      },
+      (message) => setRowError({ id, message }),
+    );
+  };
+
+  const saveRow = async (s: WlSubject, draft: SubjectIdentity) => {
+    const built = buildSubjectBody(draft);
+    if (!built.ok) return setRowError({ id: s.id, message: built.message });
+    const changed = changedFields(identityOf(s), built.body);
+    if (Object.keys(changed).length === 0) return setEditingId(null);
+    if (await patch(s.id, changed)) setEditingId(null);
+  };
+
+  const addSubject = async (draft: SubjectIdentity): Promise<boolean> => {
+    setAddError(null);
+    const built = buildSubjectBody(draft);
+    if (!built.ok) {
+      setAddError(built.message);
+      return false;
+    }
+    return run(
+      async () => {
+        subjects.upsert(await createSubject(built.body));
+      },
+      setAddError,
+    );
+  };
 
   return (
-    <div>
-      <h2 className="text-xl font-bold">ทะเบียนวิชา</h2>
-      {!loading && !loadError && (
-        <p data-testid="subject-count" className="mt-1">
-          วิชาทั้งหมด {subjects.rows.length} วิชา · ยังเปิดสอน {activeCount} วิชา
-        </p>
-      )}
-
-      {!loading && !loadError && (
-        <AddSubjectForm
-          departments={depts.rows}
-          disabled={saving}
-          onAdd={(body) =>
-            run(async () => {
-              subjects.upsert(await createSubject(body));
-            })
-          }
-          onInvalid={setError}
-        />
-      )}
-
-      <RegistryStatus loading={loading} saving={saving} error={error ?? loadError} />
-      {loadError && (
-        <button
-          onClick={() => {
-            subjects.reload();
-            depts.reload();
-          }}
-          className="rounded border border-gray-300 px-3 py-1"
-        >
-          ลองโหลดใหม่
-        </button>
-      )}
-
-      {!loading && !loadError && (
-        <DepartmentGroups
-          groups={groups}
-          renderRow={(s) => (
-            <SubjectRow
-              subject={s}
-              departments={depts.rows}
-              disabled={saving}
-              editing={editingId === s.id}
-              onEdit={() => setEditingId(s.id)}
-              onCancel={() => setEditingId(null)}
-              onSave={async (body) => {
-                if (await patch(s.id, body)) setEditingId(null);
-              }}
-              onInvalid={setError}
-              onActive={(active) => patch(s.id, { active })}
-            />
-          )}
-        />
-      )}
-    </div>
+    <RegistryFrame
+      title="ทะเบียนวิชา"
+      countTestId="subject-count"
+      countText={`วิชาทั้งหมด ${subjects.rows.length} วิชา · ยังเปิดสอน ${activeCount} วิชา`}
+      loaded={loaded}
+      loadError={subjects.error ?? depts.error}
+      saving={saving}
+      onRetry={() => {
+        subjects.reload();
+        depts.reload();
+      }}
+    >
+      <AddSubjectForm departments={depts.rows} disabled={saving} error={addError} onAdd={addSubject} />
+      <DepartmentGroups
+        groups={groups}
+        renderRow={(s) => (
+          <SubjectRow
+            subject={s}
+            departments={depts.rows}
+            disabled={saving}
+            editing={editingId === s.id}
+            error={rowError?.id === s.id ? rowError.message : null}
+            onEdit={() => {
+              setRowError(null);
+              setEditingId(s.id);
+            }}
+            onCancel={() => {
+              setRowError(null);
+              setEditingId(null);
+            }}
+            onSave={(draft) => saveRow(s, draft)}
+            onActive={(active) => patch(s.id, { active })}
+          />
+        )}
+      />
+    </RegistryFrame>
   );
-}
-
-function validate(v: SubjectIdentity): string | null {
-  if (v.code.trim() === "") return "กรุณากรอกรหัสวิชา";
-  if (v.name.trim() === "") return "กรุณากรอกชื่อวิชา";
-  return null;
 }
 
 function AddSubjectForm(props: {
   departments: Department[];
   disabled: boolean;
-  onAdd: (body: SubjectIdentity) => Promise<boolean>;
-  onInvalid: (message: string) => void;
+  error: string | null;
+  onAdd: (draft: SubjectIdentity) => Promise<boolean>;
 }) {
   const [v, setV] = useState<SubjectIdentity>(EMPTY);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (props.disabled) return;
-    const problem = validate(v);
-    if (problem) return props.onInvalid(problem);
     // เก็บกลุ่มสาระ/ประเภทไว้ให้เพิ่มวิชาถัดไปในกลุ่มเดียวกันได้เร็ว ล้างแต่รหัสกับชื่อ
     if (await props.onAdd(v)) setV({ ...v, code: "", name: "" });
   };
 
   return (
-    <form onSubmit={submit} className="mt-3 flex flex-wrap items-center gap-2 rounded border border-gray-300 bg-white p-3">
+    <form onSubmit={submit} aria-label="เพิ่มวิชา" className="mt-3 mb-4 flex flex-wrap items-center gap-2 rounded border border-gray-300 bg-white p-3">
       <SubjectFields value={v} onChange={setV} departments={props.departments} disabled={props.disabled} />
       <button type="submit" disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">
         เพิ่มวิชา
       </button>
+      <RowError message={props.error} />
     </form>
   );
 }
@@ -171,27 +170,21 @@ function SubjectRow(props: {
   departments: Department[];
   disabled: boolean;
   editing: boolean;
+  error: string | null;
   onEdit: () => void;
   onCancel: () => void;
-  onSave: (body: SubjectPatch) => Promise<void>;
-  onInvalid: (message: string) => void;
+  onSave: (draft: SubjectIdentity) => Promise<void>;
   onActive: (active: boolean) => Promise<boolean>;
 }) {
   const s = props.subject;
   const [draft, setDraft] = useState<SubjectIdentity>(identityOf(s));
-
-  const save = async () => {
-    const problem = validate(draft);
-    if (problem) return props.onInvalid(problem);
-    await props.onSave(draft);
-  };
 
   return (
     <div className={`flex flex-wrap items-center gap-2 ${s.active ? "" : "opacity-50"}`} data-testid={`subject-${s.id}`}>
       {props.editing ? (
         <>
           <SubjectFields value={draft} onChange={setDraft} departments={props.departments} disabled={props.disabled} />
-          <button onClick={save} disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">บันทึก</button>
+          <button onClick={() => void props.onSave(draft)} disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">บันทึก</button>
           <button onClick={props.onCancel} disabled={props.disabled} className="rounded border border-gray-300 px-3 py-1 disabled:opacity-50">ยกเลิก</button>
         </>
       ) : (
@@ -218,6 +211,7 @@ function SubjectRow(props: {
           </span>
         </>
       )}
+      <RowError message={props.error} />
     </div>
   );
 }

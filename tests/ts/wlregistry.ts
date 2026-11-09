@@ -5,7 +5,8 @@
  * (อ้างด้วย id เท่านั้น ห้ามใช้ชื่อเป็น key) · การเรียงต้องไม่แก้ลิสต์ที่ส่งเข้ามา
  */
 import {
-  groupByDepartment, importSummary, parseOrder, sortSubjects, sortTeachers, UNASSIGNED_NAME,
+  buildSubjectBody, buildTeacherBody, changedFields, groupByDepartment, importSummary, parseOrder,
+  sortSubjects, sortTeachers, UNASSIGNED_NAME,
 } from "../../workload/src/registry.ts";
 import type { WlSubject, WlTeacher } from "../../workload/src/types.ts";
 
@@ -125,6 +126,72 @@ test("parseOrder: ว่างเป็น null · จำนวนเต็ม�
   eq(parseOrder("1.5").ok, false);
   eq(parseOrder("abc").ok, false);
   eq(parseOrder("99999999999").ok, false);
+});
+
+test("dept_order เป็น undefined นับเป็นว่าง ไว้ท้ายกลุ่ม", () => {
+  const a = { ...T(1, 1, 1) } as Partial<WlTeacher> & WlTeacher;
+  delete a.dept_order;
+  deepEq(ids(sortTeachers([a, T(2, 1, 9), T(3, 1, null)])), [2, 1, 3]);
+});
+
+test("เรียงวิชาแล้วไม่แก้ลิสต์เดิม", () => {
+  const rows = [S(2, 1, "ข"), S(1, 1, "ก")];
+  const before = JSON.stringify(rows);
+  const out = sortSubjects(rows);
+  eq(JSON.stringify(rows), before);
+  eq(out === rows, false);
+});
+
+test("สรุปไม่มีครูใหม่แต่ข้ามแถว ต้องบอกจำนวนที่ข้าม", () => {
+  eq(importSummary({ created: 0, linked: 5, skipped: 2 }, "preview"),
+    "ไม่มีครูใหม่ให้ดึง (มีอยู่แล้ว 5 คน) · ข้าม 2 แถว");
+  eq(importSummary({ created: 0, linked: 5, skipped: 2 }, "done"),
+    "ไม่มีครูใหม่ (มีอยู่แล้ว 5 คน) · ข้าม 2 แถว");
+});
+
+const TF = { name: "ครูก", code: "T1", department_id: 2 as number | null, order: "3" };
+
+test("buildTeacherBody: ชื่อว่างไม่ผ่าน มีข้อความไทย", () => {
+  const r = buildTeacherBody({ ...TF, name: "   " });
+  eq(r.ok, false);
+  eq(r.ok === false && r.message, "กรุณากรอกชื่อครู");
+});
+
+test("buildTeacherBody: ลำดับผิดรูปไม่ผ่าน", () => {
+  const r = buildTeacherBody({ ...TF, order: "abc" });
+  eq(r.ok, false);
+  eq(r.ok === false && r.message, "ลำดับในกลุ่มต้องเป็นจำนวนเต็ม หรือเว้นว่างไว้");
+});
+
+test("buildTeacherBody: รหัสว่างเป็น null · ลำดับว่างเป็น null · ตัดช่องว่างชื่อ", () => {
+  const r = buildTeacherBody({ name: " ครูก ", code: "  ", department_id: null, order: "" });
+  deepEq(r, { ok: true, body: { name: "ครูก", code: null, department_id: null, dept_order: null } });
+});
+
+test("buildTeacherBody: ข้อมูลดีได้ body ครบ", () => {
+  deepEq(buildTeacherBody(TF), { ok: true, body: { name: "ครูก", code: "T1", department_id: 2, dept_order: 3 } });
+});
+
+test("buildSubjectBody: รหัสว่าง/ชื่อว่างไม่ผ่าน · ข้อมูลดีตัดช่องว่าง", () => {
+  const base = { code: " ค1 ", name: " คณิต ", type: "common" as const, department_id: null, duration: 1 as const, is_activity: false, is_elective: false };
+  eq(buildSubjectBody({ ...base, code: " " }).ok, false);
+  eq(buildSubjectBody({ ...base, name: "" }).ok, false);
+  const r = buildSubjectBody({ ...base, code: " " });
+  eq(r.ok === false && r.message, "กรุณากรอกรหัสวิชา");
+  const g = buildSubjectBody(base);
+  eq(g.ok && g.body.code, "ค1");
+  eq(g.ok && g.body.name, "คณิต");
+});
+
+test("changedFields: ส่งเฉพาะช่องที่เปลี่ยน", () => {
+  deepEq(changedFields({ a: 1, b: "x", c: null }, { a: 1, b: "y", c: null }), { b: "y" });
+  deepEq(changedFields({ a: 1, b: "x" }, { a: 1, b: "x" }), {});
+  deepEq(changedFields({ a: 1, c: 5 as number | null }, { a: 2, c: null }), { a: 2, c: null });
+});
+
+test("changedFields: กลุ่มสาระกำพร้าที่ไม่ได้แตะต้องไม่ถูกส่ง", () => {
+  const before = { name: "ก", code: null, department_id: 9999 as number | null, dept_order: null };
+  deepEq(changedFields(before, { ...before, name: "ข" }), { name: "ข" });
 });
 
 if (fails.length) {

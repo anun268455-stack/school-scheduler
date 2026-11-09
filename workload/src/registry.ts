@@ -1,6 +1,6 @@
 // ตรรกะล้วนของหน้าทะเบียนครู/วิชา — import ได้เฉพาะ import type (node รันตรง ๆ ใน tests/ts/wlregistry.ts)
 // ทุกอย่างอ้างแถวด้วย id เสมอ ห้ามใช้ชื่อเป็น key หรือจับคู่ (ครูชื่อเหมือนกันมีจริง)
-import type { Department, ImportCounts, WlSubject, WlTeacher } from "./types.ts";
+import type { Department, ImportCounts, SubjectIdentity, TeacherIdentity, WlSubject, WlTeacher } from "./types.ts";
 
 export const UNASSIGNED_NAME = "ยังไม่ระบุกลุ่มสาระ";
 
@@ -83,4 +83,49 @@ export function parseOrder(text: string): OrderParse {
   if (!/^-?\d+$/.test(t)) return { ok: false };
   const n = Number(t);
   return Math.abs(n) <= 2147483647 ? { ok: true, value: n } : { ok: false };
+}
+
+export type Built<T> = { ok: true; body: T } | { ok: false; message: string };
+
+export type TeacherForm = {
+  name: string;
+  code: string;
+  department_id: number | null;
+  /** ข้อความที่พิมพ์ในช่อง "ลำดับในกลุ่ม" */
+  order: string;
+};
+
+// ตรวจและแปลงฟอร์มครูเป็น body ที่ส่งได้ — ใช้ทั้งฟอร์มเพิ่มและการแก้ในแถว จะได้ข้อความตรงกัน
+export function buildTeacherBody(f: TeacherForm): Built<TeacherIdentity> {
+  const name = f.name.trim();
+  if (name === "") return { ok: false, message: "กรุณากรอกชื่อครู" };
+  const o = parseOrder(f.order);
+  if (!o.ok) return { ok: false, message: "ลำดับในกลุ่มต้องเป็นจำนวนเต็ม หรือเว้นว่างไว้" };
+  return {
+    ok: true,
+    body: {
+      name,
+      code: f.code.trim() === "" ? null : f.code,
+      department_id: f.department_id,
+      dept_order: o.value,
+    },
+  };
+}
+
+export function buildSubjectBody(f: SubjectIdentity): Built<SubjectIdentity> {
+  const code = f.code.trim();
+  if (code === "") return { ok: false, message: "กรุณากรอกรหัสวิชา" };
+  const name = f.name.trim();
+  if (name === "") return { ok: false, message: "กรุณากรอกชื่อวิชา" };
+  return { ok: true, body: { ...f, code, name, is_elective: Boolean(f.is_elective) } };
+}
+
+// การแก้ในแถวส่งเฉพาะช่องที่ผู้ใช้เปลี่ยน (PUT ของเซิร์ฟเวอร์เป็นการแก้บางช่อง)
+// กันส่งค่าเดิมที่เซิร์ฟเวอร์ไม่รับแล้วกลับไป เช่น รหัสกลุ่มสาระที่ถูกลบไปแล้ว
+export function changedFields<T extends Record<string, unknown>>(before: T, after: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const k of Object.keys(after) as (keyof T)[]) {
+    if (after[k] !== before[k]) out[k] = after[k];
+  }
+  return out;
 }

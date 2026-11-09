@@ -69,7 +69,12 @@ http.interceptors.response.use(
 
 // ---- ข้อความผิดพลาดภาษาไทยเสมอ แม้เซิร์ฟเวอร์ตอบอังกฤษ ----
 
+// คำตอบของเซิร์ฟเวอร์ผิดรูปจากสัญญา — ต้องขึ้นเป็นความผิดพลาด ไม่ใช่แปลงเป็นค่าที่ดูปกติ
+export class ContractError extends Error {}
+const CONTRACT_TEXT = "เซิร์ฟเวอร์ตอบกลับในรูปแบบที่ไม่คาดไว้ กรุณาแจ้งผู้ดูแลระบบ";
+
 export function apiErrorText(err: unknown): string {
+  if (err instanceof ContractError) return CONTRACT_TEXT;
   const res = (err as AxiosError | undefined)?.response;
   const fromServer = thaiDetail((res?.data as { detail?: unknown } | undefined)?.detail);
   if (fromServer) return fromServer;
@@ -143,8 +148,13 @@ export async function updateSubject(id: number, body: SubjectPatch): Promise<WlS
   return res.data as WlSubject;
 }
 
+// ตัวเลขที่ผิดรูปแล้วแปลงเป็น 0 จะอ่านออกมาเป็น "ไม่มีครูใหม่" ซึ่งซ่อนความผิดพลาด จึงโยนทิ้ง
 function counts(d: any): ImportCounts {
-  return { created: Number(d?.created) || 0, linked: Number(d?.linked) || 0, skipped: Number(d?.skipped) || 0 };
+  const isCount = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0;
+  if (!isCount(d?.created) || !isCount(d?.linked) || !isCount(d?.skipped)) {
+    throw new ContractError("bad import counts");
+  }
+  return { created: d.created, linked: d.linked, skipped: d.skipped };
 }
 
 // GET = ดูก่อนเฉย ๆ ไม่เขียนอะไร · POST = เขียนจริง (ต้องมาจากปุ่มยืนยันเท่านั้น)
