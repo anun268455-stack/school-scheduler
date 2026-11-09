@@ -1,59 +1,102 @@
 import { useEffect, useState } from "react";
-import axios from "axios";
+import {
+  apiErrorText, clearSession, loadSession, logout, me, saveSession, setSessionExpiredHandler,
+} from "./api";
+import { canManageRegistry, type Session } from "./auth";
+import LoginPage from "./pages/LoginPage";
 
-// ที่อยู่เซิร์ฟเวอร์แบบเดียวกับเว็บตาราง (frontend/src/api/client.ts)
-const BASE_URL = import.meta.env.VITE_API_URL
-  ? `${import.meta.env.VITE_API_URL}/api`
-  : "/api";
-
-type Status =
-  | { kind: "loading" }
-  | { kind: "ok"; needsSetup: boolean }
-  | { kind: "error"; message: string };
+const ROLE_TEXT = { admin: "ผู้ดูแลระบบ", head: "หัวหน้ากลุ่มสาระ" } as const;
 
 export default function App() {
-  const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const [session, setSession] = useState<Session | null>(() => loadSession());
+  // มี session เก็บไว้ = ต้องยืนยันกับเซิร์ฟเวอร์ก่อนเชื่อ (รหัสอาจถูกปิดไปแล้ว)
+  const [checking, setChecking] = useState<boolean>(() => loadSession() !== null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
+    setSessionExpiredHandler((message) => {
+      setSession(null);
+      setChecking(false);
+      setNotice(message);
+    });
+    return () => setSessionExpiredHandler(null);
+  }, []);
+
+  useEffect(() => {
+    const stored = loadSession();
+    if (!stored) return;
     let cancelled = false;
-    // เซิร์ฟเวอร์ Render หลับได้ ครั้งแรกอาจรอเป็นสิบวินาที จึงตั้งเวลารอไว้ยาว
-    axios
-      .get(`${BASE_URL}/workload/health`, { timeout: 60_000 })
-      .then((res) => {
-        if (!cancelled) setStatus({ kind: "ok", needsSetup: Boolean(res.data?.needs_setup) });
+    me()
+      .then((m) => {
+        if (cancelled) return;
+        // ใช้บทบาทที่เซิร์ฟเวอร์ยืนยัน ไม่ใช่ที่เก็บไว้ในเครื่อง
+        const s: Session = { token: stored.token, ...m };
+        saveSession(s);
+        setSession(s);
+        setChecking(false);
       })
       .catch((err) => {
         if (cancelled) return;
-        // 503 = เซิร์ฟเวอร์ตอบมาแล้วพร้อมเหตุผลภาษาไทย · ไม่มีคำตอบเลย = เรียกไม่ถึง
-        const detail = err?.response?.data?.detail;
-        setStatus({
-          kind: "error",
-          message:
-            typeof detail === "string" && detail
-              ? detail
-              : "เรียกเซิร์ฟเวอร์ไม่ถึง ลองรอสักครู่แล้วโหลดหน้านี้ใหม่",
-        });
+        // 401 ถูกจัดการโดย callback แล้ว · อย่างอื่น (เซิร์ฟเวอร์ล่ม/หลับ) แสดงหน้าล็อกอินพร้อมเหตุผล แต่คง session ไว้ให้โหลดใหม่แล้วลองยืนยันอีก
+        if (err?.response?.status !== 401) {
+          setSession(null);
+          setNotice(apiErrorText(err));
+        }
+        setChecking(false);
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
+  const onLoggedIn = (s: Session) => {
+    saveSession(s);
+    setNotice(null);
+    setSession(s);
+  };
+
+  const onLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      // ออกจากหน้านี้ได้เสมอ แม้เซิร์ฟเวอร์ไม่ตอบ (session ฝั่งเซิร์ฟเวอร์หมดเองใน 12 ชั่วโมง)
+    }
+    clearSession();
+    setSession(null);
+  };
+
+  if (checking) {
+    return (
+      <main className="mx-auto max-w-md p-6">
+        <h1 className="text-2xl font-bold">เว็บลงอัตรากำลัง</h1>
+        <p className="mt-4" role="status">กำลังตรวจสอบการเข้าสู่ระบบ...</p>
+      </main>
+    );
+  }
+
+  if (!session) return <LoginPage onLoggedIn={onLoggedIn} notice={notice} />;
+
   return (
-    <main className="mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-bold">เว็บลงอัตรากำลัง</h1>
-      <p className="mt-4" role="status">
-        {status.kind === "loading" && "กำลังต่อเซิร์ฟเวอร์..."}
-        {status.kind === "ok" && (
-          <span className="text-green-700">
-            ต่อเซิร์ฟเวอร์ได้
-            {status.needsSetup ? " (ยังไม่ได้ตั้งรหัสเข้าใช้งาน)" : ""}
+    <div>
+      <header className="flex items-center justify-between bg-white px-6 py-3 shadow">
+        <div>
+          <span className="font-bold">เว็บลงอัตรากำลัง</span>
+          <span className="ml-4 text-gray-700" data-testid="who">
+            {session.label} ({ROLE_TEXT[session.role]})
           </span>
+        </div>
+        <button onClick={onLogout} className="rounded border border-gray-300 px-3 py-1">
+          ออกจากระบบ
+        </button>
+      </header>
+      <main className="mx-auto max-w-3xl p-6">
+        {canManageRegistry(session) ? (
+          // ที่ว่างรอ Task 6 — จะแทนที่ด้วยหน้าทะเบียน
+          <p>เข้าสู่ระบบในฐานะผู้ดูแลระบบแล้ว (หน้าทะเบียนครูและวิชากำลังจะมา)</p>
+        ) : (
+          <p>ยังไม่มีรอบอัตรากำลังที่เปิดอยู่</p>
         )}
-        {status.kind === "error" && (
-          <span className="text-red-700">ต่อเซิร์ฟเวอร์ไม่ได้: {status.message}</span>
-        )}
-      </p>
-    </main>
+      </main>
+    </div>
   );
 }
