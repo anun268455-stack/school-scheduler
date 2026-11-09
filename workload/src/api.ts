@@ -1,4 +1,5 @@
 import axios, { AxiosError } from "axios";
+import type { CodeEntry } from "./codes";
 import { parseSession, SESSION_KEY, statusText, thaiDetail, type Session } from "./auth";
 import type {
   Department, ImportCounts, SubjectCreate, SubjectPatch, TeacherCreate, TeacherPatch, WlSubject, WlTeacher,
@@ -172,4 +173,26 @@ export async function importRun(): Promise<ImportCounts> {
 export async function listDepartments(): Promise<Department[]> {
   const res = await http.get("/departments/");
   return (res.data as any[]).map((d) => ({ id: d.id, name: d.name }));
+}
+
+// ---- รหัสเข้า (admin เท่านั้น) · เซิร์ฟเวอร์ไม่เคยส่งตัวรหัสกลับมา มีแต่สถานะ ----
+
+export async function listCodes(): Promise<CodeEntry[]> {
+  const res = await http.get("/workload/codes");
+  if (!Array.isArray(res.data)) throw new ContractError("bad codes list");
+  return res.data as CodeEntry[];
+}
+
+// สร้างได้เฉพาะรหัสหัวหน้ากลุ่มสาระ (รหัส admin มาจากหน้าตั้งรหัสครั้งแรกเท่านั้น)
+export async function createCode(body: { department_id: number; label: string; code: string }): Promise<void> {
+  await http.post("/workload/codes", { role: "head", ...body });
+}
+
+export async function updateCode(id: number, body: { code: string } | { active: boolean }): Promise<void> {
+  await http.put(`/workload/codes/${id}`, body);
+}
+
+// ตั้ง/กู้รหัสผู้ดูแลระบบด้วยรหัสตั้งค่าจาก Render · ไม่ล็อกอินให้ ผู้เรียกต้องพากลับหน้าล็อกอิน
+export async function setupAdmin(setupCode: string, code: string): Promise<void> {
+  await http.post("/workload/setup", { setup_code: setupCode, code });
 }

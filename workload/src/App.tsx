@@ -3,7 +3,9 @@ import {
   apiErrorText, clearSession, loadSession, logout, me, saveSession, setSessionExpiredHandler,
 } from "./api";
 import { canManageRegistry, parseSession, type Session } from "./auth";
+import CodesPage from "./pages/CodesPage";
 import LoginPage from "./pages/LoginPage";
+import SetupPage from "./pages/SetupPage";
 import SubjectsPage from "./pages/SubjectsPage";
 import TeachersPage from "./pages/TeachersPage";
 
@@ -14,8 +16,11 @@ export default function App() {
   // มี session เก็บไว้ = ต้องยืนยันกับเซิร์ฟเวอร์ก่อนเชื่อ (รหัสอาจถูกปิดไปแล้ว)
   const [checking, setChecking] = useState<boolean>(() => loadSession() !== null);
   const [notice, setNotice] = useState<string | null>(null);
-  // สลับหน้าด้วย state (ไม่ใช้ react-router โดยตั้งใจ) — Task 7 จะเพิ่ม "รหัสเข้า"
-  const [page, setPage] = useState<"teachers" | "subjects">("teachers");
+  const [info, setInfo] = useState<string | null>(null);
+  // null = หน้าล็อกอินปกติ · มีค่า = ฟอร์มตั้งรหัสผู้ดูแลระบบ (firstTime: false = ลืมรหัส)
+  const [setup, setSetup] = useState<{ firstTime: boolean } | null>(null);
+  // สลับหน้าด้วย state (ไม่ใช้ react-router โดยตั้งใจ)
+  const [page, setPage] = useState<"teachers" | "subjects" | "codes">("teachers");
 
   useEffect(() => {
     setSessionExpiredHandler((message) => {
@@ -85,7 +90,35 @@ export default function App() {
     );
   }
 
-  if (!session) return <LoginPage onLoggedIn={onLoggedIn} notice={notice} />;
+  if (!session) {
+    if (setup) {
+      return (
+        <SetupPage
+          firstTime={setup.firstTime}
+          onCancel={() => setSetup(null)}
+          onDone={() => {
+            setSetup(null);
+            setNotice(null);
+            setInfo("ตั้งรหัสผู้ดูแลระบบแล้ว ใส่รหัสใหม่ด้านล่างเพื่อเข้าสู่ระบบ");
+          }}
+        />
+      );
+    }
+    return (
+      <LoginPage
+        onLoggedIn={(s) => {
+          setInfo(null);
+          onLoggedIn(s);
+        }}
+        notice={notice}
+        info={info}
+        onOpenSetup={(firstTime) => {
+          setInfo(null);
+          setSetup({ firstTime });
+        }}
+      />
+    );
+  }
 
   return (
     <div>
@@ -102,7 +135,7 @@ export default function App() {
       </header>
       {canManageRegistry(session) && (
         <nav className="flex gap-2 bg-gray-50 px-6 py-2" aria-label="เมนูผู้ดูแลระบบ">
-          {([["teachers", "ทะเบียนครู"], ["subjects", "ทะเบียนวิชา"]] as const).map(([key, text]) => (
+          {([["teachers", "ทะเบียนครู"], ["subjects", "ทะเบียนวิชา"], ["codes", "รหัสเข้า"]] as const).map(([key, text]) => (
             <button
               key={key}
               onClick={() => setPage(key)}
@@ -116,7 +149,7 @@ export default function App() {
       )}
       <main className="mx-auto max-w-5xl p-6">
         {canManageRegistry(session) ? (
-          page === "teachers" ? <TeachersPage /> : <SubjectsPage />
+          page === "teachers" ? <TeachersPage /> : page === "subjects" ? <SubjectsPage /> : <CodesPage />
         ) : (
           <p>ยังไม่มีรอบอัตรากำลังที่เปิดอยู่</p>
         )}

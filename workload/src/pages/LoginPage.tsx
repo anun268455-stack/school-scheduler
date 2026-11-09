@@ -11,9 +11,13 @@ type Props = {
   onLoggedIn: (s: Session) => void;
   // ข้อความจากการถูกพากลับมา เช่น session หมดอายุ
   notice?: string | null;
+  // ข้อความแจ้งสำเร็จ เช่น ตั้งรหัสผู้ดูแลระบบเสร็จแล้ว
+  info?: string | null;
+  // เปิดฟอร์มตั้งรหัสผู้ดูแลระบบ (true = ครั้งแรก · false = ลืมรหัส)
+  onOpenSetup: (firstTime: boolean) => void;
 };
 
-export default function LoginPage({ onLoggedIn, notice }: Props) {
+export default function LoginPage({ onLoggedIn, notice, info, onOpenSetup }: Props) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -61,8 +65,19 @@ export default function LoginPage({ onLoggedIn, notice }: Props) {
         )}
       </p>
       {status.kind === "ok" && status.needsSetup && (
-        <p className="mt-2 rounded bg-yellow-50 p-3 text-yellow-900">
-          ยังไม่ได้ตั้งรหัสผู้ดูแลระบบ ต้องตั้งรหัสแรกก่อนจึงจะเข้าใช้งานได้
+        <div className="mt-2 rounded bg-yellow-50 p-3 text-yellow-900">
+          <p>ยังไม่ได้ตั้งรหัสผู้ดูแลระบบ ต้องตั้งรหัสแรกก่อนจึงจะเข้าใช้งานได้</p>
+          <button
+            onClick={() => onOpenSetup(true)}
+            className="mt-2 rounded bg-blue-600 px-4 py-2 font-bold text-white"
+          >
+            ตั้งรหัสผู้ดูแลระบบครั้งแรก
+          </button>
+        </div>
+      )}
+      {info && (
+        <p className="mt-2 rounded bg-green-50 p-3 text-green-900" role="status">
+          {info}
         </p>
       )}
       {notice && (
@@ -101,6 +116,15 @@ export default function LoginPage({ onLoggedIn, notice }: Props) {
           </p>
         )}
       </form>
+
+      {status.kind === "ok" && !status.needsSetup && (
+        <p className="mt-4 text-sm">
+          <button onClick={() => onOpenSetup(false)} className="text-blue-700 underline">
+            ลืมรหัสผู้ดูแลระบบ
+          </button>
+          <span className="text-gray-600"> (ต้องใช้รหัสตั้งค่าจาก Render)</span>
+        </p>
+      )}
 
       <p className="mt-10 rounded border border-orange-300 bg-orange-50 p-3 text-sm text-orange-900">
         รหัสนี้ป้องกันได้แค่เว็บนี้ · โปรแกรมจัดตารางสอนยังไม่มีระบบล็อกอิน
