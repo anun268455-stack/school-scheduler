@@ -57,7 +57,7 @@ export default function LoginPage({ onLoggedIn, notice }: Props) {
         {status.kind === "loading" && "กำลังต่อเซิร์ฟเวอร์..."}
         {status.kind === "ok" && <span className="text-green-700">ต่อเซิร์ฟเวอร์ได้</span>}
         {status.kind === "error" && (
-          <span className="text-red-700">ต่อเซิร์ฟเวอร์ไม่ได้: {status.message}</span>
+          <span className="text-red-700">{status.message}</span>
         )}
       </p>
       {status.kind === "ok" && status.needsSetup && (

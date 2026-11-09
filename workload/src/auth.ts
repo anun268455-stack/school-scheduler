@@ -50,6 +50,27 @@ export function parseSession(raw: string | null): Session | null {
   return null;
 }
 
+// ข้อความตามรหัสสถานะที่จริงในทุกหน้า (ไม่ผูกกับการล็อกอิน) · 0 = เรียกเซิร์ฟเวอร์ไม่ถึง
+export function statusText(status: number): string {
+  switch (status) {
+    case 0:
+      return "ติดต่อเซิร์ฟเวอร์ไม่ได้ เซิร์ฟเวอร์อาจกำลังตื่น รอสักครู่แล้วลองใหม่";
+    case 401:
+      return "ยังไม่ได้เข้าสู่ระบบหรือหมดเวลาแล้ว กรุณาใส่รหัสเข้าใหม่";
+    case 403:
+      return "เฉพาะผู้ดูแลระบบเท่านั้นที่ทำรายการนี้ได้";
+    case 404:
+      return "เซิร์ฟเวอร์ยังเป็นรุ่นที่ยังไม่มีเว็บลงอัตรากำลัง กรุณาแจ้งผู้ดูแลระบบ";
+    case 429:
+      return "ทำรายการถี่เกินไป รอสักครู่แล้วลองใหม่";
+    case 503:
+      return "ต่อฐานข้อมูลไม่ได้ในตอนนี้ ลองใหม่อีกครั้งภายหลัง";
+    default:
+      return `ทำรายการไม่สำเร็จ (รหัสสถานะ ${status})`;
+  }
+}
+
+// ข้อความของแบบฟอร์มล็อกอินเท่านั้น หน้าอื่นใช้ statusText
 // 0 = เรียกเซิร์ฟเวอร์ไม่ถึง (ไม่มีคำตอบกลับมา)
 export function loginError(status: number): string {
   if (status === 401) return "รหัสไม่ถูกต้อง ตรวจรหัสแล้วลองใหม่";
@@ -63,5 +84,5 @@ export function loginError(status: number): string {
 // เซิร์ฟเวอร์รุ่นเก่าตอบ detail เป็นอังกฤษ (เช่น "Not Found") หรือเป็นลิสต์ (422 ของ FastAPI)
 // ผู้ใช้ต้องเห็นไทยเท่านั้น จึงรับเฉพาะ string ที่มีอักษรไทย
 export function thaiDetail(detail: unknown): string | null {
-  return typeof detail === "string" && /[฀-๿]/.test(detail) ? detail : null;
+  return typeof detail === "string" && /[\u0E00-\u0E7F]/.test(detail) ? detail : null;
 }

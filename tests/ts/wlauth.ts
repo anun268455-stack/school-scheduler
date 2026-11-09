@@ -5,7 +5,7 @@
  * parseSession จึงต้องไม่ยอมให้ใครกลายเป็น admin บนหน้าจอจากข้อมูลรูปผิด
  */
 import {
-  canManageRegistry, loginError, parseSession, SESSION_KEY, thaiDetail, visibleDepartments,
+  canManageRegistry, loginError, parseSession, SESSION_KEY, statusText, thaiDetail, visibleDepartments,
   type Session,
 } from "../../workload/src/auth.ts";
 
@@ -21,7 +21,7 @@ const deepEq = (a: unknown, b: unknown): void => {
     throw new Error(`ได้ ${JSON.stringify(a)} ควรเป็น ${JSON.stringify(b)}`);
   }
 };
-const hasThai = (s: string): boolean => /[฀-๿]/.test(s);
+const hasThai = (s: string): boolean => /[\u0E00-\u0E7F]/.test(s);
 
 const ADMIN: Session = { token: "t", role: "admin", departmentId: null, label: "admin" };
 const HEAD3: Session = { token: "t", role: "head", departmentId: 3, label: "ภาษาไทย" };
@@ -49,7 +49,7 @@ test("หัวหน้าที่กลุ่มของตัวเอง�
 test("loginError: ทุกสถานะเป็นไทย ไม่ซ้ำกัน และบอกเหตุถูกข้อ", () => {
   const msgs = [401, 503, 0, 500].map(loginError);
   for (const m of msgs) eq(hasThai(m), true);
-  eq(new Set(msgs).size, msgs.length, );
+  eq(new Set(msgs).size, msgs.length);
   eq(loginError(401).includes("รหัสไม่ถูกต้อง"), true);
   eq(loginError(503).includes("ฐานข้อมูล"), true);
   eq(loginError(503).includes("ภายหลัง"), true);
@@ -99,6 +99,29 @@ test("thaiDetail: คืนเฉพาะข้อความที่มี�
   eq(thaiDetail([{ msg: "field required" }]), null);
   eq(thaiDetail(undefined), null);
   eq(thaiDetail(""), null);
+});
+
+test("thaiDetail: ขอบเขตช่วงอักษรไทย", () => {
+  eq(thaiDetail("\u0E01"), "\u0E01");
+  eq(thaiDetail("\u0E7F"), "\u0E7F");
+  eq(thaiDetail("\u0DFF"), null);
+  eq(thaiDetail("\u0E80"), null);
+  eq(thaiDetail("\u0DFF\u0E80"), null);
+});
+
+test("statusText: ไทย ไม่ซ้ำ ไม่ผูกกับการล็อกอิน", () => {
+  const codes = [0, 401, 403, 404, 429, 503, 500];
+  const msgs = codes.map(statusText);
+  for (const m of msgs) {
+    eq(thaiDetail(m), m);
+    eq(m.includes("เข้าสู่ระบบไม่สำเร็จ"), false);
+  }
+  eq(new Set(msgs).size, codes.length);
+  eq(statusText(500).includes("500"), true);
+  eq(statusText(502).includes("502"), true);
+  eq(statusText(0).includes("ตื่น"), true);
+  eq(statusText(403).includes("ผู้ดูแลระบบ"), true);
+  eq(statusText(404).includes("แจ้งผู้ดูแลระบบ"), true);
 });
 
 if (fails.length) {

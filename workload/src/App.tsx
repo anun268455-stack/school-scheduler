@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   apiErrorText, clearSession, loadSession, logout, me, saveSession, setSessionExpiredHandler,
 } from "./api";
-import { canManageRegistry, type Session } from "./auth";
+import { canManageRegistry, parseSession, type Session } from "./auth";
 import LoginPage from "./pages/LoginPage";
 
 const ROLE_TEXT = { admin: "ผู้ดูแลระบบ", head: "หัวหน้ากลุ่มสาระ" } as const;
@@ -29,8 +29,14 @@ export default function App() {
     me()
       .then((m) => {
         if (cancelled) return;
-        // ใช้บทบาทที่เซิร์ฟเวอร์ยืนยัน ไม่ใช่ที่เก็บไว้ในเครื่อง
-        const s: Session = { token: stored.token, ...m };
+        // ใช้บทบาทที่เซิร์ฟเวอร์ยืนยัน ไม่ใช่ที่เก็บไว้ในเครื่อง · แต่คำตอบต้องผ่านการตรวจรูปแบบเดียวกับของที่เก็บไว้
+        const s = parseSession(JSON.stringify({ token: stored.token, ...m }));
+        if (!s) {
+          setSession(null);
+          setNotice("คำตอบจากเซิร์ฟเวอร์ไม่ถูกต้อง กรุณาใส่รหัสเข้าใหม่");
+          setChecking(false);
+          return;
+        }
         saveSession(s);
         setSession(s);
         setChecking(false);

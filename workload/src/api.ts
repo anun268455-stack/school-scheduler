@@ -1,5 +1,5 @@
 import axios, { AxiosError } from "axios";
-import { loginError, parseSession, SESSION_KEY, thaiDetail, type Session } from "./auth";
+import { parseSession, SESSION_KEY, statusText, thaiDetail, type Session } from "./auth";
 
 // ที่อยู่เซิร์ฟเวอร์แบบเดียวกับเว็บตาราง (frontend/src/api/client.ts)
 const BASE_URL = import.meta.env.VITE_API_URL
@@ -70,11 +70,7 @@ export function apiErrorText(err: unknown): string {
   const res = (err as AxiosError | undefined)?.response;
   const fromServer = thaiDetail((res?.data as { detail?: unknown } | undefined)?.detail);
   if (fromServer) return fromServer;
-  if (!res) return loginError(0);
-  if (res.status === 404) {
-    return "เซิร์ฟเวอร์ยังเป็นรุ่นที่ยังไม่มีเว็บลงอัตรากำลัง กรุณาแจ้งผู้ดูแลระบบ";
-  }
-  return loginError(res.status);
+  return statusText(res?.status ?? 0);
 }
 
 // ---- route ของเว็บลงอัตรากำลัง ----
