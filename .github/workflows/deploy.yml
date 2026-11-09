@@ -17,6 +17,7 @@ permissions:
   contents: write
 
 # deploy.yml กับ workload.yml เขียนสาขา gh-pages เดียวกัน ถ้าทำพร้อมกันตัวหลังจะถูกปฏิเสธ
+# GitHub เก็บงานที่รอคิวไว้แค่หนึ่งงานต่อกลุ่ม งานที่ขึ้นสถานะ cancelled ในแท็บ Actions คือถูกงานใหม่แทนตอนรอคิว — สั่งใหม่ด้วย Run workflow (workflow_dispatch)
 concurrency:
   group: gh-pages
   cancel-in-progress: false
@@ -54,14 +55,26 @@ jobs:
       # เว็บลงอัตรากำลังอยู่ที่โฟลเดอร์ workload/ บน gh-pages (ขึ้นจาก workload.yml)
       # ขั้น deploy ข้างล่างแทนที่ gh-pages ทั้งก้อนด้วย frontend/dist — ถ้าไม่ยกโฟลเดอร์นั้น
       # ติดมาด้วย ลิงก์เว็บลงอัตรากำลังจะหายทุกครั้งที่เว็บตาราง deploy
-      # ยังไม่มีโฟลเดอร์นั้น (หรือยังไม่มี gh-pages) = ข้ามไปเฉย ๆ ไม่ทำให้ deploy ล้ม
+      # ยังไม่มีโฟลเดอร์นั้น หรือยังไม่มีสาขา gh-pages = ข้ามไปเฉย ๆ ไม่ทำให้ deploy ล้ม
       #
       # ไม่ใช้ keep_files: true กับเว็บหลัก เพราะไฟล์ js/css ชื่อติดแฮชของทุกรุ่นเก่าจะค้างสะสมไม่สิ้นสุด
       # ไม่ยก preview/ มาด้วยโดยตั้งใจ: พรีวิวรุ่นเก่าที่ยังเขียนฐานข้อมูลจริงได้คือของอันตราย ไม่ใช่ของที่ควรเก็บ
+      # อ่าน gh-pages ไม่ได้ = หยุด deploy (ยังไม่ได้เผยแพร่อะไร เว็บเดิมอยู่ครบ กด Re-run ได้) ไม่ใช่ข้าม:
+      # ถ้าข้าม ขั้น deploy ข้างล่างจะลบ workload/ ทิ้งเงียบ ๆ ซึ่งคือสิ่งเดียวที่ขั้นนี้มีไว้กัน
       - name: เก็บเว็บลงอัตรากำลัง (workload/) ของเดิมไว้
+        shell: bash
         run: |
-          if git fetch --depth=1 origin gh-pages 2>/dev/null \
-             && git cat-file -e FETCH_HEAD:workload 2>/dev/null; then
+          rc=0
+          git ls-remote --exit-code --heads origin gh-pages >/dev/null || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "ยังไม่มีสาขา gh-pages — ข้าม"
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::อ่านสาขา gh-pages ไม่ได้ (รหัส $rc) — หยุด deploy เพื่อไม่ให้เว็บลงอัตรากำลังหาย กด Re-run ได้เลย"
+            exit 1
+          fi
+          git fetch --depth=1 origin gh-pages
+          if git cat-file -e FETCH_HEAD:workload 2>/dev/null; then
             git archive FETCH_HEAD workload | tar -x -C frontend/dist
             echo "ยก workload/ เดิมมาแล้ว: $(find frontend/dist/workload -type f | wc -l) ไฟล์"
           else

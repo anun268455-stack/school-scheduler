@@ -7,8 +7,11 @@ name: เว็บลงอัตรากำลัง (ขึ้นที่ /w
 #
 # ที่ไม่ให้แตะเว็บหลัก:
 #   1. paths: workload/**   — ทำงานเมื่อมีการแก้เว็บนี้เท่านั้น
-#   2. destination_dir: workload + keep_files: true — เขียนได้แค่โฟลเดอร์ workload/ ของเดิมบน gh-pages ไม่ถูกลบ
-#   3. deploy.yml มี paths-ignore ของโฟลเดอร์นี้ และยกโฟลเดอร์ workload/ ติดไปตอน deploy เว็บตาราง
+#   2. destination_dir: workload — ตัวนี้แหละที่จำกัดการเผยแพร่ให้อยู่แค่โฟลเดอร์ workload/
+#   3. keep_files: true — ชั้นสำรองเพิ่ม: ขั้นนี้จะไม่รันคำสั่งลบไฟล์เลย จึงไม่มีอะไรทั้งนอกและในโฟลเดอร์ถูกลบโดย workflow นี้
+#      ราคาที่ต้องจ่าย: ไฟล์ js/css ชื่อติดแฮชของ build รุ่นเก่าจะค้างสะสมใน gh-pages/workload/
+#      (ประมาณ 0.2 MB ต่อการ deploy หนึ่งครั้ง) และ deploy.yml ยกติดไปด้วย ไม่เป็นอันตราย วันหนึ่งลบมือได้
+#   4. deploy.yml มี paths-ignore ของโฟลเดอร์นี้ และยกโฟลเดอร์ workload/ ติดไปตอน deploy เว็บตาราง
 #      (deploy.yml แทนที่ gh-pages ทั้งก้อน)
 #
 # ⚠️ เว็บนี้คุยกับ **เซิร์ฟเวอร์และฐานข้อมูลตัวเดียวกัน** กับเว็บหลัก ไม่ใช่ฐานข้อมูลทดลอง
@@ -26,6 +29,7 @@ permissions:
   contents: write
 
 # กลุ่มเดียวกับ deploy.yml เพราะสองงานเขียนสาขา gh-pages เดียวกัน ถ้าทำพร้อมกันตัวหลังจะถูกปฏิเสธ
+# GitHub เก็บงานที่รอคิวไว้แค่หนึ่งงานต่อกลุ่ม งานที่ขึ้นสถานะ cancelled ในแท็บ Actions คือถูกงานใหม่แทนตอนรอคิว — สั่งใหม่ด้วย Run workflow (workflow_dispatch)
 concurrency:
   group: gh-pages
   cancel-in-progress: false
