@@ -14016,6 +14016,8 @@ _WL_FAILS_LOCK = _threading.Lock()  # handler รันใน thread pool
 # PBKDF2 ของการล็อกอินรันได้ทีละคำขอ: เครื่องเดียวกันนี้ให้บริการเว็บตารางสอนด้วย
 # ล็อกอินรัว ๆ ต้องไม่แย่ง CPU ของ worker ทั้งหมดจากครูที่กำลังใช้ตาราง
 _WL_LOGIN_HASH_GATE = _threading.Semaphore(1)
+WL_LOGIN_MAX_IN_FLIGHT: int = 8
+_WL_LOGIN_INFLIGHT = _threading.BoundedSemaphore(WL_LOGIN_MAX_IN_FLIGHT)
 
 
 def wl_throttled(times: list[float], now: float, limit: int, window: float) -> bool:
@@ -14065,20 +14067,30 @@ def wl_login(body: Any = Body(None)) -> dict[str, Any]:
     if not isinstance(raw, str):
         _wl_fail_record("login")
         raise HTTPException(401, WL_BAD_CODE)
-    with _wl_db() as cur:
-        rows = _wl_code_rows(cur)
+    # คำขอที่รอคิวแฮชแต่ละตัวถือ worker thread ของ pool ที่เว็บตารางใช้ร่วมกัน
+    # รอได้พร้อมกัน 8 ตัวคือเพดานที่เว็บตารางอยู่ได้ คิวไม่จำกัดอยู่ไม่ได้ จึงปฏิเสธทันทีเมื่อเต็ม
+    if not _WL_LOGIN_INFLIGHT.acquire(blocking=False):
+        raise HTTPException(429, "มีคนเข้าสู่ระบบพร้อมกันมากเกินไป กรุณารอสักครู่ (ไม่กี่วินาที) แล้วลองใหม่")
+    try:
         with _WL_LOGIN_HASH_GATE:
-            row = wl_check_code(raw, rows)
-        if row is None:
-            _wl_fail_record("login")
-            raise HTTPException(401, WL_BAD_CODE)
-        cur.execute("DELETE FROM wl_sessions WHERE expires_at <= now()")
-        new: list[dict[str, Any]] = []
-        token = wl_session_open(row["id"], new)
-        cur.execute("INSERT INTO wl_sessions (token_hash, code_id, expires_at) VALUES (%s, %s, %s)",
-                    (new[0]["token_hash"], row["id"], new[0]["expires_at"]))
-        return {"token": token, "role": row["role"],
-                "department_id": row["department_id"], "label": row["label"]}
+            # ตรวจซ้ำในประตู: ตัวที่รอคิวระหว่างที่รายการผิดยังสะสมอยู่ต้องถูกไล่กลับโดยไม่แฮช
+            # (ตรวจ+บันทึกอยู่ในประตูเดียวกัน จำนวนการแฮชที่ผิดในหนึ่งหน้าต่างจึงไม่เกินเพดาน)
+            _wl_fail_guard("login", WL_LOGIN_FAIL_LIMIT, WL_LOGIN_FAIL_WINDOW)
+            # เปิดฐานข้อมูลหลังได้ประตูเท่านั้น: ตัวที่รออยู่ห้ามถือการเชื่อมต่อ
+            with _wl_db() as cur:
+                row = wl_check_code(raw, _wl_code_rows(cur))
+                if row is None:
+                    _wl_fail_record("login")
+                    raise HTTPException(401, WL_BAD_CODE)
+                cur.execute("DELETE FROM wl_sessions WHERE expires_at <= now()")
+                new: list[dict[str, Any]] = []
+                token = wl_session_open(row["id"], new)
+                cur.execute("INSERT INTO wl_sessions (token_hash, code_id, expires_at) VALUES (%s, %s, %s)",
+                            (new[0]["token_hash"], row["id"], new[0]["expires_at"]))
+                return {"token": token, "role": row["role"],
+                        "department_id": row["department_id"], "label": row["label"]}
+    finally:
+        _WL_LOGIN_INFLIGHT.release()
 
 
 @app.post("/api/workload/logout")

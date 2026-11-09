@@ -226,7 +226,6 @@ def test_login_429_before_any_hashing():
 
     def run():
         mock_api.wl_check_code = lambda *a, **k: calls.append(1)
-        now = time.monotonic()
         return _code(lambda: mock_api.wl_login({"code": "abcdef"})), _code(
             lambda: mock_api.wl_login([1, 2]))
     (a, b) = _with_fails([time.monotonic()] * mock_api.WL_LOGIN_FAIL_LIMIT, run)
@@ -266,6 +265,82 @@ def test_setup_bad_body_and_short_env_and_throttle():
     assert a[0] == 400 and b[0] == 403 and n == 1
     assert c[0] == 403 and "12" in c[1]
     assert d[0] == 429
+
+
+def test_login_burst_is_bounded():
+    import contextlib
+    import threading
+    import time
+    lock = threading.Lock()
+    st = {"hashes": 0, "open": 0, "max_open": 0}
+    outcomes: list = []
+
+    def slow_check(raw, rows):
+        with lock:
+            st["hashes"] += 1
+        time.sleep(0.02)
+        return None
+
+    @contextlib.contextmanager
+    def fake_db():
+        with lock:
+            st["open"] += 1
+            st["max_open"] = max(st["max_open"], st["open"])
+        try:
+            yield object()
+        finally:
+            with lock:
+                st["open"] -= 1
+
+    def one():
+        try:
+            mock_api.wl_login({"code": "wrong-code"})
+            outcomes.append("ok")
+        except HTTPException as e:
+            outcomes.append(e.status_code)
+        except Exception as e:  # noqa: BLE001
+            outcomes.append(type(e).__name__)
+
+    def run():
+        mock_api.wl_check_code = slow_check
+        mock_api._wl_db = fake_db
+        mock_api._wl_code_rows = lambda cur: []
+        ts = [threading.Thread(target=one) for _ in range(40)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+
+    saved = {k: getattr(mock_api, k) for k in ("_wl_db", "_wl_code_rows")}
+    try:
+        _with_fails((), run)
+    finally:
+        for k, v in saved.items():
+            setattr(mock_api, k, v)
+    assert len(outcomes) == 40, outcomes
+    assert st["hashes"] <= mock_api.WL_LOGIN_FAIL_LIMIT, st
+    assert all(o in (401, 429) for o in outcomes), outcomes
+    assert outcomes.count(401) == st["hashes"], (outcomes.count(401), st)
+    assert outcomes.count(429) == 40 - st["hashes"]
+    assert st["max_open"] <= 1, st
+
+
+def test_login_inflight_ceiling_gives_distinct_429_without_recording():
+    import threading
+    saved = mock_api._WL_LOGIN_INFLIGHT
+    full = threading.BoundedSemaphore(1)
+    full.acquire()
+    mock_api._WL_LOGIN_INFLIGHT = full
+
+    def run():
+        r = _code(lambda: mock_api.wl_login({"code": "abcdef"}))
+        return r, len(mock_api._WL_FAILS["login"])
+    try:
+        (c, d), n = _with_fails((), run)
+    finally:
+        mock_api._WL_LOGIN_INFLIGHT = saved
+    assert c == 429 and n == 0
+    assert "พร้อมกัน" in d and "ผิดบ่อย" not in d
 
 
 for name, fn in list(globals().items()):
