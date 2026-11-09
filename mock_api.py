@@ -3,7 +3,7 @@ Mock API v3 — working mock solver + bulk import + periods CRUD + bulk lock.
 Run: python mock_api.py
 """
 from __future__ import annotations
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -13847,6 +13847,15 @@ WL_NEED_LOGIN: str = "ยังไม่ได้เข้าสู่ระบ�
 WL_ADMIN_ONLY: str = "เฉพาะผู้ดูแลระบบ (admin) เท่านั้น"
 
 
+def _wl_utf8(text: str) -> bytes | None:
+    """utf-8 ของข้อความ หรือ None เมื่อเข้ารหัสไม่ได้ (เช่น surrogate โดดจาก JSON "\\ud800")
+    ค่าแบบนั้นต้องนับเป็น "รหัสผิด" ไม่ใช่ทำให้ route ล้มเป็น 500"""
+    try:
+        return text.encode()
+    except UnicodeEncodeError:
+        return None
+
+
 def wl_hash(code: str, salt: bytes) -> bytes:
     return _hashlib.pbkdf2_hmac("sha256", code.encode(), bytes(salt), WL_HASH_ROUNDS)
 
@@ -13859,7 +13868,7 @@ def wl_normalize_code(raw: str) -> str:
 def wl_check_code(raw: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     """คืนแถวรหัสที่เปิดอยู่และตรงกับ raw หรือ None · รหัสว่างไม่ผ่านเด็ดขาด"""
     code = wl_normalize_code(raw)
-    if not code:
+    if not code or _wl_utf8(code) is None:
         return None
     for row in rows:
         if not row.get("active"):
@@ -13876,7 +13885,7 @@ def wl_code_taken(code: str, other_rows: list[dict[str, Any]]) -> bool:
     และแถวที่ปิดอยู่ก็นับ เพราะตอนเปิดกลับมาไม่มีรหัสจริงให้ตรวจซ้ำอีก
     """
     code = wl_normalize_code(code)
-    if not code:
+    if not code or _wl_utf8(code) is None:
         return False
     return any(_hmac.compare_digest(wl_hash(code, r["salt"]), bytes(r["hash"]))
                for r in other_rows)
@@ -13956,6 +13965,8 @@ def wl_require_admin(request: Request, cur) -> dict[str, Any]:
 def wl_validate_new_code(raw: Any) -> str:
     """รหัสใหม่ที่ผ่านกติกา (ตัดช่องว่างแล้วยาว >= WL_CODE_MIN_LEN) · ใช้ที่จุดตั้งรหัสเท่านั้น"""
     code = wl_normalize_code(raw) if isinstance(raw, str) else ""
+    if code and _wl_utf8(code) is None:
+        raise HTTPException(400, "รหัสมีตัวอักษรที่ใช้ไม่ได้ กรุณาเลือกรหัสอื่น")
     if len(code) < WL_CODE_MIN_LEN:
         raise HTTPException(400, f"รหัสต้องยาวอย่างน้อย {WL_CODE_MIN_LEN} ตัวอักษร (ไม่นับช่องว่างหัวท้าย)")
     return code
@@ -13979,7 +13990,53 @@ def wl_setup_allowed(env_value: str | None, given: object) -> bool:
         return False
     if not isinstance(given, str) or not given.strip():
         return False
-    return _hmac.compare_digest(env_value.strip().encode(), given.strip().encode())
+    a, b = _wl_utf8(env_value.strip()), _wl_utf8(given.strip())
+    if a is None or b is None:
+        return False
+    return _hmac.compare_digest(a, b)
+
+
+# รหัสตั้งค่าที่ผู้ใช้ตั้งเองบน Render สั้นเกินไปเดาได้ และใครตั้งผ่านก็ยึด admin ได้
+WL_SETUP_CODE_MIN_LEN: int = 12
+
+
+def wl_setup_env_strong(env_value: str | None) -> bool:
+    return isinstance(env_value, str) and len(env_value.strip()) >= WL_SETUP_CODE_MIN_LEN
+
+
+# ── จำกัดการเดารหัส (ไม่ต้องล็อกอินและเปิดรับทุกที่ จึงต้องกันทั้งการเดาและการกิน CPU) ──
+# นับทั้งเครื่อง ไม่แยกตาม IP: หลัง proxy ของ Render IP ผู้เรียกปลอมได้ ขีดจำกัดต่อ IP จึงเป็นของตกแต่ง
+# เก็บในหน่วยความจำของ process นี้ รีสตาร์ตแล้วเริ่มนับใหม่ (Render free มี process เดียว จึงยอมรับได้)
+WL_LOGIN_FAIL_LIMIT: int = 10
+WL_LOGIN_FAIL_WINDOW: float = 60.0
+WL_SETUP_FAIL_LIMIT: int = 5
+WL_SETUP_FAIL_WINDOW: float = 600.0
+_WL_FAILS: dict[str, list[float]] = {"login": [], "setup": []}
+_WL_FAILS_LOCK = _threading.Lock()  # handler รันใน thread pool
+# PBKDF2 ของการล็อกอินรันได้ทีละคำขอ: เครื่องเดียวกันนี้ให้บริการเว็บตารางสอนด้วย
+# ล็อกอินรัว ๆ ต้องไม่แย่ง CPU ของ worker ทั้งหมดจากครูที่กำลังใช้ตาราง
+_WL_LOGIN_HASH_GATE = _threading.Semaphore(1)
+
+
+def wl_throttled(times: list[float], now: float, limit: int, window: float) -> bool:
+    """จริงเมื่อมี limit รายการขึ้นไปใน window วินาทีล่าสุดก่อน now"""
+    return sum(1 for t in times if now - window < t <= now) >= limit
+
+
+def _wl_fail_guard(kind: str, limit: int, window: float) -> None:
+    with _WL_FAILS_LOCK:
+        now = _time.monotonic()
+        lst = _WL_FAILS[kind]
+        lst[:] = [t for t in lst if now - window < t <= now]  # ตัดของเก่า ลิสต์จะไม่โตไม่สิ้นสุด
+        if wl_throttled(lst, now, limit, window):
+            raise HTTPException(429, "ใส่รหัสผิดบ่อยเกินไป กรุณารอสักครู่ (ประมาณหนึ่งนาที) แล้วลองใหม่"
+                                if kind == "login" else
+                                "ใส่รหัสตั้งค่าผิดบ่อยเกินไป กรุณารอสักครู่ (ประมาณสิบนาที) แล้วลองใหม่")
+
+
+def _wl_fail_record(kind: str) -> None:
+    with _WL_FAILS_LOCK:
+        _WL_FAILS[kind].append(_time.monotonic())
 
 
 def _wl_code_rows(cur, exclude_id: int | None = None) -> list[dict[str, Any]]:
@@ -13993,14 +14050,27 @@ def _wl_body(body: Any) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+def _wl_require_body(body: Any) -> dict[str, Any]:
+    """body ที่ไม่ใช่ออบเจ็กต์ JSON (หรือไม่มีเลย) ตอบ 400 ไทย — FastAPI จะตอบ 422 อังกฤษถ้าให้มันตรวจเอง"""
+    if not isinstance(body, dict):
+        raise HTTPException(400, "ข้อมูลที่ส่งมาต้องเป็นออบเจ็กต์ JSON")
+    return body
+
+
 @app.post("/api/workload/login")
-def wl_login(body: dict[str, Any]) -> dict[str, Any]:
+def wl_login(body: Any = Body(None)) -> dict[str, Any]:
+    # ตรวจก่อนแฮชและก่อนเปิดฐานข้อมูล: ถูกจำกัดแล้วต้องไม่เสียทั้ง CPU และการเชื่อมต่อ
+    _wl_fail_guard("login", WL_LOGIN_FAIL_LIMIT, WL_LOGIN_FAIL_WINDOW)
     raw = _wl_body(body).get("code")
     if not isinstance(raw, str):
+        _wl_fail_record("login")
         raise HTTPException(401, WL_BAD_CODE)
     with _wl_db() as cur:
-        row = wl_check_code(raw, _wl_code_rows(cur))
+        rows = _wl_code_rows(cur)
+        with _WL_LOGIN_HASH_GATE:
+            row = wl_check_code(raw, rows)
         if row is None:
+            _wl_fail_record("login")
             raise HTTPException(401, WL_BAD_CODE)
         cur.execute("DELETE FROM wl_sessions WHERE expires_at <= now()")
         new: list[dict[str, Any]] = []
@@ -14055,14 +14125,19 @@ def _wl_drop_sessions(cur, code_id: int, keep_hash: bytes | None = None) -> None
 
 
 @app.post("/api/workload/setup")
-def wl_setup(body: dict[str, Any]) -> dict[str, Any]:
+def wl_setup(body: Any = Body(None)) -> dict[str, Any]:
     """ตั้งรหัส admin ใบแรก หรือกู้เมื่อลืม — ด้วยรหัสตั้งค่าใน WORKLOAD_SETUP_CODE ของเซิร์ฟเวอร์"""
-    b = _wl_body(body)
+    _wl_fail_guard("setup", WL_SETUP_FAIL_LIMIT, WL_SETUP_FAIL_WINDOW)
+    b = _wl_require_body(body)
     env = _os.environ.get("WORKLOAD_SETUP_CODE")
     if not isinstance(env, str) or not env.strip():
         raise HTTPException(403, "ยังไม่ได้ตั้งรหัสตั้งค่าที่เซิร์ฟเวอร์ — ให้ตั้งตัวแปร "
                                  "WORKLOAD_SETUP_CODE ในหน้า Environment ของ Render ก่อน แล้วลองใหม่")
+    if not wl_setup_env_strong(env):
+        raise HTTPException(403, f"รหัสตั้งค่า WORKLOAD_SETUP_CODE บน Render สั้นเกินไป "
+                                 f"ต้องยาวอย่างน้อย {WL_SETUP_CODE_MIN_LEN} ตัวอักษร")
     if not wl_setup_allowed(env, b.get("setup_code")):
+        _wl_fail_record("setup")
         raise HTTPException(403, "รหัสตั้งค่าไม่ถูกต้อง")
     code = wl_validate_new_code(b.get("code"))
     with _wl_db() as cur:
@@ -14090,10 +14165,10 @@ def wl_codes_list(request: Request) -> list[dict[str, Any]]:
 
 
 @app.post("/api/workload/codes")
-def wl_codes_create(request: Request, body: dict[str, Any]) -> dict[str, Any]:
-    b = _wl_body(body)
+def wl_codes_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
     with _wl_db() as cur:
         wl_require_admin(request, cur)
+        b = _wl_require_body(body)
         role, dept = b.get("role"), b.get("department_id")
         wl_validate_role_dept(role, dept)
         label = b.get("label")
@@ -14109,10 +14184,10 @@ def wl_codes_create(request: Request, body: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.put("/api/workload/codes/{code_id}")
-def wl_codes_update(code_id: int, request: Request, body: dict[str, Any]) -> dict[str, Any]:
-    b = _wl_body(body)
+def wl_codes_update(code_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
     with _wl_db() as cur:
         me = wl_require_admin(request, cur)
+        b = _wl_require_body(body)
         extra = [k for k in b if k not in ("code", "label", "active")]
         if extra:
             raise HTTPException(400, f"แก้ช่อง {extra[0]} ไม่ได้ (แก้ได้เฉพาะ code, label, active)")

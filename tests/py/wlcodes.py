@@ -178,6 +178,96 @@ def test_min_length_and_roles_validated():
         assert s == 400, (role, dept)
 
 
+def test_throttled_pure():
+    f = mock_api.wl_throttled
+    assert f([], 100.0, 3, 60.0) is False
+    assert f([90.0, 95.0], 100.0, 3, 60.0) is False
+    assert f([90.0, 95.0, 99.0], 100.0, 3, 60.0) is True
+    # นอกหน้าต่างไม่นับ
+    assert f([10.0, 20.0, 30.0], 100.0, 3, 60.0) is False
+    assert f([10.0, 20.0, 99.0, 98.0], 100.0, 3, 60.0) is False
+
+
+def test_setup_env_strength():
+    f = mock_api.wl_setup_env_strong
+    assert f(None) is False and f("") is False and f("short") is False
+    assert f("   12345678901   ") is False
+    assert f("123456789012") is True
+
+
+def test_lone_surrogate_is_wrong_not_crash():
+    bad = "\ud800abcdef"
+    row = {"id": 1, "role": "admin", "salt": SALT,
+           "hash": mock_api.wl_hash("abcdef", SALT), "active": True}
+    assert mock_api.wl_check_code(bad, [row]) is None
+    assert mock_api.wl_code_taken(bad, [row]) is False
+    assert mock_api.wl_setup_allowed("secret-secret-1", bad) is False
+    assert mock_api.wl_setup_allowed(bad, "secret-secret-1") is False
+    s, d = _code(lambda: mock_api.wl_validate_new_code(bad))
+    assert s == 400 and not d.isascii()
+
+
+def _with_fails(login=(), fn=None):
+    saved = {k: list(v) for k, v in mock_api._WL_FAILS.items()}
+    saved_check = mock_api.wl_check_code
+    try:
+        mock_api._WL_FAILS["login"][:] = list(login)
+        mock_api._WL_FAILS["setup"][:] = []
+        return fn()
+    finally:
+        mock_api.wl_check_code = saved_check
+        for k, v in saved.items():
+            mock_api._WL_FAILS[k][:] = v
+
+
+def test_login_429_before_any_hashing():
+    import time
+    calls = []
+
+    def run():
+        mock_api.wl_check_code = lambda *a, **k: calls.append(1)
+        now = time.monotonic()
+        return _code(lambda: mock_api.wl_login({"code": "abcdef"})), _code(
+            lambda: mock_api.wl_login([1, 2]))
+    (a, b) = _with_fails([time.monotonic()] * mock_api.WL_LOGIN_FAIL_LIMIT, run)
+    assert a[0] == 429 and b[0] == 429 and not a[1].isascii()
+    assert calls == []
+
+
+def test_login_bad_body_is_401_and_records_failure():
+    def run():
+        r = [_code(lambda: mock_api.wl_login(x)) for x in (None, [1, 2], "x", {"code": 5})]
+        return r, len(mock_api._WL_FAILS["login"])
+    r, n = _with_fails((), run)
+    assert all(c == 401 and d == mock_api.WL_BAD_CODE for c, d in r) and n == 4
+
+
+def test_setup_bad_body_and_short_env_and_throttle():
+    import os, time
+    saved = os.environ.get("WORKLOAD_SETUP_CODE")
+
+    def run():
+        os.environ["WORKLOAD_SETUP_CODE"] = "long-enough-secret"
+        a = _code(lambda: mock_api.wl_setup(None))
+        b = _code(lambda: mock_api.wl_setup({"setup_code": "wrong", "code": "abcdef"}))
+        n = len(mock_api._WL_FAILS["setup"])
+        os.environ["WORKLOAD_SETUP_CODE"] = "short"
+        c = _code(lambda: mock_api.wl_setup({"setup_code": "short", "code": "abcdef"}))
+        mock_api._WL_FAILS["setup"][:] = [time.monotonic()] * mock_api.WL_SETUP_FAIL_LIMIT
+        d = _code(lambda: mock_api.wl_setup({"setup_code": "x", "code": "abcdef"}))
+        return a, b, n, c, d
+    try:
+        a, b, n, c, d = _with_fails((), run)
+    finally:
+        if saved is None:
+            os.environ.pop("WORKLOAD_SETUP_CODE", None)
+        else:
+            os.environ["WORKLOAD_SETUP_CODE"] = saved
+    assert a[0] == 400 and b[0] == 403 and n == 1
+    assert c[0] == 403 and "12" in c[1]
+    assert d[0] == 429
+
+
 for name, fn in list(globals().items()):
     if name.startswith("test_") and callable(fn):
         try:
