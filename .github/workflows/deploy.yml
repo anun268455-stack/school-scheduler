@@ -3,10 +3,23 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
+    # การแก้เว็บลงอัตรากำลัง เอกสาร และตัวทดสอบ ต้องไม่ปลุก deploy ของเว็บตาราง
+    # เพราะตารางสอนยังไม่นิ่ง และการ build ใหม่ที่ไม่มีใครขอคือความเสี่ยงที่ไม่ได้อะไรกลับมา
+    # workflow_dispatch ยังอยู่ จึงสั่ง deploy เว็บตารางด้วยมือได้เสมอ
+    paths-ignore:
+      - 'workload/**'
+      - 'docs/**'
+      - 'tests/**'
+      - '.github/workflows/workload.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# deploy.yml กับ workload.yml เขียนสาขา gh-pages เดียวกัน ถ้าทำพร้อมกันตัวหลังจะถูกปฏิเสธ
+concurrency:
+  group: gh-pages
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
@@ -37,6 +50,23 @@ jobs:
           # Replace YOUR_REPO_NAME with your actual GitHub repository name
           VITE_BASE_URL: /${{ github.event.repository.name }}/
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+      # เว็บลงอัตรากำลังอยู่ที่โฟลเดอร์ workload/ บน gh-pages (ขึ้นจาก workload.yml)
+      # ขั้น deploy ข้างล่างแทนที่ gh-pages ทั้งก้อนด้วย frontend/dist — ถ้าไม่ยกโฟลเดอร์นั้น
+      # ติดมาด้วย ลิงก์เว็บลงอัตรากำลังจะหายทุกครั้งที่เว็บตาราง deploy
+      # ยังไม่มีโฟลเดอร์นั้น (หรือยังไม่มี gh-pages) = ข้ามไปเฉย ๆ ไม่ทำให้ deploy ล้ม
+      #
+      # ไม่ใช้ keep_files: true กับเว็บหลัก เพราะไฟล์ js/css ชื่อติดแฮชของทุกรุ่นเก่าจะค้างสะสมไม่สิ้นสุด
+      # ไม่ยก preview/ มาด้วยโดยตั้งใจ: พรีวิวรุ่นเก่าที่ยังเขียนฐานข้อมูลจริงได้คือของอันตราย ไม่ใช่ของที่ควรเก็บ
+      - name: เก็บเว็บลงอัตรากำลัง (workload/) ของเดิมไว้
+        run: |
+          if git fetch --depth=1 origin gh-pages 2>/dev/null \
+             && git cat-file -e FETCH_HEAD:workload 2>/dev/null; then
+            git archive FETCH_HEAD workload | tar -x -C frontend/dist
+            echo "ยก workload/ เดิมมาแล้ว: $(find frontend/dist/workload -type f | wc -l) ไฟล์"
+          else
+            echo "ยังไม่มี workload/ บน gh-pages — ข้าม"
+          fi
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

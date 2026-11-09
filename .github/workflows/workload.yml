@@ -1,0 +1,70 @@
+name: เว็บลงอัตรากำลัง (ขึ้นที่ /workload/ ไม่แตะเว็บหลัก)
+
+# เว็บลงอัตรากำลังเป็นเว็บที่สอง อยู่คนละโฟลเดอร์ (workload/) กับเว็บตาราง
+#
+#   เว็บตาราง        https://anun268455-stack.github.io/school-scheduler/
+#   เว็บลงอัตรากำลัง  https://anun268455-stack.github.io/school-scheduler/workload/
+#
+# ที่ไม่ให้แตะเว็บหลัก:
+#   1. paths: workload/**   — ทำงานเมื่อมีการแก้เว็บนี้เท่านั้น
+#   2. destination_dir: workload + keep_files: true — เขียนได้แค่โฟลเดอร์ workload/ ของเดิมบน gh-pages ไม่ถูกลบ
+#   3. deploy.yml มี paths-ignore ของโฟลเดอร์นี้ และยกโฟลเดอร์ workload/ ติดไปตอน deploy เว็บตาราง
+#      (deploy.yml แทนที่ gh-pages ทั้งก้อน)
+#
+# ⚠️ เว็บนี้คุยกับ **เซิร์ฟเวอร์และฐานข้อมูลตัวเดียวกัน** กับเว็บหลัก ไม่ใช่ฐานข้อมูลทดลอง
+# อะไรที่บันทึกสำเร็จในเว็บนี้ คือบันทึกลงของจริง
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'workload/**'
+      - '.github/workflows/workload.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# กลุ่มเดียวกับ deploy.yml เพราะสองงานเขียนสาขา gh-pages เดียวกัน ถ้าทำพร้อมกันตัวหลังจะถูกปฏิเสธ
+concurrency:
+  group: gh-pages
+  cancel-in-progress: false
+
+jobs:
+  workload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20 (ให้ตรงกับ deploy.yml)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: workload/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: workload
+
+      - name: Lint
+        run: npm run lint
+        working-directory: workload
+
+      - name: Build
+        run: npm run build
+        working-directory: workload
+        env:
+          # ต้องลงท้ายด้วย /workload/ ไม่งั้นไฟล์ js/css จะหาไม่เจอ
+          VITE_BASE_URL: /${{ github.event.repository.name }}/workload/
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+      - name: วางไว้ที่ /workload/ เท่านั้น
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: workload/dist
+          destination_dir: workload
+          keep_files: true
+          commit_message: "เว็บลงอัตรากำลัง (ไม่แตะเว็บหลัก)"
