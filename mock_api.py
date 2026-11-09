@@ -15,6 +15,7 @@ import os as _os
 import json as _json
 import datetime as _dt
 import time as _time
+import contextlib as _contextlib
 from collections import Counter, defaultdict
 from contextvars import ContextVar
 import substitution as _SUB
@@ -82,13 +83,31 @@ def _nothing_changed() -> None:
 # path ที่เขียนได้เสมอ แม้เทอมปัจจุบันปิดอยู่ — ไม่งั้นปลดล็อกไม่ได้ (การปลดล็อก
 # เองก็คือ POST) และกู้ข้อมูลกลับไม่ได้ ตัวที่ลงท้ายด้วย "/" ครอบ path ลูกด้วย
 # เช่น "/api/terms/" ครอบ "/api/terms/3/unlock"
+# "/api/workload/" (เว็บลงอัตรากำลัง) อยู่ในลิสต์นี้ด้วย: มันเขียนแต่ตาราง wl_* ที่อยู่
+# นอกข้อมูลของเทอม การปิดเทอมของเว็บตารางจึงต้องไม่ห้ามการกรอกอัตรากำลัง
+WORKLOAD_PREFIX: str = "/api/workload/"
 TERM_WRITE_SAFE_PATHS: frozenset[str] = frozenset({
     "/api/terms", "/api/terms/", "/api/restore", "/api/state/adopt",
-    "/api/state/history/",
+    "/api/state/history/", WORKLOAD_PREFIX,
 })
 # ทุก route เขียนใต้ "/api/terms/" ได้ตลอดโดยตั้งใจ ดังนั้นอะไรที่เพิ่มใต้ path นี้
 # ต้องปลอดภัยที่จะเรียกตอนเทอมปัจจุบันปิดอยู่ (ถ้าลิสต์ทีละ path ตัวถัดไปที่เพิ่ม
 # จะถูกล็อกเงียบ ๆ และปลดล็อกเทอมไม่ได้)
+
+
+def workload_path(path: str) -> bool:
+    """path นี้เป็นของเว็บลงอัตรากำลังหรือไม่ — ต้องขึ้นต้นด้วย "/api/workload/" เต็ม ๆ
+    ("/api/workloadsheet" ไม่ใช่)"""
+    return path.startswith(WORKLOAD_PREFIX)
+
+
+def skip_revision_bump(method: str, path: str) -> bool:
+    """จริงเมื่อคำขอนี้ไม่ต้องบวกตัวนับรุ่น · ฟังก์ชันล้วน ไม่อ่านตัวแปรกลาง
+
+    เว็บลงอัตรากำลังเขียนแต่ตาราง wl_* ไม่แตะข้อมูลตารางสอน ถ้าบวกตัวนับ เบราว์เซอร์
+    ที่ครูกำลังจัดตารางอยู่จะเห็นว่ามีรุ่นใหม่แล้วรีโหลดทับงานที่ยังไม่เซฟ
+    """
+    return method not in ("POST", "PUT", "PATCH", "DELETE") or workload_path(path)
 
 
 def term_blocks_write(term: dict[str, Any] | None, method: str, path: str) -> str | None:
@@ -131,7 +150,10 @@ async def _bump_revision(request, call_next):
     _NOTHING_CHANGED.set(unchanged)
     response = await call_next(request)
     if (request.method in ("POST", "PUT", "PATCH", "DELETE")
-            and response.status_code < 400 and not unchanged):
+            and response.status_code < 400 and not unchanged
+            # คำขอของเว็บลงอัตรากำลังไม่บวกตัวนับ ไม่ล้างแคช ไม่เซฟ snapshot
+            # (ดู skip_revision_bump) — แคชสองตัวข้างล่างไม่อ้างข้อมูลที่เว็บนั้นแตะ
+            and not skip_revision_bump(request.method, request.url.path)):
         REVISION["n"] += 1
         # The substitution engine caches who is busy when; any write may have
         # changed that, and a stale cache would offer a teacher who has just
@@ -13695,6 +13717,104 @@ def _terms_schema(cur) -> None:
     """Create the table and its one-active-row index; safe to run every time."""
     cur.execute(_TERMS_SCHEMA)
     cur.execute(_TERMS_ONE_ACTIVE)
+
+
+# ── เว็บลงอัตรากำลัง: ตาราง wl_* ─────────────────────────────────────────
+# ตารางชุดนี้อยู่นอก _snapshot() โดยตั้งใจ — ห้ามเพิ่มเข้าไป เพราะการกู้คืนเว็บตาราง
+# (restore / ย้อนรุ่น / เปลี่ยนเทอม) ครั้งเดียวจะย้อนงานอัตรากำลังที่ครูกรอกไว้ทิ้งทั้งหมด
+# และการเขียนตารางพวกนี้ไม่บวกตัวนับรุ่นของเว็บตาราง (ดู skip_revision_bump)
+#
+# sched_id UNIQUE แต่ NULL ได้หลายแถว (พฤติกรรมปกติของ PostgreSQL): ครูที่ยังไม่เคยส่ง
+# เข้าโปรแกรมจัดตารางมีได้หลายคน แต่ครูฝั่งเว็บตารางหนึ่งคนผูกได้แถวเดียว
+# sched_id IS NULL คือธง "ยังไม่ผูก" เอง จึงไม่มีช่อง boolean แยก (สองที่เก็บความจริงเดียว
+# วันหนึ่งจะขัดกัน)
+#
+# สองดัชนี partial unique บังคับ "admin รหัสเดียว" และ "กลุ่มสาระละหนึ่งรหัส" ที่ฐานข้อมูล
+# ไม่ปล่อยให้โค้ดข้างหน้าคุมเอง: กดสองครั้งติดกันจะได้สองแถว แล้วการปิดรหัสปิดได้แถวเดียว
+# อีกแถวยังเข้าได้เงียบ ๆ (แบบเดียวกับ _TERMS_ONE_ACTIVE)
+_WL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS wl_codes (
+    id            bigserial PRIMARY KEY,
+    role          text NOT NULL CHECK (role IN ('admin','head')),
+    department_id integer,
+    label         text NOT NULL,
+    salt          bytea NOT NULL,
+    hash          bytea NOT NULL,
+    active        boolean NOT NULL DEFAULT true,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS wl_sessions (
+    token_hash bytea PRIMARY KEY,
+    code_id    bigint NOT NULL REFERENCES wl_codes(id),
+    expires_at timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS wl_teachers (
+    id            bigserial PRIMARY KEY,
+    sched_id      integer UNIQUE,
+    name          text NOT NULL,
+    code          text,
+    department_id integer,
+    dept_order    integer,
+    active        boolean NOT NULL DEFAULT true
+);
+CREATE TABLE IF NOT EXISTS wl_subjects (
+    id            bigserial PRIMARY KEY,
+    sched_id      integer UNIQUE,
+    code          text NOT NULL,
+    name          text NOT NULL,
+    type          text,
+    department_id integer,
+    duration      integer NOT NULL DEFAULT 1,
+    is_activity   boolean NOT NULL DEFAULT false,
+    is_elective   boolean NOT NULL DEFAULT false,
+    active        boolean NOT NULL DEFAULT true
+);
+CREATE UNIQUE INDEX IF NOT EXISTS wl_codes_one_admin
+    ON wl_codes (role) WHERE role = 'admin';
+CREATE UNIQUE INDEX IF NOT EXISTS wl_codes_one_per_dept
+    ON wl_codes (department_id) WHERE role = 'head'
+"""
+
+
+def _wl_schema(cur) -> None:
+    """สร้างตาราง wl_* และดัชนี · รันซ้ำได้ปลอดภัย"""
+    cur.execute(_WL_SCHEMA)
+
+
+def wl_db_error_detail() -> str:
+    """ข้อความไทยเมื่อเว็บลงอัตรากำลังต่อฐานข้อมูลไม่ได้ — ใช้ร่วมกันทุก route"""
+    return "ต่อฐานข้อมูลไม่ได้ จึงใช้เว็บลงอัตรากำลังไม่ได้ในตอนนี้ ลองใหม่อีกครั้งภายหลัง"
+
+
+@_contextlib.contextmanager
+def _wl_db():
+    """เปิดการเชื่อมต่อ + สร้างตาราง wl_* แล้วส่ง cursor ให้บล็อก · commit เมื่อบล็อกจบปกติ
+
+    ต่อไม่ได้หรือสร้างตารางไม่ได้ = 503 ข้อความไทย (ไม่ใช่ 500 เปล่า) ส่วน HTTPException
+    ที่โค้ดในบล็อกยกเอง (400/401/403/409) ผ่านออกไปตามเดิม และบล็อกที่ยกข้อผิดพลาดไม่ commit
+    ห้ามใช้ _require_db() กับเว็บนี้ — ข้อความของมันพูดถึงระบบเทอมและตอบ 400
+    """
+    if _STORE_KIND != "postgres":
+        raise HTTPException(503, wl_db_error_detail())
+    try:
+        conn = _db_connect()
+    except Exception:
+        raise HTTPException(503, wl_db_error_detail()) from None
+    # `with conn` ของ psycopg ย้อนกลับเมื่อบล็อกยกข้อผิดพลาด แล้วปิดการเชื่อมต่อเสมอ
+    with conn:
+        with conn.cursor() as cur:
+            try:
+                _wl_schema(cur)
+            except Exception:
+                raise HTTPException(503, wl_db_error_detail()) from None
+            yield cur
+        conn.commit()
+
+
+@app.get("/api/workload/health")
+def wl_health() -> dict[str, Any]:
+    with _wl_db():
+        return {"db": True}
 
 
 def _check_term_status(status: str) -> None:
