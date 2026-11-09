@@ -14235,6 +14235,260 @@ def wl_codes_update(code_id: int, request: Request, body: Any = Body(None)) -> d
         return {"ok": True}
 
 
+# ── ทะเบียนครูและทะเบียนวิชาของเว็บลงอัตรากำลัง ─────────────────────────
+# เป็นของเว็บใหม่เอง (wl_teachers / wl_subjects) ไม่เขียน TEACHERS / SUBJECTS ของเว็บตาราง
+# ช่องที่ตั้งได้มีแค่ที่เว็บใหม่เป็นเจ้าของ ช่องของเครื่องจัดคาบ (fixed_room_id ฯลฯ) ปฏิเสธด้วย 400
+# เพราะถ้าหลุดเข้ามาเงียบ ๆ จะกลายเป็นจุดเริ่มของการทับเงื่อนไขจัดคาบในขั้นถัดไป
+WL_TEACHER_FIELDS: frozenset[str] = frozenset({"name", "code", "department_id", "dept_order", "active"})
+WL_SUBJECT_FIELDS: frozenset[str] = frozenset(
+    {"code", "name", "type", "department_id", "duration", "is_activity", "is_elective", "active"})
+
+# ชื่อคอลัมน์ใน SQL มาจากสองชุดนี้เท่านั้น (เรียงตามตาราง) ค่าจากผู้ใช้ส่งเป็นพารามิเตอร์เสมอ
+_WL_TEACHER_COLS = ("id", "sched_id", "name", "code", "department_id", "dept_order", "active")
+_WL_SUBJECT_COLS = ("id", "sched_id", "code", "name", "type", "department_id",
+                    "duration", "is_activity", "is_elective", "active")
+_WL_INT4_MAX = 2_147_483_647
+_WL_BIGINT_MAX = 9_223_372_036_854_775_807
+
+
+def wl_clean_fields(body: object, allowed: frozenset[str]) -> dict[str, Any]:
+    """body ต้องเป็นออบเจ็กต์ที่มีแต่คีย์ใน allowed · คีย์แปลกปลอมบอกชื่อให้ครบทุกตัว"""
+    if not isinstance(body, dict):
+        raise HTTPException(400, "ข้อมูลที่ส่งมาต้องเป็นออบเจ็กต์ JSON")
+    extra = [str(k) for k in body if k not in allowed]
+    if extra:
+        raise HTTPException(
+            400, f"ส่งช่อง {', '.join(extra)} ไม่ได้ (รับเฉพาะ {', '.join(sorted(allowed))})")
+    return body
+
+
+def _wl_text(field: str, v: Any, required: bool) -> str | None:
+    """ข้อความที่ฐานข้อมูลเก็บได้ · NUL และ surrogate โดดทำให้ psycopg ล้มเป็น 500 จึงกันที่นี่"""
+    if v is None and not required:
+        return None
+    if not isinstance(v, str) or (required and not v.strip()):
+        raise HTTPException(400, f"ช่อง {field} ต้องเป็นข้อความ" + (" และห้ามว่าง" if required else ""))
+    if "\x00" in v or _wl_utf8(v) is None:
+        raise HTTPException(400, f"ช่อง {field} มีตัวอักษรที่ใช้ไม่ได้")
+    return v.strip() if required else v
+
+
+def _wl_bool(field: str, v: Any) -> bool:
+    if not isinstance(v, bool):
+        raise HTTPException(400, f"ช่อง {field} ต้องเป็นจริงหรือเท็จ (true/false)")
+    return v
+
+
+def _wl_int_or_none(field: str, v: Any) -> int | None:
+    # bool เป็น int ในไพทอน — True ไม่ใช่เลขกลุ่มสาระ จึงเช็ค type ตรง ๆ
+    if v is None:
+        return None
+    if type(v) is not int or abs(v) > _WL_INT4_MAX:
+        raise HTTPException(400, f"ช่อง {field} ต้องเป็นจำนวนเต็มหรือว่าง")
+    return v
+
+
+def _wl_dept_or_none(v: Any) -> int | None:
+    v = _wl_int_or_none("department_id", v)
+    if v is not None and v not in {d["id"] for d in DEPARTMENTS}:
+        raise HTTPException(400, "ช่อง department_id ไม่ตรงกับกลุ่มสาระที่มีอยู่")
+    return v
+
+
+def wl_check_teacher(f: dict[str, Any], creating: bool) -> dict[str, Any]:
+    """ตรวจค่าครู (ฟังก์ชันล้วน) · creating=True เติมค่าตั้งต้นให้ครบทุกช่อง"""
+    out: dict[str, Any] = {}
+    if creating or "name" in f:
+        out["name"] = _wl_text("name", f.get("name"), True)
+    if "code" in f:
+        out["code"] = _wl_text("code", f["code"], False)
+    if "department_id" in f:
+        out["department_id"] = _wl_dept_or_none(f["department_id"])
+    if "dept_order" in f:
+        out["dept_order"] = _wl_int_or_none("dept_order", f["dept_order"])
+    if "active" in f:
+        out["active"] = _wl_bool("active", f["active"])
+    if creating:
+        for k, dv in (("code", None), ("department_id", None), ("dept_order", None), ("active", True)):
+            out.setdefault(k, dv)
+    return out
+
+
+def wl_check_subject(f: dict[str, Any], creating: bool) -> dict[str, Any]:
+    """ตรวจค่าวิชา (ฟังก์ชันล้วน) · type ตรงกับ SubjectType ของเว็บตาราง · duration 2 = คาบคู่"""
+    out: dict[str, Any] = {}
+    for k in ("code", "name"):
+        if creating or k in f:
+            out[k] = _wl_text(k, f.get(k), True)
+    if "type" in f:
+        if f["type"] not in ("common", "parallel"):
+            raise HTTPException(400, "ช่อง type ต้องเป็น common หรือ parallel")
+        out["type"] = f["type"]
+    if "department_id" in f:
+        out["department_id"] = _wl_dept_or_none(f["department_id"])
+    if "duration" in f:
+        if type(f["duration"]) is not int or f["duration"] not in (1, 2):
+            raise HTTPException(400, "ช่อง duration ต้องเป็น 1 หรือ 2 (2 = คาบคู่)")
+        out["duration"] = f["duration"]
+    for k in ("is_activity", "is_elective", "active"):
+        if k in f:
+            out[k] = _wl_bool(k, f[k])
+    if creating:
+        for k, dv in (("type", "common"), ("department_id", None), ("duration", 1),
+                      ("is_activity", False), ("is_elective", False), ("active", True)):
+            out.setdefault(k, dv)
+    return out
+
+
+def wl_import_plan(sched: list[dict[str, Any]], existing: list[dict[str, Any]]) -> dict[str, Any]:
+    """ตัดสินว่าครูฝั่งตารางคนไหนต้องสร้างใหม่ (ฟังก์ชันล้วน ไม่แก้ลิสต์ที่รับเข้ามา)
+
+    จับคู่ด้วย sched_id เท่านั้น ห้ามเทียบชื่อแม้เป็นทางสำรอง: ชื่อสะกดต่างกันได้
+    แต่รหัสเดียวกันคือคนเดียวกัน และครูชื่อซ้ำกันจริงมีในโรงเรียน
+    skipped = แถวที่ id ไม่ใช่ int จริง หรือ id ซ้ำกับแถวก่อนหน้าในลิสต์เดียวกัน
+    """
+    known = {e.get("sched_id") for e in existing if type(e.get("sched_id")) is int}
+    seen: set[int] = set()
+    create: list[dict[str, Any]] = []
+    already: list[int] = []
+    skipped: list[dict[str, Any]] = []
+    for t in sched:
+        tid = t.get("id")
+        if type(tid) is not int or tid in seen:
+            skipped.append(t)
+            continue
+        seen.add(tid)
+        if tid in known:
+            already.append(tid)
+        else:
+            create.append(t)
+    return {"create": create, "already": already, "skipped": skipped}
+
+
+def _wl_rows(cur, table: str, cols: tuple[str, ...], order: str) -> list[dict[str, Any]]:
+    cur.execute(f"SELECT {', '.join(cols)} FROM {table} ORDER BY {order}")
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+@app.get("/api/workload/teachers")
+def wl_teachers_list(request: Request) -> list[dict[str, Any]]:
+    with _wl_db() as cur:
+        wl_require_session(request, cur)
+        return _wl_rows(cur, "wl_teachers", _WL_TEACHER_COLS,
+                        "department_id NULLS LAST, dept_order NULLS LAST, id")
+
+
+@app.get("/api/workload/subjects")
+def wl_subjects_list(request: Request) -> list[dict[str, Any]]:
+    with _wl_db() as cur:
+        wl_require_session(request, cur)
+        return _wl_rows(cur, "wl_subjects", _WL_SUBJECT_COLS,
+                        "department_id NULLS LAST, code, id")
+
+
+def _wl_insert_row(cur, table: str, cols: tuple[str, ...], values: dict[str, Any]) -> dict[str, Any]:
+    keys = [c for c in cols if c in values]
+    cur.execute(f"INSERT INTO {table} ({', '.join(keys)}) VALUES ({', '.join(['%s'] * len(keys))}) "
+                f"RETURNING {', '.join(cols)}", tuple(values[k] for k in keys))
+    return dict(zip(cols, cur.fetchone()))
+
+
+def _wl_update_row(cur, table: str, cols: tuple[str, ...], row_id: int,
+                   values: dict[str, Any]) -> dict[str, Any]:
+    if not values:
+        raise HTTPException(400, "ไม่มีช่องที่จะแก้ ส่งอย่างน้อยหนึ่งช่อง")
+    keys = [c for c in cols if c in values]
+    row = None
+    if 0 < row_id <= _WL_BIGINT_MAX:       # id เกินช่วงของ bigint = ไม่มีแถวนั้นแน่ ไม่ใช่ 500
+        cur.execute(f"UPDATE {table} SET {', '.join(k + ' = %s' for k in keys)} WHERE id = %s "
+                    f"RETURNING {', '.join(cols)}", (*(values[k] for k in keys), row_id))
+        row = cur.fetchone()
+    if row is None:
+        raise HTTPException(404, "ไม่พบรายการนี้")
+    return dict(zip(cols, row))
+
+
+@app.post("/api/workload/teachers")
+def wl_teachers_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        vals = wl_check_teacher(wl_clean_fields(body, WL_TEACHER_FIELDS), True)
+        return _wl_insert_row(cur, "wl_teachers", _WL_TEACHER_COLS, vals)
+
+
+@app.put("/api/workload/teachers/{teacher_id}")
+def wl_teachers_update(teacher_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        vals = wl_check_teacher(wl_clean_fields(body, WL_TEACHER_FIELDS), False)
+        return _wl_update_row(cur, "wl_teachers", _WL_TEACHER_COLS, teacher_id, vals)
+
+
+@app.post("/api/workload/subjects")
+def wl_subjects_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        vals = wl_check_subject(wl_clean_fields(body, WL_SUBJECT_FIELDS), True)
+        return _wl_insert_row(cur, "wl_subjects", _WL_SUBJECT_COLS, vals)
+
+
+@app.put("/api/workload/subjects/{subject_id}")
+def wl_subjects_update(subject_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        vals = wl_check_subject(wl_clean_fields(body, WL_SUBJECT_FIELDS), False)
+        return _wl_update_row(cur, "wl_subjects", _WL_SUBJECT_COLS, subject_id, vals)
+
+
+def _wl_import_guard() -> None:
+    # ตอนที่ _db_write_blocked() เป็นจริง TEACHERS ในหน่วยความจำคือข้อมูลตั้งต้นที่มากับโค้ด
+    # ไม่ใช่ครูของโรงเรียน ดึงเข้ามาจะได้ครูผิดชุดพร้อมรหัสที่ผูกผิดคน ซึ่งแก้ทีหลังยากมาก
+    if _db_write_blocked():
+        raise HTTPException(
+            503, "เซิร์ฟเวอร์ยังโหลดข้อมูลของโรงเรียนไม่สำเร็จ จึงยังดึงครูจากโปรแกรมจัดตารางไม่ได้ "
+                 "รอสักครู่แล้วลองใหม่ หรือแจ้งผู้ดูแลระบบ")
+
+
+def _wl_import_existing(cur) -> list[dict[str, Any]]:
+    cur.execute("SELECT id, sched_id, name FROM wl_teachers")
+    return [dict(zip(("id", "sched_id", "name"), r)) for r in cur.fetchall()]
+
+
+@app.get("/api/workload/teachers/import-from-scheduler")
+def wl_teachers_import_preview(request: Request) -> dict[str, int]:
+    """ดูก่อนดึง: ตัวเลขที่ POST จะทำ โดยไม่เขียนอะไรเลย"""
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        _wl_import_guard()
+        plan = wl_import_plan(list(TEACHERS), _wl_import_existing(cur))
+        return {"created": len(plan["create"]), "linked": len(plan["already"]),
+                "skipped": len(plan["skipped"])}
+
+
+@app.post("/api/workload/teachers/import-from-scheduler")
+def wl_teachers_import(request: Request) -> dict[str, int]:
+    """คัดลอกครูจากโปรแกรมจัดตารางครั้งแรก · อ่าน TEACHERS อย่างเดียว ไม่เขียน
+
+    ON CONFLICT DO NOTHING แล้วนับจาก rowcount: admin สองคนกดพร้อมกันต้องไม่ได้ 500
+    หรือครูซ้ำ แถวที่ชนนับเป็น linked · ไม่คัดลอกช่องเงื่อนไขของเครื่องจัดคาบแม้ช่องเดียว
+    """
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        _wl_import_guard()
+        plan = wl_import_plan(list(TEACHERS), _wl_import_existing(cur))
+        created = 0
+        for t in plan["create"]:
+            cur.execute(
+                "INSERT INTO wl_teachers (sched_id, name, code, department_id, dept_order, active) "
+                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (sched_id) DO NOTHING",
+                (t["id"], str(t.get("name") or ""), t.get("code"), t.get("department_id"),
+                 t.get("dept_order"), bool(t.get("active", True))))
+            created += 1 if cur.rowcount == 1 else 0
+        return {"created": created,
+                "linked": len(plan["already"]) + len(plan["create"]) - created,
+                "skipped": len(plan["skipped"])}
+
+
 def _check_term_status(status: str) -> None:
     if status not in TERM_STATUSES:
         raise ValueError(f"สถานะเทอมไม่ถูกต้อง: {status!r}")
