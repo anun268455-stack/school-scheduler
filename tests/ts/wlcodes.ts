@@ -117,6 +117,25 @@ test("key ของแถวไม่ซ้ำกัน", () => {
   eq(new Set(rows.map((r) => r.key)).size, rows.length);
 });
 
+test("รหัสหัวหน้าสองรหัสของกลุ่มเดียวกัน: ตัวแรกจับคู่ ตัวที่สองเป็นกำพร้า ไม่หายเงียบ", () => {
+  const rows = buildCodeRows(DEPTS, [ADMIN, head(2, 1), head(3, 1)]);
+  eq(rows.find((r) => r.departmentId === 1 && r.kind === "head")!.codeId, 2);
+  eq(rows.filter((r) => r.kind === "orphan").map((r) => r.codeId), [3]);
+});
+
+test("รหัสกำพร้าที่ปิดอยู่ ยังขึ้นเป็น ปิดอยู่ พร้อม codeId ให้เปิดคืนได้", () => {
+  const rows = buildCodeRows(DEPTS, [ADMIN, head(6, 99, false)]);
+  const o = rows[rows.length - 1];
+  eq(o.kind, "orphan");
+  eq(o.status, "disabled");
+  eq(o.codeId, 6);
+});
+
+test("รายการกลุ่มสาระว่าง แต่มีรหัสหัวหน้า: ขึ้นเป็นกำพร้าทั้งหมด", () => {
+  const rows = buildCodeRows([], [ADMIN, head(2, 1), head(3, 2)]);
+  eq(rows.map((r) => r.kind), ["admin", "orphan", "orphan"]);
+});
+
 test("ไม่มีกลุ่มสาระเลย ก็ยังมีแถว admin", () => {
   eq(buildCodeRows([], [ADMIN]).length, 1);
 });

@@ -44,6 +44,8 @@ export default function CodesPage() {
       setRowError({ key: row.key, message: problem });
       return false;
     }
+    // เซิร์ฟเวอร์เก็บรหัสแบบตัดช่องว่างหัวท้าย กล่องต้องแสดงตัวที่เก็บจริง ไม่งั้นคนจดรหัสพร้อมช่องว่างแล้วล็อกอินไม่ผ่าน
+    code = code.trim();
     const ok = await act(row, async () => {
       if (row.codeId === null) {
         if (row.departmentId === null) throw new Error("no department"); // ปุ่มนี้ไม่ขึ้นกับแถวที่ไม่มีกลุ่ม
