@@ -62,16 +62,23 @@ export function groupByDepartment<T extends { department_id: number | null }>(
   return groups;
 }
 
+// คำนามของสิ่งที่ดึง: thing = ใช้ในประโยค ("ครูใหม่") · unit = ลักษณนาม ("143 คน")
+export type ImportNoun = { thing: string; unit: string };
+export const TEACHER_NOUN: ImportNoun = { thing: "ครู", unit: "คน" };
+export const SUBJECT_NOUN: ImportNoun = { thing: "วิชา", unit: "วิชา" };
+
 // ข้อความหน้าสรุปก่อนดึง (ยังไม่เขียน) และหลังดึง (จำนวนจริงจากเซิร์ฟเวอร์)
-export function importSummary(c: ImportCounts, phase: "preview" | "done"): string {
+export function importSummary(c: ImportCounts, phase: "preview" | "done", n: ImportNoun): string {
   const skipped = c.skipped > 0 ? ` · ข้าม ${c.skipped} แถว` : "";
   if (c.created === 0) {
     return phase === "preview"
-      ? `ไม่มีครูใหม่ให้ดึง (มีอยู่แล้ว ${c.linked} คน)${skipped}`
-      : `ไม่มีครูใหม่ (มีอยู่แล้ว ${c.linked} คน)${skipped}`;
+      ? `ไม่มี${n.thing}ใหม่ให้ดึง (มีอยู่แล้ว ${c.linked} ${n.unit})${skipped}`
+      : `ไม่มี${n.thing}ใหม่ (มีอยู่แล้ว ${c.linked} ${n.unit})${skipped}`;
   }
-  const head = phase === "preview" ? `จะสร้างครูใหม่ ${c.created} คน` : `สร้างครูใหม่แล้ว ${c.created} คน`;
-  return `${head} · มีอยู่แล้ว ${c.linked} คน${skipped}`;
+  const head = phase === "preview"
+    ? `จะสร้าง${n.thing}ใหม่ ${c.created} ${n.unit}`
+    : `สร้าง${n.thing}ใหม่แล้ว ${c.created} ${n.unit}`;
+  return `${head} · มีอยู่แล้ว ${c.linked} ${n.unit}${skipped}`;
 }
 
 // ช่อง "ลำดับในกลุ่ม": ว่าง = ไม่กำหนด · เซิร์ฟเวอร์รับจำนวนเต็มไม่เกิน 2147483647 (ลบได้)

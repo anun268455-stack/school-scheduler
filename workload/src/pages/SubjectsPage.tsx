@@ -1,10 +1,15 @@
-import { useState, type FormEvent } from "react";
-import { createSubject, listDepartments, listSubjects, updateSubject } from "../api";
-import { buildSubjectBody, changedFields, sortSubjects } from "../registry";
-import type { Department, SubjectIdentity, SubjectPatch, WlSubject } from "../types";
-import { useDepartmentGroups, useRegistryList, useSaving, useWriteErrors } from "../useRegistryList";
+import { useId, useState, type FormEvent } from "react";
 import {
-  DepartmentGroups, DepartmentSelect, InactiveSwitch, inputClass, NeverSentBadge, RegistryFrame, RowError,
+  createSubject, importSubjectsPreview, importSubjectsRun, listDepartments, listSubjects, updateSubject,
+} from "../api";
+import { buildSubjectBody, changedFields, sortSubjects, SUBJECT_NOUN } from "../registry";
+import type { Department, SubjectIdentity, SubjectPatch, WlSubject } from "../types";
+import {
+  useDepartmentGroups, useRegistryList, useSaving, useSchedulerImport, useWriteErrors,
+} from "../useRegistryList";
+import {
+  CheckField, DepartmentGroups, DepartmentSelect, Field, ImportBox, InactiveSwitch, inputClass, NeverSentBadge,
+  RegistryFrame, RowError,
 } from "./registryParts";
 
 // ค่า type สองค่าของวิชา: "คู่ขนาน" ตามที่ frontend/ เรียก (Dashboard.tsx "รหัสคู่ขนาน") · "common" ที่นั่นไม่มีชื่อไทย จึงใช้ "ปกติ"
@@ -14,36 +19,36 @@ const EMPTY: SubjectIdentity = {
   code: "", name: "", type: "common", department_id: null, duration: 1, is_activity: false, is_elective: false,
 };
 
-// ช่องกรอกของวิชา ใช้ทั้งฟอร์มเพิ่มและการแก้ในแถว
+// ช่องกรอกของวิชา ใช้ทั้งฟอร์มเพิ่มและการแก้ในแถว · useId ให้ id ไม่ซ้ำกันระหว่างแถว
 function SubjectFields(props: {
   value: SubjectIdentity;
   onChange: (v: SubjectIdentity) => void;
   departments: Department[];
   disabled: boolean;
 }) {
+  const id = useId();
   const v = props.value;
   const set = (p: Partial<SubjectIdentity>) => props.onChange({ ...v, ...p });
   return (
     <>
-      <input aria-label="รหัสวิชา" placeholder="รหัสวิชา" value={v.code} onChange={(e) => set({ code: e.target.value })} disabled={props.disabled} className={`${inputClass} w-28`} />
-      <input aria-label="ชื่อวิชา" placeholder="ชื่อวิชา" value={v.name} onChange={(e) => set({ name: e.target.value })} disabled={props.disabled} className={inputClass} />
-      <select aria-label="ประเภท" value={v.type} onChange={(e) => set({ type: e.target.value as SubjectIdentity["type"] })} disabled={props.disabled} className={inputClass}>
-        <option value="common">{TYPE_TEXT.common}</option>
-        <option value="parallel">{TYPE_TEXT.parallel}</option>
-      </select>
-      <DepartmentSelect label="กลุ่มสาระ" value={v.department_id} onChange={(d) => set({ department_id: d })} departments={props.departments} disabled={props.disabled} />
-      <label className="flex items-center gap-1 text-sm whitespace-nowrap">
-        <input type="checkbox" checked={v.duration === 2} onChange={(e) => set({ duration: e.target.checked ? 2 : 1 })} disabled={props.disabled} />
-        คาบคู่
-      </label>
-      <label className="flex items-center gap-1 text-sm whitespace-nowrap">
-        <input type="checkbox" checked={v.is_activity} onChange={(e) => set({ is_activity: e.target.checked })} disabled={props.disabled} />
-        เป็นกิจกรรม
-      </label>
-      <label className="flex items-center gap-1 text-sm whitespace-nowrap">
-        <input type="checkbox" checked={Boolean(v.is_elective)} onChange={(e) => set({ is_elective: e.target.checked })} disabled={props.disabled} />
-        เป็นวิชาเสรี
-      </label>
+      <Field label="รหัสวิชา" htmlFor={`${id}-code`}>
+        <input id={`${id}-code`} placeholder="รหัสวิชา" value={v.code} onChange={(e) => set({ code: e.target.value })} disabled={props.disabled} className={`${inputClass} w-28`} />
+      </Field>
+      <Field label="ชื่อวิชา" htmlFor={`${id}-name`}>
+        <input id={`${id}-name`} placeholder="ชื่อวิชา" value={v.name} onChange={(e) => set({ name: e.target.value })} disabled={props.disabled} className={inputClass} />
+      </Field>
+      <Field label="ประเภทวิชา" htmlFor={`${id}-type`}>
+        <select id={`${id}-type`} value={v.type} onChange={(e) => set({ type: e.target.value as SubjectIdentity["type"] })} disabled={props.disabled} className={inputClass}>
+          <option value="common">{TYPE_TEXT.common}</option>
+          <option value="parallel">{TYPE_TEXT.parallel}</option>
+        </select>
+      </Field>
+      <Field label="กลุ่มสาระ" htmlFor={`${id}-dept`}>
+        <DepartmentSelect id={`${id}-dept`} value={v.department_id} onChange={(d) => set({ department_id: d })} departments={props.departments} disabled={props.disabled} />
+      </Field>
+      <CheckField id={`${id}-double`} label="คาบคู่" checked={v.duration === 2} onChange={(c) => set({ duration: c ? 2 : 1 })} disabled={props.disabled} />
+      <CheckField id={`${id}-activity`} label="เป็นกิจกรรม" checked={v.is_activity} onChange={(c) => set({ is_activity: c })} disabled={props.disabled} />
+      <CheckField id={`${id}-elective`} label="เป็นวิชาเสรี" checked={Boolean(v.is_elective)} onChange={(c) => set({ is_elective: c })} disabled={props.disabled} />
     </>
   );
 }
@@ -60,11 +65,13 @@ export default function SubjectsPage() {
   const depts = useRegistryList(listDepartments);
   const { saving, run } = useSaving();
   const { addError, setAddError, rowError, setRowError } = useWriteErrors();
+  const imp = useSchedulerImport(importSubjectsPreview, importSubjectsRun, subjects.reload);
   const [editingId, setEditingId] = useState<number | null>(null);
 
   const loaded = subjects.loaded && depts.loaded;
   const groups = useDepartmentGroups(subjects.rows, sortSubjects, depts.rows);
   const activeCount = subjects.rows.filter((s) => s.active).length;
+  const disabled = saving || imp.busy;
 
   const patch = (id: number, body: SubjectPatch) => {
     setRowError(null);
@@ -80,7 +87,11 @@ export default function SubjectsPage() {
     const built = buildSubjectBody(draft);
     if (!built.ok) return setRowError({ id: s.id, message: built.message });
     const changed = changedFields(identityOf(s), built.body);
-    if (Object.keys(changed).length === 0) return setEditingId(null);
+    if (Object.keys(changed).length === 0) {
+      // ไม่มีอะไรเปลี่ยน = ปิดตัวแก้ และข้อความแดงเก่าของแถวนี้ต้องหายไปด้วย
+      setRowError(null);
+      return setEditingId(null);
+    }
     if (await patch(s.id, changed)) setEditingId(null);
   };
 
@@ -111,15 +122,16 @@ export default function SubjectsPage() {
         subjects.reload();
         depts.reload();
       }}
+      top={<ImportBox imp={imp} noun={SUBJECT_NOUN} disabled={disabled} />}
     >
-      <AddSubjectForm departments={depts.rows} disabled={saving} error={addError} onAdd={addSubject} />
+      <AddSubjectForm departments={depts.rows} disabled={disabled} error={addError} onAdd={addSubject} />
       <DepartmentGroups
         groups={groups}
         renderRow={(s) => (
           <SubjectRow
             subject={s}
             departments={depts.rows}
-            disabled={saving}
+            disabled={disabled}
             editing={editingId === s.id}
             error={rowError?.id === s.id ? rowError.message : null}
             onEdit={() => {
@@ -155,7 +167,7 @@ function AddSubjectForm(props: {
   };
 
   return (
-    <form onSubmit={submit} aria-label="เพิ่มวิชา" className="mt-3 mb-4 flex flex-wrap items-center gap-2 rounded border border-gray-300 bg-white p-3">
+    <form onSubmit={submit} aria-label="เพิ่มวิชา" className="mt-3 mb-4 flex flex-wrap items-end gap-2 rounded border border-gray-300 bg-white p-3">
       <SubjectFields value={v} onChange={setV} departments={props.departments} disabled={props.disabled} />
       <button type="submit" disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">
         เพิ่มวิชา
@@ -180,7 +192,7 @@ function SubjectRow(props: {
   const [draft, setDraft] = useState<SubjectIdentity>(identityOf(s));
 
   return (
-    <div className={`flex flex-wrap items-center gap-2 ${s.active ? "" : "opacity-50"}`} data-testid={`subject-${s.id}`}>
+    <div className={`flex flex-wrap gap-2 ${props.editing ? "items-end" : "items-center"} ${s.active ? "" : "opacity-50"}`} data-testid={`subject-${s.id}`}>
       {props.editing ? (
         <>
           <SubjectFields value={draft} onChange={setDraft} departments={props.departments} disabled={props.disabled} />

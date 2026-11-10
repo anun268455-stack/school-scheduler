@@ -6,7 +6,7 @@
  */
 import {
   buildSubjectBody, buildTeacherBody, changedFields, groupByDepartment, importSummary, parseOrder,
-  sortSubjects, sortTeachers, UNASSIGNED_NAME,
+  sortSubjects, sortTeachers, SUBJECT_NOUN, TEACHER_NOUN, UNASSIGNED_NAME,
 } from "../../workload/src/registry.ts";
 import type { WlSubject, WlTeacher } from "../../workload/src/types.ts";
 
@@ -97,25 +97,38 @@ test("ครูสองคนชื่อเหมือนกันเป็�
 });
 
 test("สรุปก่อนดึง: มีครูใหม่", () => {
-  eq(importSummary({ created: 143, linked: 0, skipped: 0 }, "preview"),
+  eq(importSummary({ created: 143, linked: 0, skipped: 0 }, "preview", TEACHER_NOUN),
     "จะสร้างครูใหม่ 143 คน · มีอยู่แล้ว 0 คน");
 });
 
 test("สรุปก่อนดึง: ไม่มีครูใหม่ บอกตรง ๆ", () => {
-  eq(importSummary({ created: 0, linked: 143, skipped: 0 }, "preview"),
+  eq(importSummary({ created: 0, linked: 143, skipped: 0 }, "preview", TEACHER_NOUN),
     "ไม่มีครูใหม่ให้ดึง (มีอยู่แล้ว 143 คน)");
 });
 
 test("สรุปมีแถวที่ข้ามต้องบอกจำนวน", () => {
-  eq(importSummary({ created: 2, linked: 1, skipped: 3 }, "preview"),
+  eq(importSummary({ created: 2, linked: 1, skipped: 3 }, "preview", TEACHER_NOUN),
     "จะสร้างครูใหม่ 2 คน · มีอยู่แล้ว 1 คน · ข้าม 3 แถว");
 });
 
 test("สรุปหลังดึง ใช้ถ้อยคำอดีต", () => {
-  eq(importSummary({ created: 143, linked: 0, skipped: 0 }, "done"),
+  eq(importSummary({ created: 143, linked: 0, skipped: 0 }, "done", TEACHER_NOUN),
     "สร้างครูใหม่แล้ว 143 คน · มีอยู่แล้ว 0 คน");
-  eq(importSummary({ created: 0, linked: 143, skipped: 0 }, "done"),
+  eq(importSummary({ created: 0, linked: 143, skipped: 0 }, "done", TEACHER_NOUN),
     "ไม่มีครูใหม่ (มีอยู่แล้ว 143 คน)");
+});
+
+test("สรุปดึงวิชา ใช้คำว่าวิชาทั้งสิ่งของและหน่วย", () => {
+  eq(importSummary({ created: 271, linked: 0, skipped: 0 }, "preview", SUBJECT_NOUN),
+    "จะสร้างวิชาใหม่ 271 วิชา · มีอยู่แล้ว 0 วิชา");
+  eq(importSummary({ created: 271, linked: 0, skipped: 0 }, "done", SUBJECT_NOUN),
+    "สร้างวิชาใหม่แล้ว 271 วิชา · มีอยู่แล้ว 0 วิชา");
+  eq(importSummary({ created: 0, linked: 271, skipped: 0 }, "preview", SUBJECT_NOUN),
+    "ไม่มีวิชาใหม่ให้ดึง (มีอยู่แล้ว 271 วิชา)");
+  eq(importSummary({ created: 0, linked: 271, skipped: 2 }, "done", SUBJECT_NOUN),
+    "ไม่มีวิชาใหม่ (มีอยู่แล้ว 271 วิชา) · ข้าม 2 แถว");
+  eq(importSummary({ created: 2, linked: 1, skipped: 3 }, "preview", SUBJECT_NOUN),
+    "จะสร้างวิชาใหม่ 2 วิชา · มีอยู่แล้ว 1 วิชา · ข้าม 3 แถว");
 });
 
 test("parseOrder: ว่างเป็น null · จำนวนเต็มรวมลบ · อย่างอื่นไม่ผ่าน", () => {
@@ -143,9 +156,9 @@ test("เรียงวิชาแล้วไม่แก้ลิสต์�
 });
 
 test("สรุปไม่มีครูใหม่แต่ข้ามแถว ต้องบอกจำนวนที่ข้าม", () => {
-  eq(importSummary({ created: 0, linked: 5, skipped: 2 }, "preview"),
+  eq(importSummary({ created: 0, linked: 5, skipped: 2 }, "preview", TEACHER_NOUN),
     "ไม่มีครูใหม่ให้ดึง (มีอยู่แล้ว 5 คน) · ข้าม 2 แถว");
-  eq(importSummary({ created: 0, linked: 5, skipped: 2 }, "done"),
+  eq(importSummary({ created: 0, linked: 5, skipped: 2 }, "done", TEACHER_NOUN),
     "ไม่มีครูใหม่ (มีอยู่แล้ว 5 คน) · ข้าม 2 แถว");
 });
 

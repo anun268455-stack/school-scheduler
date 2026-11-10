@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiErrorText } from "./api";
 import { groupByDepartment } from "./registry";
-import type { Department } from "./types";
+import type { Department, ImportCounts } from "./types";
 
 // โหลดรายการหนึ่งชุดพร้อมสถานะ กำลังโหลด/ผิดพลาด · แถวอ้างด้วย id เท่านั้น
 export function useRegistryList<T extends { id: number }>(fetcher: () => Promise<T[]>) {
@@ -80,3 +80,46 @@ export function useWriteErrors() {
   const [rowError, setRowError] = useState<{ id: number; message: string } | null>(null);
   return { addError, setAddError, rowError, setRowError };
 }
+
+// ขั้นของปุ่มดึงจากโปรแกรมจัดตาราง: ดูก่อน (ยังไม่เขียน) → ยืนยัน → ผลจริงจากเซิร์ฟเวอร์
+export type ImportState =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "confirm"; counts: ImportCounts }
+  | { kind: "running" }
+  | { kind: "done"; counts: ImportCounts }
+  | { kind: "error"; message: string };
+
+// ใช้ร่วมกันทั้งดึงครูและดึงวิชา · onDone = โหลดรายการใหม่ (ฟอร์มที่พิมพ์ค้างไม่หาย เพราะ reload เก็บแถวเดิมไว้บนจอ)
+export function useSchedulerImport(
+  preview: () => Promise<ImportCounts>,
+  runImport: () => Promise<ImportCounts>,
+  onDone: () => void,
+) {
+  const [state, setState] = useState<ImportState>({ kind: "idle" });
+
+  const start = async () => {
+    setState({ kind: "checking" });
+    try {
+      setState({ kind: "confirm", counts: await preview() });
+    } catch (err) {
+      setState({ kind: "error", message: apiErrorText(err) });
+    }
+  };
+
+  const confirm = async () => {
+    setState({ kind: "running" });
+    try {
+      const counts = await runImport();
+      setState({ kind: "done", counts });
+      onDone();
+    } catch (err) {
+      setState({ kind: "error", message: apiErrorText(err) });
+    }
+  };
+
+  const busy = state.kind === "checking" || state.kind === "running";
+  return { state, busy, start, confirm, cancel: () => setState({ kind: "idle" }) };
+}
+
+export type SchedulerImport = ReturnType<typeof useSchedulerImport>;

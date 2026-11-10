@@ -149,7 +149,7 @@ export async function updateSubject(id: number, body: SubjectPatch): Promise<WlS
   return res.data as WlSubject;
 }
 
-// ตัวเลขที่ผิดรูปแล้วแปลงเป็น 0 จะอ่านออกมาเป็น "ไม่มีครูใหม่" ซึ่งซ่อนความผิดพลาด จึงโยนทิ้ง
+// ตัวเลขที่ผิดรูปแล้วแปลงเป็น 0 จะอ่านออกมาเป็น "ไม่มีครู/วิชาใหม่" ซึ่งซ่อนความผิดพลาด จึงโยนทิ้ง
 function counts(d: any): ImportCounts {
   const isCount = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0;
   if (!isCount(d?.created) || !isCount(d?.linked) || !isCount(d?.skipped)) {
@@ -166,6 +166,16 @@ export async function importPreview(): Promise<ImportCounts> {
 
 export async function importRun(): Promise<ImportCounts> {
   const res = await http.post("/workload/teachers/import-from-scheduler");
+  return counts(res.data);
+}
+
+export async function importSubjectsPreview(): Promise<ImportCounts> {
+  const res = await http.get("/workload/subjects/import-from-scheduler");
+  return counts(res.data);
+}
+
+export async function importSubjectsRun(): Promise<ImportCounts> {
+  const res = await http.post("/workload/subjects/import-from-scheduler");
   return counts(res.data);
 }
 

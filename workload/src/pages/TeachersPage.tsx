@@ -1,21 +1,13 @@
 import { useState, type FormEvent } from "react";
+import { createTeacher, importPreview, importRun, listDepartments, listTeachers, updateTeacher } from "../api";
+import { buildTeacherBody, changedFields, sortTeachers, TEACHER_NOUN, type TeacherForm } from "../registry";
+import type { Department, TeacherPatch, WlTeacher } from "../types";
 import {
-  apiErrorText, createTeacher, importPreview, importRun, listDepartments, listTeachers, updateTeacher,
-} from "../api";
-import { buildTeacherBody, changedFields, importSummary, sortTeachers, type TeacherForm } from "../registry";
-import type { Department, ImportCounts, TeacherPatch, WlTeacher } from "../types";
-import { useDepartmentGroups, useRegistryList, useSaving, useWriteErrors } from "../useRegistryList";
+  useDepartmentGroups, useRegistryList, useSaving, useSchedulerImport, useWriteErrors,
+} from "../useRegistryList";
 import {
-  DepartmentGroups, InactiveSwitch, NeverSentBadge, RegistryFrame, RowError, TeacherFields,
+  DepartmentGroups, ImportBox, InactiveSwitch, NeverSentBadge, RegistryFrame, RowError, TeacherFields,
 } from "./registryParts";
-
-type ImportState =
-  | { kind: "idle" }
-  | { kind: "checking" }
-  | { kind: "confirm"; counts: ImportCounts }
-  | { kind: "running" }
-  | { kind: "done"; counts: ImportCounts }
-  | { kind: "error"; message: string };
 
 const EMPTY_FORM: TeacherForm = { name: "", code: "", department_id: null, order: "" };
 
@@ -33,14 +25,13 @@ export default function TeachersPage() {
   const depts = useRegistryList(listDepartments);
   const { saving, run } = useSaving();
   const { addError, setAddError, rowError, setRowError } = useWriteErrors();
-  const [imp, setImp] = useState<ImportState>({ kind: "idle" });
+  const imp = useSchedulerImport(importPreview, importRun, teachers.reload);
   const [editingId, setEditingId] = useState<number | null>(null);
 
   const loaded = teachers.loaded && depts.loaded;
   const groups = useDepartmentGroups(teachers.rows, sortTeachers, depts.rows);
   const activeCount = teachers.rows.filter((t) => t.active).length;
-  const importBusy = imp.kind === "checking" || imp.kind === "running";
-  const disabled = saving || importBusy;
+  const disabled = saving || imp.busy;
 
   const patch = (id: number, body: TeacherPatch) => {
     setRowError(null);
@@ -60,7 +51,11 @@ export default function TeachersPage() {
       { name: t.name, code: t.code ?? null, department_id: t.department_id, dept_order: t.dept_order ?? null },
       built.body,
     );
-    if (Object.keys(changed).length === 0) return setEditingId(null);
+    if (Object.keys(changed).length === 0) {
+      // ไม่มีอะไรเปลี่ยน = ปิดตัวแก้ และข้อความแดงเก่าของแถวนี้ต้องหายไปด้วย
+      setRowError(null);
+      return setEditingId(null);
+    }
     if (await patch(t.id, changed)) setEditingId(null);
   };
 
@@ -79,26 +74,6 @@ export default function TeachersPage() {
     );
   };
 
-  const startImport = async () => {
-    setImp({ kind: "checking" });
-    try {
-      setImp({ kind: "confirm", counts: await importPreview() });
-    } catch (err) {
-      setImp({ kind: "error", message: apiErrorText(err) });
-    }
-  };
-
-  const confirmImport = async () => {
-    setImp({ kind: "running" });
-    try {
-      const counts = await importRun();
-      setImp({ kind: "done", counts });
-      teachers.reload();
-    } catch (err) {
-      setImp({ kind: "error", message: apiErrorText(err) });
-    }
-  };
-
   return (
     <RegistryFrame
       title="ทะเบียนครู"
@@ -111,41 +86,7 @@ export default function TeachersPage() {
         teachers.reload();
         depts.reload();
       }}
-      top={
-        <div className="mt-3 rounded border border-gray-300 bg-white p-3">
-          <button
-            onClick={startImport}
-            disabled={disabled || imp.kind === "confirm"}
-            className="rounded border border-blue-600 px-3 py-1 text-blue-700 disabled:opacity-50"
-          >
-            ดึงครูจากโปรแกรมจัดตาราง
-          </button>
-          {imp.kind === "checking" && <p role="status" className="mt-2">กำลังตรวจจำนวน...</p>}
-          {imp.kind === "running" && <p role="status" className="mt-2">กำลังดึงครู...</p>}
-          {imp.kind === "confirm" && (
-            <div className="mt-2" data-testid="import-confirm">
-              <p>{importSummary(imp.counts, "preview")}</p>
-              <p className="text-sm text-gray-600">ยังไม่ได้เขียนอะไรลงทะเบียน จนกว่าจะกดยืนยัน</p>
-              <div className="mt-2 flex gap-2">
-                {imp.counts.created > 0 && (
-                  <button onClick={confirmImport} className="rounded bg-blue-600 px-3 py-1 text-white">
-                    ยืนยันดึงครู {imp.counts.created} คน
-                  </button>
-                )}
-                <button onClick={() => setImp({ kind: "idle" })} className="rounded border border-gray-300 px-3 py-1">
-                  {imp.counts.created > 0 ? "ยกเลิก" : "ปิด"}
-                </button>
-              </div>
-            </div>
-          )}
-          {imp.kind === "done" && (
-            <p role="status" className="mt-2 text-green-800" data-testid="import-done">
-              {importSummary(imp.counts, "done")}
-            </p>
-          )}
-          {imp.kind === "error" && <p role="alert" className="mt-2 text-red-700">{imp.message}</p>}
-        </div>
-      }
+      top={<ImportBox imp={imp} noun={TEACHER_NOUN} disabled={disabled} />}
     >
       <AddTeacherForm departments={depts.rows} disabled={disabled} error={addError} onAdd={addTeacher} />
       <DepartmentGroups
@@ -190,7 +131,7 @@ function AddTeacherForm(props: {
   };
 
   return (
-    <form onSubmit={submit} aria-label="เพิ่มครู" className="mt-3 mb-4 flex flex-wrap items-center gap-2 rounded border border-gray-300 bg-white p-3">
+    <form onSubmit={submit} aria-label="เพิ่มครู" className="mt-3 mb-4 flex flex-wrap items-end gap-2 rounded border border-gray-300 bg-white p-3">
       <TeacherFields value={form} onChange={setForm} departments={props.departments} disabled={props.disabled} />
       <button type="submit" disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">
         เพิ่มครู
@@ -215,7 +156,7 @@ function TeacherRow(props: {
   const [form, setForm] = useState<TeacherForm>(formOf(t));
 
   return (
-    <div className={`flex flex-wrap items-center gap-2 ${t.active ? "" : "opacity-50"}`} data-testid={`teacher-${t.id}`}>
+    <div className={`flex flex-wrap gap-2 ${props.editing ? "items-end" : "items-center"} ${t.active ? "" : "opacity-50"}`} data-testid={`teacher-${t.id}`}>
       {props.editing ? (
         <>
           <TeacherFields value={form} onChange={setForm} departments={props.departments} disabled={props.disabled} />

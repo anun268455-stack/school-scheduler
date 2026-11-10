@@ -1,21 +1,49 @@
-import type { ReactNode } from "react";
-import type { DepartmentGroup, TeacherForm } from "../registry";
+import { useId, type ReactNode } from "react";
+import { importSummary, type DepartmentGroup, type ImportNoun, type TeacherForm } from "../registry";
 import type { Department } from "../types";
+import type { SchedulerImport } from "../useRegistryList";
 
 // ชิ้นส่วนที่ทะเบียนครูและทะเบียนวิชาใช้ร่วมกัน
 
 export const inputClass = "rounded border border-gray-300 px-2 py-1 disabled:opacity-50";
 
+// ป้ายที่มองเห็นได้เหนือช่องกรอก ผูกด้วย htmlFor/id · ตัวแก้ในแถวกรอกค่าไว้แล้ว placeholder จึงไม่โชว์
+// ถ้าไม่มีป้าย ช่อง "รหัสประจำตัว" กับ "ลำดับในกลุ่ม" ที่เป็นตัวเลขทั้งคู่และกว้างเท่ากันจะแยกไม่ออก
+export function Field(props: { label: string; htmlFor: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col">
+      <label htmlFor={props.htmlFor} className="text-xs text-gray-600">{props.label}</label>
+      {props.children}
+    </div>
+  );
+}
+
+// ช่องติ๊กที่ป้ายอยู่ข้างช่อง (ป้ายห่อช่องไว้ และผูก htmlFor/id ด้วย)
+export function CheckField(props: {
+  id: string;
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled: boolean;
+}) {
+  return (
+    <label htmlFor={props.id} className="flex items-center gap-1 pb-1 text-sm whitespace-nowrap">
+      <input id={props.id} type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} disabled={props.disabled} />
+      {props.label}
+    </label>
+  );
+}
+
 export function DepartmentSelect(props: {
+  id: string;
   value: number | null;
   onChange: (v: number | null) => void;
   departments: Department[];
   disabled?: boolean;
-  label: string;
 }) {
   return (
     <select
-      aria-label={props.label}
+      id={props.id}
       value={props.value ?? ""}
       disabled={props.disabled}
       onChange={(e) => props.onChange(e.target.value === "" ? null : Number(e.target.value))}
@@ -98,22 +126,72 @@ export function RowError(props: { message: string | null }) {
   return props.message ? <p role="alert" className="w-full text-red-700">{props.message}</p> : null;
 }
 
-// ช่องกรอกครู ใช้ทั้งฟอร์มเพิ่มและการแก้ในแถว
+// ช่องกรอกครู ใช้ทั้งฟอร์มเพิ่มและการแก้ในแถว · useId ให้ id ไม่ซ้ำกันระหว่างแถว
 export function TeacherFields(props: {
   value: TeacherForm;
   onChange: (v: TeacherForm) => void;
   departments: Department[];
   disabled: boolean;
 }) {
+  const id = useId();
   const v = props.value;
   const set = (p: Partial<TeacherForm>) => props.onChange({ ...v, ...p });
   return (
     <>
-      <input aria-label="ชื่อครู" placeholder="ชื่อครู" value={v.name} onChange={(e) => set({ name: e.target.value })} disabled={props.disabled} className={inputClass} />
-      <input aria-label="รหัสประจำตัว" placeholder="รหัสประจำตัว" value={v.code} onChange={(e) => set({ code: e.target.value })} disabled={props.disabled} className={`${inputClass} w-28`} />
-      <DepartmentSelect label="กลุ่มสาระ" value={v.department_id} onChange={(d) => set({ department_id: d })} departments={props.departments} disabled={props.disabled} />
-      <input aria-label="ลำดับในกลุ่ม" placeholder="ลำดับในกลุ่ม" value={v.order} onChange={(e) => set({ order: e.target.value })} disabled={props.disabled} inputMode="numeric" className={`${inputClass} w-28`} />
+      <Field label="ชื่อครู" htmlFor={`${id}-name`}>
+        <input id={`${id}-name`} placeholder="ชื่อครู" value={v.name} onChange={(e) => set({ name: e.target.value })} disabled={props.disabled} className={inputClass} />
+      </Field>
+      <Field label="รหัสประจำตัว" htmlFor={`${id}-code`}>
+        <input id={`${id}-code`} placeholder="รหัสประจำตัว" value={v.code} onChange={(e) => set({ code: e.target.value })} disabled={props.disabled} className={`${inputClass} w-28`} />
+      </Field>
+      <Field label="กลุ่มสาระ" htmlFor={`${id}-dept`}>
+        <DepartmentSelect id={`${id}-dept`} value={v.department_id} onChange={(d) => set({ department_id: d })} departments={props.departments} disabled={props.disabled} />
+      </Field>
+      <Field label="ลำดับในกลุ่ม" htmlFor={`${id}-order`}>
+        <input id={`${id}-order`} placeholder="ลำดับในกลุ่ม" value={v.order} onChange={(e) => set({ order: e.target.value })} disabled={props.disabled} inputMode="numeric" className={`${inputClass} w-28`} />
+      </Field>
     </>
+  );
+}
+
+// กล่องปุ่มดึงจากโปรแกรมจัดตาราง ใช้ร่วมกันทั้งทะเบียนครูและทะเบียนวิชา
+export function ImportBox(props: { imp: SchedulerImport; noun: ImportNoun; disabled: boolean }) {
+  const { state, start, confirm, cancel } = props.imp;
+  const n = props.noun;
+  return (
+    <div className="mt-3 rounded border border-gray-300 bg-white p-3">
+      <button
+        onClick={() => void start()}
+        disabled={props.disabled || state.kind === "confirm"}
+        className="rounded border border-blue-600 px-3 py-1 text-blue-700 disabled:opacity-50"
+      >
+        ดึง{n.thing}จากโปรแกรมจัดตาราง
+      </button>
+      {state.kind === "checking" && <p role="status" className="mt-2">กำลังตรวจจำนวน...</p>}
+      {state.kind === "running" && <p role="status" className="mt-2">กำลังดึง{n.thing}...</p>}
+      {state.kind === "confirm" && (
+        <div className="mt-2" data-testid="import-confirm">
+          <p>{importSummary(state.counts, "preview", n)}</p>
+          <p className="text-sm text-gray-600">ยังไม่ได้เขียนอะไรลงทะเบียน จนกว่าจะกดยืนยัน</p>
+          <div className="mt-2 flex gap-2">
+            {state.counts.created > 0 && (
+              <button onClick={() => void confirm()} className="rounded bg-blue-600 px-3 py-1 text-white">
+                ยืนยันดึง{n.thing} {state.counts.created} {n.unit}
+              </button>
+            )}
+            <button onClick={cancel} className="rounded border border-gray-300 px-3 py-1">
+              {state.counts.created > 0 ? "ยกเลิก" : "ปิด"}
+            </button>
+          </div>
+        </div>
+      )}
+      {state.kind === "done" && (
+        <p role="status" className="mt-2 text-green-800" data-testid="import-done">
+          {importSummary(state.counts, "done", n)}
+        </p>
+      )}
+      {state.kind === "error" && <p role="alert" className="mt-2 text-red-700">{state.message}</p>}
+    </div>
   );
 }
 
