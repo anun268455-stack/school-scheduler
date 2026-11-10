@@ -7,6 +7,7 @@
 """
 import asyncio
 import contextlib
+import io
 import sys
 from types import SimpleNamespace
 
@@ -186,11 +187,84 @@ def test_wl_db_commits_on_clean_exit_and_not_on_error():
         ok("commit" not in log, "บล็อกยกข้อผิดพลาดต้องไม่ commit")
         log.clear()
         try:
-            with mock_api._wl_db():
+            with contextlib.redirect_stderr(io.StringIO()), mock_api._wl_db():
                 raise ValueError("x")
-        except ValueError:
+        except Exception:  # noqa: BLE001
             pass
         ok("commit" not in log, "ข้อผิดพลาดอื่นต้องไม่ commit")
+
+
+def _capture_wl_db(conn, body):
+    """เข้า _wl_db() กับการเชื่อมต่อปลอม รันบล็อก · คืน (exception ที่หลุดออกมา, ข้อความที่พิมพ์ออก)"""
+    out, err = io.StringIO(), io.StringIO()
+    got = None
+    with patched(_STORE_KIND="postgres", _db_connect=lambda: conn, _WL_SCHEMA_READY=True):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                with mock_api._wl_db() as cur:
+                    body(cur)
+            except BaseException as e:  # noqa: BLE001
+                got = e
+    return got, out.getvalue() + err.getvalue()
+
+
+def _expect_500(got, what):
+    ok(isinstance(got, HTTPException), f"{what}: ต้องได้ HTTPException ได้ {type(got).__name__}")
+    if isinstance(got, HTTPException):
+        ok(got.status_code == 500, f"{what}: ต้อง 500 ได้ {got.status_code}")
+        ok(got.detail == mock_api.wl_server_error_detail() and not str(got.detail).isascii(),
+           f"{what}: ข้อความไทย")
+
+
+class _SqlError(Exception):
+    sqlstate = "23505"
+
+
+def _secret(tail):
+    # ประกอบตอนรัน: stack frames พิมพ์บรรทัดโค้ดของต้นทางด้วย ถ้าเขียนค่าตรง ๆ ในบรรทัด raise
+    # ตัวทดสอบจะเจอค่าจากบรรทัดโค้ด ไม่ได้ตรวจว่าข้อความของ exception หลุดลง log หรือไม่
+    return "SECRET-" + tail
+
+
+def test_wl_db_error_inside_block_is_thai_500_without_row_values_in_the_log():
+    # ข้อผิดพลาดกลางคำขอ (แถวเสีย การเชื่อมต่อหลุด) ต้องได้คำตอบที่หน้าเว็บอ่านได้ ไม่ใช่ 500 เปล่าไร้ CORS
+    log: list[str] = []
+
+    def body(cur):
+        raise RuntimeError(_secret("row-value"))
+    got, printed = _capture_wl_db(_Conn(log), body)
+    _expect_500(got, "บล็อกยกข้อผิดพลาด")
+    ok("commit" not in log, "บล็อกยกข้อผิดพลาดต้องไม่ commit")
+    ok("SECRET-row-value" not in printed, "log ห้ามมีข้อความของ exception (มีค่าในแถว)")
+    ok("RuntimeError" in printed, "log ต้องมีชื่อชนิด exception ให้ตามรอยได้")
+    ok("body" in printed, "log ต้องมี stack frames")
+
+    def body2(cur):
+        raise _SqlError(_secret("salt-hash"))
+    got, printed = _capture_wl_db(_Conn([]), body2)
+    _expect_500(got, "ข้อผิดพลาดของฐานข้อมูล")
+    ok("23505" in printed and "_SqlError" in printed, "log ต้องมี sqlstate และชื่อชนิด")
+    ok("SECRET-salt-hash" not in printed, "log ห้ามมีข้อความของ exception (sqlstate)")
+
+
+def test_wl_db_commit_failure_is_thai_500():
+    class BadCommit(_Conn):
+        def commit(self):
+            raise RuntimeError(_secret("commit-value"))
+    got, printed = _capture_wl_db(BadCommit([]), lambda cur: None)
+    _expect_500(got, "commit ล้ม")
+    ok("SECRET-commit-value" not in printed and "RuntimeError" in printed, "log ของ commit ล้ม")
+
+
+def test_wl_db_http_exception_inside_block_passes_through():
+    log: list[str] = []
+
+    def body(cur):
+        raise HTTPException(409, "ซ้ำ")
+    got, printed = _capture_wl_db(_Conn(log), body)
+    ok(isinstance(got, HTTPException) and got.status_code == 409 and got.detail == "ซ้ำ",
+       "HTTPException(409) ต้องผ่านออกมาตามเดิม")
+    ok("commit" not in log and printed == "", "409 ไม่ commit และไม่พิมพ์อะไร")
 
 
 def test_schema_flag_not_set_when_first_block_fails():

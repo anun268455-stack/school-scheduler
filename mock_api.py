@@ -19,6 +19,8 @@ import contextlib as _contextlib
 import hashlib as _hashlib
 import hmac as _hmac
 import secrets as _secrets
+import sys as _sys
+import traceback as _traceback
 from collections import Counter, defaultdict
 from contextvars import ContextVar
 import substitution as _SUB
@@ -88,6 +90,10 @@ def _nothing_changed() -> None:
 # เช่น "/api/terms/" ครอบ "/api/terms/3/unlock"
 # "/api/workload/" (เว็บลงอัตรากำลัง) อยู่ในลิสต์นี้ด้วย: มันเขียนแต่ตาราง wl_* ที่อยู่
 # นอกข้อมูลของเทอม การปิดเทอมของเว็บตารางจึงต้องไม่ห้ามการกรอกอัตรากำลัง
+# คำเตือน: route ใต้ prefix นี้ห้ามแก้ TEACHERS / SUBJECTS / REQUIREMENTS / SLOTS ในหน่วยความจำ
+# เด็ดขาด เพราะ path นี้ข้ามทั้งสามด่านของเว็บตาราง: ไม่บวกตัวนับรุ่น ไม่บันทึก snapshot และไม่ผ่าน
+# ด่านเทอมปิด สิ่งที่แก้จะหายเมื่อเซิร์ฟเวอร์เริ่มใหม่ และอาจไปแก้เทอมที่ปิดแล้วได้
+# การส่งข้อมูลเข้าโปรแกรมจัดตาราง (ขั้นที่ 3) ต้องผ่าน endpoint เดิมของเว็บตารางตามสเปกส่วนที่ 7
 WORKLOAD_PREFIX: str = "/api/workload/"
 TERM_WRITE_SAFE_PATHS: frozenset[str] = frozenset({
     "/api/terms", "/api/terms/", "/api/restore", "/api/state/adopt",
@@ -13796,6 +13802,23 @@ def wl_db_error_detail() -> str:
     return "ต่อฐานข้อมูลไม่ได้ จึงใช้เว็บลงอัตรากำลังไม่ได้ในตอนนี้ ลองใหม่อีกครั้งภายหลัง"
 
 
+def wl_server_error_detail() -> str:
+    """ข้อความไทยเมื่อเกิดข้อผิดพลาดที่เซิร์ฟเวอร์กลางคำขอ — ใช้ร่วมกันทุก route"""
+    return ("เกิดข้อผิดพลาดที่เซิร์ฟเวอร์ ทำรายการไม่สำเร็จ ลองใหม่อีกครั้ง "
+            "ถ้ายังไม่ได้ให้แจ้งผู้ดูแลระบบ")
+
+
+def _wl_log_server_error(exc: BaseException) -> None:
+    # พิมพ์แค่ชื่อชนิด sqlstate และ stack frames ห้ามพิมพ์ข้อความของ exception เด็ดขาด:
+    # ข้อความของ psycopg ยกค่าในแถวที่ผิดมาด้วย (label, salt, แฮชของรหัส) ซึ่งห้ามไปอยู่ใน log
+    # ของ Render ส่วน stack frames มีแค่ชื่อไฟล์ บรรทัด และโค้ด พอให้คนดูแลตามรอยได้
+    state = getattr(exc, "sqlstate", None)
+    lines = [f"[workload] ข้อผิดพลาดที่เซิร์ฟเวอร์: {type(exc).__name__}"
+             + (f" sqlstate={state}" if state else "") + "\n"]
+    lines += _traceback.format_tb(exc.__traceback__)
+    print("".join(lines), end="", file=_sys.stderr, flush=True)
+
+
 @_contextlib.contextmanager
 def _wl_db():
     """เปิดการเชื่อมต่อ + สร้างตาราง wl_* แล้วส่ง cursor ให้บล็อก · commit เมื่อบล็อกจบปกติ
@@ -13810,16 +13833,25 @@ def _wl_db():
         conn = _db_connect()
     except Exception:
         raise HTTPException(503, wl_db_error_detail()) from None
-    # `with conn` ของ psycopg ย้อนกลับเมื่อบล็อกยกข้อผิดพลาด แล้วปิดการเชื่อมต่อเสมอ
-    with conn:
-        with conn.cursor() as cur:
-            if not _WL_SCHEMA_READY:
-                try:
-                    _wl_schema(cur)
-                except Exception:
-                    raise HTTPException(503, wl_db_error_detail()) from None
-            yield cur
-        conn.commit()
+    # ข้อผิดพลาดอื่นกลางบล็อกหรือตอน commit (การเชื่อมต่อหลุด แถวเสียหนึ่งแถว) ต้องกลายเป็น
+    # HTTPException 500 ข้อความไทย: 500 เปล่าถูกส่งจากชั้นนอกของ Starlette โดยไม่มีหัว CORS
+    # หน้าเว็บที่อยู่ต่างโดเมนจึงไม่เห็นคำตอบเลย แล้วบอกผู้ใช้ผิด ๆ ว่าเซิร์ฟเวอร์กำลังตื่น
+    try:
+        # `with conn` ของ psycopg ย้อนกลับเมื่อบล็อกยกข้อผิดพลาด แล้วปิดการเชื่อมต่อเสมอ
+        with conn:
+            with conn.cursor() as cur:
+                if not _WL_SCHEMA_READY:
+                    try:
+                        _wl_schema(cur)
+                    except Exception:
+                        raise HTTPException(503, wl_db_error_detail()) from None
+                yield cur
+            conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        _wl_log_server_error(e)
+        raise HTTPException(500, wl_server_error_detail()) from None
     _set_wl_schema_ready()
 
 
@@ -14440,53 +14472,92 @@ def wl_subjects_update(subject_id: int, request: Request, body: Any = Body(None)
         return _wl_update_row(cur, "wl_subjects", _WL_SUBJECT_COLS, subject_id, vals)
 
 
-def _wl_import_guard() -> None:
-    # ตอนที่ _db_write_blocked() เป็นจริง TEACHERS ในหน่วยความจำคือข้อมูลตั้งต้นที่มากับโค้ด
-    # ไม่ใช่ครูของโรงเรียน ดึงเข้ามาจะได้ครูผิดชุดพร้อมรหัสที่ผูกผิดคน ซึ่งแก้ทีหลังยากมาก
+def _wl_import_guard(noun: str) -> None:
+    # ตอนที่ _db_write_blocked() เป็นจริง TEACHERS/SUBJECTS ในหน่วยความจำคือข้อมูลตั้งต้นที่มากับโค้ด
+    # ไม่ใช่ของโรงเรียน ดึงเข้ามาจะได้รายการผิดชุดพร้อมรหัสที่ผูกผิดตัว ซึ่งแก้ทีหลังยากมาก
     if _db_write_blocked():
         raise HTTPException(
-            503, "เซิร์ฟเวอร์ยังโหลดข้อมูลของโรงเรียนไม่สำเร็จ จึงยังดึงครูจากโปรแกรมจัดตารางไม่ได้ "
+            503, f"เซิร์ฟเวอร์ยังโหลดข้อมูลของโรงเรียนไม่สำเร็จ จึงยังดึง{noun}จากโปรแกรมจัดตารางไม่ได้ "
                  "รอสักครู่แล้วลองใหม่ หรือแจ้งผู้ดูแลระบบ")
 
 
-def _wl_import_existing(cur) -> list[dict[str, Any]]:
-    cur.execute("SELECT id, sched_id, name FROM wl_teachers")
-    return [dict(zip(("id", "sched_id", "name"), r)) for r in cur.fetchall()]
+def _wl_teacher_from_sched(t: dict[str, Any]) -> tuple:
+    return (t["id"], str(t.get("name") or ""), t.get("code"), t.get("department_id"),
+            t.get("dept_order"), bool(t.get("active", True)))
+
+
+def _wl_subject_from_sched(s: dict[str, Any]) -> tuple:
+    return (s["id"], str(s.get("code") or ""), str(s.get("name") or ""), s.get("type") or "common",
+            s.get("department_id"), s.get("duration") or 1, bool(s.get("is_activity")),
+            bool(s.get("is_elective")), bool(s.get("active", True)))
+
+
+# ช่องที่คัดลอกจากโปรแกรมจัดตาราง = ช่องตัวตนเท่านั้น ไม่มีช่องเงื่อนไขของเครื่องจัดคาบแม้ช่องเดียว
+# (fixed_room_id ห้องที่ใช้ได้ credits ฯลฯ ยังเป็นของเว็บตาราง) ลำดับต้องตรงกับตัวแปลงแถวข้างบน
+_WL_IMPORTS: dict[str, tuple[str, str, tuple[str, ...], Callable[[dict[str, Any]], tuple]]] = {
+    "teachers": ("wl_teachers", "ครู",
+                 ("sched_id", "name", "code", "department_id", "dept_order", "active"),
+                 _wl_teacher_from_sched),
+    "subjects": ("wl_subjects", "วิชา",
+                 ("sched_id", "code", "name", "type", "department_id", "duration",
+                  "is_activity", "is_elective", "active"),
+                 _wl_subject_from_sched),
+}
+
+
+def _wl_import_from_scheduler(request: Request, kind: str, source: list[dict[str, Any]],
+                              write: bool) -> dict[str, int]:
+    """ดึงครูหรือวิชาจากโปรแกรมจัดตาราง (write=False = ดูก่อน ไม่เขียนอะไรเลย)
+
+    อ่านลิสต์ต้นทางอย่างเดียว ไม่แก้ dict ในลิสต์ · จับคู่ด้วย sched_id ผ่าน wl_import_plan เท่านั้น
+    ON CONFLICT DO NOTHING แล้วนับจาก rowcount: admin สองคนกดพร้อมกันต้องไม่ได้ 500
+    หรือแถวซ้ำ แถวที่ชนนับเป็น linked
+    """
+    table, noun, cols, to_row = _WL_IMPORTS[kind]
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        _wl_import_guard(noun)
+        cur.execute(f"SELECT id, sched_id, name FROM {table}")
+        existing = [dict(zip(("id", "sched_id", "name"), r)) for r in cur.fetchall()]
+        plan = wl_import_plan(list(source), existing)
+        created = len(plan["create"])
+        if write:
+            created = 0
+            sql = (f"INSERT INTO {table} ({', '.join(cols)}) "
+                   f"VALUES ({', '.join(['%s'] * len(cols))}) ON CONFLICT (sched_id) DO NOTHING")
+            for row in plan["create"]:
+                cur.execute(sql, to_row(row))
+                created += 1 if cur.rowcount == 1 else 0
+        return {"created": created,
+                "linked": len(plan["already"]) + len(plan["create"]) - created,
+                "skipped": len(plan["skipped"])}
 
 
 @app.get("/api/workload/teachers/import-from-scheduler")
 def wl_teachers_import_preview(request: Request) -> dict[str, int]:
     """ดูก่อนดึง: ตัวเลขที่ POST จะทำ โดยไม่เขียนอะไรเลย"""
-    with _wl_db() as cur:
-        wl_require_admin(request, cur)
-        _wl_import_guard()
-        plan = wl_import_plan(list(TEACHERS), _wl_import_existing(cur))
-        return {"created": len(plan["create"]), "linked": len(plan["already"]),
-                "skipped": len(plan["skipped"])}
+    return _wl_import_from_scheduler(request, "teachers", TEACHERS, write=False)
 
 
 @app.post("/api/workload/teachers/import-from-scheduler")
 def wl_teachers_import(request: Request) -> dict[str, int]:
-    """คัดลอกครูจากโปรแกรมจัดตารางครั้งแรก · อ่าน TEACHERS อย่างเดียว ไม่เขียน
+    """คัดลอกครูจากโปรแกรมจัดตารางครั้งแรก · อ่าน TEACHERS อย่างเดียว ไม่เขียน"""
+    return _wl_import_from_scheduler(request, "teachers", TEACHERS, write=True)
 
-    ON CONFLICT DO NOTHING แล้วนับจาก rowcount: admin สองคนกดพร้อมกันต้องไม่ได้ 500
-    หรือครูซ้ำ แถวที่ชนนับเป็น linked · ไม่คัดลอกช่องเงื่อนไขของเครื่องจัดคาบแม้ช่องเดียว
+
+@app.get("/api/workload/subjects/import-from-scheduler")
+def wl_subjects_import_preview(request: Request) -> dict[str, int]:
+    """ดูก่อนดึงวิชา: ตัวเลขที่ POST จะทำ โดยไม่เขียนอะไรเลย"""
+    return _wl_import_from_scheduler(request, "subjects", SUBJECTS, write=False)
+
+
+@app.post("/api/workload/subjects/import-from-scheduler")
+def wl_subjects_import(request: Request) -> dict[str, int]:
+    """คัดลอกวิชาจากโปรแกรมจัดตารางครั้งแรก · อ่าน SUBJECTS อย่างเดียว ไม่เขียน
+
+    ไม่มีปุ่มนี้ วิชาที่พิมพ์เองทุกแถวจะไม่มี sched_id และกลายเป็นวิชาซ้ำในขั้นที่ 3
     """
-    with _wl_db() as cur:
-        wl_require_admin(request, cur)
-        _wl_import_guard()
-        plan = wl_import_plan(list(TEACHERS), _wl_import_existing(cur))
-        created = 0
-        for t in plan["create"]:
-            cur.execute(
-                "INSERT INTO wl_teachers (sched_id, name, code, department_id, dept_order, active) "
-                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (sched_id) DO NOTHING",
-                (t["id"], str(t.get("name") or ""), t.get("code"), t.get("department_id"),
-                 t.get("dept_order"), bool(t.get("active", True))))
-            created += 1 if cur.rowcount == 1 else 0
-        return {"created": created,
-                "linked": len(plan["already"]) + len(plan["create"]) - created,
-                "skipped": len(plan["skipped"])}
+    return _wl_import_from_scheduler(request, "subjects", SUBJECTS, write=True)
 
 
 def _check_term_status(status: str) -> None:

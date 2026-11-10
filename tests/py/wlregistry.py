@@ -238,6 +238,8 @@ def test_writes_are_admin_only_and_write_nothing_for_heads():
         (mock_api.wl_subjects_update, (1, REQ, {"active": False})),
         (mock_api.wl_teachers_import_preview, (REQ,)),
         (mock_api.wl_teachers_import, (REQ,)),
+        (mock_api.wl_subjects_import_preview, (REQ,)),
+        (mock_api.wl_subjects_import, (REQ,)),
     ]
     for fn, args in cases:
         cur = _Cur(_sess("head"), [[TROW]])
@@ -276,19 +278,30 @@ def test_bad_body_rejected_before_any_write():
 
 
 # ── ดึงครู ─────────────────────────────────────────────────────────────
-class _Teachers:
-    """แทน TEACHERS ชั่วคราว + จำว่าถูกแก้หรือไม่"""
+class _Sched:
+    """แทนลิสต์ของโปรแกรมจัดตาราง (TEACHERS หรือ SUBJECTS) ชั่วคราว + สถานะ write-blocked"""
+    attr = "TEACHERS"
+
     def __init__(self, rows, blocked=False):
         self.rows, self.blocked = rows, blocked
 
     def __enter__(self):
-        self.t0, self.b0 = mock_api.TEACHERS, mock_api._db_write_blocked
-        mock_api.TEACHERS = self.rows
+        self.t0, self.b0 = getattr(mock_api, self.attr), mock_api._db_write_blocked
+        setattr(mock_api, self.attr, self.rows)
         mock_api._db_write_blocked = lambda: self.blocked
         return self
 
     def __exit__(self, *a):
-        mock_api.TEACHERS, mock_api._db_write_blocked = self.t0, self.b0
+        setattr(mock_api, self.attr, self.t0)
+        mock_api._db_write_blocked = self.b0
+
+
+class _Teachers(_Sched):
+    attr = "TEACHERS"
+
+
+class _Subjects(_Sched):
+    attr = "SUBJECTS"
 
 
 def test_import_refused_while_school_data_not_loaded():
@@ -335,6 +348,82 @@ def test_import_post_counts_real_rowcount_and_copies_only_registry_fields():
     assert sched == snap
 
 
+# ── ดึงวิชา (พฤติกรรมเดียวกับดึงครู) ───────────────────────────────────
+def _inserts(cur):
+    return [(s, p) for s, p in cur.log if s.lstrip().upper().startswith("INSERT")]
+
+
+def test_subject_import_refused_while_school_data_not_loaded():
+    with _Subjects([{"id": 1, "code": "a", "name": "ก"}], blocked=True):
+        for fn in (mock_api.wl_subjects_import_preview, mock_api.wl_subjects_import):
+            cur = _Cur(_sess("admin"), [[]])
+            c, d = _code(lambda: _call(fn, cur, REQ))
+            assert c == 503 and not d.isascii() and "วิชา" in d, (fn.__name__, d)
+            assert _writes(cur) == []
+
+
+def test_subject_import_preview_counts_and_writes_nothing():
+    sched = [{"id": 1, "code": "a", "name": "ก"}, {"id": 2, "code": "b", "name": "ข"},
+             {"id": 3, "code": "c", "name": "ค"}, {"code": "x", "name": "ไม่มีรหัส"}]
+    with _Subjects(sched):
+        cur = _Cur(_sess("admin"), [[(10, 1, "ก")]])
+        out = _call(mock_api.wl_subjects_import_preview, cur, REQ)
+    assert out == {"created": 2, "linked": 1, "skipped": 1}
+    assert _writes(cur) == []
+    assert any("FROM wl_subjects" in s for s, _ in cur.log)
+
+
+def test_subject_import_post_copies_only_identity_fields():
+    sched = [{"id": 1, "code": "MA1", "name": "คณิต", "type": "parallel", "department_id": 2,
+              "duration": 2, "is_activity": True, "is_elective": True, "active": False,
+              "fixed_room_id": 9, "credits": 1.5, "allowed_rooms": [1, 2], "prefer_morning": True},
+             {"id": 2, "code": None, "name": None},
+             {"id": 3, "code": "SC1", "name": "วิทย์"}]
+    snap = copy.deepcopy(sched)
+
+    class Cur(_Cur):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if sql.lstrip().upper().startswith("INSERT"):
+                self.rowcount = 0 if params[0] == 3 else 1   # รายการที่สามชนกับ admin อีกคน
+    with _Subjects(sched):
+        cur = Cur(_sess("admin"), [[]])
+        out = _call(mock_api.wl_subjects_import, cur, REQ)
+    assert out == {"created": 2, "linked": 1, "skipped": 0}
+    ins = _inserts(cur)
+    assert len(ins) == 3
+    for sql, params in ins:
+        assert "INTO wl_subjects" in sql and "ON CONFLICT (sched_id) DO NOTHING" in sql
+        for bad in ("fixed_room_id", "credits", "room", "prefer"):
+            assert bad not in sql, bad
+        assert 9 not in params and 1.5 not in params and [1, 2] not in params
+    assert ins[0][1] == (1, "MA1", "คณิต", "parallel", 2, 2, True, True, False)
+    assert ins[1][1] == (2, "", "", "common", None, 1, False, False, True)
+    assert sched == snap, "ห้ามแก้ dict ใน SUBJECTS"
+
+
+def test_subject_import_same_name_and_code_different_id_makes_two_rows():
+    sched = [{"id": 5, "code": "MA1", "name": "คณิต"}, {"id": 6, "code": "MA1", "name": "คณิต"}]
+
+    class Cur(_Cur):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if sql.lstrip().upper().startswith("INSERT"):
+                self.rowcount = 1
+    with _Subjects(sched):
+        cur = Cur(_sess("admin"), [[(1, None, "คณิต")]])   # แถวพิมพ์เองชื่อเดียวกันไม่ถูกนับว่ามีแล้ว
+        out = _call(mock_api.wl_subjects_import, cur, REQ)
+    assert out == {"created": 2, "linked": 0, "skipped": 0}
+    assert [p[0] for _, p in _inserts(cur)] == [5, 6]
+
+
+def test_teacher_import_reads_teachers_not_subjects():
+    with _Teachers([{"id": 1, "name": "ก"}]), _Subjects([{"id": 1, "code": "a", "name": "ข"},
+                                                         {"id": 2, "code": "b", "name": "ค"}]):
+        out = _call(mock_api.wl_teachers_import_preview, _Cur(_sess("admin"), [[]]), REQ)
+    assert out == {"created": 1, "linked": 0, "skipped": 0}
+
+
 # ── ไม่มี endpoint ลบ ──────────────────────────────────────────────────
 def test_no_delete_route_under_workload():
     verbs = [(v, p) for v, p, _ in mock_api.app.routes if p.startswith("/api/workload")]
@@ -346,7 +435,9 @@ def test_no_delete_route_under_workload():
                  ("get", "/api/workload/subjects"), ("post", "/api/workload/subjects"),
                  ("put", "/api/workload/subjects/{subject_id}"),
                  ("get", "/api/workload/teachers/import-from-scheduler"),
-                 ("post", "/api/workload/teachers/import-from-scheduler")):
+                 ("post", "/api/workload/teachers/import-from-scheduler"),
+                 ("get", "/api/workload/subjects/import-from-scheduler"),
+                 ("post", "/api/workload/subjects/import-from-scheduler")):
         assert want in paths, want
 
 
