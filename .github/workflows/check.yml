@@ -1,0 +1,62 @@
+name: ตรวจสาขา (lint + build) — ไม่ขึ้นเว็บ
+
+# งานนี้ "ตรวจอย่างเดียว" ตั้งใจให้ไม่มีขั้น deploy และไม่มีสิทธิ์เขียน repo
+# จะได้ push สาขาที่ยังทำไม่เสร็จขึ้นมาตรวจได้ โดยเว็บที่ครูใช้งานอยู่ไม่เปลี่ยนอะไรเลย
+#
+# เว็บขึ้นจาก .github/workflows/deploy.yml ซึ่งทำงานเฉพาะตอน push เข้า main เท่านั้น
+# ไฟล์นี้จึงกันไม่ให้ main เข้ามาซ้ำ เพราะ deploy.yml ก็ lint + build อยู่แล้ว
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# อ่านได้อย่างเดียว — ต่างจาก deploy.yml ที่ต้องมี contents: write เพื่อเขียน gh-pages
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # lint กับ build ใช้ Node 20 ให้ตรงกับ deploy.yml เป๊ะ ๆ
+      # ไม่งั้นด่านนี้จะตรวจคนละสภาพแวดล้อมกับที่ขึ้นเว็บจริง ซึ่งไร้ประโยชน์
+      - name: Setup Node.js 20 (ให้ตรงกับ deploy.yml)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Lint
+        run: npm run lint
+        working-directory: frontend
+
+      # build ต้องใช้ VITE_API_URL เป็น secret เหมือน deploy.yml ไม่งั้นค่าจะว่าง
+      # ซึ่งไม่เป็นไรสำหรับการตรวจว่าคอมไพล์ผ่าน เพราะไม่มีใครเอาผลนี้ไปใช้
+      - name: Build (tsc + vite)
+        run: npm run build
+        working-directory: frontend
+        env:
+          VITE_BASE_URL: /${{ github.event.repository.name }}/
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+      # ตัวทดสอบฝั่ง TypeScript รันไฟล์ .ts ตรง ๆ ด้วย node ซึ่งต้อง Node 22 ขึ้นไป
+      # (Node 20 ตอบ ERR_UNKNOWN_FILE_EXTENSION) จึงสลับมาเฉพาะขั้นนี้ หลัง build เสร็จแล้ว
+      # ดู tests/README.md
+      - name: Setup Node.js 22 (ตัวทดสอบต้องใช้)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: ตัวทดสอบของโปรแกรม
+        run: bash tests/run.sh
