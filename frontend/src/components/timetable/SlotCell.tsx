@@ -6,6 +6,7 @@ import { problemOf, parentMap, type ProblemKind, type SlotProblem } from "../../
 import { useTimetableStore } from "../../store/timetableStore";
 import { cellFont } from "../../utils/cellScale";
 import { normalizeScreenLayout, type CellPartKey } from "../../utils/cellLayout";
+import { classRanges } from "../../utils/classRange";
 
 interface SlotCellProps {
   slots:       TimetableSlot[];
@@ -92,9 +93,16 @@ export const SlotCell: React.FC<SlotCellProps> = ({
            — "สามช่องที่ซ่อนกัน". One line each instead, with the subgroup
            letter in front, and the whole thing on hover. */
         <div className="flex flex-col h-full divide-y divide-gray-200/70">
-          {slots.map((s) => (
-            <MiniLayer key={s.id} slot={s} label={shortName(s.group_name, slots)}
-              problem={probs.get(s.id) ?? null} />
+          {mergeParallel(slots).map((row) => (
+            row.length === 1
+              ? <MiniLayer key={row[0].id} slot={row[0]} label={shortName(row[0].group_name, slots)}
+                  problem={probs.get(row[0].id) ?? null} />
+              : <MiniLayer key={row[0].id} slot={row[0]}
+                  // ชั้นเต็มไม่ใช่ตัวท้ายแบบแถวเดี่ยว — "1/5-14" บอกชั้นด้วย
+                  // ส่วน "5-14" ลอย ๆ ไม่บอกว่าชั้นไหน
+                  label={classRanges(row.map((s) => s.group_name ?? ""), 3)}
+                  rows={row}
+                  problem={row.map((s) => probs.get(s.id)).find(Boolean) ?? null} />
           ))}
         </div>
       ) : (
@@ -400,15 +408,46 @@ function shortName(name: string | null | undefined, all: TimetableSlot[]): strin
   return rest && rest.length <= 2 ? rest : name;
 }
 
+/**
+ * ยุบคาบที่ซ้อนกันและเหมือนกันทุกอย่างยกเว้นห้องเรียน ให้เหลือแถวเดียว
+ *
+ *   "ตารางการใช้ห้องคือช่วยเขียนแบบสั้นๆ ไม่ต้องเอามาทั้งหมด เช่น 3/5-12"
+ *
+ * ห้องดนตรีไทยคาบหนึ่งมีสิบห้องเรียนเข้าใช้พร้อมกัน ของเดิมวาดแถวละห้องเรียน
+ * ช่องเดียวจึงสูงสิบบรรทัดและเบียดคาบอื่นในวันเดียวกันจนอ่านไม่ออก
+ *
+ * รวมได้ต่อเมื่อวิชา ห้อง และครู ตรงกันหมด — ถ้าต่างกันแม้ช่องเดียว การยุบจะ
+ * ซ่อนความต่างนั้นไป ซึ่งเป็นข้อมูลที่คนจัดตารางต้องเห็น ไม่ใช่ข้อมูลซ้ำ
+ */
+function mergeParallel(slots: TimetableSlot[]): TimetableSlot[][] {
+  const order: string[] = [];
+  const by = new Map<string, TimetableSlot[]>();
+  for (const s of slots) {
+    const key = [slotLabel(s), s.room_name ?? "",
+                 slotTeacherNames(s).join("·")].join("|");
+    let g = by.get(key);
+    if (!g) { by.set(key, g = []); order.push(key); }
+    g.push(s);
+  }
+  return order.map((k) => by.get(k)!);
+}
+
 const MiniLayer: React.FC<{
   slot: TimetableSlot;
   label: string;
   problem?: SlotProblem | null;
+  /** คาบทั้งหมดที่ถูกยุบมาอยู่แถวนี้ — มีไว้ให้ชี้เมาส์อ่านรายการเต็ม */
+  rows?: TimetableSlot[];
   /** Declared because the type-check stub's React.FC does not carry it. */
   key?: string | number;
-}> = ({ slot, label, problem }) => {
+}> = ({ slot, label, problem, rows }) => {
   const names = slotTeacherNames(slot);
-  const title = [slot.group_name, slotLabel(slot), slot.subject_name,
+  // ป้ายบนจอถูกย่อและตัดได้ เพราะชี้เมาส์อ่านรายการเต็มตรงนี้ได้ กระดาษไม่มี
+  // ทางนี้ ใบพิมพ์จึงย่อแต่ไม่ตัด
+  const where = rows
+    ? rows.map((r) => r.group_name).filter(Boolean).join(" · ")
+    : slot.group_name;
+  const title = [where, slotLabel(slot), slot.subject_name,
                  names.join(" · "), slot.room_name].filter(Boolean).join(" · ");
   return (
     <div className={clsx("flex-1 min-h-0 flex items-center gap-1 px-1 overflow-hidden",
