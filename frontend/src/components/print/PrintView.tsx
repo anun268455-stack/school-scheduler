@@ -344,10 +344,9 @@ const TimetableBlock: React.FC<BlockProps> = ({
       </table>
       </div>
 
-      {/* Signatures. The gap above is deliberate and in millimetres: the grid
-          is the flex child that grows, so whatever is reserved here is taken
-          off the table rather than added to the page, and the signature line
-          stops sitting right on the table's bottom border. */}
+      {/* แถวลงชื่อ อยู่ใต้ตารางเลย ห่างเท่าที่กำหนดเป็นมิลลิเมตร ไม่ถูกดันลงก้นหน้า
+          ("เอาชื่อขึ้นไปติดกับตาราง") ระยะห่างนี้มีไว้ไม่ให้เส้นลงชื่อไปแปะติด
+          ขอบล่างของตารางพอดีจนดูเหมือนเป็นแถวหนึ่งของตาราง */
       {signers.length > 0 && (
         <div className="tt-signatures" style={{
           marginTop: compact ? "6mm" : "10mm",
@@ -886,10 +885,10 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             }
             .tt-block { flex: 1 1 0; min-height: 0; }
             /* ตารางสูงเท่าเนื้อหา ไม่ยืดกินที่ว่างทั้งหน้า — บล็อกยังกินทั้ง
-               หน้าเหมือนเดิม ที่ว่างจึงไปโผล่ระหว่างตารางกับแถวลงชื่อ ซึ่งถูก
-               ดันลงก้นหน้าด้วย margin-top:auto ด้านล่าง */
+               หน้าเหมือนเดิม ส่วนแถวลงชื่อตามขึ้นมาอยู่ใต้ตารางเลย ไม่ถูกดัน
+               ลงก้นหน้า ("เอาชื่อขึ้นไปติดกับตาราง") ที่ว่างทั้งหมดจึงไปรวมกัน
+               อยู่ใต้แถวลงชื่อ แทนที่จะคั่นกลางระหว่างตารางกับชื่อ */
             .tt-grid  { flex: 0 0 auto; min-height: 0; }
-            .tt-signatures { margin-top: auto !important; }
             /* Half a sheet, measured the same way a pair is: the page is a
                flex column of the printable height and a pair splits it with
                5mm of gap, so one alone takes that same share and the bottom
