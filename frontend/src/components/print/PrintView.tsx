@@ -638,14 +638,19 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
     <CellLines
       m={m}
       code={s.subject_code ?? s.subject_name ?? mine?.code ?? (mine ? "วิชาเสรี" : "")}
-      // A คาบกิจกรรม is run for many classrooms at once and the school splits
-      // them between the ครูผู้ดูแล themselves, so naming one of the fourteen
-      // here would be picking a room at random.
-      // ย่อเป็นช่วง แต่ไม่ตัดทิ้ง: กระดาษชี้เมาส์ดูรายการเต็มไม่ได้ ครูที่ถือ
-      // ใบนี้เข้าสอนต้องเห็นห้องเรียนครบทุกห้อง
-      mid={mine?.label ?? (s.is_activity_block && s.activity_scope
-            ? s.activity_scope
-            : classRanges(classes))}
+      // คาบกิจกรรม (สาธารณประโยชน์ · คุณธรรม · ชุมนุม) ไม่ขึ้นชั้นเรียน
+      //
+      //   "ไม่ต้องมี ชั้นในคาบ สาธา คุณธรรม ชุมนุม"
+      //
+      // คาบพวกนี้ทั้งโรงเรียนเข้าพร้อมกัน บรรทัดนี้จึงเคยเป็น "M4/M5/M6 38 ห้อง"
+      // ซึ่งยาวจนถูกตัด และไม่ได้บอกอะไรที่ครูไม่รู้อยู่แล้ว
+      //
+      // คาบเสรียังขึ้นชื่อวิชาที่ครูคนนี้รับผิดชอบ (mine.label) เหมือนเดิม เพราะ
+      // ในคาบเสรีครูแต่ละคนสอนคนละวิชา ซึ่งเป็นข้อมูลที่ต้องมี
+      //
+      // ส่วนคาบปกติ ย่อเป็นช่วงแต่ไม่ตัดทิ้ง: กระดาษชี้เมาส์ดูรายการเต็มไม่ได้
+      // ครูที่ถือใบนี้เข้าสอนต้องเห็นห้องเรียนครบทุกห้อง
+      mid={mine?.label ?? (s.is_activity_block ? "" : classRanges(classes))}
       // ห้องของครูคนนี้ ไม่ใช่ห้องของคาบ — ในคาบเสรีแต่ละวิชาอยู่คนละห้อง
       // ของเดิมใบนี้เว้นช่องห้องว่างไว้ทุกคาบเสรี เพราะคาบเสรีไม่มีห้องของตัวเอง
       room={roomNumber(roomNameForTeacher(s, teacherId) ?? s.room_name)}
