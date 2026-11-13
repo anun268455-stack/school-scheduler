@@ -12,7 +12,8 @@
  */
 import {
   allSigners, DEFAULT_SIGNER_ROLES, DEFAULT_WORKLOAD_SIGNER_ROLES, fillTemplate, pageLabel,
-  sheetSigners, signsOn, thaiDate, normalizeSheet, type SheetSetup,
+  sheetSigners, signsOn, signerRow, splitSignerRows, thaiDate, normalizeSheet,
+  type SheetSetup, type Signer,
 } from "../../frontend/src/utils/printSheet.ts";
 
 let n = 0;
@@ -161,5 +162,50 @@ eq(pageLabel(0, 1), "หน้า 1/1", "ใบเดียว");
 // พ.ศ. ไม่ใช่ ค.ศ. — ใบที่ส่งเขตใช้ พ.ศ.
 eq(thaiDate(new Date(2026, 10, 3)), "3 พฤศจิกายน 2569", "วันที่เป็นพุทธศักราช");
 eq(thaiDate(new Date(2026, 0, 1)), "1 มกราคม 2569", "ต้นปี");
+
+// ── แถวของช่องลงชื่อ ────────────────────────────────────────────────────────
+//
+//   "อยากให้ชื่อคนตรงกลางอยู่ข้างบนของชื่อ 2 คน"
+//   "กำหนดแยกได้ว่าใบไหนอยู่แถวไหน"
+//
+// ข้อสำคัญเหมือนเดิม: ของที่โรงเรียนตั้งไว้ก่อนมีช่องนี้ ต้องออกมาเหมือนเดิม
+// ทุกตัวอักษร ไม่ใช่กระโดดขึ้นไปอยู่แถวบนกันหมด
+eq(signerRow({ name: "ก", role: "r" }, "timetable"), 2, "ไม่ระบุ = แถวล่าง");
+
+const upOnGrid: Signer = { name: "ข", role: "r", top: ["timetable"] };
+eq(signerRow(upOnGrid, "timetable"), 1, "ติ๊กแถวบนของใบตาราง");
+eq(signerRow(upOnGrid, "workload"), 2, "ใบที่ไม่ได้ติ๊กยังอยู่แถวล่าง");
+
+const trio: Signer[] = [
+  { name: "A", role: "ra" },
+  { name: "B", role: "rb", top: ["timetable"] },
+  { name: "C", role: "rc" },
+];
+const grid = splitSignerRows(trio, "timetable");
+eq(grid.top.map((s) => s.name), ["B"], "แถวบนมีเฉพาะคนที่ติ๊ก");
+eq(grid.bottom.map((s) => s.name), ["A", "C"], "ที่เหลืออยู่แถวล่าง เรียงเดิม");
+
+const work = splitSignerRows(trio, "workload");
+eq(work.top.map((s) => s.name), [], "ใบอัตรากำลังไม่มีใครอยู่แถวบน");
+eq(work.bottom.map((s) => s.name), ["A", "B", "C"], "ทั้งสามอยู่แถวเดียวเหมือนเดิม");
+
+// คนที่ไม่ได้เซ็นใบนี้ ต้องไม่โผล่ทั้งสองแถว — ติ๊กแถวบนไม่ใช่การพาขึ้นใบ
+const elsewhere: Signer[] = [{ name: "D", role: "rd", on: ["workload"], top: ["timetable"] }];
+const gone = splitSignerRows(elsewhere, "timetable");
+eq([...gone.top, ...gone.bottom], [], "ติ๊กแถวบนไม่ลบล้างว่าไม่ได้เซ็นใบนี้");
+
+// ── อ่านค่าที่บันทึกไว้ ──────────────────────────────────────────────────────
+const keep = normalizeSheet({ signers: [{ name: "x", role: "y", top: ["workload", "ขยะ"] }] });
+eq(keep.signers?.[0].top, ["workload"], "เก็บเฉพาะชื่อใบที่รู้จัก ทิ้งค่าที่อ่านไม่ออก");
+
+const empty = normalizeSheet({ signers: [{ name: "x", role: "y", top: [] }] });
+eq(empty.signers?.[0].top, undefined, "รายการเปล่า = ไม่ระบุ = แถวล่าง");
+
+const badTop = normalizeSheet({ signers: [{ name: "x", role: "y", top: "timetable" }] });
+eq(badTop.signers?.[0].name, "x", "ค่าที่ไม่ใช่รายการไม่ทำให้ทั้งแถวหาย");
+eq(badTop.signers?.[0].top, undefined, "และถูกทิ้ง");
+
+const old = normalizeSheet({ signers: [{ name: "x", role: "y" }] });
+eq(old.signers?.[0].top, undefined, "ฟอร์มที่บันทึกไว้ก่อนมีช่องนี้ ไม่มีช่องนี้งอกมา");
 
 console.log(`ALL PASS (${n})`);

@@ -62,6 +62,19 @@ export interface Signer {
    * หายจากใบทั้งหมดพร้อมกันตอนอัปเดต
    */
   on?: SheetDoc[];
+  /**
+   * ใบที่คนนี้อยู่ "แถวบน" — ไม่ระบุ = แถวล่างทุกใบ ซึ่งคือของเดิม
+   *
+   *   "อยากให้ชื่อคนตรงกลางอยู่ข้างบนของชื่อ 2 คน"
+   *   "กำหนดแยกได้ว่าใบไหนอยู่แถวไหน"
+   *
+   * เป็นรายการใบเหมือน `on` ไม่ใช่ค่าจริงเท็จ เพราะโรงเรียนขอให้ใบตารางกับใบ
+   * อัตรากำลังจัดแถวต่างกันได้ ผอ. อาจอยู่ข้างบนบนใบหนึ่งแต่อยู่แถวเดียวกับ
+   * คนอื่นบนอีกใบ
+   *
+   * ติ๊กแถวบนไม่ใช่การพาขึ้นใบ — ถ้าคนนี้ไม่ได้เซ็นใบนั้น (`on`) ก็ยังไม่ขึ้น
+   */
+  top?: SheetDoc[];
 }
 
 /**
@@ -84,6 +97,20 @@ export interface SheetSetup {
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
 /**
+ * อ่านรายการชื่อใบจากค่าที่อาจเป็นอะไรก็ได้
+ *
+ * คืน undefined เมื่ออ่านไม่ได้หรือว่างเปล่า ซึ่งทุกที่ในไฟล์นี้แปลว่า
+ * "ไม่ได้ระบุ" ไม่ใช่ "ไม่มีใบไหนเลย" — ความต่างนี้สำคัญ เพราะฟอร์มที่
+ * โรงเรียนบันทึกไว้ก่อนมีช่องนี้ย่อมไม่มีค่าในช่องนี้
+ */
+const docList = (v: unknown): SheetDoc[] | undefined => {
+  if (!Array.isArray(v)) return undefined;
+  const list = v.filter(
+    (d): d is SheetDoc => d === "timetable" || d === "workload");
+  return list.length ? [...new Set(list)] : undefined;
+};
+
+/**
  * ทำให้ค่าที่อ่านมาใช้งานได้ ไม่ว่าจะมาในรูปอะไร
  *
  * ค่านี้อยู่ในก้อน JSON อิสระ จึงเป็นอะไรก็ได้ — ใบพิมพ์ 47 หน้าต้องไม่ล้ม
@@ -102,13 +129,12 @@ export function normalizeSheet(raw: unknown): SheetSetup {
       .slice(0, MAX_SIGNERS)
       .map((s) => {
         const signer: Signer = { name: str(s.name), role: str(s.role) };
-        if (Array.isArray(s.on)) {
-          // เก็บเฉพาะชื่อใบที่รู้จัก — ค่าที่อ่านไม่ออกถูกทิ้ง ไม่ใช่ทำให้ทั้ง
-          // แถวหาย ส่วนรายการเปล่าแปลว่า "ทุกใบ" เหมือนไม่ได้ระบุ
-          const on = s.on.filter(
-            (d): d is SheetDoc => d === "timetable" || d === "workload");
-          if (on.length) signer.on = [...new Set(on)];
-        }
+        // เก็บเฉพาะชื่อใบที่รู้จัก — ค่าที่อ่านไม่ออกถูกทิ้ง ไม่ใช่ทำให้ทั้ง
+        // แถวหาย ส่วนรายการเปล่าแปลว่า "ไม่ได้ระบุ" เหมือนไม่มีช่องนั้น
+        const on = docList(s.on);
+        if (on) signer.on = on;
+        const top = docList(s.top);
+        if (top) signer.top = top;
         return signer;
       });
   }
@@ -138,6 +164,31 @@ export function allSigners(setup: SheetSetup, exec: ExecNames): Signer[] {
 export function signsOn(s: Signer, doc: SheetDoc): boolean {
   // ไม่ระบุ หรือระบุมาเป็นรายการเปล่า = ทุกใบ
   return !s.on || s.on.length === 0 || s.on.includes(doc);
+}
+
+/** แถวที่ชื่อนี้อยู่บนใบชนิดนี้ — 1 = แถวบน · 2 = แถวล่าง ซึ่งเป็นของเดิม */
+export function signerRow(s: Signer, doc: SheetDoc): 1 | 2 {
+  return s.top?.includes(doc) ? 1 : 2;
+}
+
+/**
+ * แยกผู้เซ็นของใบชนิดนี้ออกเป็นสองแถว
+ *
+ * กรอง `signsOn` ซ้ำอีกชั้นโดยตั้งใจ แม้ผู้เรียกส่วนใหญ่จะส่งรายการที่กรองมาแล้ว
+ * จาก sheetSigners — ถ้ามีใครเรียกด้วยรายการดิบ การติ๊กแถวบนต้องไม่กลายเป็น
+ * ช่องทางพาคนที่ไม่ได้เซ็นใบนี้ขึ้นมาบนกระดาษ
+ *
+ * แถวล่างคือของเดิม: ฟอร์มที่ไม่มีใครติ๊กแถวบนเลย จะได้ top เป็นรายการเปล่า
+ * แล้วใบพิมพ์วาดแถวเดียวเหมือนที่เคยเป็นทุกประการ
+ */
+export function splitSignerRows(
+  signers: readonly Signer[], doc: SheetDoc,
+): { top: Signer[]; bottom: Signer[] } {
+  const mine = signers.filter((s) => signsOn(s, doc));
+  return {
+    top: mine.filter((s) => signerRow(s, doc) === 1),
+    bottom: mine.filter((s) => signerRow(s, doc) === 2),
+  };
 }
 
 /**

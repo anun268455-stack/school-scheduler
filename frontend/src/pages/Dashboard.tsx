@@ -16,7 +16,8 @@ import {
   type CellLayout, type CellPartKey,
 } from "../utils/cellLayout";
 import {
-  allSigners, MAX_SIGNERS, normalizeSheet, pageLabel, signsOn, thaiDate,
+  allSigners, MAX_SIGNERS, normalizeSheet, pageLabel, signerRow, signsOn,
+  splitSignerRows, thaiDate,
   type SheetDoc, type SheetSetup, type Signer,
 } from "../utils/printSheet";
 import type { SubjectType, PeriodType, Room, Period, StudentGroup, Subject, LessonRequirement, ElectivePool } from "../types";
@@ -3857,6 +3858,8 @@ const SheetFormEditor: React.FC = () => {
   /** ตัวอย่างท้ายใบกำลังดูใบชนิดไหนอยู่ */
   const [preview, setPreview] = useState<SheetDoc>("timetable");
   const shown = signers.filter((s) => signsOn(s, preview));
+  // แยกสองแถวด้วยตัวเดียวกับที่ใบพิมพ์ใช้ ตัวอย่างจึงตรงกับกระดาษเสมอ
+  const previewRows = splitSignerRows(signers, preview);
 
   const write = (next: Partial<SheetSetup>) => setPrintSheet({ ...setup, ...next });
   const writeSigners = (list: Signer[]) => write({ signers: list });
@@ -3871,10 +3874,30 @@ const SheetFormEditor: React.FC = () => {
    * เป็นทุกใบ) และการเอาออกทั้งสองใบ เก็บเป็นรายการเปล่าไม่ได้ด้วยเหตุผล
    * เดียวกัน — จึงเหลือไว้ใบเดียวเสมอ ถ้าไม่อยากให้ใครเซ็นเลยให้ลบแถวทิ้ง
    */
-  const toggleDoc = (s: Signer, doc: SheetDoc): SheetDoc[] => {
-    const now: SheetDoc[] = s.on?.length ? s.on : ["timetable", "workload"];
-    const next = now.includes(doc) ? now.filter((d) => d !== doc) : [...now, doc];
-    return next.length ? next : [doc === "timetable" ? "workload" : "timetable"];
+  /** สามสถานะต่อหนึ่งใบ — ไม่พิมพ์ / แถวล่าง (ของเดิม) / แถวบน */
+  type DocState = "off" | "bottom" | "top";
+
+  const docState = (s: Signer, doc: SheetDoc): DocState =>
+    !signsOn(s, doc) ? "off" : signerRow(s, doc) === 1 ? "top" : "bottom";
+
+  /**
+   * ตั้งสถานะของใบหนึ่ง แล้วคืนช่องที่ต้องเขียนทับ
+   *
+   * ต้องเหลืออย่างน้อยหนึ่งใบเสมอ เพราะรายการเปล่าแปลว่า "ทุกใบ" ตามกฎของ
+   * printSheet — ถ้าปล่อยให้ปิดได้ทั้งสองใบ ช่องลงชื่อจะเด้งกลับไปโผล่ทุกใบ
+   * ซึ่งตรงข้ามกับที่คนกดตั้งใจ ปิดใบสุดท้ายจึงไม่มีผล ให้กดกากบาทลบทิ้งแทน
+   */
+  const setDoc = (s: Signer, doc: SheetDoc, state: DocState): Partial<Signer> => {
+    const other: SheetDoc = doc === "timetable" ? "workload" : "timetable";
+    const onNow: SheetDoc[] = s.on?.length ? s.on : ["timetable", "workload"];
+    let on = onNow.filter((d) => d !== doc);
+    if (state !== "off") on = [...on, doc];
+    if (!on.length) on = [other];
+
+    const top = (s.top ?? []).filter((d) => d !== doc);
+    if (state === "top" && on.includes(doc)) top.push(doc);
+
+    return { on, top: top.length ? top : undefined };
   };
   const move = (i: number, by: number) => {
     const to = i + by;
@@ -3918,19 +3941,26 @@ const SheetFormEditor: React.FC = () => {
               placeholder="ตำแหน่ง"
               className="flex-1 min-w-[10rem] border border-gray-200 rounded px-2 py-1 text-xs"
             />
-            {/* ขึ้นบนใบไหนบ้าง — ใบอัตรากำลังกับใบตารางต้องการคนเซ็นคนละชุด
-                ติ๊กไว้ครั้งเดียว ไม่ต้องเข้ามาแก้สลับไปมาทุกครั้งที่เปลี่ยนใบ */}
+            {/* ขึ้นบนใบไหน และอยู่แถวไหนของใบนั้น — ใบอัตรากำลังกับใบตารางต้องการ
+                คนเซ็นคนละชุดและจัดแถวต่างกันได้ ตั้งครั้งเดียว ไม่ต้องเข้ามาแก้
+                สลับไปมาทุกครั้งที่เปลี่ยนใบที่จะพิมพ์ */}
             {(["timetable", "workload"] as const).map((doc) => (
               <label key={doc}
-                className={clsx("flex items-center gap-1 text-[10px] px-1.5 py-1 rounded border cursor-pointer select-none",
-                  signsOn(s, doc)
+                className={clsx("flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border select-none",
+                  docState(s, doc) !== "off"
                     ? "bg-indigo-50 border-indigo-200 text-indigo-800"
                     : "bg-white border-gray-200 text-gray-400")}
-                title={doc === "timetable" ? "ขึ้นบนใบตารางเรียน ตารางสอน ตารางการใช้ห้อง"
-                                           : "ขึ้นบนใบอัตรากำลังการสอน"}>
-                <input type="checkbox" checked={signsOn(s, doc)}
-                  onChange={() => edit(i, { on: toggleDoc(s, doc) })} />
+                title={doc === "timetable" ? "ใบตารางเรียน ตารางสอน ตารางการใช้ห้อง"
+                                           : "ใบอัตรากำลังการสอน"}>
                 {doc === "timetable" ? "ใบตาราง" : "อัตรากำลัง"}
+                <select
+                  value={docState(s, doc)}
+                  onChange={(e) => edit(i, setDoc(s, doc, e.target.value as DocState))}
+                  className="bg-transparent text-[10px] border-0 outline-none cursor-pointer">
+                  <option value="off">ไม่พิมพ์</option>
+                  <option value="bottom">แถวล่าง</option>
+                  <option value="top">แถวบน</option>
+                </select>
               </label>
             ))}
             <button onClick={() => move(i, -1)} disabled={i === 0}
@@ -4007,19 +4037,28 @@ const SheetFormEditor: React.FC = () => {
         ))}
       </div>
       <div className="border border-dashed border-gray-300 rounded bg-gray-50/60 px-3 py-3">
-        <div className="flex"
-          style={{ justifyContent: shown.length <= 2 ? "space-between" : "space-around" }}>
-          {shown.map((s, i) => (
-            <div key={i} className="text-center text-[9px] text-gray-700 leading-tight">
-              <div>ลงชื่อ{shown.length > 3 ? "........" : "..................."}</div>
-              {s.name && <div>({s.name})</div>}
-              <div>{s.role || <span className="text-gray-300">ตำแหน่ง</span>}</div>
+        {/* ตัวอย่างต้องแสดงสองแถวเหมือนกระดาษจริง ไม่งั้นคนตั้งค่าจะไม่เห็นผล
+            ของการเลือก "แถวบน" จนกว่าจะสั่งพิมพ์ออกมาดู */}
+        {([previewRows.top, previewRows.bottom] as const).map((row, r) => (
+          row.length === 0 ? null : (
+            <div key={r} className="flex" style={{
+              marginTop: r === 1 && previewRows.top.length > 0 ? "0.75rem" : undefined,
+              justifyContent: r === 0 && row.length === 1 ? "center"
+                : row.length <= 2 ? "space-between" : "space-around",
+            }}>
+              {row.map((s, i) => (
+                <div key={i} className="text-center text-[9px] text-gray-700 leading-tight">
+                  <div>ลงชื่อ{row.length > 3 ? "........" : "..................."}</div>
+                  {s.name && <div>({s.name})</div>}
+                  <div>{s.role || <span className="text-gray-300">ตำแหน่ง</span>}</div>
+                </div>
+              ))}
             </div>
-          ))}
-          {shown.length === 0 && (
-            <span className="text-[9px] text-gray-400">ใบนี้ไม่มีช่องลงชื่อ</span>
-          )}
-        </div>
+          )
+        ))}
+        {shown.length === 0 && (
+          <span className="text-[9px] text-gray-400">ใบนี้ไม่มีช่องลงชื่อ</span>
+        )}
         {((setup.note ?? "").trim() || setup.showDate || setup.showPageNumbers) && (
           <div className="flex justify-between gap-3 mt-2 text-[8px] text-gray-500">
             <span className="whitespace-pre-wrap">{(setup.note ?? "").trim()}</span>

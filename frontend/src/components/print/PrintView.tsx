@@ -22,6 +22,7 @@ import {
 import { shortTeacher, teacherLine, withKhru } from "../../utils/teacherLabel";
 import { charsFitting, fitFont, FONT_STACK, THAI_LINE_HEIGHT } from "../../utils/fonts";
 import { classRanges } from "../../utils/classRange";
+import { SignatureBlock } from "./SignatureBlock";
 import { DEFAULT_FREE_LABEL, DEFAULT_FREE_THROUGH, freeCellLabel }
   from "../../utils/freePeriodLabel";
 import { normalizePrintLayout, type CellLayout, type CellPartKey } from "../../utils/cellLayout";
@@ -358,27 +359,10 @@ const TimetableBlock: React.FC<BlockProps> = ({
       {/* แถวลงชื่อ อยู่ใต้ตารางเลย ห่างเท่าที่กำหนดเป็นมิลลิเมตร ไม่ถูกดันลงก้นหน้า
           ("เอาชื่อขึ้นไปติดกับตาราง") ระยะห่างนี้มีไว้ไม่ให้เส้นลงชื่อไปแปะติด
           ขอบล่างของตารางพอดีจนดูเหมือนเป็นแถวหนึ่งของตาราง */}
-      {signers.length > 0 && (
-        <div className="tt-signatures" style={{
-          marginTop: compact ? "6mm" : "10mm",
-          display: "flex",
-          // สองคนยืนห่างกันคนละฝั่งเหมือนเดิม สามคนขึ้นไปเกลี่ยให้เท่ากัน
-          justifyContent: signers.length <= 2 ? "space-between" : "space-around",
-          fontSize: compact ? "8pt" : "10pt",
-        }}>
-          {signers.map((s, i) => (
-            <div key={i} style={{
-              textAlign: "center",
-              // เส้นลงชื่อสั้นลงเมื่อมีคนเซ็นมาก ไม่งั้นมันจะชนกัน
-              minWidth: signers.length <= 2 ? "40%" : `${Math.floor(92 / signers.length)}%`,
-            }}>
-              <div>ลงชื่อ{signers.length > 3 ? "................" : "................................"}</div>
-              {s.name && <div>({s.name})</div>}
-              <div>{s.role}</div>
-            </div>
-          ))}
-        </div>
-      )}
+      <SignatureBlock
+        signers={signers} doc="timetable"
+        marginTop={compact ? "6mm" : "10mm"}
+        fontSize={compact ? "8pt" : "10pt"} />
     </div>
   );
 };
