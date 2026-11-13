@@ -305,7 +305,18 @@ const TimetableBlock: React.FC<BlockProps> = ({
         <tbody>
           {DAYS.map((dayName, dayIdx) => (
             <tr key={dayIdx}>
-              <td style={{ ...TD, fontWeight: 600, fontSize: m.headFont, backgroundColor: "#f9fafb" }}>
+              {/* ชื่อวันต้องอยู่ในช่องของตัวเอง — "พฤหัสบดี" ยาวกว่าชื่อวันอื่นเท่าตัว
+                  และภาษาไทยไม่มีช่องว่างคั่นคำ เบราว์เซอร์จึงขึ้นบรรทัดใหม่ให้เองไม่ได้
+                  พอคอลัมน์กว้างตายตัว 46 จุด ตัวอักษรเลยล้นออกนอกเส้นตาราง
+
+                  แก้สามชั้น: ย่อให้พอดีความกว้างก่อน · ถ้ายังไม่พอให้ขึ้นบรรทัดใหม่ได้
+                  แม้กลางคำ (แถวสูง 20mm รับสองบรรทัดสบาย) · ชั้นสุดท้ายคือตัดส่วนที่
+                  เกินทิ้ง เพื่อให้ไม่มีทางหลุดไปทับช่องข้าง ๆ ได้เลย */}
+              <td style={{ ...TD, fontWeight: 600, backgroundColor: "#f9fafb",
+                           fontSize: fitFont(compact ? DAYS_SHORT[dayIdx] : dayName,
+                                             m.headFont,
+                                             charsFitting(dayW - padX - 2, m.headFont), 0.55),
+                           overflow: "hidden", overflowWrap: "anywhere" }}>
                 {compact ? DAYS_SHORT[dayIdx] : dayName}
               </td>
               {cols.map((p) => {
