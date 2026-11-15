@@ -89,7 +89,13 @@ export const SubjectRosterReport: React.FC<Props> = ({
           .sr-section table { page-break-inside: auto; }
           .sr-section thead { display: table-header-group; }
           .sr-section tr { page-break-inside: avoid; }
-          .sr-sign { break-inside: avoid; page-break-inside: avoid; }
+          /* ห้ามขึ้นหน้าใหม่ตรงหน้าแถวลงชื่อ — เบราว์เซอร์จะดึงแถวท้ายตาราง
+             ตามลงไปด้วย หน้าสุดท้ายจึงมีทั้งตารางและลายเซ็น ไม่ใช่ลายเซ็น
+             ลอยเดี่ยวบนหน้าว่าง ซึ่งเกิดขึ้นเมื่อตารางยาวจนเต็มหน้าพอดี */
+          .sr-sign {
+            break-inside: avoid; page-break-inside: avoid;
+            break-before: avoid; page-break-before: avoid;
+          }
         }
       `}</style>
 
@@ -160,13 +166,18 @@ export const SubjectRosterReport: React.FC<Props> = ({
                           <span style={{ color: "#555" }}>{line.teacherCode}{" "}</span>
                         )}
                         {line.teacherName}
-                        {line.coTeaching && (
-                          <span style={{ color: "#555" }}>{"  (สอนร่วม)"}</span>
-                        )}
                       </td>
                       <td style={TD}>{line.classes}</td>
                       <td style={NUM}>{line.classCount}</td>
-                      <td style={NUM}>{line.periods}</td>
+                      {/* ครูสอนร่วมขึ้นจำนวนคาบจริง แล้วติด (co) ไว้ข้างหลัง
+                          ตัวเลขนี้ไม่ถูกรวมเข้ายอดของวิชา เพราะครูสองคนใน
+                          คาบเดียวไม่ใช่สองคาบ */}
+                      <td style={NUM}>
+                        {line.periods}
+                        {line.coTeaching && (
+                          <span style={{ color: "#555" }}>{" (co)"}</span>
+                        )}
+                      </td>
                     </tr>
                   ));
                 })}

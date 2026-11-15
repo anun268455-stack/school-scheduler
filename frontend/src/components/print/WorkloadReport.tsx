@@ -150,7 +150,12 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
           /* A signature line and the title underneath it must not be split
              across a page break — the first print put "ลงชื่อ" at the foot of
              one sheet and "ผู้อำนวยการโรงเรียน" alone at the top of the next. */
-          .wl-sign { break-inside: avoid; page-break-inside: avoid; }
+          .wl-sign {
+            break-inside: avoid; page-break-inside: avoid;
+            /* และห้ามขึ้นหน้าใหม่ตรงหน้ามันด้วย ไม่งั้นตารางที่ยาวจนเต็มหน้า
+               พอดีจะดันแถวลงชื่อไปอยู่หน้าถัดไปตัวเดียว */
+            break-before: avoid; page-break-before: avoid;
+          }
         }
       `}</style>
 

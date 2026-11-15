@@ -112,9 +112,17 @@ export function buildSubjectRoster(
     if (r.served_by_elective) continue;
     const weekly = Number.isFinite(r.weekly_count) ? Math.max(0, r.weekly_count) : 0;
 
-    const main = bucket(r.subject_id, r.teacher_id ?? NO_TEACHER, false);
+    // `co_half` คือครึ่งหลังของการสอนร่วมที่เขียนไว้สองแถว ครูคนนี้เป็นครูสอนร่วม
+    // ไม่ใช่ครูประจำวิชาที่สอนศูนย์คาบ — เดิมบรรทัดนี้ขึ้นเลข 0 ซึ่งอ่านแล้วเหมือน
+    // ครูไม่ได้สอน ทั้งที่เข้าห้องจริงทุกคาบ
+    //
+    //   "ครูที่[สอนร่วม]คาบกัน มันขึ้นเลข 0 อยากให้ขึ้นเลขไปเลยแต่มีวงเล็บ
+    //    ข้างหลังว่า co โดยไม่รวบกับชั่วโมงทั้งหมด"
+    const isCo = !!r.co_half;
+    const main = bucket(r.subject_id, r.teacher_id ?? NO_TEACHER, isCo);
     main.groups.add(r.group_id);
-    if (!r.co_half) main.periods += weekly;
+    // คาบขึ้นบนบรรทัดของครูเสมอ ส่วนที่ไม่นับซ้ำคือยอดรวมของวิชาข้างล่าง
+    main.periods += weekly;
 
     if (r.co_teacher_id) {
       const co = bucket(r.subject_id, r.co_teacher_id, true);
@@ -125,7 +133,8 @@ export function buildSubjectRoster(
     let gs = subjectGroups.get(r.subject_id);
     if (!gs) subjectGroups.set(r.subject_id, gs = new Set());
     gs.add(r.group_id);
-    if (!r.co_half) {
+    // ยอดรวมของวิชานับคาบของการสอนร่วมครั้งเดียว ครูสองคนในคาบเดียวไม่ใช่สองคาบ
+    if (!isCo) {
       subjectPeriods.set(r.subject_id, (subjectPeriods.get(r.subject_id) ?? 0) + weekly);
     }
   }
