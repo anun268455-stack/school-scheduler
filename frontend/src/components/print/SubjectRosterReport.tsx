@@ -25,7 +25,8 @@ interface Props {
   teachers:     Teacher[];
   groups:       StudentGroup[];
   departments:  Department[];
-  schoolName:   string;
+  /** ที่เรียกยังส่งมา แต่ไม่ได้ใช้ — termLabel มีคำว่า "โรงเรียน<ชื่อ>" อยู่แล้ว */
+  schoolName?:  string;
   termLabel:    string;
   signers:      Signer[];
   /** วิชาที่เลือกพิมพ์ — ว่าง = ทุกวิชา ตามแบบเดียวกับใบอื่น */
@@ -39,12 +40,16 @@ const TH: React.CSSProperties = {
 const TD: React.CSSProperties = {
   border: "1px solid #000", padding: "1.2mm 1.5mm", fontSize: "9pt",
   verticalAlign: "top",
+  // คอลัมน์กว้างตายตัว (tableLayout: fixed) และภาษาไทยไม่มีช่องว่างคั่นคำให้
+  // เบราว์เซอร์ตัดบรรทัด ชื่อวิชายาว ๆ อย่าง "พัฒนาอัจฉริยภาพทางคณิตศาสตร์"
+  // จึงทะลุไปทับช่องข้าง ๆ ถ้าไม่สั่งให้ตัดกลางคำได้ และตัดส่วนที่ยังเกินทิ้ง
+  overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word",
 };
 const NUM: React.CSSProperties = { ...TD, textAlign: "center" };
 
 export const SubjectRosterReport: React.FC<Props> = ({
   requirements, subjects, teachers, groups, departments,
-  schoolName, termLabel, signers, selectedIds,
+  termLabel, signers, selectedIds,
 }) => {
   const flat = useMemo(() => flattenGroups(groups), [groups]);
 
@@ -73,7 +78,10 @@ export const SubjectRosterReport: React.FC<Props> = ({
   const totalSubjects = depts.reduce((n, d) => n + d.subjects.length, 0);
 
   return (
-    <div className="print-page" style={{ padding: "0" }}>
+    // ห้ามห่อด้วย .print-page — คลาสนั้นมีกฎ page-break-inside: avoid ซึ่งสั่งห้าม
+    // ขึ้นหน้าใหม่ข้างใน มันจะทับกฎ break-before ของ .sr-section ด้านล่างจนกลุ่ม
+    // สาระทั้งหมดอัดมาต่อกันในหน้าเดียว ใบอัตรากำลังก็คืนเป็น fragment ด้วยเหตุนี้
+    <>
       <style>{`
         @media print {
           .sr-section { break-before: page; page-break-before: always; }
@@ -102,7 +110,9 @@ export const SubjectRosterReport: React.FC<Props> = ({
                 {dept.deptName}
               </div>
               <div style={{ fontSize: "9.5pt", marginTop: "0.5mm" }}>
-                {termLabel}{schoolName ? `  ${schoolName}` : ""}
+                {/* termLabel มีคำว่า "โรงเรียน<ชื่อ>" อยู่แล้ว เติม schoolName ซ้ำ
+                    ตรงนี้จะได้ "โรงเรียนราชวินิต นนทบุรี ราชวินิต นนทบุรี" */}
+                {termLabel}
                 {"  ·  "}{dept.subjects.length}{" รายวิชา  ·  รวม "}
                 {deptPeriods}{" คาบ/สัปดาห์"}
               </div>
@@ -169,6 +179,6 @@ export const SubjectRosterReport: React.FC<Props> = ({
           </div>
         );
       })}
-    </div>
+    </>
   );
 };
