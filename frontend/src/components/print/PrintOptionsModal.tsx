@@ -24,7 +24,7 @@ interface Props {
 }
 
 export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm, onClose }) => {
-  const { groups, teachers, departments, rooms, slots } = useTimetableStore();
+  const { groups, teachers, departments, rooms, slots, subjects } = useTimetableStore();
   const [opt, setOpt]       = useState<PrintOptions>(value);
   const [search, setSearch] = useState("");
   // เปิด/ปิดการเขียนคำกำกับ แยกจากตัวข้อความ ไม่งั้นพอลบคำจนหมดเพื่อจะพิมพ์
@@ -32,6 +32,16 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
   const [labelOn, setLabelOn] = useState(!!value.freeLabel?.trim());
 
   const flat = useMemo(() => flattenGroups(groups), [groups]);
+  /**
+   * ใบที่จัดหน้าเอง — อัตรากำลังกับรายวิชา
+   *
+   * สองใบนี้เป็นใบรายการ ไม่ใช่ตารางตาราง มันขึ้นหน้าใหม่ทุกกลุ่มสาระและไหล
+   * ยาวเท่าที่เนื้อหามี ตัวเลือก "เรียงลำดับ" กับ "จำนวนต่อแผ่น A4" จึงไม่มีผล
+   * ปิดไว้ให้เห็นว่าปิด ดีกว่าปล่อยให้กดแล้วไม่เกิดอะไรขึ้น
+   */
+  const selfPaged = opt.mode === "workload" || opt.mode === "subject";
+  const pagedNote = opt.mode === "workload" ? "อัตรากำลัง" : "ใบรายวิชา";
+
   const deptName = (id: number | null | undefined) =>
     departments.find((d) => d.id === id)?.name ?? "ไม่ระบุกลุ่มสาระ";
 
@@ -54,6 +64,18 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
           group: r.building_name ?? "ไม่ระบุอาคาร",
         }));
     }
+    if (opt.mode === "subject") {
+      // ใบนี้ไล่ทีละวิชา รายการให้เลือกจึงเป็นวิชา ไม่ใช่ครูเหมือนใบอื่น
+      return [...subjects]
+        .sort((a, b) => (a.code ?? "").localeCompare(b.code ?? "", "th")
+                        || compareNames(a.name, b.name))
+        .filter((x) => !q || x.name.toLowerCase().includes(q)
+                       || (x.code ?? "").toLowerCase().includes(q))
+        .map((x) => ({
+          id: x.id, label: x.name, hint: x.code ?? "",
+          group: deptName(x.department_id),
+        }));
+    }
     if (opt.mode !== "group") {
       return [...teachers]
         .sort((a, b) => {
@@ -68,15 +90,16 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
       .sort((a, b) => compareNames(a.level ?? "", b.level ?? "") || compareNames(a.name, b.name))
       .filter((g) => !q || g.name.toLowerCase().includes(q))
       .map((g) => ({ id: g.id, label: g.name, hint: `${g.size} คน`, group: g.level ?? "ไม่ระบุระดับ" }));
-  }, [opt.mode, opt.sort, teachers, flat, search, departments, rooms, roomHours]);
+  }, [opt.mode, opt.sort, teachers, flat, search, departments, rooms, roomHours, subjects]);
 
   // Every id that exists, ignoring the search box, so counts stay honest.
   const universe = useMemo(
     () => (opt.mode === "room"
       // ค่าตั้งต้นของตารางการใช้ห้องสอน = ห้องที่มีคาบจริง ไม่ใช่ทั้ง 130 ห้อง
       ? roomsToPrint(rooms, slots, []).map((r) => r.id)
+      : opt.mode === "subject" ? subjects.map((x) => x.id)
       : opt.mode !== "group" ? teachers.map((t) => t.id) : flat.map((g) => g.id)),
-    [opt.mode, teachers, flat, rooms, slots, roomHours],
+    [opt.mode, teachers, flat, rooms, slots, roomHours, subjects],
   );
   const allIds   = universe;
   const picked   = new Set(opt.selectedIds);
@@ -129,7 +152,8 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
             <div className="grid grid-cols-2 gap-2">
               {([["group", "👥 ตารางเรียน (รายห้อง)"], ["teacher", "👨‍🏫 ตารางสอน (รายครู)"],
                  ["room", "🏫 ตารางการใช้ห้องสอน"],
-                 ["workload", "📋 อัตรากำลัง (ตามกลุ่มสาระ)"]] as [PrintMode, string][]).map(([k, label]) => (
+                 ["workload", "📋 อัตรากำลัง (ตามกลุ่มสาระ)"],
+                 ["subject", "📚 รายวิชาและผู้สอน"]] as [PrintMode, string][]).map(([k, label]) => (
                 <button key={k}
                   onClick={() => set({ mode: k, selectedIds: [],
                                        sort: k === "group" || k === "room" ? "name" : "code" })}
@@ -145,9 +169,9 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
 
           {/* Order + sheets */}
           <div className="grid grid-cols-2 gap-3">
-            <div className={opt.mode === "workload" ? "opacity-40 pointer-events-none" : ""}>
+            <div className={selfPaged ? "opacity-40 pointer-events-none" : ""}>
               <p className="text-xs font-semibold text-gray-700 mb-1.5">
-                เรียงลำดับ{opt.mode === "workload" && " (อัตรากำลังเรียงตามรหัสในกลุ่มสาระ)"}
+                เรียงลำดับ{selfPaged && ` (${pagedNote}จัดลำดับเองตามกลุ่มสาระ)`}
               </p>
               <select className="w-full border border-gray-400 bg-white text-gray-900 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                 value={opt.sort} onChange={(e) => set({ sort: e.target.value as PrintSort })}>
@@ -157,9 +181,9 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
                 {opt.mode === "room" && <option value="department">ตามอาคาร</option>}
               </select>
             </div>
-            <div className={opt.mode === "workload" ? "opacity-40 pointer-events-none" : ""}>
+            <div className={selfPaged ? "opacity-40 pointer-events-none" : ""}>
               <p className="text-xs font-semibold text-gray-700 mb-1.5">
-                จำนวนต่อแผ่น A4{opt.mode === "workload" && " (อัตรากำลังจัดเองตามกลุ่มสาระ)"}
+                จำนวนต่อแผ่น A4{selfPaged && ` (${pagedNote}จัดหน้าเองตามกลุ่มสาระ)`}
               </p>
               <select className="w-full border border-gray-400 bg-white text-gray-900 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
                 value={opt.perPage} onChange={(e) => set({ perPage: Number(e.target.value) as 1 | 2 })}>
@@ -292,6 +316,8 @@ export const PrintOptionsModal: React.FC<Props> = ({ value, onChange, onConfirm,
           <p className="text-[11px] text-gray-500 flex-1">
             {opt.mode === "workload"
               ? <>พิมพ์ <strong>{countSel}</strong> คน แยกเป็นตารางตามกลุ่มสาระ (ขึ้นหน้าใหม่ทุกกลุ่มสาระ)</>
+              : opt.mode === "subject"
+              ? <>พิมพ์ <strong>{countSel}</strong> รายวิชา แยกตามกลุ่มสาระ (ขึ้นหน้าใหม่ทุกกลุ่มสาระ)</>
               : <>จะได้ <strong>{sheets}</strong> แผ่น ({countSel} ตาราง × {opt.perPage} ต่อแผ่น)</>}
           </p>
           <button onClick={close} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-lg font-medium">ยกเลิก</button>
