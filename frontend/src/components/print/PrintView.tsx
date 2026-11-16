@@ -20,7 +20,9 @@ import {
   type SheetSetup, type Signer,
 } from "../../utils/printSheet";
 import { shortTeacher, teacherLine, withKhru } from "../../utils/teacherLabel";
-import { fitFont, FONT_STACK, THAI_LINE_HEIGHT } from "../../utils/fonts";
+import { charsFitting, fitFont, FONT_STACK, THAI_LINE_HEIGHT } from "../../utils/fonts";
+import { classRanges } from "../../utils/classRange";
+import { SignatureBlock } from "./SignatureBlock";
 import { DEFAULT_FREE_LABEL, DEFAULT_FREE_THROUGH, freeCellLabel }
   from "../../utils/freePeriodLabel";
 import { normalizePrintLayout, type CellLayout, type CellPartKey } from "../../utils/cellLayout";
@@ -112,6 +114,14 @@ interface Metrics {
   lineH: string;
   rowH: string; pad: string; titleFont: string; subtitleFont: string; logo: number;
   /**
+   * ความกว้างของช่องคาบหนึ่งช่อง เป็นจุด หลังหักขอบและช่องไฟแล้ว
+   *
+   * คิดจากจำนวนคาบจริงของใบนั้นใน TimetableBlock แล้วส่งต่อลงไปให้ช่อง เพื่อให้
+   * ย่อขนาดตัวอักษรได้พอดีช่องแทนที่จะเดาเป็นจำนวนตัวอักษรตรึงไว้ ไม่ระบุ =
+   * ใช้ค่าเดิมที่เคยตรึงไว้ ซึ่งเกิดขึ้นได้เฉพาะเวลาเรียกช่องนอกตาราง
+   */
+  colPx?: number;
+  /**
    * ลำดับและขนาดของสามบรรทัดในช่อง — ตั้งได้ที่หน้าตั้งค่าเครื่องมือ
    *
    * ติดมากับ Metrics เพราะ Metrics ถูกส่งถึงทุกช่องอยู่แล้ว ไม่ต้องร้อย prop
@@ -121,8 +131,14 @@ interface Metrics {
 }
 
 const METRICS: Record<1 | 2, Metrics> = {
+  // ── แถวสูงเท่าที่เนื้อหาต้องการ ไม่ใช่เท่าที่หน้ากระดาษเหลือ ──
+  //
+  //   "คือจะปริ้นคนเดี่ยวแต่ตารางยาว ช่วยแก้ไขให้เป็นตารางสั้นๆ สวยงาม"
+  //
+  // เดิม rowH 34mm × ห้าวัน = 170mm ของเนื้อหาสามบรรทัดเล็ก ๆ ครูที่มีคาบไม่
+  // เยอะจึงได้ตารางโปร่งสูงเต็มหน้า 20mm พอดีกับสามบรรทัดที่ 5.5mm บวกช่องไฟ
   1: { headFont: "11pt", timeFont: "8.5pt", cellFont: "13pt", subFont: "11pt", roomFont: "12pt",
-       lineH: "8mm", rowH: "34mm", pad: "3px 4px", titleFont: "15pt", subtitleFont: "11.5pt", logo: 52 },
+       lineH: "5.5mm", rowH: "20mm", pad: "3px 4px", titleFont: "15pt", subtitleFont: "11.5pt", logo: 52 },
   2: { headFont: "8.5pt", timeFont: "7pt", cellFont: "9.5pt", subFont: "8.5pt", roomFont: "9pt",
        lineH: "4.2mm", rowH: "15mm", pad: "2px 3px", titleFont: "11.5pt", subtitleFont: "9pt", logo: 34 },
 };
@@ -147,7 +163,14 @@ interface BlockProps {
   schoolConfig: SchoolConfig;
   metrics:  Metrics;
   compact:  boolean;
-  renderCell: (slots: TimetableSlot[]) => React.ReactNode;
+  /**
+   * วาดเนื้อในช่องหนึ่งช่อง
+   *
+   * รับ Metrics กลับไปด้วย ไม่ใช่ใช้ตัวที่ปิดทับมาจากข้างนอก เพราะตัวที่ส่งมา
+   * ตรงนี้รู้ความกว้างจริงของช่องคาบของใบนี้แล้ว (colPx) ซึ่งคิดจากจำนวนคาบ
+   * ของใบนั้น — ข้างนอกไม่รู้
+   */
+  renderCell: (slots: TimetableSlot[], m: Metrics) => React.ReactNode;
   /**
    * คำที่เขียนในช่องที่ไม่มีคาบ — ใบของชั้นเรียนเท่านั้น
    *
@@ -170,6 +193,21 @@ const TimetableBlock: React.FC<BlockProps> = ({
 }) => {
   const cols = getDisplayPeriods(periods, level);
 
+  // ── ช่องคาบหนึ่งช่องกว้างจริงเท่าไร ──
+  //
+  // ใบกว้าง 190mm (.print-page) ที่ 96 จุดต่อนิ้ว = 718 จุด หักคอลัมน์ชื่อวัน
+  // กับคอลัมน์พักซึ่งกว้างตายตัวตาม <colgroup> ที่เหลือหารเท่า ๆ กันให้คาบเรียน
+  // แล้วหักช่องไฟสองข้างกับเส้นขอบ เพราะตัวอักษรใช้ได้แค่ส่วนใน
+  const SHEET_PX = 718;
+  const lessonCols = cols.filter((p) => p.type === "class").length || 1;
+  const breakCols = cols.length - lessonCols;
+  const dayW = compact ? 34 : 46;
+  const breakW = compact ? 30 : 42;
+  const padX = compact ? 6 : 8;
+  const colPx = Math.max(
+    12, (SHEET_PX - dayW - breakCols * breakW) / lessonCols - padX - 2);
+  const cellM: Metrics = { ...m, colPx };
+
   // What number each column is given at the top of the sheet.
   //
   // Not the stored period_num, and not the label: the school's rows number
@@ -184,8 +222,9 @@ const TimetableBlock: React.FC<BlockProps> = ({
   let seq = 0;
   for (const p of cols) if (COUNTED(p.type)) printedNum.set(p.period_num, ++seq);
   const TH: React.CSSProperties = { ...borderCell(m), fontSize: m.headFont, fontWeight: 600, backgroundColor: "#fff" };
-  // A minimum, not a fixed height: the rows share whatever the sheet has left.
-  const TD: React.CSSProperties = { ...borderCell(m), fontSize: m.cellFont, minHeight: m.rowH };
+  // ความสูงของแถว ซึ่งบนช่องตารางทำตัวเป็นค่าต่ำสุดอยู่แล้ว — แถวสูงเท่านี้
+  // ไม่ใช่เท่าที่หน้ากระดาษเหลือ ตารางจึงกระชับและไม่โปร่งเต็มหน้า
+  const TD: React.CSSProperties = { ...borderCell(m), fontSize: m.cellFont, height: m.rowH };
   // Printed in black and white, so these are true neutral greys (R=G=B),
   // not the blue-tinted ones: a tinted grey shifts when the driver converts
   // it. #f3f4f6 was only 1.10:1 against the white lesson cells — on paper the
@@ -233,10 +272,11 @@ const TimetableBlock: React.FC<BlockProps> = ({
       {/* Grid */}
       <div className="tt-grid">
       <table style={{
-        width: "100%", height: "100%", borderCollapse: "collapse", tableLayout: "fixed",
-        /* height 100% inside a flex child that grows: the day rows share the
-           sheet's leftover space instead of stopping at a fixed height and
-           leaving the bottom of the page empty.
+        width: "100%", height: "auto", borderCollapse: "collapse", tableLayout: "fixed",
+        /* เดิมเป็น height 100% ในลูก flex ที่ยืดได้ แถววันจึงแบ่งที่ว่างที่เหลือ
+           ของหน้ากระดาษกันไป ตารางของครูที่มีคาบไม่เยอะเลยโปร่งสูงเต็มหน้า
+           ("ตารางยาว") ตอนนี้แถวสูงเท่า rowH แล้วที่ว่างที่เหลือไปอยู่เหนือ
+           แถวลงชื่อซึ่งถูกดันลงไปอยู่ก้นหน้า ตามแบบเอกสารราชการ
            The outer frame is NOT here — see .tt-grid. A collapsed table draws
            its border centred ON the table edge, so half of it falls outside
            the table's box, and the page clipped that half away. */
@@ -270,9 +310,20 @@ const TimetableBlock: React.FC<BlockProps> = ({
         </thead>
 
         <tbody>
-          {DAYS.map((dayName, dayIdx) => (
+          {DAYS_PRINT.map((dayName, dayIdx) => (
             <tr key={dayIdx}>
-              <td style={{ ...TD, fontWeight: 600, fontSize: m.headFont, backgroundColor: "#f9fafb" }}>
+              {/* ชื่อวันต้องอยู่ในช่องของตัวเอง — "พฤหัสบดี" ยาวกว่าชื่อวันอื่นเท่าตัว
+                  และภาษาไทยไม่มีช่องว่างคั่นคำ เบราว์เซอร์จึงขึ้นบรรทัดใหม่ให้เองไม่ได้
+                  พอคอลัมน์กว้างตายตัว 46 จุด ตัวอักษรเลยล้นออกนอกเส้นตาราง
+
+                  แก้สามชั้น: ย่อให้พอดีความกว้างก่อน · ถ้ายังไม่พอให้ขึ้นบรรทัดใหม่ได้
+                  แม้กลางคำ (แถวสูง 20mm รับสองบรรทัดสบาย) · ชั้นสุดท้ายคือตัดส่วนที่
+                  เกินทิ้ง เพื่อให้ไม่มีทางหลุดไปทับช่องข้าง ๆ ได้เลย */}
+              <td style={{ ...TD, fontWeight: 600, backgroundColor: "#f9fafb",
+                           fontSize: fitFont(compact ? DAYS_SHORT[dayIdx] : dayName,
+                                             m.headFont,
+                                             charsFitting(dayW - padX - 2, m.headFont), 0.55),
+                           overflow: "hidden", overflowWrap: "anywhere" }}>
                 {compact ? DAYS_SHORT[dayIdx] : dayName}
               </td>
               {cols.map((p) => {
@@ -300,7 +351,7 @@ const TimetableBlock: React.FC<BlockProps> = ({
                     {/* A full-height wrapper, so the cell's three lines can
                         share the row however tall the row ends up. */}
                     <div style={{ height: "100%", minHeight: m.rowH }}>
-                      {filler ? <FreeCell text={filler} m={m} /> : renderCell(cs)}
+                      {filler ? <FreeCell text={filler} m={cellM} /> : renderCell(cs, cellM)}
                     </div>
                   </td>
                 );
@@ -311,31 +362,13 @@ const TimetableBlock: React.FC<BlockProps> = ({
       </table>
       </div>
 
-      {/* Signatures. The gap above is deliberate and in millimetres: the grid
-          is the flex child that grows, so whatever is reserved here is taken
-          off the table rather than added to the page, and the signature line
-          stops sitting right on the table's bottom border. */}
-      {signers.length > 0 && (
-        <div style={{
-          marginTop: compact ? "6mm" : "10mm",
-          display: "flex",
-          // สองคนยืนห่างกันคนละฝั่งเหมือนเดิม สามคนขึ้นไปเกลี่ยให้เท่ากัน
-          justifyContent: signers.length <= 2 ? "space-between" : "space-around",
-          fontSize: compact ? "8pt" : "10pt",
-        }}>
-          {signers.map((s, i) => (
-            <div key={i} style={{
-              textAlign: "center",
-              // เส้นลงชื่อสั้นลงเมื่อมีคนเซ็นมาก ไม่งั้นมันจะชนกัน
-              minWidth: signers.length <= 2 ? "40%" : `${Math.floor(92 / signers.length)}%`,
-            }}>
-              <div>ลงชื่อ{signers.length > 3 ? "................" : "................................"}</div>
-              {s.name && <div>({s.name})</div>}
-              <div>{s.role}</div>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* แถวลงชื่อ อยู่ใต้ตารางเลย ห่างเท่าที่กำหนดเป็นมิลลิเมตร ไม่ถูกดันลงก้นหน้า
+          ("เอาชื่อขึ้นไปติดกับตาราง") ระยะห่างนี้มีไว้ไม่ให้เส้นลงชื่อไปแปะติด
+          ขอบล่างของตารางพอดีจนดูเหมือนเป็นแถวหนึ่งของตาราง */}
+      <SignatureBlock
+        signers={signers} doc="timetable"
+        marginTop={compact ? "6mm" : "10mm"}
+        fontSize={compact ? "8pt" : "10pt"} />
     </div>
   );
 };
@@ -444,6 +477,32 @@ const cellText = (m: Metrics): React.CSSProperties =>
   ({ lineHeight: THAI_LINE_HEIGHT, fontSize: m.cellFont });
 
 /**
+ * ใช้เมื่อไม่รู้ความกว้างของช่อง — เกิดขึ้นได้เฉพาะเวลาเรียกช่องนอกตาราง
+ *
+ * ค่าเดิมที่เคยตรึงไว้ ปล่อยไว้เท่าเดิมเพื่อให้ทางที่ไม่รู้ความกว้างยังได้ผล
+ * เหมือนก่อนหน้านี้ แทนที่จะเปลี่ยนรูปไปอีกแบบที่ไม่มีใครตั้งใจ
+ */
+const LEGACY_MAX_CHARS = 10;
+
+/**
+ * ชื่อวันบนใบพิมพ์ — "พฤ" ไม่ใช่ "พฤหัสบดี"
+ *
+ *   "เปลี่ยนเป็น พฤ ไปเลย"
+ *
+ * คอลัมน์ชื่อวันกว้างตายตัว 46 จุด ซึ่งพอดีกับชื่อวันอื่นแต่ไม่พอกับวันนี้
+ * และภาษาไทยไม่มีช่องว่างคั่นคำ เบราว์เซอร์จึงขึ้นบรรทัดใหม่ให้เองไม่ได้
+ * ตัวอักษรเลยล้นออกนอกเส้นตาราง โรงเรียนเลือกย่อชื่อวันแทนการย่อตัวอักษร
+ *
+ * แยกจาก DAYS ใน types โดยตั้งใจ — ตัวนั้นใช้ทั่วหน้าจอนับสิบที่ ตั้งแต่
+ * หน้าต่างแก้คาบจนถึงรายงานปัญหา การย่อที่นั่นจะเปลี่ยนทั้งโปรแกรม
+ * ทั้งที่ปัญหาอยู่แค่บนกระดาษ
+ *
+ * ต้องยาวเท่า DAYS เสมอ — เป็นชื่อเรียกของวันเดียวกัน ไม่ใช่รายการวันคนละชุด
+ * จำนวนแถวยังนับจาก DAYS.length เหมือนเดิม
+ */
+const DAYS_PRINT = ["จันทร์", "อังคาร", "พุธ", "พฤ", "ศุกร์"] as const;
+
+/**
  * The three lines every cell has: subject code, teacher, room.
  *
  * Each line is a fixed height whether or not it has anything in it, so the
@@ -463,9 +522,11 @@ function CellLines(
   const baseFont: Record<CellPartKey, string> = {
     subject: m.cellFont, teacher: m.subFont, room: m.roomFont, group: m.subFont,
   };
-  const maxChars: Record<CellPartKey, number> = {
-    subject: 9, teacher: 11, room: 10, group: 11,
-  };
+  // ของเดิมเดาไว้เป็นจำนวนตัวอักษรตรึง ๆ (รหัสวิชา 9 ตัว) ซึ่งกว้างกว่าช่องจริง
+  // เกือบเท่าตัว รหัสวิชาเลยถูกตัดเป็น "ก339…" ทุกใบ ตอนนี้คิดจากความกว้างจริง
+  // ของช่องแทน — ดู charsFitting ใน utils/fonts
+  const fitsIn = (font: string): number =>
+    m.colPx ? charsFitting(m.colPx, font) : LEGACY_MAX_CHARS;
   // ย่อลงได้ลึกแค่ไหนก่อนจะยอมให้ตัดท้ายด้วยจุดไข่ปลา
   //
   // รหัสวิชากับเลขห้องคือสองอย่างที่อ่านแวบเดียว จึงไม่ยอมให้เล็กมาก ส่วน
@@ -473,8 +534,11 @@ function CellLines(
   // "ครูทัฬหมน + Charles" กว้าง 17 ช่อง ซึ่งพื้นเดิม (72%) รับได้แค่ราว 15
   // แล้วชื่อครูอีกคนจะหายไปในจุดไข่ปลา — ชื่อเล็กลงยังอ่านได้ ชื่อที่ถูกตัด
   // หายไม่เหลืออะไรให้อ่าน
+  // พื้นที่ย่อลงได้ลึกสุดก่อนยอมตัดท้าย — ลดลงจาก 0.72/0.64 ตามที่ผู้ใช้สั่งว่า
+  // "ลดขนาดตัวดีกว่าไม่ต้อง ก339.." ตัวที่เล็กลงยังอ่านได้ ตัวที่ถูกตัดไม่เหลือ
+  // อะไรให้อ่าน ที่ 0.55 รหัสวิชา 13pt ย่อได้ถึง 7.2pt ซึ่งยังชัดบนกระดาษ
   const minScale: Record<CellPartKey, number> = {
-    subject: 0.72, teacher: 0.64, room: 0.72, group: 0.64,
+    subject: 0.55, teacher: 0.5, room: 0.55, group: 0.5,
   };
   const weight: Record<CellPartKey, number> = {
     subject: 600, teacher: 400, room: 500, group: 400,
@@ -510,7 +574,7 @@ function CellLines(
                style={{ ...line, fontWeight: weight[part.key], color: colour[part.key] }}>
             <span style={{ ...text,
                            fontSize: fitFont(content[part.key], base,
-                                             maxChars[part.key], minScale[part.key]) }}>
+                                             fitsIn(base), minScale[part.key]) }}>
               {content[part.key]}
             </span>
           </div>
@@ -542,7 +606,8 @@ function FreeCell({ text, m }: { text: string; m: Metrics }) {
       <span style={{
         width: "100%", textAlign: "center", whiteSpace: "nowrap",
         overflow: "hidden", textOverflow: "ellipsis", color: "#4b5563",
-        fontSize: fitFont(text, m.subFont, 11, 0.64),
+        fontSize: fitFont(text, m.subFont,
+                          m.colPx ? charsFitting(m.colPx, m.subFont) : LEGACY_MAX_CHARS, 0.5),
       }}>{text}</span>
     </div>
   );
@@ -592,12 +657,19 @@ function TeacherCell({ slots, m, teacherId }: { slots: TimetableSlot[]; m: Metri
     <CellLines
       m={m}
       code={s.subject_code ?? s.subject_name ?? mine?.code ?? (mine ? "วิชาเสรี" : "")}
-      // A คาบกิจกรรม is run for many classrooms at once and the school splits
-      // them between the ครูผู้ดูแล themselves, so naming one of the fourteen
-      // here would be picking a room at random.
-      mid={mine?.label ?? (s.is_activity_block && s.activity_scope
-            ? s.activity_scope
-            : classes.join(" "))}
+      // คาบกิจกรรม (สาธารณประโยชน์ · คุณธรรม · ชุมนุม) ไม่ขึ้นชั้นเรียน
+      //
+      //   "ไม่ต้องมี ชั้นในคาบ สาธา คุณธรรม ชุมนุม"
+      //
+      // คาบพวกนี้ทั้งโรงเรียนเข้าพร้อมกัน บรรทัดนี้จึงเคยเป็น "M4/M5/M6 38 ห้อง"
+      // ซึ่งยาวจนถูกตัด และไม่ได้บอกอะไรที่ครูไม่รู้อยู่แล้ว
+      //
+      // คาบเสรียังขึ้นชื่อวิชาที่ครูคนนี้รับผิดชอบ (mine.label) เหมือนเดิม เพราะ
+      // ในคาบเสรีครูแต่ละคนสอนคนละวิชา ซึ่งเป็นข้อมูลที่ต้องมี
+      //
+      // ส่วนคาบปกติ ย่อเป็นช่วงแต่ไม่ตัดทิ้ง: กระดาษชี้เมาส์ดูรายการเต็มไม่ได้
+      // ครูที่ถือใบนี้เข้าสอนต้องเห็นห้องเรียนครบทุกห้อง
+      mid={mine?.label ?? (s.is_activity_block ? "" : classRanges(classes))}
       // ห้องของครูคนนี้ ไม่ใช่ห้องของคาบ — ในคาบเสรีแต่ละวิชาอยู่คนละห้อง
       // ของเดิมใบนี้เว้นช่องห้องว่างไว้ทุกคาบเสรี เพราะคาบเสรีไม่มีห้องของตัวเอง
       room={roomNumber(roomNameForTeacher(s, teacherId) ?? s.room_name)}
@@ -672,7 +744,8 @@ function RoomCell({ slots, m, roomId }: {
       m={m}
       code={here[0]?.code ?? here[0]?.label
             ?? s.subject_code ?? s.subject_name ?? (s.is_elective ? "วิชาเสรี" : "")}
-      mid={classes.join(" ")}
+      // ใบของห้องคือที่ที่รายชื่อยาวที่สุด — ห้องดนตรีไทยคาบหนึ่งมีสิบห้องเรียน
+      mid={classRanges(classes)}
       // บรรทัดล่างของใบนี้เป็นชื่อครู (ไม่ใช่ชื่อห้องซึ่งซ้ำกับหัวกระดาษ) จึงใส่
       // คำว่าครูนำหน้าด้วยกฎเดียวกับใบของชั้นเรียน
       room={withKhru(who, " ")}
@@ -730,7 +803,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             grid={grid} periods={periods} schoolConfig={schoolConfig}
             signers={signers}
             metrics={m} compact={compact}
-            renderCell={(cs) => <TeacherCell slots={cs} m={m} teacherId={teacher.id} />}
+            renderCell={(cs, cm) => <TeacherCell slots={cs} m={cm} teacherId={teacher.id} />}
           />,
         );
       });
@@ -762,7 +835,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             grid={grid} periods={periods} schoolConfig={schoolConfig}
             signers={signers}
             metrics={m} compact={compact}
-            renderCell={(cs) => <RoomCell slots={cs} m={m} roomId={room.id} />}
+            renderCell={(cs, cm) => <RoomCell slots={cs} m={cm} roomId={room.id} />}
           />,
         );
       });
@@ -798,7 +871,7 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
             grid={grid} periods={periods} schoolConfig={schoolConfig}
             signers={signers}
             metrics={m} compact={compact}
-            renderCell={(cs) => <GroupCell slots={cs} m={m} />}
+            renderCell={(cs, cm) => <GroupCell slots={cs} m={cm} />}
             fillEmpty={(no, cs) => freeCellLabel(no, cs, {
               label: options.freeLabel ?? DEFAULT_FREE_LABEL,
               through: options.freeLabelThrough ?? DEFAULT_FREE_THROUGH,
@@ -839,7 +912,11 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
               height: 281mm; max-height: 281mm; overflow: hidden;
             }
             .tt-block { flex: 1 1 0; min-height: 0; }
-            .tt-grid  { flex: 1 1 auto; min-height: 0; }
+            /* ตารางสูงเท่าเนื้อหา ไม่ยืดกินที่ว่างทั้งหน้า — บล็อกยังกินทั้ง
+               หน้าเหมือนเดิม ส่วนแถวลงชื่อตามขึ้นมาอยู่ใต้ตารางเลย ไม่ถูกดัน
+               ลงก้นหน้า ("เอาชื่อขึ้นไปติดกับตาราง") ที่ว่างทั้งหมดจึงไปรวมกัน
+               อยู่ใต้แถวลงชื่อ แทนที่จะคั่นกลางระหว่างตารางกับชื่อ */
+            .tt-grid  { flex: 0 0 auto; min-height: 0; }
             /* Half a sheet, measured the same way a pair is: the page is a
                flex column of the printable height and a pair splits it with
                5mm of gap, so one alone takes that same share and the bottom

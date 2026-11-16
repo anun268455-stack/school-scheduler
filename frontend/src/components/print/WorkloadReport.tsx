@@ -19,6 +19,7 @@ import type {
 import { flattenGroups, compareNames } from "../../utils/groupHierarchy";
 import { workloadRows, type WorkloadRow } from "../../utils/workloadRows";
 import type { Signer } from "../../utils/printSheet";
+import { SignatureBlock } from "./SignatureBlock";
 
 /** "ม.4/2" → "4/2": the "ม." is on every row and tells the reader nothing. */
 const shortClass = (n: string | null | undefined) =>
@@ -279,24 +280,9 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
             {/* ผู้เซ็นมาจากแบบฟอร์มใบพิมพ์ ซึ่งเลือกได้ว่าใครขึ้นใบไหน —
                 ใบอัตรากำลังกับใบตารางต้องการคนละชุด และของเดิมต้องเข้าไปแก้
                 สลับไปมาทุกครั้งที่เปลี่ยนใบที่จะพิมพ์ (utils/printSheet) */}
-            {signers.length > 0 && (
-              <div className="wl-sign" style={{
-                marginTop: "5mm", display: "flex",
-                justifyContent: signers.length <= 2 ? "space-between" : "space-around",
-                fontSize: "9.5pt",
-              }}>
-                {signers.map((s, i) => (
-                  <div key={i} className="wl-sign" style={{
-                    textAlign: "center",
-                    minWidth: signers.length <= 2 ? "40%" : `${Math.floor(92 / signers.length)}%`,
-                  }}>
-                    <div>ลงชื่อ{signers.length > 3 ? "................" : "................................"}</div>
-                    {s.name && <div>({s.name})</div>}
-                    <div>{s.role}</div>
-                  </div>
-                ))}
-              </div>
-            )}
+            <SignatureBlock
+              signers={signers} doc="workload"
+              marginTop="5mm" fontSize="9.5pt" className="wl-sign" />
           </div>
         );
       })}

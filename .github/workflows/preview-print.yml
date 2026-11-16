@@ -1,0 +1,63 @@
+name: พรีวิวใบพิมพ์ (ไม่แตะเว็บหลัก)
+
+# เอาสาขา print-compact ไปวางไว้ที่ลิงก์แยก เพื่อกดสั่งพิมพ์ดูก่อนตัดสินใจ
+#
+#   เว็บหลัก   https://anun268455-stack.github.io/school-scheduler/
+#   พรีวิวนี้   https://anun268455-stack.github.io/school-scheduler/print/
+#
+# สามอย่างที่ทำให้ขั้นนี้แตะเว็บหลักไม่ได้:
+#   1. branches: [print-compact] — push ขึ้น main ไม่เข้าเงื่อนไขนี้
+#   2. destination_dir: print    — เขียนลง gh-pages ได้แค่โฟลเดอร์ print/
+#   3. keep_files: true          — ข้ามขั้นลบไฟล์ ของเดิมบน gh-pages แตะไม่ได้เลย
+#
+# ใช้โฟลเดอร์ print/ ไม่ใช่ preview/ เพราะ preview/ เป็นของสาขา term-layer อยู่แล้ว
+# สองพรีวิวจึงอยู่พร้อมกันได้โดยไม่ทับกัน
+#
+# พรีวิวคุยกับเซิร์ฟเวอร์และฐานข้อมูลตัวเดียวกับของจริง แต่งานรอบนี้เปลี่ยนแค่
+# วิธีวาดกับวิธีพิมพ์ ไม่มีการเขียนข้อมูลใหม่ การเปิดดูและกดสั่งพิมพ์จึงไม่แตะข้อมูล
+
+on:
+  push:
+    branches: [print-compact]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: preview-print
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20 (ให้ตรงกับ deploy.yml)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build
+        run: npm run build
+        working-directory: frontend
+        env:
+          # ต้องลงท้ายด้วย /print/ ไม่งั้นไฟล์ js/css จะหาไม่เจอ
+          VITE_BASE_URL: /${{ github.event.repository.name }}/print/
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+      - name: วางไว้ที่ /print/ เท่านั้น
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: frontend/dist
+          destination_dir: print
+          keep_files: true
+          commit_message: "พรีวิวใบพิมพ์ (ไม่แตะเว็บหลัก)"
