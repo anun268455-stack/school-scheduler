@@ -13772,8 +13772,8 @@ def _terms_schema(cur) -> None:
 #   เพราะเป็นทะเบียนที่ยืมอ่าน ไม่มีตารางฝั่งนี้ให้ชี้
 # · unconverted เก็บรายการที่แปลงไม่ได้ ณ ตอนเปิดรอบ: แผนการสอนเปลี่ยนได้ทุกวัน คำนวณใหม่ทีหลัง
 #   จะได้รายการของวันนั้น ไม่ใช่ของที่ admin ต้องเพิ่มเองในรอบนี้
-# · แถว ครูของตัวเลือก และสถานะกลุ่มไม่ลบตามรอบ — รอบไม่มีทางลบ ถ้าวันหนึ่งมีคนลบรอบด้วยมือ
-#   ให้ล้มดีกว่าหายเงียบ
+# · แถว ครูของตัวเลือก และสถานะกลุ่มไม่ลบตามรอบ (ไม่มี CASCADE) — ทางลบรอบทางเดียวคือยกเลิกรอบที่ยังเตรียมอยู่
+#   (wl_rounds_cancel ลบลูกเองทีละตารางในธุรกรรมเดียว) ถ้าวันหนึ่งมีคนลบรอบที่มีงานแล้วด้วยมือ ให้ล้มดีกว่าหายเงียบ
 # ทั้งหมดเป็นตารางใหม่ ไม่แตะดัชนีของตารางที่มีข้อมูลจริงอยู่แล้ว (สเปกขั้นที่ 2 ข้อ 4.2)
 # ตารางของรอบยังไม่เคยขึ้นเว็บจริง จึงแก้ CREATE TABLE ตรง ๆ ได้โดยไม่ต้องย้ายข้อมูล
 _WL_SCHEMA = """
@@ -15334,11 +15334,14 @@ def _wl_term_locked(cur, year: int, semester: int) -> bool:
 
 
 def _wl_refuse_locked(cur, year: int, semester: int) -> None:
-    # อ่านแถวรอบของภาคเรียน FOR SHARE โดยไม่กรองสถานะ: การปิดรอบอ่านแถวเดียวกัน FOR UPDATE
-    # ถ้าการปิดได้ล็อกก่อน คำสั่งนี้รอจนมัน commit แล้วเห็น closed · ถ้าเราได้ก่อน การปิดรอจนการแก้นี้ commit
-    # การแก้หลักสูตรจึงหลุดเข้ามาหลังปิดรอบไม่ได้ (กรอง status = 'closed' ใน SQL จะไม่ล็อกแถวที่ยังไม่ปิด
-    # แล้วการปิดที่ commit ทีหลังไม่รอเรา) · ภาคเรียนที่ยังไม่มีรอบไม่มีแถวให้ล็อก — การเปิดรอบล็อกตารางหลักสูตรเอง
-    cur.execute("SELECT status FROM wl_rounds WHERE year = %s AND semester = %s FOR SHARE", (year, semester))
+    # ทุกการเขียนหลักสูตรอ่านแถวรอบของภาคเรียน FOR NO KEY UPDATE โดยไม่กรองสถานะ
+    # · กับการปิด/เปิดรอบ (FOR UPDATE): ฝั่งที่ได้ล็อกก่อนทำจน commit อีกฝั่งรอแล้วเห็นสถานะล่าสุด — การแก้หลักสูตร
+    #   หลุดเข้ามาหลังปิดรอบไม่ได้ (กรอง status = 'closed' ใน SQL จะไม่ล็อกแถวที่ยังไม่ปิด แล้วการปิดไม่รอเรา)
+    # · การแก้หลักสูตรสองตัวของภาคเรียนเดียวกันต่อคิวกัน (NO KEY UPDATE ขัดกับตัวเอง) ไม่อย่างนั้น sync ของทั้งคู่เห็น
+    #   หลักสูตรก่อนอีกฝั่ง commit: เพิ่มห้อง + เพิ่มบรรทัดพร้อมกัน ช่องคู่นั้นไม่มีแถว · เอาห้องออก + เพิ่มบรรทัด เหลือแถวค้าง
+    # · ไม่ขัดกับ FK ของ wl_rows ที่ชี้รอบ (FOR KEY SHARE) · ภาคเรียนที่ยังไม่มีรอบไม่มีแถวให้ล็อก และไม่มีอะไรให้ sync
+    #   — การเปิดรอบล็อกตารางหลักสูตรเอง (wl_rounds_create)
+    cur.execute("SELECT status FROM wl_rounds WHERE year = %s AND semester = %s FOR NO KEY UPDATE", (year, semester))
     if any(r[0] == "closed" for r in cur.fetchall()):
         raise HTTPException(409, f"รอบอัตรากำลังภาคเรียน {term_label(year, semester)} ปิดแล้ว "
                                  "หลักสูตรของภาคเรียนนี้จึงแก้ไม่ได้ (เก็บไว้เป็นหลักฐานย้อนหลัง)")
@@ -15823,15 +15826,17 @@ def wl_curricula_update(curriculum_id: int, request: Request, force: str | None 
         removed = [g for g in now if g not in new_gids] if new_gids is not None else []
         _wl_refuse_unknown_groups(added, names)
         _wl_refuse_groups_taken(cur, year, semester, curriculum_id, added, names)
-        if removed:
-            cur.execute("DELETE FROM wl_curriculum_groups WHERE curriculum_id = %s AND group_id = ANY(%s)",
-                        (curriculum_id, removed))
-        _wl_add_groups(cur, curriculum_id, year, semester, added)
+        # เขียน wl_curricula ก่อน wl_curriculum_groups — ลำดับเดียวกับ _wl_insert_plan และ LOCK TABLE ของการเปิดรอบ
+        # ลำดับกลับกันคือ deadlock: เราถือห้องรอแถวหลักสูตร การเปิดรอบถือ SHARE ของหลักสูตรรอห้อง
         row = old
         if vals:
             row = _wl_unique_or_409(
                 lambda: _wl_update_row(cur, "wl_curricula", _WL_CURRICULUM_COLS, curriculum_id, vals),
                 f"ภาคเรียน {term_label(year, semester)} มีหลักสูตรชื่อ {vals.get('name')} อยู่แล้ว ตั้งชื่ออื่น")
+        if removed:
+            cur.execute("DELETE FROM wl_curriculum_groups WHERE curriculum_id = %s AND group_id = ANY(%s)",
+                        (curriculum_id, removed))
+        _wl_add_groups(cur, curriculum_id, year, semester, added)
         synced = _wl_after_curriculum_change(cur, year, semester, fo)
         changes = _wl_changes(old, row, _WL_CURRICULUM_DIFF)
         if added:
@@ -16185,7 +16190,8 @@ def wl_term_set_options_delete(option_id: int, request: Request, force: str | No
 # ── ขั้นที่ 2: รอบอัตรากำลัง — เปิดรอบจากหลักสูตร ครูเทอมก่อน และแถวที่ตามหลักสูตร (สเปกขั้นที่ 2 ข้อ 4.5) ────────
 # แถวของรอบ = ทุก (บรรทัดหลักสูตร × ห้องที่ใช้หลักสูตรนั้น) ของภาคเรียน เก็บแค่ช่องของหัวหน้ากลุ่มสาระ ช่องวิชาอ่านจาก
 # บรรทัดเสมอ · ตัวเลือกของชุดคาบเสรี/กิจกรรมมี "ครูของตัวเลือก" ได้หลายแถว · รอบเดินทางเดียว: preparing (admin ตรวจ)
-# → filling (หัวหน้ากรอก) → closed (หลักสูตรของภาคเรียนนั้นอ่านอย่างเดียวตลอดไป) · ไม่มี route ลบรอบ (หลักฐานย้อนหลัง)
+# → filling (หัวหน้ากรอก) → closed (หลักสูตรของภาคเรียนนั้นอ่านอย่างเดียวตลอดไป) · รอบที่ยังเตรียมอยู่ยกเลิกได้
+# (หัวหน้ายังไม่เห็น จึงยังไม่มีงานของใคร) ส่วนรอบที่เปิดให้กรอกแล้วลบไม่ได้ (หลักฐานย้อนหลัง)
 # ครูเทอมก่อนมาจากแผนการสอนของโปรแกรมจัดตาราง ณ ตอนเปิดรอบ ใส่ไว้แบบยังไม่ยืนยัน — หายได้เพราะคนกดเท่านั้น
 
 WL_ROUND_FIELDS: frozenset[str] = frozenset({"year", "semester"})
@@ -16409,19 +16415,25 @@ def _wl_refuse_round_exists(cur, year: int, semester: int) -> None:
     hit = cur.fetchone()
     if hit is not None:
         raise HTTPException(409, f"ภาคเรียน {hit[0]} มีรอบอัตรากำลังแล้ว ({WL_ROUND_STATUS_TEXT.get(hit[1], hit[1])}) "
-                                 "หนึ่งภาคเรียนเปิดรอบได้ครั้งเดียว")
+                                 "หนึ่งภาคเรียนมีได้รอบเดียว" + (" — ถ้าจะเปิดใหม่ ให้ยกเลิกรอบที่กำลังเตรียมก่อน"
+                                                                  if hit[1] == "preparing" else ""))
     cur.execute("SELECT label, status FROM wl_rounds WHERE status <> %s", ("closed",))
     hit = cur.fetchone()
     if hit is not None:
         raise HTTPException(409, f"รอบอัตรากำลัง {hit[0]} ยังไม่ปิด ({WL_ROUND_STATUS_TEXT.get(hit[1], hit[1])}) "
-                                 "เปิดรอบใหม่ได้ทีละรอบ ให้ปิดรอบนั้นก่อน")
+                                 "เปิดรอบใหม่ได้ทีละรอบ ให้"
+                                 + ("ยกเลิกรอบนั้นก่อน (ยังไม่เปิดให้กรอก)" if hit[1] == "preparing" else "ปิดรอบนั้นก่อน"))
 
 
-def _wl_entered(confirmed: Any, from_plan: Any, *teachers: Any) -> bool:
-    """แถวของรอบ/ครูของตัวเลือกนี้มีงานที่คนทำไว้ไหม: ยืนยันแล้ว หรือไม่ได้มาจากแผนเดิมและมีครู
-    กติกา force มีไว้ไม่ให้งานของคนหายเงียบ ๆ ไม่ได้มีไว้ปกป้องข้อเสนอของเครื่อง — ครูเทอมก่อนที่ระบบใส่ให้
-    (from_plan) และยังไม่มีใครยืนยัน ลบตามหลักสูตรได้ทันที · การนับใน 409 และในบันทึกใช้นิยามเดียวกันนี้"""
-    return bool(confirmed) or (not from_plan and any(t is not None for t in teachers))
+def _wl_entered(confirmed: Any, from_plan: Any, *fields: Any) -> bool:
+    """แถวของรอบ/ครูของตัวเลือกนี้มีงานที่คนทำไว้ไหม: ยืนยันแล้ว หรือไม่ได้มาจากแผนเดิมและมีช่องใดช่องหนึ่งของหัวหน้า
+    (แถว: ครูผู้สอน ครูสอนร่วม หมายเหตุ ห้องปฏิบัติการ คาบคู่ · ครูของตัวเลือก: ครู หมายเหตุ ห้อง) — หมายเหตุว่าง/คาบคู่เท็จ
+    ไม่นับ · กติกา force มีไว้ไม่ให้งานของคนหายเงียบ ๆ ไม่ได้มีไว้ปกป้องข้อเสนอของเครื่อง: ของที่ระบบใส่จากแผนเดิม
+    (from_plan) และยังไม่มีใครยืนยัน ลบตามหลักสูตรได้ทันที · งานที่ 4 ตั้ง from_plan เป็นเท็จทุกครั้งที่หัวหน้าเขียน
+    การนับใน 409 และในบันทึกใช้นิยามเดียวกันนี้"""
+    def filled(v: Any) -> bool:
+        return v is not None and v is not False and not (isinstance(v, str) and not v.strip())
+    return bool(confirmed) or (not from_plan and any(filled(v) for v in fields))
 
 
 def _wl_sync_note(res: dict[str, Any]) -> str:
@@ -16451,7 +16463,7 @@ def _wl_sync_round(cur, year: int, semester: int, force: bool) -> dict[str, Any]
     label = term_label(year, semester)
     out = {"round_id": None, "label": label, "rows_added": 0, "rows_removed": 0, "rows_removed_entered": 0,
            "option_teachers_removed": 0, "option_teachers_removed_entered": 0}
-    cur.execute("SELECT id, status FROM wl_rounds WHERE year = %s AND semester = %s", (year, semester))
+    cur.execute("SELECT id, status FROM wl_rounds WHERE year = %s AND semester = %s FOR SHARE", (year, semester))
     hit = cur.fetchone()
     if hit is None or hit[1] == "closed":
         return out
@@ -16460,15 +16472,17 @@ def _wl_sync_round(cur, year: int, semester: int, force: bool) -> dict[str, Any]
     want = [(lid, gid) for lid, gid, _sid in shape["cells"]]
     want_set = set(want)
     keep_options = {oid for oid, _gids, _sid in shape["options"]}
-    cur.execute("SELECT id, line_id, group_id, teacher_id, co_teacher_id, confirmed, from_plan FROM wl_rows "
-                "WHERE round_id = %s", (round_id,))
+    # FOR UPDATE: การบันทึกของหัวหน้าที่ยังไม่ commit ต้องถูกรอแล้วนับ — อ่านแบบไม่ล็อกจะเห็นแถวรุ่นเก่า (ยังไม่ใช่งานของคน)
+    # แล้ว DELETE ข้างล่างรอจนหัวหน้า commit ก่อนลบแถวรุ่นใหม่ทิ้ง: งานหายโดยไม่มี 409 และไม่มีบันทึก (READ COMMITTED)
+    cur.execute("SELECT id, line_id, group_id, teacher_id, co_teacher_id, note, lab_room_id, is_double, confirmed, "
+                "from_plan FROM wl_rows WHERE round_id = %s FOR UPDATE", (round_id,))
     rows = cur.fetchall()
     gone = [r for r in rows if (r[1], r[2]) not in want_set]
-    gone_t = sum(1 for r in gone if _wl_entered(r[5], r[6], r[3], r[4]))
-    cur.execute("SELECT id, option_id, teacher_id, confirmed, from_plan FROM wl_option_teachers WHERE round_id = %s",
-                (round_id,))
+    gone_t = sum(1 for r in gone if _wl_entered(r[8], r[9], r[3], r[4], r[5], r[6], r[7]))
+    cur.execute("SELECT id, option_id, teacher_id, note, room_id, confirmed, from_plan FROM wl_option_teachers "
+                "WHERE round_id = %s FOR UPDATE", (round_id,))
     ot_gone = [o for o in cur.fetchall() if o[1] not in keep_options]
-    ot_gone_t = sum(1 for o in ot_gone if _wl_entered(o[3], o[4], o[2]))
+    ot_gone_t = sum(1 for o in ot_gone if _wl_entered(o[5], o[6], o[2], o[3], o[4]))
     if (gone_t or ot_gone_t) and not force:
         what = []
         if gone_t:
@@ -16518,11 +16532,13 @@ def wl_rounds_preview(request: Request, year: str | None = None, semester: str |
         _wl_refuse_plan_blocked()
         _wl_refuse_no_curriculum(cur, y, s)
         plan = _wl_round_plan(cur, y, s)
-        filled = sum(1 for v in plan["prefill"]["rows"].values() if v["teacher_id"] is not None)
+        # แถวที่มีครูเทอมก่อน = แถวที่ wl_prefill ใส่ให้ (ครูผู้สอนหรือครูสอนร่วม) = แถวที่ POST จะติด from_plan
+        filled = len(plan["prefill"]["rows"])
         return {"label": term_label(y, s), "rows": len(plan["cells"]), "options": len(plan["options"]),
                 "prefilled_rows": filled, "prefilled_options": len(plan["prefill"]["options"]),
                 "empty_rows": len(plan["cells"]) - filled,
-                "lines_without_department": plan["lines_without_department"], "unconverted": plan["unconverted"]}
+                "lines_without_department": plan["lines_without_department"],
+                "options_without_department": plan["options_without_department"], "unconverted": plan["unconverted"]}
 
 
 @app.post("/api/workload/rounds")
@@ -16581,11 +16597,29 @@ def wl_round_get(round_id: int, request: Request) -> dict[str, Any]:
         return _wl_round_detail(cur, _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING))
 
 
+@app.delete("/api/workload/rounds/{round_id}")
+def wl_rounds_cancel(round_id: int, request: Request) -> dict[str, Any]:
+    """ยกเลิกรอบที่ยังเตรียมอยู่ (เช่น เปิดผิดภาคเรียน) — ลบรอบ แถว ครูของตัวเลือก และสถานะกลุ่มในธุรกรรมเดียว
+    แล้วภาคเรียนนั้นเปิดรอบใหม่ได้ · ได้เฉพาะ preparing: หัวหน้ายังไม่เห็นรอบนี้ จึงยังไม่มีงานของใครให้หาย (มีแต่ครูเทอมก่อน
+    ที่ระบบใส่ไว้ และการแก้ของ admin) · รอบที่เปิดให้กรอกหรือปิดแล้วลบไม่ได้ (หลักฐานย้อนหลัง) · หลักสูตรไม่ถูกแตะ
+    ลบลูกเองทีละตาราง FK ของลูกไม่มี CASCADE โดยตั้งใจ (ดูคอมเมนต์ที่ _WL_SCHEMA)"""
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        r = _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING, for_update=True)
+        if r["status"] != "preparing":
+            raise HTTPException(409, f"รอบ {r['label']} {WL_ROUND_STATUS_TEXT.get(r['status'], r['status'])} "
+                                     "ยกเลิกได้เฉพาะรอบที่กำลังเตรียม (หัวหน้ากลุ่มสาระยังไม่เห็น)")
+        for table in ("wl_rows", "wl_option_teachers", "wl_dept_status"):
+            cur.execute(f"DELETE FROM {table} WHERE round_id = %s", (round_id,))
+        cur.execute("DELETE FROM wl_rounds WHERE id = %s", (round_id,))
+        return {"ok": True}
+
+
 @app.post("/api/workload/rounds/{round_id}/open")
 def wl_rounds_open(round_id: int, request: Request) -> dict[str, Any]:
     """preparing → filling (เปิดให้หัวหน้ากลุ่มสาระกรอก) · บรรทัดหลักสูตรหรือตัวเลือกของชุดที่ยังไม่มีกลุ่มสาระ = สิ่งที่ไม่มี
     หัวหน้าคนไหนเห็น จะค้างไม่มีใครกรอกตลอดรอบ จึงต้องระบุให้ครบก่อน · อ่านแถวรอบ FOR UPDATE ให้การแก้หลักสูตรที่แข่งกัน
-    (ล็อก FOR SHARE) รอกันเป็นลำดับ"""
+    (ล็อก FOR NO KEY UPDATE) รอกันเป็นลำดับ"""
     with _wl_db() as cur:
         wl_require_admin(request, cur)
         r = _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING, for_update=True)
@@ -16609,9 +16643,10 @@ def wl_rounds_open(round_id: int, request: Request) -> dict[str, Any]:
 def wl_rounds_close(round_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
     """ปิดรอบ: ต้องพิมพ์ชื่อรอบ (เช่น 2/2569) ให้ตรง · ปิดแล้วหลักสูตรของภาคเรียนนั้นอ่านอย่างเดียวตลอดไป
 
-    ปิดได้ทั้งจาก filling และ preparing — รอบที่เปิดผิดภาคเรียนต้องมีทางออก ไม่อย่างนั้นค้างเป็นรอบเดียวที่ยังไม่ปิด
-    แล้วเปิดรอบอื่นไม่ได้อีกเลย (ไม่มี route ลบรอบ) · อ่านแถวรอบ FOR UPDATE: การแก้หลักสูตรที่ล็อกแถวนี้ FOR SHARE
-    อยู่ก่อนต้อง commit ก่อนรอบปิด ส่วนที่มาทีหลังจะเห็นว่าปิดแล้วและถูกปฏิเสธ (_wl_refuse_locked)
+    ปิดได้เฉพาะรอบที่เปิดให้กรอกแล้ว (filling) — ปิดรอบที่ยังเตรียมอยู่ (เช่น เปิดผิดภาคเรียน) จะล็อกหลักสูตรของภาคเรียนนั้น
+    ตลอดไป และ UNIQUE (year, semester) ทำให้ภาคเรียนนั้นไม่มีวันมีรอบอีก จึงให้ยกเลิก (DELETE) แทน
+    อ่านแถวรอบ FOR UPDATE: การแก้หลักสูตรที่ล็อกแถวนี้ (FOR NO KEY UPDATE) อยู่ก่อนต้อง commit ก่อนรอบปิด
+    ส่วนที่มาทีหลังจะเห็นว่าปิดแล้วและถูกปฏิเสธ (_wl_refuse_locked)
     """
     with _wl_db() as cur:
         wl_require_admin(request, cur)
@@ -16619,6 +16654,9 @@ def wl_rounds_close(round_id: int, request: Request, body: Any = Body(None)) -> 
         r = _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING, for_update=True)
         if r["status"] == "closed":
             raise HTTPException(409, f"รอบ {r['label']} ปิดไปแล้ว")
+        if r["status"] != "filling":
+            raise HTTPException(409, f"รอบ {r['label']} ยังไม่เปิดให้กลุ่มสาระกรอก จึงยังปิดไม่ได้ "
+                                     "ถ้าเปิดรอบผิดภาคเรียนหรือไม่ใช้รอบนี้แล้ว ให้ยกเลิกรอบแทน")
         typed = f.get("confirm_label")
         if not isinstance(typed, str) or typed.strip() != r["label"]:
             raise HTTPException(400, f"พิมพ์ชื่อรอบ {r['label']} ให้ตรงเพื่อยืนยันการปิดรอบ — ปิดแล้วหัวหน้ากลุ่มสาระแก้ไม่ได้อีก "

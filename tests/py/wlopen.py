@@ -209,7 +209,8 @@ def test_preview_writes_nothing_and_requires_curriculum():
         p = _call(db, ADMIN, mock_api.wl_rounds_preview, REQ, year="2569", semester="2")
     assert _state(db) == before
     assert set(p) == {"label", "rows", "options", "prefilled_rows", "prefilled_options", "empty_rows",
-                      "lines_without_department", "unconverted"}, p
+                      "lines_without_department", "options_without_department", "unconverted"}, p
+    assert p["options_without_department"] == 0
     # 3 บรรทัด × 6 ห้อง · ครูเทอมก่อน: ท ม.1/1 ม.1/2 · ค ม.1/1 · ว ม.1/3 (ม.1/4 ครูไม่มีในทะเบียน)
     assert (p["label"], p["rows"], p["options"], p["prefilled_rows"], p["empty_rows"]) == ("2/2569", 18, 1, 4, 14), p
     assert p["prefilled_options"] == 1 and p["lines_without_department"] == 0
@@ -217,6 +218,20 @@ def test_preview_writes_nothing_and_requires_curriculum():
     # ปี/ภาคผิด → 400
     for kw in ({}, {"year": "2569"}, {"year": "2499", "semester": "1"}, {"year": "2569", "semester": "3"}):
         assert _code(lambda: _call(db, ADMIN, mock_api.wl_rounds_preview, REQ, **kw))[0] == 400, kw
+
+
+def test_preview_numbers_equal_what_create_writes_for_a_co_teacher_only_row():
+    db, t = _rdb()
+    plan = PLAN + [_req(9, 5, 900, None, co_teacher_id=503)]                 # แผนที่มีแต่ครูสอนร่วม
+    with _timetable(requirements=plan):
+        p = _call(db, ADMIN, mock_api.wl_rounds_preview, REQ, year="2569", semester="2")
+        _call(db, ADMIN, mock_api.wl_rounds_create, REQ, {"year": 2569, "semester": 2})
+    rows = db.tables["wl_rows"]
+    marked = sum(1 for r in rows if r["from_plan"])
+    co_only = [r for r in rows if r["group_id"] == 5 and r["co_teacher_id"] is not None]
+    assert len(co_only) == 1 and co_only[0]["teacher_id"] is None and co_only[0]["from_plan"] is True
+    assert (p["rows"], p["prefilled_rows"], p["empty_rows"]) == (len(rows), marked, len(rows) - marked) == (18, 5, 13), p
+    assert p["prefilled_options"] == len({o["option_id"] for o in db.tables["wl_option_teachers"]})
 
 
 def test_create_round_rows_equal_lines_times_groups():
@@ -329,6 +344,7 @@ def test_round_race_on_the_open_index_is_409_not_500():
 def test_duplicate_year_semester_is_409():
     db, t = _rdb()
     rnd = _open(db)
+    _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)
     _call(db, ADMIN, mock_api.wl_rounds_close, rnd["id"], REQ, {"confirm_label": "2/2569"})
     before = _state(db)
     with _timetable():
@@ -392,27 +408,86 @@ def test_close_requires_typed_label():
     assert got["status"] == "closed" and isinstance(got["closed_at"], str)
     c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_rounds_close, rnd["id"], REQ, {"confirm_label": "2/2569"}))
     assert c == 409 and _thai(d)
-    # รอบที่ยังเตรียมอยู่ปิดได้ (เปิดผิดภาคเรียน ต้องมีทางออก ไม่งั้นค้างเป็นรอบเดียวที่ยังไม่ปิดตลอดไป)
+    # รอบที่ยังเตรียมอยู่ปิดไม่ได้ (ปิดแล้วหลักสูตรของภาคเรียนนั้นล็อกตลอดไปและเปิดรอบใหม่ไม่ได้อีก) — ให้ยกเลิกแทน
     _call(db, ADMIN, mock_api.wl_curricula_create, REQ, {"year": 2570, "semester": 1, "name": "x", "group_ids": [1]})
     r2 = _open(db, 2570, 1)
-    assert _call(db, ADMIN, mock_api.wl_rounds_close, r2["id"], REQ, {"confirm_label": "1/2570"})["status"] == "closed"
+    before = _state(db)
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_rounds_close, r2["id"], REQ, {"confirm_label": "1/2570"}))
+    assert c == 409 and "ยกเลิก" in d and _thai(d), (c, d)
+    assert _state(db) == before
 
 
-def test_close_locks_the_round_row_and_curriculum_writes_read_it_for_share():
-    # ปิดรอบอ่านแถวรอบ FOR UPDATE · ด่านล็อกของหลักสูตรอ่านแถวรอบของภาคเรียน FOR SHARE โดยไม่กรองสถานะ
+def test_cancel_a_preparing_round_removes_it_and_the_term_can_open_again():
+    db, t = _rdb()
+    rnd = _open(db)
+    assert db.count("wl_rows") == 18 and db.count("wl_option_teachers") == 2 and db.count("wl_dept_status") == 11
+    assert _call(db, ADMIN, mock_api.wl_rounds_cancel, rnd["id"], REQ) == {"ok": True}
+    for table in ("wl_rounds", "wl_rows", "wl_option_teachers", "wl_dept_status"):
+        assert db.count(table) == 0, table
+    assert db.count("wl_curriculum_lines") == 3 and db.count("wl_term_set_options") == 1        # หลักสูตรไม่แตะ
+    assert _code(lambda: _call(db, ADMIN, mock_api.wl_round_get, rnd["id"], REQ))[0] == 404
+    # ภาคเรียนนี้เปิดรอบใหม่ได้ · แก้หลักสูตรหลังยกเลิกไม่ไปสร้างแถวให้รอบที่ไม่มีแล้ว
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_create, REQ,
+          {"curriculum_id": t["curriculum"]["id"], "code": "ก21902", "weekly": 1})
+    assert db.count("wl_rows") == 0
+    again = _open(db)
+    assert again["status"] == "preparing" and again["counts"]["rows"] == 24
+    # รอบที่เปิดให้กรอกแล้ว / ปิดแล้ว ยกเลิกไม่ได้ · ไม่มีรอบนี้ 404
+    _call(db, ADMIN, mock_api.wl_rounds_open, again["id"], REQ)
+    before = _state(db)
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_rounds_cancel, again["id"], REQ))
+    assert c == 409 and _thai(d), (c, d)
+    assert _state(db) == before
+    _call(db, ADMIN, mock_api.wl_rounds_close, again["id"], REQ, {"confirm_label": "2/2569"})
+    assert _code(lambda: _call(db, ADMIN, mock_api.wl_rounds_cancel, again["id"], REQ))[0] == 409
+    assert _code(lambda: _call(db, ADMIN, mock_api.wl_rounds_cancel, 9999, REQ))[0] == 404
+
+
+def test_close_locks_the_round_row_and_curriculum_writes_read_it_for_no_key_update():
+    # ปิดรอบอ่านแถวรอบ FOR UPDATE · การแก้หลักสูตรทุกตัวอ่านแถวรอบของภาคเรียน FOR NO KEY UPDATE โดยไม่กรองสถานะ
     # ฝั่งไหนได้ล็อกก่อน อีกฝั่งรอจน commit แล้วเห็นสถานะล่าสุด — แก้หลักสูตรหลุดเข้ามาหลังปิดรอบไม่ได้
+    # และการแก้หลักสูตรสองตัวของภาคเรียนเดียวกันต่อคิวกัน sync ของตัวหลังจึงเห็นสิ่งที่ตัวแรกเปลี่ยน
     db, t = _rdb()
     rnd = _open(db)
     seen = _sql_of(db, mock_api.wl_curriculum_lines_update, t["lines"][0]["id"], REQ, None, {"weekly": 2})
     reads = [q for q in seen if "FROM wl_rounds" in q]
-    assert re.fullmatch(r"SELECT \w+(, \w+)* FROM wl_rounds WHERE year = %s AND semester = %s FOR SHARE", reads[0]), reads
+    assert re.fullmatch(r"SELECT \w+(, \w+)* FROM wl_rounds WHERE year = %s AND semester = %s FOR NO KEY UPDATE",
+                        reads[0]), reads
+    _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)
     seen = _sql_of(db, mock_api.wl_rounds_close, rnd["id"], REQ, {"confirm_label": "2/2569"})
     reads = [q for q in seen if "FROM wl_rounds" in q]
     assert reads and reads[0].endswith("FOR UPDATE") and "WHERE id = %s" in reads[0], reads
 
 
+def test_sync_locks_the_round_rows_before_deciding_what_to_delete():
+    # sync นับงานของคนจากแถวของรอบแล้วลบ — ถ้าอ่านโดยไม่ล็อก การบันทึกของหัวหน้าที่ยังไม่ commit จะไม่ถูกนับ แล้ว DELETE
+    # รอจนหัวหน้า commit ก่อนลบแถวนั้นทิ้ง (งานของคนหายโดยไม่มี 409 และไม่มีบันทึก) — อ่าน FOR UPDATE ให้รอแล้วเห็นของล่าสุด
+    db, t = _rdb()
+    _open(db)
+    seen = _sql_of(db, mock_api.wl_curriculum_lines_delete, t["lines"][0]["id"], REQ, "1", None)
+    rnd_read = [q for q in seen if q.startswith("SELECT id, status FROM wl_rounds WHERE year = %s AND semester = %s")]
+    assert rnd_read and rnd_read[0].endswith("FOR SHARE"), rnd_read
+    rows = next(i for i, q in enumerate(seen) if "FROM wl_rows WHERE round_id = %s" in q)
+    ots = next(i for i, q in enumerate(seen) if "FROM wl_option_teachers WHERE round_id = %s" in q)
+    assert seen[rows].endswith("FOR UPDATE") and seen[ots].endswith("FOR UPDATE"), (seen[rows], seen[ots])
+    delete = next(i for i, q in enumerate(seen) if q.startswith("DELETE FROM wl_rows"))
+    assert rows < delete, seen
+
+
+def test_curriculum_update_writes_the_curriculum_row_before_its_rooms():
+    # ลำดับเดียวกับ _wl_insert_plan และ LOCK TABLE ของการเปิดรอบ (wl_curricula ก่อน wl_curriculum_groups)
+    # ลำดับกลับกันคือ deadlock 40P01 ระหว่าง PUT /curricula (แก้ชื่อ+ห้อง) กับ POST /rounds
+    db, t = _rdb()
+    seen = _sql_of(db, mock_api.wl_curricula_update, t["curriculum"]["id"], REQ, None,
+                   {"name": "ม.1/1-5", "group_ids": [1, 2, 3, 4, 5, 7]})
+    upd = next(i for i, q in enumerate(seen) if q.startswith("UPDATE wl_curricula "))
+    rooms = [i for i, q in enumerate(seen) if q.startswith(("DELETE FROM wl_curriculum_groups",
+                                                            "INSERT INTO wl_curriculum_groups"))]
+    assert len(rooms) == 2 and upd < min(rooms), seen
+
+
 def test_create_locks_the_curriculum_tables_before_reading_them():
-    # การแก้หลักสูตรล็อกแถวรอบ (FOR SHARE) แต่รอบที่กำลังเปิดยังไม่ commit จึงไม่มีแถวให้ล็อก — การเปิดรอบต้องล็อก
+    # การแก้หลักสูตรล็อกแถวรอบ (FOR NO KEY UPDATE) แต่รอบที่กำลังเปิดยังไม่ commit จึงไม่มีแถวให้ล็อก — การเปิดรอบต้องล็อก
     # ตารางหลักสูตรก่อนอ่าน ไม่อย่างนั้นบรรทัดที่เพิ่มพร้อมกันไม่มีแถว และห้องที่เอาออกพร้อมกันเหลือแถวค้าง
     db, t = _rdb()
     with _timetable():
@@ -472,7 +547,8 @@ def test_head_cannot_preview_create_open_close():
                              (mock_api.wl_rounds_create, (REQ, {"year": 2570, "semester": 1}), {}),
                              (mock_api.wl_round_get, (rnd["id"], REQ), {}),
                              (mock_api.wl_rounds_open, (rnd["id"], REQ), {}),
-                             (mock_api.wl_rounds_close, (rnd["id"], REQ, {"confirm_label": "2/2569"}), {})):
+                             (mock_api.wl_rounds_close, (rnd["id"], REQ, {"confirm_label": "2/2569"}), {}),
+                             (mock_api.wl_rounds_cancel, (rnd["id"], REQ), {})):
             c, d = _code(lambda: _call(db, HEAD, fn, *args, **kw))
             assert c == 403 and _thai(d), (fn.__name__, c, d)
             anon = tuple(NOREQ if a is REQ else a for a in args)
@@ -685,12 +761,33 @@ def test_sync_returns_what_it_did():
     assert (got["rows_removed"], got["rows_removed_entered"]) == (3, 2), got
 
 
-def test_entered_means_confirmed_or_a_teacher_not_from_the_plan():
+def test_entered_means_confirmed_or_something_set_not_from_the_plan():
     e = mock_api._wl_entered
     assert e(True, True, 5) and e(True, False) and e(True, True, None, None)       # ยืนยันแล้ว
     assert e(False, False, 5) and e(False, False, None, 7)                         # ใส่ครูเอง
-    assert not e(False, True, 5, 7)                                                # ครูเทอมก่อน ยังไม่ยืนยัน
-    assert not e(False, False, None, None)                                         # แถวว่าง
+    # (teacher, co_teacher, note, lab_room, is_double) — หมายเหตุ ห้องปฏิบัติการ หรือคาบคู่อย่างเดียวก็เป็นงานของคน
+    assert e(False, False, None, None, "ขอห้องคอม", None, False)
+    assert e(False, False, None, None, "", 31, False) and e(False, False, None, None, "", None, True)
+    assert not e(False, False, None, None, "  ", None, False)                     # หมายเหตุว่าง
+    assert not e(False, True, 5, 7, "x", 31, True)                                # ของที่ระบบใส่ ยังไม่ยืนยัน
+    assert not e(False, False, None, None, "", None, False)                       # แถวว่าง
+
+
+def test_note_or_lab_room_only_rows_and_note_only_option_teachers_need_force():
+    db, t = _rdb()
+    rnd = _open(db)
+    for r in _rows(db, round_id=rnd["id"]):
+        r["teacher_id"] = r["co_teacher_id"] = None
+    lid = t["lines"][0]["id"]
+    by = {r["group_id"]: r for r in _rows(db, line_id=lid)}
+    by[1].update(note="ขอห้องคอม", from_plan=False)
+    by[2].update(lab_room_id=31, from_plan=False)
+    by[3].update(lab_room_id=32, from_plan=True)                 # ห้องปฏิบัติการที่ระบบใส่จากแผนเดิม ไม่ใช่งานของคน
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, lid, REQ))
+    assert c == 409 and re.search(r"\b2 แถว", d), (c, d)
+    db.add("wl_option_teachers", round_id=rnd["id"], option_id=t["option"]["id"], note="รอถามครูใหม่")
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_term_set_options_delete, t["option"]["id"], REQ))
+    assert c == 409 and "ครูของตัวเลือก 1 คน" in d, (c, d)                      # ครูเทอมก่อน 2 คนไม่นับ
 
 
 # ── ข้อมูลตั้งต้นทั้งเส้น ─────────────────────────────────────────────────────
@@ -809,7 +906,8 @@ def test_round_routes_are_registered_and_preview_comes_before_round_id():
         assert want in routes, want
     # ประกาศ /rounds/preview ก่อน /rounds/{round_id} ไม่งั้นคำว่า preview ถูกอ่านเป็นรหัสรอบ
     assert routes.index(("get", "/api/workload/rounds/preview")) < routes.index(("get", "/api/workload/rounds/{round_id}"))
-    assert not any(v == "delete" and "/rounds" in p for v, p in routes)
+    # ลบได้แค่การยกเลิกรอบที่ยังเตรียมอยู่ (ทางเดียว)
+    assert [p for v, p in routes if v == "delete" and "/rounds" in p] == ["/api/workload/rounds/{round_id}"]
 
 
 if __name__ == "__main__":
