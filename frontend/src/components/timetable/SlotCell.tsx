@@ -21,6 +21,11 @@ interface SlotCellProps {
   /** หาลานให้คาบที่ไม่มีห้อง — ปุ่มขึ้นเฉพาะคาบกรอบแดงที่ไม่มีห้อง */
   onRescue?:   (slot: TimetableSlot) => void;
   compact?:    boolean;
+  /**
+   * เทอมที่ปิดแล้ว — ช่องวาดเหมือนเดิม แต่ไม่มีปุ่มลบ ล็อก ย้าย สลับห้อง หรือเมนูแก้ใด ๆ
+   * (ไม่ว่าผู้เรียกจะส่ง handler มาหรือไม่)
+   */
+  readOnly?:   boolean;
 }
 
 /**
@@ -56,7 +61,7 @@ function slotColors(s: TimetableSlot, bad?: boolean): string {
 }
 
 export const SlotCell: React.FC<SlotCellProps> = ({
-  slots, isDragging, isOver, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue, compact,
+  slots, isDragging, isOver, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue, compact, readOnly,
 }) => {
   // ทุกคาบในตาราง เพราะ "ครูติดสอนห้องอื่นในชั่วโมงนี้" ดูจากคาบของตัวเองไม่ได้
   // และ "ห้องนี้มีอีกห้องเรียนอยู่ด้วย" ก็เช่นกัน — ต้นไม้ห้องมาด้วยเพราะห้องย่อย
@@ -108,7 +113,8 @@ export const SlotCell: React.FC<SlotCellProps> = ({
       ) : (
         <Layer slot={slots[0]} problem={probs.get(slots[0].id) ?? null}
           onLock={onLock} onDelete={onDelete} onPark={onPark} onMoveOptions={onMoveOptions} onSwapRoom={onSwapRoom}
-          onOpenElective={onOpenElective} onRescue={onRescue} compact={compact} />
+          onOpenElective={onOpenElective} onRescue={onRescue} compact={compact}
+          readOnly={readOnly} />
       )}
     </div>
   );
@@ -125,9 +131,11 @@ interface LayerProps {
   onSwapRoom?: (slot: TimetableSlot) => void;
   onOpenElective?: (slot: TimetableSlot) => void;
   onRescue?: (slot: TimetableSlot) => void;
+  /** เทอมที่ปิดแล้ว — ไม่วาดปุ่มแก้ใด ๆ */
+  readOnly?: boolean;
 }
 
-const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue }) => {
+const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue, readOnly }) => {
   // สอนร่วม and a คาบกิจกรรม duty roster both put more than one teacher in the
   // room. The line truncates, so the count goes in a badge that cannot.
   const names = slotTeacherNames(slot);
@@ -317,6 +325,7 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
     </div>
 
     {/* ── Hover action buttons ───────────────────────────────────── */}
+    {!readOnly && (
     <div className="absolute top-0.5 right-0.5 hidden group-hover:flex gap-0.5 z-10">
       {slot.is_elective && onOpenElective && (
         <button
@@ -387,6 +396,7 @@ const Layer: React.FC<LayerProps> = ({ slot, problem, compact, onLock, onDelete,
         </button>
       )}
     </div>
+    )}
   </div>
   );
 };

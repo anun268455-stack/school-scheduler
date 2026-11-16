@@ -135,7 +135,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
     setBusy(true); setError(null);
     try {
       const updated = await api.updateSubject(subjectId, { duration });
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         subjects: st.subjects.map((x) => (x.id === subjectId ? { ...x, ...updated } : x)),
       }));
     } catch (e) {
@@ -150,7 +150,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
     setBusy(true);
     try {
       const updated = await api.updateSubject(subjectId, { is_elective: on });
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         subjects: st.subjects.map((x) => (x.id === subjectId ? { ...x, ...updated } : x)),
       }));
     } finally { setBusy(false); }
@@ -237,7 +237,7 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
 
   const refresh = async () => {
     const updated = await api.fetchRequirements();
-    useTimetableStore.setState({ requirements: updated });
+    useTimetableStore.getState().patch({ requirements: updated });
   };
 
   const addClass = async (groupId: number) => {
@@ -279,8 +279,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
         }
       }
       await refresh();
-    } catch {
-      setError("จับคู่สอนร่วมไม่สำเร็จ");
+    } catch (e) {
+      setError(api.blockedReason(e) ?? "จับคู่สอนร่วมไม่สำเร็จ");
     } finally { setBusy(false); }
   };
 
@@ -303,8 +303,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
         }
       }
       await refresh();
-    } catch {
-      setError("จับคู่สอนร่วมไม่สำเร็จ");
+    } catch (e) {
+      setError(api.blockedReason(e) ?? "จับคู่สอนร่วมไม่สำเร็จ");
     } finally { setBusy(false); }
   };
 
@@ -333,8 +333,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
     try {
       await api.updateRequirement(r.id, { co_teacher_id: null });
       await refresh();
-    } catch {
-      setError("เลิกสอนร่วมไม่สำเร็จ");
+    } catch (e) {
+      setError(api.blockedReason(e) ?? "เลิกสอนร่วมไม่สำเร็จ");
     } finally { setBusy(false); }
   };
 
@@ -371,8 +371,8 @@ export const TeacherAssignModal: React.FC<Props> = ({ teacher, onClose }) => {
       await api.updateRequirement(r.id, { group_id: gid, subject_id: sid });
       setEditing(null);
       await refresh();
-    } catch {
-      setError("แก้ไขไม่สำเร็จ");
+    } catch (e) {
+      setError(api.blockedReason(e) ?? "แก้ไขไม่สำเร็จ");
     } finally { setBusy(false); }
   };
 

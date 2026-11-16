@@ -61,7 +61,7 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
       const updated = await api.updateSubject(subject.id, {
         building_ids: ids, building_id: ids[0] ?? null,
       });
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         subjects: st.subjects.map((x) => (x.id === subject.id ? { ...x, ...updated } : x)),
       }));
     } finally { setBusy(false); }
@@ -86,7 +86,7 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
       const updated = await api.updateSubject(subject.id, {
         blocked_days: [...days].sort((a, b) => a - b),
       });
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         subjects: st.subjects.map((x) => (x.id === subject.id ? { ...x, ...updated } : x)),
       }));
     } finally { setBusy(false); }
@@ -101,7 +101,7 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
         fixed_room_ids: ids,
         fixed_room_id: ids[0] ?? null,
       });
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         subjects: st.subjects.map((x) => (x.id === subject.id ? { ...x, ...updated } : x)),
       }));
     } finally { setBusy(false); }
@@ -113,7 +113,7 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
       const updated = await api.updateRequirement(reqId, {
         room_id: roomId ? Number(roomId) : null,
       });
-      useTimetableStore.setState((st) => ({
+      useTimetableStore.getState().patch((st) => ({
         requirements: st.requirements.map((r) => (r.id === reqId ? { ...r, ...updated } : r)),
       }));
     } finally { setBusy(false); }
@@ -125,7 +125,7 @@ export const SubjectRoomsModal: React.FC<Props> = ({ subject, onClose }) => {
       const roomId = bulk ? Number(bulk) : null;
       for (const { req } of rows) {
         const updated = await api.updateRequirement(req.id, { room_id: roomId });
-        useTimetableStore.setState((st) => ({
+        useTimetableStore.getState().patch((st) => ({
           requirements: st.requirements.map((r) => (r.id === req.id ? { ...r, ...updated } : r)),
         }));
       }

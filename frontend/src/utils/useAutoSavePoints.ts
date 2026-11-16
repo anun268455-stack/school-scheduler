@@ -37,7 +37,7 @@ export function useAutoSavePoints(enabled: boolean): void {
 
     /** Settle the indicator. It must never be left reading "กำลังเซฟ…". */
     const settle = (why: "saved" | "failed" | "idle") =>
-      useTimetableStore.setState((cur) =>
+      useTimetableStore.getState().patch((cur) =>
         cur.savePointState === why ? {} : { savePointState: why });
 
     const tick = async () => {
@@ -76,11 +76,11 @@ export function useAutoSavePoints(enabled: boolean): void {
         savedRevision.current = revision;
         // Say so on screen. "I do not know whether what I am doing is saved"
         // is the whole problem; a copy nobody can see does not answer it.
-        useTimetableStore.setState({ lastSavePointAt: meta.saved_at, savePointState: "saved" });
+        useTimetableStore.getState().patch({ lastSavePointAt: meta.saved_at, savePointState: "saved" });
       } catch {
         // A failed copy must not interrupt the work, but it must not look like
         // success either — the indicator turns and stays turned.
-        useTimetableStore.setState({ savePointState: "failed" });
+        useTimetableStore.getState().patch({ savePointState: "failed" });
       } finally {
         running.current = false;
       }
@@ -108,7 +108,7 @@ export function useAutoSavePoints(enabled: boolean): void {
           && st.groups === prev.groups && st.teachers === prev.teachers
           && st.subjects === prev.subjects && st.rooms === prev.rooms
           && st.lastRevision === prev.lastRevision) return;
-      useTimetableStore.setState({ savePointState: "saving" });
+      useTimetableStore.getState().patch({ savePointState: "saving" });
       if (pending !== undefined) clearTimeout(pending);
       pending = setTimeout(() => { void tick(); }, AFTER_CHANGE_MS) as unknown as number;
     });

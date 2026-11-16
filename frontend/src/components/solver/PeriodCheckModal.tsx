@@ -67,8 +67,8 @@ export const PeriodCheckModal: React.FC<{ onClose: () => void }> = ({ onClose })
       const d = await api.savePeriodTargets(targets);
       setData(d); setEdits({});
       setNote(`บันทึกที่ตั้งไว้แล้ว ${targets.length} ห้อง`);
-    } catch {
-      setErr("บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
+    } catch (e) {
+      setErr(api.blockedReason(e) ?? "บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
     } finally { setBusy(false); }
   };
 
@@ -84,8 +84,8 @@ export const PeriodCheckModal: React.FC<{ onClose: () => void }> = ({ onClose })
       setData(d); setEdits({}); setPaste(""); setPasteOpen(false);
       setNote(`ตั้งค่าให้ ${p.targets.length} ห้องจาก ${p.matched.length} บรรทัด`
         + (p.missed.length ? ` · อ่านไม่ออก ${p.missed.length} บรรทัด: ${p.missed.slice(0, 2).join(" / ")}` : ""));
-    } catch {
-      setErr("บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
+    } catch (e) {
+      setErr(api.blockedReason(e) ?? "บันทึกไม่สำเร็จ — ลองใหม่อีกครั้ง");
     } finally { setBusy(false); }
   };
 

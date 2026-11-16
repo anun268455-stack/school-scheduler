@@ -9,6 +9,15 @@ class HTTPException(Exception):
         self.detail = detail
 
 
+def Body(default: Any = None, **_: Any) -> Any:
+    return default
+
+
+class Request:
+    """ตัวแทนเล็กที่สุด — ตัวทดสอบส่ง SimpleNamespace(headers={...}) เข้า route ตรง ๆ"""
+    headers: dict = {}
+
+
 class FastAPI:
     def __init__(self, **kw: Any) -> None:
         self.kw = kw

@@ -100,19 +100,25 @@ interface DroppableCellProps {
    * เปิดหน้าต่างนั้น แล้วเก็บ ＋ (เพิ่มคาบใหม่) ไว้เป็นปุ่มเล็กที่มุม
    */
   onFillRoom?: (day: number, period: number) => void;
+  /**
+   * กำลังดูเทอมที่ปิดแล้ว — ช่องวาดเหมือนเดิมทุกอย่าง แต่ลากไม่ได้ ไม่มีปุ่มลบ/ล็อก/
+   * สลับห้อง ไม่มีเมนูแก้ และกดช่องว่างไม่ได้ ไม่ตั้ง listener ของ dnd-kit เลย
+   */
+  readOnly: boolean;
 }
 
 const DroppableCell: React.FC<DroppableCellProps> = ({
   periodDef, day, period, slots, impact, onLock, onDelete, onPark, onMoveOptions, onSwapRoom, onOpenElective, onRescue,
   preLockMode, onPreLockClick, isDragging, onAddLesson, yardMode, yardLabel, onYardClick,
   onYardRemove, guideKind, guideNote, guideMode, onGuidePick, onGuideChoose, onFillRoom,
+  readOnly,
 }) => {
   const { setNodeRef, isOver } = useDroppable({
     id: `cell-${day}-${period}`,
     data: { day, period },
     // Only truly un-droppable cells (break/lunch/homeroom) are disabled.
     // "red" (occupied) cells stay droppable so we can offer replacement routes.
-    disabled: impact?.level === "fixed",
+    disabled: impact?.level === "fixed" || readOnly,
   });
 
   const isFixed   = periodDef != null && periodDef.type !== "class";
@@ -133,7 +139,12 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
   const pickYard = () => onYardClick(day, period);
 
   let body: React.ReactNode = null;
-  if (slots.length > 0) {
+  if (readOnly) {
+    // เทอมที่ปิดแล้ว: แสดงอย่างเดียว ไม่ผ่านโหมดจัดเอง/ล็อก/เลือกลาน/นำทางใด ๆ
+    body = slots.length > 0
+      ? <div className="w-full h-full"><SlotCell slots={slots} readOnly /></div>
+      : yardLabel ? <YardReserved label={yardLabel} /> : null;
+  } else if (slots.length > 0) {
     if (guideMode) {
       // คลิกคาบ = "หาที่ให้คาบนี้" · คลิกช่องที่เป็นทางเลือก = เลือกทางนั้น
       body = (
@@ -275,7 +286,7 @@ const DroppableCell: React.FC<DroppableCellProps> = ({
       {yardLabel && slots.length > 0 ? (
         <div className="flex flex-col h-full">
           <div className="flex-1 min-h-0">{body}</div>
-          <YardTag label={yardLabel} onRemove={() => onYardRemove(day, period)} />
+          <YardTag label={yardLabel} onRemove={readOnly ? undefined : () => onYardRemove(day, period)} />
         </div>
       ) : body}
     </div>
@@ -423,9 +434,13 @@ const ServerWaking: React.FC<{ state: DataState; onRetry: () => void }> = ({
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Grid
 // ─────────────────────────────────────────────────────────────────────────────
-interface TimetableGridProps { onNav?: (page: string) => void }
+interface TimetableGridProps {
+  onNav?: (page: string) => void;
+  /** กำลังดูเทอมที่ปิดแล้ว = !canEdit(viewingTerm, activeTerm) — App คำนวณแล้วส่งลงมา */
+  readOnly: boolean;
+}
 
-export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
+export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav, readOnly }) => {
   const {
     slots, rooms, teachers, periods, groups, subjects, requirements, selectedGroupId, selectedTeacherId, selectedRoomId,
     impactMap, draggingSlot, startDrag, endDrag,
@@ -615,6 +630,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
 
   const onDragEnd = useCallback((e: DragEndEvent) => {
     endDrag();
+    if (readOnly) return;   // ไม่มีอะไรให้ลากอยู่แล้ว กันไว้อีกชั้น
     const { active, over } = e;
     if (!over) return;
 
@@ -673,7 +689,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
     }
     setRoutePlan({ moving: movingSlot, target: { day: nd, period: np }, routes });
   }, [endDrag, impactMap, moveSlot, applySwapRoute, slots, rooms, teachers, periods, groups,
-      manualMode, subjects, parkSlot, unpark]);
+      manualMode, subjects, parkSlot, unpark, readOnly]);
 
   const activeSlots = useMemo(() => {
     if (!draggingSlot) return [];
@@ -813,14 +829,14 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
   // Keyboard shortcut: Ctrl/Cmd+Z to undo the last change.
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && undoStack.length > 0) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && undoStack.length > 0 && !readOnly) {
         e.preventDefault();
         undo();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [undo, undoStack.length]);
+  }, [undo, undoStack.length, readOnly]);
 
   // ยังไม่ได้ยินเสียงเซิร์ฟเวอร์ — จอว่างไม่ได้แปลว่าโรงเรียนไม่มีข้อมูล
   //
@@ -1009,7 +1025,9 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                       : "bg-white border-gray-200 text-gray-500")}>
           <button
             onClick={() => void toggleClassLock(selectedGroupId)}
+            disabled={readOnly}
             className={clsx(
+              "disabled:opacity-50 disabled:cursor-not-allowed",
               "inline-flex items-center gap-1 px-2.5 py-1 rounded-md border font-medium transition-colors",
               classLocked
                 ? "bg-gray-600 border-gray-700 text-white hover:bg-gray-500"
@@ -1029,7 +1047,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       )}
 
       {/* Undo bar */}
-      {undoStack.length > 0 && (
+      {undoStack.length > 0 && !readOnly && (
         <div className="flex items-center gap-2 px-4 py-1.5 bg-slate-50 border-b border-slate-200 text-xs shrink-0">
           <button
             onClick={() => undo()}
@@ -1065,12 +1083,14 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
               ? `คาบเสรี ${electiveDuties.length} คาบ — ยังไม่ได้เลือกห้อง ${electiveRoomsMissing} คาบ`
               : `คาบเสรี ${electiveDuties.length} คาบ — เลือกห้องไว้ครบแล้ว`}
           </span>
-          <button
-            onClick={() => setElectiveRoomsFor({ teacherId: selectedTeacherId })}
-            className="px-2 py-0.5 rounded border border-purple-300 bg-white
-                       hover:bg-purple-100 font-medium">
-            {electiveRoomsMissing > 0 ? "เลือกห้องสอน" : "ดู / เปลี่ยนห้อง"}
-          </button>
+          {!readOnly && (
+            <button
+              onClick={() => setElectiveRoomsFor({ teacherId: selectedTeacherId })}
+              className="px-2 py-0.5 rounded border border-purple-300 bg-white
+                         hover:bg-purple-100 font-medium">
+              {electiveRoomsMissing > 0 ? "เลือกห้องสอน" : "ดู / เปลี่ยนห้อง"}
+            </button>
+          )}
         </div>
       )}
 
@@ -1085,7 +1105,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         </div>
       )}
 
-      {guideMode && (
+      {guideMode && !readOnly && (
         <div className="px-4 py-2 bg-indigo-50 border-b border-indigo-200 text-xs shrink-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-bold text-indigo-900">🧩 โหมดนำทางการจัดคาบ</span>
@@ -1209,7 +1229,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
       {/* โหมดจัดเองไม่มีแถบของตัวเองแล้ว — ปุ่มบนแถบเครื่องมือขึ้นว่า "✋ จัดเอง"
           อยู่ตลอดเวลาที่เปิด ซึ่งบอกเรื่องเดียวกันโดยไม่กินที่เหนือตาราง */}
       {/* Pre-lock banner */}
-      {preLockMode && (
+      {preLockMode && !readOnly && (
         <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-900/40 border-b border-amber-700 text-amber-200 text-xs shrink-0">
           🔒 <strong>โหมดล็อก:</strong> คลิกที่คาบเพื่อล็อก/ปลดล็อก
         </div>
@@ -1219,7 +1239,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
           Says plainly that the timetable stays as it is: the marks are only
           decisions until สร้างตาราง is pressed again, and nobody should wait
           for the grid to rearrange itself. */}
-      {yardPickMode && (
+      {yardPickMode && !readOnly && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-4 py-1.5 bg-teal-50 border-b border-teal-300 text-teal-900 text-xs shrink-0">
           <span>📌 <strong>โหมดเลือกคาบเรียนลาน:</strong></span>
           {yardMode ? (
@@ -1381,6 +1401,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
                             guideNote={guideMap.get(key)?.note}
                             onGuidePick={handleGuidePick}
                             onGuideChoose={guideChoose}
+                            readOnly={readOnly}
                           />
                         </div>
                       </td>
@@ -1397,7 +1418,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
 
           {/* ถาดพักคาบ — ต้องอยู่ในวงลากวางเดียวกับตาราง ไม่งั้นลากข้ามกันไม่ได้
               "เอาไว้วางคาบเฉยๆ เพื่อรอเปลี่ยนได้" */}
-          <ParkTray />
+          {!readOnly && <ParkTray />}
 
           {/* Drag overlay preview */}
           <DragOverlay>
@@ -1444,7 +1465,9 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
           <span className="inline-block bg-blue-500 text-white text-[8px] px-1 rounded font-bold">2×</span> คาบคู่
         </span>
         {!isDragActive && (
-          <span className="ml-auto text-gray-400 italic">ลาก-วางเพื่อย้ายคาบ</span>
+          <span className="ml-auto text-gray-400 italic">
+            {readOnly ? "ดูอย่างเดียว · เทอมที่ปิดแล้วแก้ไม่ได้" : "ลาก-วางเพื่อย้ายคาบ"}
+          </span>
         )}
       </div>
     </div>
@@ -1458,7 +1481,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({ onNav }) => {
         // Esc reaches every open dialog; with the rescue screen on top it should
         // only close that one, not the list underneath as well.
         onClose={() => { if (!rescueSlot) setShowProblems(false); }}
-        onRescue={setRescueSlot}
+        onRescue={readOnly ? undefined : setRescueSlot}
       />
     )}
     {/* หาลานให้คาบที่ไม่มีห้อง — from the lesson's hover button or the problems

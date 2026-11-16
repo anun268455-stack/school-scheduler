@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
 import * as sub from "../../api/subClient";
+import { blockedReason } from "../../api/writeGate";
 
 const DAY_TH = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"];
 
@@ -119,8 +120,8 @@ export const ArrangeCover: React.FC<Props> = ({ me, meName }) => {
         next[u[0].slot_id] = { cover: r.cover, swap: r.swap, unit: u, owed: r.owed };
       }
       setOptions(next);
-    } catch {
-      setError("ค้นหาไม่สำเร็จ — ลองใหม่อีกครั้ง");
+    } catch (e) {
+      setError(blockedReason(e) ?? "ค้นหาไม่สำเร็จ — ลองใหม่อีกครั้ง");
     } finally { setSearching(false); }
   };
 

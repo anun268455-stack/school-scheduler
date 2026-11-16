@@ -86,7 +86,7 @@ export const SavePointPanel = ({ onRestored }: Props) => {
         + ` (เซฟเมื่อ ${formatSavedAt(point.saved_at)})`);
     } catch (e) {
       const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setErr(d ?? "กู้คืนไม่สำเร็จ");
+      setErr(api.blockedReason(e) ?? d ?? "กู้คืนไม่สำเร็จ");
     } finally { setBusy(null); }
   };
 

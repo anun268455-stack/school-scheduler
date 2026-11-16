@@ -9,6 +9,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { StorageWarningBanner } from "./components/backup/StorageWarningBanner";
 import { useAutoSavePoints } from "./utils/useAutoSavePoints";
 import { useTimetableStore } from "./store/timetableStore";
+import { isReadOnly, printTermName } from "./utils/terms";
 import {
   mergeRemembered, parseStored, toRemember, PRINT_MEMORY_KEY,
 } from "./utils/printMemory";
@@ -25,7 +26,7 @@ function wantsSubstitute(): boolean {
 }
 
 type Page = "timetable" | DashPage;
-const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","yards","requirements","curriculum","electives","activities","periods","locks","settings","departments","analytics","help"];
+const DASH_PAGES: DashPage[] = ["groups","teachers","subjects","rooms","yards","requirements","curriculum","electives","activities","periods","locks","settings","terms","departments","analytics","help"];
 
 export default function App() {
   // Decided before anything else: the two pages share data but no chrome, and
@@ -40,10 +41,15 @@ export default function App() {
 
   const [page, setPage] = useState<Page>("timetable");
   const {
-    loadAll, slots, groups, teachers, rooms, departments, periods, schoolConfig,
+    loadAll, loadTerms, slots, groups, teachers, rooms, departments, periods, schoolConfig,
     subjects, requirements,
     startLiveSync, stopLiveSync,
+    terms, viewingTerm,
   } = useTimetableStore();
+  // กำลังดูเทอมที่ปิดอยู่ → ตารางบนจอแก้ไม่ได้ (readOnly ส่งลงไปถึงทุกช่อง)
+  const readOnly = isReadOnly(viewingTerm, terms);
+  // ใบพิมพ์ขึ้นชื่อเทอมที่กำลังดูอยู่ ไม่ใช่เทอมที่ใช้งานอยู่ (ข้อทดสอบ 17)
+  const termName = printTermName(viewingTerm, terms);
   /**
    * ตัวเลือกการพิมพ์ — จำไว้ในเครื่องนี้ ไม่ต้องตั้งใหม่ทุกครั้งที่เปิดหน้าเว็บ
    *
@@ -76,7 +82,9 @@ export default function App() {
   useEffect(() => {
     if (onSubstitute) return;
     loadAll();
-  }, [loadAll, onSubstitute]);
+    // รายการเทอมไว้ตัดสินว่าแก้ได้ไหม ขึ้นชื่อเทอมบนใบพิมพ์ และล็อกช่องภาคเรียนในหน้าตั้งค่า
+    void loadTerms();
+  }, [loadAll, loadTerms, onSubstitute]);
 
   // Keep the page in step with anyone else editing at the same time.
   useEffect(() => {
@@ -123,13 +131,13 @@ export default function App() {
         <ErrorBoundary>
           {page === "timetable" && (
             <div className="flex-1 overflow-hidden flex flex-col">
-              <TimetableGrid onNav={(p) => setPage(p as Page)} />
+              <TimetableGrid onNav={(p) => setPage(p as Page)} readOnly={readOnly} />
             </div>
           )}
           {(DASH_PAGES as string[]).includes(page) && (
             <div className="flex-1 overflow-y-auto p-5">
               <Suspense fallback={<div className="text-center text-gray-400 text-sm py-20">กำลังโหลด…</div>}>
-                <Dashboard page={page as DashPage} />
+                <Dashboard page={page as DashPage} onNav={(p) => setPage(p as Page)} />
               </Suspense>
             </div>
           )}
@@ -150,6 +158,7 @@ export default function App() {
           periods={periods}
           schoolConfig={schoolConfig}
           options={printOptions}
+          termName={termName}
         />
       </div>
     </div>

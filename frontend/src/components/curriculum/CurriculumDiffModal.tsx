@@ -89,7 +89,7 @@ export const CurriculumDiffModal: React.FC<Props> = ({ groupId, groupName, onClo
     await load();
     try {
       // The plan changed under the rest of the app — bring its copy up to date.
-      useTimetableStore.setState({ requirements: await api.fetchRequirements() });
+      useTimetableStore.getState().patch({ requirements: await api.fetchRequirements() });
       await loadSlots();
     } catch {
       setErr("ปรับแล้ว แต่โหลดแผนการสอนใหม่ไม่สำเร็จ — รีเฟรชหน้าเพื่อให้เห็นตัวเลขล่าสุด");

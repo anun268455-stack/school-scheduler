@@ -68,7 +68,7 @@ export const ServerHistoryPanel = ({ onRestored }: Props) => {
       await load();
     } catch (e) {
       const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setErr(d ?? "กู้คืนไม่สำเร็จ");
+      setErr(api.blockedReason(e) ?? d ?? "กู้คืนไม่สำเร็จ");
     } finally { setBusy(null); }
   };
 

@@ -232,7 +232,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
           department_id: null,
           is_activity: false,
         });
-        useTimetableStore.setState((s) => ({ subjects: [...s.subjects, created] }));
+        useTimetableStore.getState().patch((s) => ({ subjects: [...s.subjects, created] }));
         useSubjectId = created.id;
       }
       if (useSubjectId == null) { setError("กรุณาเลือกวิชา"); return; }
@@ -250,7 +250,7 @@ export const AddLessonModal: React.FC<AddLessonModalProps> = ({
       // สอนคาบนี้อยู่แล้ว" — and from ตารางครู or ตารางห้องสอน that is the
       // whole answer. "ลองใหม่" would just send them round the same loop.
       const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(d || "บันทึกไม่สำเร็จ กรุณาลองใหม่");
+      setError(api.blockedReason(e) || d || "บันทึกไม่สำเร็จ กรุณาลองใหม่");
     } finally {
       setBusy(false);
     }

@@ -3,9 +3,10 @@ Mock API v3 — working mock solver + bulk import + periods CRUD + bulk lock.
 Run: python mock_api.py
 """
 from __future__ import annotations
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from typing import Any, Callable
 import copy as _copy
 import random
@@ -14,6 +15,12 @@ import os as _os
 import json as _json
 import datetime as _dt
 import time as _time
+import contextlib as _contextlib
+import hashlib as _hashlib
+import hmac as _hmac
+import secrets as _secrets
+import sys as _sys
+import traceback as _traceback
 from collections import Counter, defaultdict
 from contextvars import ContextVar
 import substitution as _SUB
@@ -78,13 +85,84 @@ def _nothing_changed() -> None:
         flag.append(True)
 
 
+# path ที่เขียนได้เสมอ แม้เทอมปัจจุบันปิดอยู่ — ไม่งั้นปลดล็อกไม่ได้ (การปลดล็อก
+# เองก็คือ POST) และกู้ข้อมูลกลับไม่ได้ ตัวที่ลงท้ายด้วย "/" ครอบ path ลูกด้วย
+# เช่น "/api/terms/" ครอบ "/api/terms/3/unlock"
+# "/api/workload/" (เว็บลงอัตรากำลัง) อยู่ในลิสต์นี้ด้วย: มันเขียนแต่ตาราง wl_* ที่อยู่
+# นอกข้อมูลของเทอม การปิดเทอมของเว็บตารางจึงต้องไม่ห้ามการกรอกอัตรากำลัง
+# คำเตือน: route ใต้ prefix นี้ห้ามแก้ TEACHERS / SUBJECTS / REQUIREMENTS / SLOTS ในหน่วยความจำ
+# เด็ดขาด เพราะ path นี้ข้ามทั้งสามด่านของเว็บตาราง: ไม่บวกตัวนับรุ่น ไม่บันทึก snapshot และไม่ผ่าน
+# ด่านเทอมปิด สิ่งที่แก้จะหายเมื่อเซิร์ฟเวอร์เริ่มใหม่ และอาจไปแก้เทอมที่ปิดแล้วได้
+# การส่งข้อมูลเข้าโปรแกรมจัดตาราง (ขั้นที่ 3) ต้องผ่าน endpoint เดิมของเว็บตารางตามสเปกส่วนที่ 7
+WORKLOAD_PREFIX: str = "/api/workload/"
+TERM_WRITE_SAFE_PATHS: frozenset[str] = frozenset({
+    "/api/terms", "/api/terms/", "/api/restore", "/api/state/adopt",
+    "/api/state/history/", WORKLOAD_PREFIX,
+})
+# ทุก route เขียนใต้ "/api/terms/" ได้ตลอดโดยตั้งใจ ดังนั้นอะไรที่เพิ่มใต้ path นี้
+# ต้องปลอดภัยที่จะเรียกตอนเทอมปัจจุบันปิดอยู่ (ถ้าลิสต์ทีละ path ตัวถัดไปที่เพิ่ม
+# จะถูกล็อกเงียบ ๆ และปลดล็อกเทอมไม่ได้)
+
+
+def workload_path(path: str) -> bool:
+    """path นี้เป็นของเว็บลงอัตรากำลังหรือไม่ — ต้องขึ้นต้นด้วย "/api/workload/" เต็ม ๆ
+    ("/api/workloadsheet" ไม่ใช่)"""
+    return path.startswith(WORKLOAD_PREFIX)
+
+
+def skip_revision_bump(method: str, path: str) -> bool:
+    """จริงเมื่อคำขอนี้ไม่ต้องบวกตัวนับรุ่น · ฟังก์ชันล้วน ไม่อ่านตัวแปรกลาง
+
+    เว็บลงอัตรากำลังเขียนแต่ตาราง wl_* ไม่แตะข้อมูลตารางสอน ถ้าบวกตัวนับ เบราว์เซอร์
+    ที่ครูกำลังจัดตารางอยู่จะเห็นว่ามีรุ่นใหม่แล้วรีโหลดทับงานที่ยังไม่เซฟ
+    """
+    return method not in ("POST", "PUT", "PATCH", "DELETE") or workload_path(path)
+
+
+def term_blocks_write(term: dict[str, Any] | None, method: str, path: str) -> str | None:
+    """ข้อความไทยบอกเหตุผลเมื่อห้ามเขียน · None เมื่อเขียนได้
+
+    ฟังก์ชันล้วน: ไม่อ่านตัวแปรกลางเลย ผู้เรียกส่ง CURRENT_TERM เข้ามา
+    ยังไม่เคยสร้างเทอม (status เป็น None) = ไม่ห้ามอะไร โปรแกรมทำงานเหมือนเดิม
+    """
+    if method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    for safe in TERM_WRITE_SAFE_PATHS:
+        if path == safe or (safe.endswith("/") and path.startswith(safe)):
+            return None
+    # เขียนแบบปิดไว้ก่อน (fail closed) โดยตั้งใจ: จะอนุญาตเขียนได้ต้องเป็นค่าที่รู้จัก
+    # คือ None (ยังไม่เคยสร้างเทอม) หรือ "active" เท่านั้น ค่าแปลกอื่น ๆ เช่น
+    # "Closed" · "closed " · สถานะใหม่ที่ใครเพิ่มทีหลัง จะถูกห้าม — ห้ามพลาดแล้วเห็นชัด
+    # และปลดล็อกได้ แต่อนุญาตพลาดคือเทอมที่โรงเรียนเชื่อว่าปิดสนิทถูกแก้เงียบ ๆ
+    # อย่า "ทำให้ง่ายขึ้น" กลับเป็น != "closed"
+    if term is None or term.get("status") in (None, "active"):
+        return None
+    label = term.get("label")
+    name = f"เทอม {label}" if label else "เทอมปัจจุบัน"
+    return f"{name} ปิดแล้ว ดูและปริ้นได้เท่านั้น"
+
+
 @app.middleware("http")
 async def _bump_revision(request, call_next):
+    # ตรวจก่อนเรียก handler เสมอ: ถ้าปล่อยให้ handler ทำงานแล้วค่อยปฏิเสธ
+    # ข้อมูลในหน่วยความจำถูกแก้ไปแล้ว แค่ไม่ได้เซฟ — เทอมที่ปิดจะถูกแก้จริง
+    # อ่าน CURRENT_TERM ในหน่วยความจำ ไม่ถามฐานข้อมูล (ทุกคำขอเขียนผ่านตรงนี้)
+    blocked = term_blocks_write(CURRENT_TERM, request.method, request.url.path)
+    if blocked is not None:
+        # ตั้งหัวข้อ CORS เอง: คำตอบนี้ออกจากชั้นนอกสุดโดยไม่ผ่าน CORSMiddleware
+        # (ต้องคืนก่อน call_next) ถ้าไม่ใส่ หน้าเว็บบน GitHub Pages ที่เรียกข้ามไป
+        # Render จะอ่านคำตอบไม่ได้ และผู้ใช้เห็นแค่ "เครือข่ายผิดพลาด" แทนข้อความไทย
+        # ค่า "*" ตรงกับ allow_origins=["*"] ด้านบน — ถ้าแก้นโยบาย CORS ต้องแก้ที่นี่ด้วย
+        return JSONResponse(status_code=409, content={"detail": blocked},
+                            headers={"Access-Control-Allow-Origin": "*"})
     unchanged: list[bool] = []
     _NOTHING_CHANGED.set(unchanged)
     response = await call_next(request)
     if (request.method in ("POST", "PUT", "PATCH", "DELETE")
-            and response.status_code < 400 and not unchanged):
+            and response.status_code < 400 and not unchanged
+            # คำขอของเว็บลงอัตรากำลังไม่บวกตัวนับ ไม่ล้างแคช ไม่เซฟ snapshot
+            # (ดู skip_revision_bump) — แคชสองตัวข้างล่างไม่อ้างข้อมูลที่เว็บนั้นแตะ
+            and not skip_revision_bump(request.method, request.url.path)):
         REVISION["n"] += 1
         # The substitution engine caches who is busy when; any write may have
         # changed that, and a stale cache would offer a teacher who has just
@@ -9022,6 +9100,7 @@ def get_rooms():
 def create_room(body: dict[str, Any]):
     body["id"] = _next("room")
     body.setdefault("usable", True)
+    body["active"] = _coerce_active(body.get("active", True))
     body.setdefault("reserved_teacher_ids", [])
     ROOMS.append(body)
     return body
@@ -9053,6 +9132,7 @@ def _refresh_names_for(*, teacher_id=None, room_id=None, subject_id=None,
 
 @app.put("/api/rooms/{i}")
 def update_room(i: int, body: dict[str, Any]):
+    body = _body_with_active(body)
     for r in ROOMS:
         if r["id"] == i:
             r.update(body)
@@ -9065,19 +9145,25 @@ def update_room(i: int, body: dict[str, Any]):
 @app.delete("/api/rooms/{i}")
 def del_room(i: int):
     global ROOMS
+    _refuse_delete_if_in_closed_term(
+        "rooms", i, next((r.get("name") for r in ROOMS if r["id"] == i), None), "ห้อง")
     removed = _purge_room(i)
     ROOMS = [r for r in ROOMS if r["id"] != i]
     return {"removed": removed}
 
 @app.post("/api/rooms/bulk")
 def bulk_create_rooms(body: list[dict[str, Any]]):
+    # แปลง active ของทุกแถวก่อน แล้วค่อยเพิ่มทีละแถว: แถวที่ 5 เสียแล้วตอบ 400
+    # ต้องไม่ทิ้งแถว 1-4 ไว้ในรายการและไม่กินเลขรหัส (กดซ้ำจะได้ซ้ำสี่แถว)
+    actives = [_coerce_active(row.get("active", True)) for row in body]
     created = []
-    for row in body:
+    for row, active in zip(body, actives):
         row["id"] = _next("room")
         row.setdefault("building_name", None)
         row.setdefault("specialized_dept_id", None)
         row.setdefault("reserved_teacher_ids", [])
         row.setdefault("usable", True)
+        row["active"] = active
         ROOMS.append(row)
         created.append(row)
     return created
@@ -9437,11 +9523,13 @@ def get_teachers():
 @app.post("/api/teachers/")
 def create_teacher(body: dict[str, Any]):
     body["id"] = _next("teacher")
+    body["active"] = _coerce_active(body.get("active", True))
     TEACHERS.append(body)
     return body
 
 @app.put("/api/teachers/{i}")
 def update_teacher(i: int, body: dict[str, Any]):
+    body = _body_with_active(body)
     for t in TEACHERS:
         if t["id"] == i:
             t.update(body)
@@ -9452,20 +9540,26 @@ def update_teacher(i: int, body: dict[str, Any]):
 @app.delete("/api/teachers/{i}")
 def del_teacher(i: int):
     global TEACHERS
+    _refuse_delete_if_in_closed_term(
+        "teachers", i, next((t.get("name") for t in TEACHERS if t["id"] == i), None), "ครู")
     removed = _purge_teacher(i)
     TEACHERS = [t for t in TEACHERS if t["id"] != i]
     return {"removed": removed}
 
 @app.post("/api/teachers/bulk")
 def bulk_create_teachers(body: list[dict[str, Any]]):
+    # แปลง active ของทุกแถวก่อน แล้วค่อยเพิ่มทีละแถว: แถวที่ 5 เสียแล้วตอบ 400
+    # ต้องไม่ทิ้งแถว 1-4 ไว้ในรายการและไม่กินเลขรหัส (กดซ้ำจะได้ซ้ำสี่แถว)
+    actives = [_coerce_active(row.get("active", True)) for row in body]
     created = []
-    for row in body:
+    for row, active in zip(body, actives):
         row["id"] = _next("teacher")
         row.setdefault("code", None)
         row.setdefault("fixed_room_id", None)
         row.setdefault("outdoor_score", 5)
         row.setdefault("max_slots_per_day", 6)
         row.setdefault("max_outdoor_per_week", 2)
+        row["active"] = active
         TEACHERS.append(row)
         created.append(row)
     return created
@@ -9719,11 +9813,13 @@ def get_subjects():
 def create_subject(body: dict[str, Any]):
     body["id"] = _next("subject")
     body.setdefault("prefer_morning", False)
+    body["active"] = _coerce_active(body.get("active", True))
     SUBJECTS.append(body)
     return body
 
 @app.put("/api/subjects/{i}")
 def update_subject(i: int, body: dict[str, Any]):
+    body = _body_with_active(body)
     for s in SUBJECTS:
         if s["id"] == i:
             s.update(body)
@@ -9734,19 +9830,25 @@ def update_subject(i: int, body: dict[str, Any]):
 @app.delete("/api/subjects/{i}")
 def del_subject(i: int):
     global SUBJECTS
+    _refuse_delete_if_in_closed_term(
+        "subjects", i, next((x.get("name") for x in SUBJECTS if x["id"] == i), None), "วิชา")
     removed = _purge_subject(i)
     SUBJECTS = [s for s in SUBJECTS if s["id"] != i]
     return {"removed": removed}
 
 @app.post("/api/subjects/bulk")
 def bulk_create_subjects(body: list[dict[str, Any]]):
+    # แปลง active ของทุกแถวก่อน แล้วค่อยเพิ่มทีละแถว: แถวที่ 5 เสียแล้วตอบ 400
+    # ต้องไม่ทิ้งแถว 1-4 ไว้ในรายการและไม่กินเลขรหัส (กดซ้ำจะได้ซ้ำสี่แถว)
+    actives = [_coerce_active(row.get("active", True)) for row in body]
     created = []
-    for row in body:
+    for row, active in zip(body, actives):
         row["id"] = _next("subject")
         row.setdefault("type", "common")
         row.setdefault("prefer_morning", False)
         row.setdefault("duration", 1)
         row.setdefault("fixed_room_id", None)
+        row["active"] = active
         SUBJECTS.append(row)
         created.append(row)
     return created
@@ -13234,6 +13336,19 @@ SCHOOL_CONFIG: dict[str, Any] = {
 }
 
 
+# เทอมที่ข้อมูลชุดนี้เป็นของ — แถวใน app_terms เป็นเจ้าของความจริง ตัวแปรนี้คือ
+# สำเนาที่ถืออยู่ในหน่วยความจำและติดไปกับ _snapshot()
+#
+# "status" ต้องอยู่ในนี้ด้วย: ตัวกันเขียนอ่านมันทุกคำขอเพื่อรู้ว่าเทอมปิดหรือยัง
+# และจะถามฐานข้อมูลทุกคำขอไม่ได้ ถ้าไม่มีคีย์นี้ .get("status") จะได้ None
+# ตัวกันก็ปล่อยให้เขียน แล้วเทอมที่ปิดไปแล้วจะถูกแก้ได้เงียบ ๆ
+# ค่า: "active" · "closed" · None (ยังไม่เคยสร้างเทอมเลย)
+CURRENT_TERM: dict[str, Any] = {
+    "id": None, "year": None, "semester": None, "label": None, "status": None,
+}
+_TERM_KEYS = ("id", "year", "semester", "label", "status")
+
+
 def _lower_homeroom_first() -> bool:
     v = (SCHOOL_CONFIG or {}).get("lower_homeroom_first")
     return True if v is None else bool(v)
@@ -13339,6 +13454,7 @@ def _snapshot() -> dict[str, Any]:
         "parked": [{**e, "rows": [dict(r) for r in e.get("rows") or []]}
                    for e in PARKED],
         "counters": _counters,
+        "current_term": dict(CURRENT_TERM),
     }
 
 
@@ -13381,6 +13497,14 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
 
     if data.get("school_config"):
         SCHOOL_CONFIG.update(dict(data["school_config"]))
+
+    # ไฟล์สำรองที่ทำก่อนมีระบบเทอมไม่มีคีย์นี้ — ต้องโหลดได้และทิ้งเทอมว่างไว้
+    # ไม่ใช่คงค่าเทอมเก่าที่ค้างอยู่ในหน่วยความจำ เพราะข้อมูลที่โหลดมาไม่ใช่ของเทอมนั้น
+    saved_term = data.get("current_term")
+    if not isinstance(saved_term, dict):
+        saved_term = {}
+    for key in _TERM_KEYS:
+        CURRENT_TERM[key] = saved_term.get(key)
 
     # The revision counter has to come back with the data.
     #
@@ -13564,6 +13688,1773 @@ def _db_history_blob(hid: int) -> bytes | None:
     return bytes(row[0]) if row else None
 
 
+# One saved copy per academic term. The active term has a row here too, from
+# the moment it is created; its live data is still the module-level variables
+# and app_state, and its row's data is only refreshed when the term is closed
+# (which is why closing is an UPDATE of that row, not an insert). Closed rows
+# let a past term be opened read-only without disturbing the live one.
+#
+# Two rules are enforced by the database on purpose, not left to the code in
+# front of it: UNIQUE (year, semester), so two clicks on "new term" cannot
+# leave two rows for the same term; and the partial unique index below, so
+# there can never be two rows with status 'active' (two browsers each holding
+# a different editable term). Closed rows are not limited, the index only
+# looks at 'active'.
+_TERMS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_terms (
+    id        bigserial PRIMARY KEY,
+    year      integer NOT NULL,
+    semester  integer NOT NULL,
+    label     text NOT NULL,
+    status    text NOT NULL,
+    data      bytea NOT NULL,
+    slots     integer,
+    opened_at timestamptz NOT NULL DEFAULT now(),
+    closed_at timestamptz,
+    UNIQUE (year, semester)
+)
+"""
+_TERMS_ONE_ACTIVE = """
+CREATE UNIQUE INDEX IF NOT EXISTS app_terms_one_active
+    ON app_terms (status) WHERE status = 'active'
+"""
+TERM_STATUSES = frozenset({"active", "closed"})
+_TERM_COLUMNS = "id, year, semester, label, status, slots, opened_at, closed_at, length(data)"
+
+
+def _terms_schema(cur) -> None:
+    """Create the table and its one-active-row index; safe to run every time."""
+    cur.execute(_TERMS_SCHEMA)
+    cur.execute(_TERMS_ONE_ACTIVE)
+
+
+# ── เว็บลงอัตรากำลัง: ตาราง wl_* ─────────────────────────────────────────
+# ตารางชุดนี้อยู่นอก _snapshot() โดยตั้งใจ — ห้ามเพิ่มเข้าไป เพราะการกู้คืนเว็บตาราง
+# (restore / ย้อนรุ่น / เปลี่ยนเทอม) ครั้งเดียวจะย้อนงานอัตรากำลังที่ครูกรอกไว้ทิ้งทั้งหมด
+# และการเขียนตารางพวกนี้ไม่บวกตัวนับรุ่นของเว็บตาราง (ดู skip_revision_bump)
+#
+# sched_id UNIQUE แต่ NULL ได้หลายแถว (พฤติกรรมปกติของ PostgreSQL): ครูที่ยังไม่เคยส่ง
+# เข้าโปรแกรมจัดตารางมีได้หลายคน แต่ครูฝั่งเว็บตารางหนึ่งคนผูกได้แถวเดียว
+# sched_id IS NULL คือธง "ยังไม่ผูก" เอง จึงไม่มีช่อง boolean แยก (สองที่เก็บความจริงเดียว
+# วันหนึ่งจะขัดกัน)
+#
+# สองดัชนี partial unique บังคับ "admin รหัสเดียว" และ "กลุ่มสาระละหนึ่งรหัส" ที่ฐานข้อมูล
+# ไม่ปล่อยให้โค้ดข้างหน้าคุมเอง: กดสองครั้งติดกันจะได้สองแถว แล้วการปิดรหัสปิดได้แถวเดียว
+# อีกแถวยังเข้าได้เงียบ ๆ (แบบเดียวกับ _TERMS_ONE_ACTIVE)
+_WL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS wl_codes (
+    id            bigserial PRIMARY KEY,
+    role          text NOT NULL CHECK (role IN ('admin','head')),
+    department_id integer,
+    label         text NOT NULL,
+    salt          bytea NOT NULL,
+    hash          bytea NOT NULL,
+    active        boolean NOT NULL DEFAULT true,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    CHECK ((role = 'admin') = (department_id IS NULL))
+);
+CREATE TABLE IF NOT EXISTS wl_sessions (
+    token_hash bytea PRIMARY KEY,
+    code_id    bigint NOT NULL REFERENCES wl_codes(id),
+    expires_at timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS wl_teachers (
+    id            bigserial PRIMARY KEY,
+    sched_id      integer UNIQUE,
+    name          text NOT NULL,
+    code          text,
+    department_id integer,
+    dept_order    integer,
+    active        boolean NOT NULL DEFAULT true
+);
+CREATE TABLE IF NOT EXISTS wl_subjects (
+    id            bigserial PRIMARY KEY,
+    sched_id      integer UNIQUE,
+    code          text NOT NULL,
+    name          text NOT NULL,
+    type          text,
+    department_id integer,
+    duration      integer NOT NULL DEFAULT 1,
+    is_activity   boolean NOT NULL DEFAULT false,
+    is_elective   boolean NOT NULL DEFAULT false,
+    active        boolean NOT NULL DEFAULT true
+);
+CREATE UNIQUE INDEX IF NOT EXISTS wl_codes_one_admin
+    ON wl_codes (role) WHERE role = 'admin';
+CREATE UNIQUE INDEX IF NOT EXISTS wl_codes_one_per_dept
+    ON wl_codes (department_id) WHERE role = 'head'
+"""
+
+
+def _wl_schema(cur) -> None:
+    """สร้างตาราง wl_* และดัชนี · รันซ้ำได้ปลอดภัย"""
+    cur.execute(_WL_SCHEMA)
+
+
+# DDL ชุดนี้เป็นหลายคำสั่ง = ไปกลับ Neon หลายรอบ จึงรันแค่ครั้งแรกที่สำเร็จของแต่ละ process
+# ตั้งธงหลัง commit เท่านั้น: DDL ของ Postgres อยู่ในธุรกรรม ถ้าบล็อกแรกล้มแล้วย้อนกลับ
+# ตารางก็หายไปด้วย การตั้งธงก่อนจะทำให้คำขอถัดไปข้ามการสร้างตารางที่ไม่มีอยู่จริง
+_WL_SCHEMA_READY: bool = False
+
+
+def wl_db_error_detail() -> str:
+    """ข้อความไทยเมื่อเว็บลงอัตรากำลังต่อฐานข้อมูลไม่ได้ — ใช้ร่วมกันทุก route"""
+    return "ต่อฐานข้อมูลไม่ได้ จึงใช้เว็บลงอัตรากำลังไม่ได้ในตอนนี้ ลองใหม่อีกครั้งภายหลัง"
+
+
+def wl_server_error_detail() -> str:
+    """ข้อความไทยเมื่อเกิดข้อผิดพลาดที่เซิร์ฟเวอร์กลางคำขอ — ใช้ร่วมกันทุก route"""
+    return ("เกิดข้อผิดพลาดที่เซิร์ฟเวอร์ ทำรายการไม่สำเร็จ ลองใหม่อีกครั้ง "
+            "ถ้ายังไม่ได้ให้แจ้งผู้ดูแลระบบ")
+
+
+def _wl_log_server_error(exc: BaseException) -> None:
+    # พิมพ์แค่ชื่อชนิด sqlstate และ stack frames ห้ามพิมพ์ข้อความของ exception เด็ดขาด:
+    # ข้อความของ psycopg ยกค่าในแถวที่ผิดมาด้วย (label, salt, แฮชของรหัส) ซึ่งห้ามไปอยู่ใน log
+    # ของ Render ส่วน stack frames มีแค่ชื่อไฟล์ บรรทัด และโค้ด พอให้คนดูแลตามรอยได้
+    state = getattr(exc, "sqlstate", None)
+    lines = [f"[workload] ข้อผิดพลาดที่เซิร์ฟเวอร์: {type(exc).__name__}"
+             + (f" sqlstate={state}" if state else "") + "\n"]
+    lines += _traceback.format_tb(exc.__traceback__)
+    print("".join(lines), end="", file=_sys.stderr, flush=True)
+
+
+@_contextlib.contextmanager
+def _wl_db():
+    """เปิดการเชื่อมต่อ + สร้างตาราง wl_* แล้วส่ง cursor ให้บล็อก · commit เมื่อบล็อกจบปกติ
+
+    ต่อไม่ได้หรือสร้างตารางไม่ได้ = 503 ข้อความไทย (ไม่ใช่ 500 เปล่า) ส่วน HTTPException
+    ที่โค้ดในบล็อกยกเอง (400/401/403/409) ผ่านออกไปตามเดิม และบล็อกที่ยกข้อผิดพลาดไม่ commit
+    ห้ามใช้ _require_db() กับเว็บนี้ — ข้อความของมันพูดถึงระบบเทอมและตอบ 400
+    """
+    if _STORE_KIND != "postgres":
+        raise HTTPException(503, wl_db_error_detail())
+    try:
+        conn = _db_connect()
+    except Exception:
+        raise HTTPException(503, wl_db_error_detail()) from None
+    # ข้อผิดพลาดอื่นกลางบล็อกหรือตอน commit (การเชื่อมต่อหลุด แถวเสียหนึ่งแถว) ต้องกลายเป็น
+    # HTTPException 500 ข้อความไทย: 500 เปล่าถูกส่งจากชั้นนอกของ Starlette โดยไม่มีหัว CORS
+    # หน้าเว็บที่อยู่ต่างโดเมนจึงไม่เห็นคำตอบเลย แล้วบอกผู้ใช้ผิด ๆ ว่าเซิร์ฟเวอร์กำลังตื่น
+    try:
+        # `with conn` ของ psycopg ย้อนกลับเมื่อบล็อกยกข้อผิดพลาด แล้วปิดการเชื่อมต่อเสมอ
+        with conn:
+            with conn.cursor() as cur:
+                if not _WL_SCHEMA_READY:
+                    try:
+                        _wl_schema(cur)
+                    except Exception:
+                        raise HTTPException(503, wl_db_error_detail()) from None
+                yield cur
+            conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        _wl_log_server_error(e)
+        raise HTTPException(500, wl_server_error_detail()) from None
+    _set_wl_schema_ready()
+
+
+def _set_wl_schema_ready() -> None:
+    global _WL_SCHEMA_READY
+    _WL_SCHEMA_READY = True
+
+
+@app.get("/api/workload/health")
+def wl_health() -> dict[str, Any]:
+    with _wl_db() as cur:
+        # ยังไม่มีรหัส admin ที่ใช้ได้ = หน้าเว็บต้องพาไปตั้งรหัสใบแรก (ดู wl_setup)
+        cur.execute("SELECT 1 FROM wl_codes WHERE role = 'admin' AND active LIMIT 1")
+        return {"db": True, "needs_setup": cur.fetchone() is None}
+
+
+# ── เว็บลงอัตรากำลัง: รหัสเข้า · session · route ล็อกอิน ─────────────────────────
+# รหัสเข้าเก็บเป็นแฮชเท่านั้น ไม่มี route ใดคืนรหัสจริง ไม่ log และไม่ใส่ในข้อความผิดพลาด
+# ทุกการเทียบความลับใช้ hmac.compare_digest
+WL_CODE_MIN_LEN: int = 6
+WL_HASH_ROUNDS: int = 200_000
+WL_SESSION_HOURS: int = 12
+WL_BAD_CODE: str = "รหัสไม่ถูกต้อง"
+WL_NEED_LOGIN: str = "ยังไม่ได้เข้าสู่ระบบ หรือหมดเวลาแล้ว กรุณาใส่รหัสเข้าใหม่"
+WL_ADMIN_ONLY: str = "เฉพาะผู้ดูแลระบบ (admin) เท่านั้น"
+
+
+def _wl_utf8(text: str) -> bytes | None:
+    """utf-8 ของข้อความ หรือ None เมื่อเข้ารหัสไม่ได้ (เช่น surrogate โดดจาก JSON "\\ud800")
+    ค่าแบบนั้นต้องนับเป็น "รหัสผิด" ไม่ใช่ทำให้ route ล้มเป็น 500"""
+    try:
+        return text.encode()
+    except UnicodeEncodeError:
+        return None
+
+
+def wl_hash(code: str, salt: bytes) -> bytes:
+    return _hashlib.pbkdf2_hmac("sha256", code.encode(), bytes(salt), WL_HASH_ROUNDS)
+
+
+def wl_normalize_code(raw: str) -> str:
+    """ตัดช่องว่างหัวท้าย (ผู้ใช้พิมพ์/วางแล้วติดช่องว่าง) แต่ไม่แปลงตัวพิมพ์"""
+    return raw.strip()
+
+
+def wl_check_code(raw: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """คืนแถวรหัสที่เปิดอยู่และตรงกับ raw หรือ None · รหัสว่างไม่ผ่านเด็ดขาด"""
+    code = wl_normalize_code(raw)
+    if not code or _wl_utf8(code) is None:
+        return None
+    for row in rows:
+        if not row.get("active"):
+            continue
+        if _hmac.compare_digest(wl_hash(code, row["salt"]), bytes(row["hash"])):
+            return row
+    return None
+
+
+def wl_code_taken(code: str, other_rows: list[dict[str, Any]]) -> bool:
+    """รหัสนี้ซ้ำกับแถวใดหรือไม่ — นับแถวที่ปิดอยู่ด้วย
+
+    wl_check_code คืนแถวแรกที่ตรง ถ้าสองกลุ่มใช้รหัสเดียวกัน หัวหน้ากลุ่มหลังจะเข้าเป็นกลุ่มแรก
+    และแถวที่ปิดอยู่ก็นับ เพราะตอนเปิดกลับมาไม่มีรหัสจริงให้ตรวจซ้ำอีก
+    """
+    code = wl_normalize_code(code)
+    if not code or _wl_utf8(code) is None:
+        return False
+    return any(_hmac.compare_digest(wl_hash(code, r["salt"]), bytes(r["hash"]))
+               for r in other_rows)
+
+
+# แฮชของ token ไม่ใช้ PBKDF2: token สุ่ม 256 บิตจาก token_urlsafe(32) เดาไม่ได้อยู่แล้ว
+# ต้องค้นด้วยคีย์หลัก token_hash ได้ (ตารางไม่มี salt) และ PBKDF2 200,000 รอบทุกคำขอ
+# จะกิน CPU ของ Render free ทุกครั้งที่กดอะไร · wl_hash ใช้กับ "รหัสเข้า" เท่านั้น
+def wl_token_hash(token: str) -> bytes:
+    return _hashlib.sha256(token.encode()).digest()
+
+
+def wl_bearer_token(header: str | None) -> str:
+    """token จากหัวข้อ Authorization: Bearer ... · ไม่มี/รูปผิดคืน "" (Bearer ไม่สนตัวพิมพ์)"""
+    if not isinstance(header, str):
+        return ""
+    parts = header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return ""
+    return parts[1]
+
+
+def wl_session_open(code_id: int, rows: list[dict[str, Any]]) -> str:
+    """ออก token ใหม่ ต่อท้าย rows ด้วยแถวที่เก็บแฮชของ token · ไม่ลบแถวเก่า
+
+    หนึ่งกลุ่มสาระมีรหัสเดียวแต่ใช้พร้อมกันหลายเครื่องได้ ออกใบที่สองต้องไม่เตะใบแรกออก
+    """
+    token = _secrets.token_urlsafe(32)
+    rows.append({"token_hash": wl_token_hash(token), "code_id": code_id,
+                 "expires_at": _dt.datetime.now(_dt.timezone.utc)
+                 + _dt.timedelta(hours=WL_SESSION_HOURS)})
+    return token
+
+
+def wl_session_find(token: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not token:
+        return None
+    want = wl_token_hash(token)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for row in rows:
+        if _hmac.compare_digest(want, bytes(row["token_hash"])) and row["expires_at"] > now:
+            return row
+    return None
+
+
+def wl_session_role(token: str, cur) -> dict[str, Any] | None:
+    """อ่านตาราง แล้วให้ wl_session_find ตัดสินเรื่องหมดอายุ · รหัสที่ถูกปิดใช้ session ไม่ได้ทันที"""
+    if not token:
+        return None
+    cur.execute(
+        "SELECT s.token_hash, s.code_id, c.role, c.department_id, c.label, s.expires_at "
+        "FROM wl_sessions s JOIN wl_codes c ON c.id = s.code_id "
+        "WHERE s.token_hash = %s AND c.active", (wl_token_hash(token),))
+    rows = [{"token_hash": bytes(r[0]), "code_id": r[1], "role": r[2],
+             "department_id": r[3], "label": r[4], "expires_at": r[5]}
+            for r in cur.fetchall()]
+    hit = wl_session_find(token, rows)
+    if hit is None:
+        return None
+    return {k: hit[k] for k in ("code_id", "role", "department_id", "label", "token_hash")}
+
+
+def wl_require_session(request: Request, cur) -> dict[str, Any]:
+    sess = wl_session_role(wl_bearer_token(request.headers.get("authorization")), cur)
+    if sess is None:
+        raise HTTPException(401, WL_NEED_LOGIN)
+    return sess
+
+
+def wl_require_admin(request: Request, cur) -> dict[str, Any]:
+    sess = wl_require_session(request, cur)
+    if sess["role"] != "admin":
+        raise HTTPException(403, WL_ADMIN_ONLY)
+    return sess
+
+
+def wl_validate_new_code(raw: Any) -> str:
+    """รหัสใหม่ที่ผ่านกติกา (ตัดช่องว่างแล้วยาว >= WL_CODE_MIN_LEN) · ใช้ที่จุดตั้งรหัสเท่านั้น"""
+    code = wl_normalize_code(raw) if isinstance(raw, str) else ""
+    if code and _wl_utf8(code) is None:
+        raise HTTPException(400, "รหัสมีตัวอักษรที่ใช้ไม่ได้ กรุณาเลือกรหัสอื่น")
+    if len(code) < WL_CODE_MIN_LEN:
+        raise HTTPException(400, f"รหัสต้องยาวอย่างน้อย {WL_CODE_MIN_LEN} ตัวอักษร (ไม่นับช่องว่างหัวท้าย)")
+    return code
+
+
+def wl_validate_role_dept(role: Any, department_id: Any) -> None:
+    if role == "admin":
+        if department_id is not None:
+            raise HTTPException(400, "รหัส admin ต้องไม่ระบุกลุ่มสาระ")
+    elif role == "head":
+        # bool เป็น int ในไพทอน — True ไม่ใช่รหัสกลุ่มสาระ
+        if type(department_id) is not int or not any(d["id"] == department_id for d in DEPARTMENTS):
+            raise HTTPException(400, "รหัสหัวหน้ากลุ่มสาระต้องระบุกลุ่มสาระที่มีอยู่จริง")
+    else:
+        raise HTTPException(400, "บทบาทต้องเป็น admin หรือ head")
+
+
+def wl_setup_allowed(env_value: str | None, given: object) -> bool:
+    """ตัวแปรที่ไม่ได้ตั้งต้องไม่มีทางผ่าน แม้ส่งค่าว่างมา"""
+    if not isinstance(env_value, str) or not env_value.strip():
+        return False
+    if not isinstance(given, str) or not given.strip():
+        return False
+    a, b = _wl_utf8(env_value.strip()), _wl_utf8(given.strip())
+    if a is None or b is None:
+        return False
+    return _hmac.compare_digest(a, b)
+
+
+# รหัสตั้งค่าที่ผู้ใช้ตั้งเองบน Render สั้นเกินไปเดาได้ และใครตั้งผ่านก็ยึด admin ได้
+WL_SETUP_CODE_MIN_LEN: int = 12
+
+
+def wl_setup_env_strong(env_value: str | None) -> bool:
+    return isinstance(env_value, str) and len(env_value.strip()) >= WL_SETUP_CODE_MIN_LEN
+
+
+# ── จำกัดการเดารหัส (ไม่ต้องล็อกอินและเปิดรับทุกที่ จึงต้องกันทั้งการเดาและการกิน CPU) ──
+# นับทั้งเครื่อง ไม่แยกตาม IP: หลัง proxy ของ Render IP ผู้เรียกปลอมได้ ขีดจำกัดต่อ IP จึงเป็นของตกแต่ง
+# เก็บในหน่วยความจำของ process นี้ รีสตาร์ตแล้วเริ่มนับใหม่ (Render free มี process เดียว จึงยอมรับได้)
+WL_LOGIN_FAIL_LIMIT: int = 10
+WL_LOGIN_FAIL_WINDOW: float = 60.0
+WL_SETUP_FAIL_LIMIT: int = 5
+WL_SETUP_FAIL_WINDOW: float = 600.0
+_WL_FAILS: dict[str, list[float]] = {"login": [], "setup": []}
+_WL_FAILS_LOCK = _threading.Lock()  # handler รันใน thread pool
+# PBKDF2 ของการล็อกอินรันได้ทีละคำขอ: เครื่องเดียวกันนี้ให้บริการเว็บตารางสอนด้วย
+# ล็อกอินรัว ๆ ต้องไม่แย่ง CPU ของ worker ทั้งหมดจากครูที่กำลังใช้ตาราง
+_WL_LOGIN_HASH_GATE = _threading.Semaphore(1)
+WL_LOGIN_MAX_IN_FLIGHT: int = 8
+_WL_LOGIN_INFLIGHT = _threading.BoundedSemaphore(WL_LOGIN_MAX_IN_FLIGHT)
+
+
+def wl_throttled(times: list[float], now: float, limit: int, window: float) -> bool:
+    """จริงเมื่อมี limit รายการขึ้นไปใน window วินาทีล่าสุดก่อน now"""
+    return sum(1 for t in times if now - window < t <= now) >= limit
+
+
+def _wl_fail_guard(kind: str, limit: int, window: float) -> None:
+    with _WL_FAILS_LOCK:
+        now = _time.monotonic()
+        lst = _WL_FAILS[kind]
+        lst[:] = [t for t in lst if now - window < t <= now]  # ตัดของเก่า ลิสต์จะไม่โตไม่สิ้นสุด
+        if wl_throttled(lst, now, limit, window):
+            raise HTTPException(429, "ใส่รหัสผิดบ่อยเกินไป กรุณารอสักครู่ (ประมาณหนึ่งนาที) แล้วลองใหม่"
+                                if kind == "login" else
+                                "ใส่รหัสตั้งค่าผิดบ่อยเกินไป กรุณารอสักครู่ (ประมาณสิบนาที) แล้วลองใหม่")
+
+
+def _wl_fail_record(kind: str) -> None:
+    with _WL_FAILS_LOCK:
+        _WL_FAILS[kind].append(_time.monotonic())
+
+
+def _wl_code_rows(cur, exclude_id: int | None = None) -> list[dict[str, Any]]:
+    cur.execute("SELECT id, role, department_id, label, salt, hash, active FROM wl_codes ORDER BY id")
+    return [{"id": r[0], "role": r[1], "department_id": r[2], "label": r[3],
+             "salt": bytes(r[4]), "hash": bytes(r[5]), "active": r[6]}
+            for r in cur.fetchall() if r[0] != exclude_id]
+
+
+def _wl_body(body: Any) -> dict[str, Any]:
+    return body if isinstance(body, dict) else {}
+
+
+def _wl_require_body(body: Any) -> dict[str, Any]:
+    """body ที่ไม่ใช่ออบเจ็กต์ JSON (หรือไม่มีเลย) ตอบ 400 ไทย — FastAPI จะตอบ 422 อังกฤษถ้าให้มันตรวจเอง"""
+    if not isinstance(body, dict):
+        raise HTTPException(400, "ข้อมูลที่ส่งมาต้องเป็นออบเจ็กต์ JSON")
+    return body
+
+
+@app.post("/api/workload/login")
+def wl_login(body: Any = Body(None)) -> dict[str, Any]:
+    # ตรวจก่อนแฮชและก่อนเปิดฐานข้อมูล: ถูกจำกัดแล้วต้องไม่เสียทั้ง CPU และการเชื่อมต่อ
+    _wl_fail_guard("login", WL_LOGIN_FAIL_LIMIT, WL_LOGIN_FAIL_WINDOW)
+    raw = _wl_body(body).get("code")
+    if not isinstance(raw, str):
+        _wl_fail_record("login")
+        raise HTTPException(401, WL_BAD_CODE)
+    # คำขอที่รอคิวแฮชแต่ละตัวถือ worker thread ของ pool ที่เว็บตารางใช้ร่วมกัน
+    # รอได้พร้อมกัน 8 ตัวคือเพดานที่เว็บตารางอยู่ได้ คิวไม่จำกัดอยู่ไม่ได้ จึงปฏิเสธทันทีเมื่อเต็ม
+    if not _WL_LOGIN_INFLIGHT.acquire(blocking=False):
+        raise HTTPException(429, "มีคนเข้าสู่ระบบพร้อมกันมากเกินไป กรุณารอสักครู่ (ไม่กี่วินาที) แล้วลองใหม่")
+    try:
+        with _WL_LOGIN_HASH_GATE:
+            # ตรวจซ้ำในประตู: ตัวที่รอคิวระหว่างที่รายการผิดยังสะสมอยู่ต้องถูกไล่กลับโดยไม่แฮช
+            # (ตรวจ+บันทึกอยู่ในประตูเดียวกัน จำนวนการแฮชที่ผิดในหนึ่งหน้าต่างจึงไม่เกินเพดาน)
+            _wl_fail_guard("login", WL_LOGIN_FAIL_LIMIT, WL_LOGIN_FAIL_WINDOW)
+            # เปิดฐานข้อมูลหลังได้ประตูเท่านั้น: ตัวที่รออยู่ห้ามถือการเชื่อมต่อ
+            with _wl_db() as cur:
+                row = wl_check_code(raw, _wl_code_rows(cur))
+                if row is None:
+                    _wl_fail_record("login")
+                    raise HTTPException(401, WL_BAD_CODE)
+                cur.execute("DELETE FROM wl_sessions WHERE expires_at <= now()")
+                new: list[dict[str, Any]] = []
+                token = wl_session_open(row["id"], new)
+                cur.execute("INSERT INTO wl_sessions (token_hash, code_id, expires_at) VALUES (%s, %s, %s)",
+                            (new[0]["token_hash"], row["id"], new[0]["expires_at"]))
+                return {"token": token, "role": row["role"],
+                        "department_id": row["department_id"], "label": row["label"]}
+    finally:
+        _WL_LOGIN_INFLIGHT.release()
+
+
+@app.post("/api/workload/logout")
+def wl_logout(request: Request) -> dict[str, Any]:
+    token = wl_bearer_token(request.headers.get("authorization"))
+    if token:
+        with _wl_db() as cur:
+            cur.execute("DELETE FROM wl_sessions WHERE token_hash = %s", (wl_token_hash(token),))
+    return {"ok": True}
+
+
+@app.get("/api/workload/me")
+def wl_me(request: Request) -> dict[str, Any]:
+    with _wl_db() as cur:
+        s = wl_require_session(request, cur)
+        return {"role": s["role"], "department_id": s["department_id"], "label": s["label"]}
+
+
+def _wl_is_unique_violation(e: Exception) -> bool:
+    return getattr(e, "sqlstate", None) == "23505"
+
+
+def _wl_insert_code(cur, role: str, department_id: int | None, label: str, code: str) -> int:
+    salt = _secrets.token_bytes(16)
+    try:
+        cur.execute("INSERT INTO wl_codes (role, department_id, label, salt, hash) "
+                    "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (role, department_id, label, salt, wl_hash(code, salt)))
+    except Exception as e:  # noqa: BLE001
+        # ดัชนี unique เป็นด่านสุดท้ายเมื่อสองคำขอชนกัน — ตอบ 409 ไม่ใช่ 500
+        if _wl_is_unique_violation(e):
+            raise HTTPException(409, "กลุ่มนี้มีรหัสอยู่แล้ว ให้ใช้การตั้งรหัสใหม่แทน") from None
+        raise
+    return cur.fetchone()[0]
+
+
+def _wl_drop_sessions(cur, code_id: int, keep_hash: bytes | None = None) -> None:
+    """เตะ session ของรหัสนี้ออกทั้งหมด ยกเว้นของผู้เรียก (admin เปลี่ยนรหัสตัวเองต้องไม่เด้งออก)"""
+    if keep_hash is None:
+        cur.execute("DELETE FROM wl_sessions WHERE code_id = %s", (code_id,))
+    else:
+        cur.execute("DELETE FROM wl_sessions WHERE code_id = %s AND token_hash <> %s",
+                    (code_id, keep_hash))
+
+
+@app.post("/api/workload/setup")
+def wl_setup(body: Any = Body(None)) -> dict[str, Any]:
+    """ตั้งรหัส admin ใบแรก หรือกู้เมื่อลืม — ด้วยรหัสตั้งค่าใน WORKLOAD_SETUP_CODE ของเซิร์ฟเวอร์"""
+    _wl_fail_guard("setup", WL_SETUP_FAIL_LIMIT, WL_SETUP_FAIL_WINDOW)
+    b = _wl_require_body(body)
+    env = _os.environ.get("WORKLOAD_SETUP_CODE")
+    if not isinstance(env, str) or not env.strip():
+        raise HTTPException(403, "ยังไม่ได้ตั้งรหัสตั้งค่าที่เซิร์ฟเวอร์ — ให้ตั้งตัวแปร "
+                                 "WORKLOAD_SETUP_CODE ในหน้า Environment ของ Render ก่อน แล้วลองใหม่")
+    if not wl_setup_env_strong(env):
+        raise HTTPException(403, f"รหัสตั้งค่า WORKLOAD_SETUP_CODE บน Render สั้นเกินไป "
+                                 f"ต้องยาวอย่างน้อย {WL_SETUP_CODE_MIN_LEN} ตัวอักษร")
+    if not wl_setup_allowed(env, b.get("setup_code")):
+        _wl_fail_record("setup")
+        raise HTTPException(403, "รหัสตั้งค่าไม่ถูกต้อง")
+    code = wl_validate_new_code(b.get("code"))
+    with _wl_db() as cur:
+        rows = _wl_code_rows(cur)
+        admin = next((r for r in rows if r["role"] == "admin"), None)
+        if wl_code_taken(code, [r for r in rows if r is not admin]):
+            raise HTTPException(409, "รหัสนี้ถูกใช้อยู่แล้ว เลือกรหัสอื่น")
+        if admin is None:
+            admin_id = _wl_insert_code(cur, "admin", None, "ผู้ดูแลระบบ", code)
+        else:
+            admin_id = admin["id"]
+            salt = _secrets.token_bytes(16)
+            cur.execute("UPDATE wl_codes SET salt = %s, hash = %s, active = true WHERE id = %s",
+                        (salt, wl_hash(code, salt), admin_id))
+        _wl_drop_sessions(cur, admin_id)
+        return {"ok": True}
+
+
+@app.get("/api/workload/codes")
+def wl_codes_list(request: Request) -> list[dict[str, Any]]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        return [{k: r[k] for k in ("id", "role", "department_id", "label", "active")}
+                for r in _wl_code_rows(cur)]
+
+
+@app.post("/api/workload/codes")
+def wl_codes_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        b = _wl_require_body(body)
+        role, dept = b.get("role"), b.get("department_id")
+        wl_validate_role_dept(role, dept)
+        label = b.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise HTTPException(400, "ต้องระบุชื่อเรียกของรหัสนี้")
+        code = wl_validate_new_code(b.get("code"))
+        rows = _wl_code_rows(cur)
+        if any(r["role"] == role and r["department_id"] == dept for r in rows):
+            raise HTTPException(409, "กลุ่มนี้มีรหัสอยู่แล้ว ให้ใช้การตั้งรหัสใหม่แทน")
+        if wl_code_taken(code, rows):
+            raise HTTPException(409, "รหัสนี้ถูกใช้อยู่แล้ว เลือกรหัสอื่น")
+        return {"id": _wl_insert_code(cur, role, dept, label.strip(), code)}
+
+
+@app.put("/api/workload/codes/{code_id}")
+def wl_codes_update(code_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        me = wl_require_admin(request, cur)
+        b = _wl_require_body(body)
+        extra = [k for k in b if k not in ("code", "label", "active")]
+        if extra:
+            raise HTTPException(400, f"แก้ช่อง {extra[0]} ไม่ได้ (แก้ได้เฉพาะ code, label, active)")
+        rows = _wl_code_rows(cur)
+        row = next((r for r in rows if r["id"] == code_id), None)
+        if row is None:
+            raise HTTPException(404, "ไม่พบรหัสนี้")
+        sets: list[str] = []
+        args: list[Any] = []
+        kick = False
+        if "label" in b:
+            if not isinstance(b["label"], str) or not b["label"].strip():
+                raise HTTPException(400, "ต้องระบุชื่อเรียกของรหัสนี้")
+            sets.append("label = %s"); args.append(b["label"].strip())
+        if "active" in b:
+            if not isinstance(b["active"], bool):
+                raise HTTPException(400, "active ต้องเป็นจริงหรือเท็จ")
+            if row["role"] == "admin" and not b["active"]:
+                raise HTTPException(400, "ปิดรหัส admin ไม่ได้ เพราะจะไม่มีใครเข้าระบบได้")
+            sets.append("active = %s"); args.append(b["active"])
+            kick = kick or not b["active"]
+        if "code" in b:
+            code = wl_validate_new_code(b["code"])
+            if wl_code_taken(code, [r for r in rows if r["id"] != code_id]):
+                raise HTTPException(409, "รหัสนี้ถูกใช้อยู่แล้ว เลือกรหัสอื่น")
+            salt = _secrets.token_bytes(16)
+            sets += ["salt = %s", "hash = %s"]; args += [salt, wl_hash(code, salt)]
+            kick = True
+        if sets:
+            cur.execute(f"UPDATE wl_codes SET {', '.join(sets)} WHERE id = %s", (*args, code_id))
+        if kick:
+            _wl_drop_sessions(cur, code_id, keep_hash=me["token_hash"])
+        return {"ok": True}
+
+
+# ── ทะเบียนครูและทะเบียนวิชาของเว็บลงอัตรากำลัง ─────────────────────────
+# เป็นของเว็บใหม่เอง (wl_teachers / wl_subjects) ไม่เขียน TEACHERS / SUBJECTS ของเว็บตาราง
+# ช่องที่ตั้งได้มีแค่ที่เว็บใหม่เป็นเจ้าของ ช่องของเครื่องจัดคาบ (fixed_room_id ฯลฯ) ปฏิเสธด้วย 400
+# เพราะถ้าหลุดเข้ามาเงียบ ๆ จะกลายเป็นจุดเริ่มของการทับเงื่อนไขจัดคาบในขั้นถัดไป
+WL_TEACHER_FIELDS: frozenset[str] = frozenset({"name", "code", "department_id", "dept_order", "active"})
+WL_SUBJECT_FIELDS: frozenset[str] = frozenset(
+    {"code", "name", "type", "department_id", "duration", "is_activity", "is_elective", "active"})
+
+# ชื่อคอลัมน์ใน SQL มาจากสองชุดนี้เท่านั้น (เรียงตามตาราง) ค่าจากผู้ใช้ส่งเป็นพารามิเตอร์เสมอ
+_WL_TEACHER_COLS = ("id", "sched_id", "name", "code", "department_id", "dept_order", "active")
+_WL_SUBJECT_COLS = ("id", "sched_id", "code", "name", "type", "department_id",
+                    "duration", "is_activity", "is_elective", "active")
+_WL_INT4_MAX = 2_147_483_647
+_WL_BIGINT_MAX = 9_223_372_036_854_775_807
+
+
+def wl_clean_fields(body: object, allowed: frozenset[str]) -> dict[str, Any]:
+    """body ต้องเป็นออบเจ็กต์ที่มีแต่คีย์ใน allowed · คีย์แปลกปลอมบอกชื่อให้ครบทุกตัว"""
+    if not isinstance(body, dict):
+        raise HTTPException(400, "ข้อมูลที่ส่งมาต้องเป็นออบเจ็กต์ JSON")
+    extra = [str(k) for k in body if k not in allowed]
+    if extra:
+        raise HTTPException(
+            400, f"ส่งช่อง {', '.join(extra)} ไม่ได้ (รับเฉพาะ {', '.join(sorted(allowed))})")
+    return body
+
+
+def _wl_text(field: str, v: Any, required: bool) -> str | None:
+    """ข้อความที่ฐานข้อมูลเก็บได้ · NUL และ surrogate โดดทำให้ psycopg ล้มเป็น 500 จึงกันที่นี่"""
+    if v is None and not required:
+        return None
+    if not isinstance(v, str) or (required and not v.strip()):
+        raise HTTPException(400, f"ช่อง {field} ต้องเป็นข้อความ" + (" และห้ามว่าง" if required else ""))
+    if "\x00" in v or _wl_utf8(v) is None:
+        raise HTTPException(400, f"ช่อง {field} มีตัวอักษรที่ใช้ไม่ได้")
+    return v.strip() if required else v
+
+
+def _wl_bool(field: str, v: Any) -> bool:
+    if not isinstance(v, bool):
+        raise HTTPException(400, f"ช่อง {field} ต้องเป็นจริงหรือเท็จ (true/false)")
+    return v
+
+
+def _wl_int_or_none(field: str, v: Any) -> int | None:
+    # bool เป็น int ในไพทอน — True ไม่ใช่เลขกลุ่มสาระ จึงเช็ค type ตรง ๆ
+    if v is None:
+        return None
+    if type(v) is not int or abs(v) > _WL_INT4_MAX:
+        raise HTTPException(400, f"ช่อง {field} ต้องเป็นจำนวนเต็มหรือว่าง")
+    return v
+
+
+def _wl_dept_or_none(v: Any) -> int | None:
+    v = _wl_int_or_none("department_id", v)
+    if v is not None and v not in {d["id"] for d in DEPARTMENTS}:
+        raise HTTPException(400, "ช่อง department_id ไม่ตรงกับกลุ่มสาระที่มีอยู่")
+    return v
+
+
+def wl_check_teacher(f: dict[str, Any], creating: bool) -> dict[str, Any]:
+    """ตรวจค่าครู (ฟังก์ชันล้วน) · creating=True เติมค่าตั้งต้นให้ครบทุกช่อง"""
+    out: dict[str, Any] = {}
+    if creating or "name" in f:
+        out["name"] = _wl_text("name", f.get("name"), True)
+    if "code" in f:
+        out["code"] = _wl_text("code", f["code"], False)
+    if "department_id" in f:
+        out["department_id"] = _wl_dept_or_none(f["department_id"])
+    if "dept_order" in f:
+        out["dept_order"] = _wl_int_or_none("dept_order", f["dept_order"])
+    if "active" in f:
+        out["active"] = _wl_bool("active", f["active"])
+    if creating:
+        for k, dv in (("code", None), ("department_id", None), ("dept_order", None), ("active", True)):
+            out.setdefault(k, dv)
+    return out
+
+
+def wl_check_subject(f: dict[str, Any], creating: bool) -> dict[str, Any]:
+    """ตรวจค่าวิชา (ฟังก์ชันล้วน) · type ตรงกับ SubjectType ของเว็บตาราง · duration 2 = คาบคู่"""
+    out: dict[str, Any] = {}
+    for k in ("code", "name"):
+        if creating or k in f:
+            out[k] = _wl_text(k, f.get(k), True)
+    if "type" in f:
+        if f["type"] not in ("common", "parallel"):
+            raise HTTPException(400, "ช่อง type ต้องเป็น common หรือ parallel")
+        out["type"] = f["type"]
+    if "department_id" in f:
+        out["department_id"] = _wl_dept_or_none(f["department_id"])
+    if "duration" in f:
+        if type(f["duration"]) is not int or f["duration"] not in (1, 2):
+            raise HTTPException(400, "ช่อง duration ต้องเป็น 1 หรือ 2 (2 = คาบคู่)")
+        out["duration"] = f["duration"]
+    for k in ("is_activity", "is_elective", "active"):
+        if k in f:
+            out[k] = _wl_bool(k, f[k])
+    if creating:
+        for k, dv in (("type", "common"), ("department_id", None), ("duration", 1),
+                      ("is_activity", False), ("is_elective", False), ("active", True)):
+            out.setdefault(k, dv)
+    return out
+
+
+def wl_import_plan(sched: list[dict[str, Any]], existing: list[dict[str, Any]]) -> dict[str, Any]:
+    """ตัดสินว่าครูฝั่งตารางคนไหนต้องสร้างใหม่ (ฟังก์ชันล้วน ไม่แก้ลิสต์ที่รับเข้ามา)
+
+    จับคู่ด้วย sched_id เท่านั้น ห้ามเทียบชื่อแม้เป็นทางสำรอง: ชื่อสะกดต่างกันได้
+    แต่รหัสเดียวกันคือคนเดียวกัน และครูชื่อซ้ำกันจริงมีในโรงเรียน
+    skipped = แถวที่ id ไม่ใช่ int จริง หรือ id ซ้ำกับแถวก่อนหน้าในลิสต์เดียวกัน
+    """
+    known = {e.get("sched_id") for e in existing if type(e.get("sched_id")) is int}
+    seen: set[int] = set()
+    create: list[dict[str, Any]] = []
+    already: list[int] = []
+    skipped: list[dict[str, Any]] = []
+    for t in sched:
+        tid = t.get("id")
+        if type(tid) is not int or tid in seen:
+            skipped.append(t)
+            continue
+        seen.add(tid)
+        if tid in known:
+            already.append(tid)
+        else:
+            create.append(t)
+    return {"create": create, "already": already, "skipped": skipped}
+
+
+def _wl_rows(cur, table: str, cols: tuple[str, ...], order: str) -> list[dict[str, Any]]:
+    cur.execute(f"SELECT {', '.join(cols)} FROM {table} ORDER BY {order}")
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+@app.get("/api/workload/teachers")
+def wl_teachers_list(request: Request) -> list[dict[str, Any]]:
+    with _wl_db() as cur:
+        wl_require_session(request, cur)
+        return _wl_rows(cur, "wl_teachers", _WL_TEACHER_COLS,
+                        "department_id NULLS LAST, dept_order NULLS LAST, id")
+
+
+@app.get("/api/workload/subjects")
+def wl_subjects_list(request: Request) -> list[dict[str, Any]]:
+    with _wl_db() as cur:
+        wl_require_session(request, cur)
+        return _wl_rows(cur, "wl_subjects", _WL_SUBJECT_COLS,
+                        "department_id NULLS LAST, code, id")
+
+
+def _wl_insert_row(cur, table: str, cols: tuple[str, ...], values: dict[str, Any]) -> dict[str, Any]:
+    keys = [c for c in cols if c in values]
+    cur.execute(f"INSERT INTO {table} ({', '.join(keys)}) VALUES ({', '.join(['%s'] * len(keys))}) "
+                f"RETURNING {', '.join(cols)}", tuple(values[k] for k in keys))
+    return dict(zip(cols, cur.fetchone()))
+
+
+def _wl_update_row(cur, table: str, cols: tuple[str, ...], row_id: int,
+                   values: dict[str, Any]) -> dict[str, Any]:
+    if not values:
+        raise HTTPException(400, "ไม่มีช่องที่จะแก้ ส่งอย่างน้อยหนึ่งช่อง")
+    keys = [c for c in cols if c in values]
+    row = None
+    if 0 < row_id <= _WL_BIGINT_MAX:       # id เกินช่วงของ bigint = ไม่มีแถวนั้นแน่ ไม่ใช่ 500
+        cur.execute(f"UPDATE {table} SET {', '.join(k + ' = %s' for k in keys)} WHERE id = %s "
+                    f"RETURNING {', '.join(cols)}", (*(values[k] for k in keys), row_id))
+        row = cur.fetchone()
+    if row is None:
+        raise HTTPException(404, "ไม่พบรายการนี้")
+    return dict(zip(cols, row))
+
+
+@app.post("/api/workload/teachers")
+def wl_teachers_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        vals = wl_check_teacher(wl_clean_fields(body, WL_TEACHER_FIELDS), True)
+        return _wl_insert_row(cur, "wl_teachers", _WL_TEACHER_COLS, vals)
+
+
+@app.put("/api/workload/teachers/{teacher_id}")
+def wl_teachers_update(teacher_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        vals = wl_check_teacher(wl_clean_fields(body, WL_TEACHER_FIELDS), False)
+        return _wl_update_row(cur, "wl_teachers", _WL_TEACHER_COLS, teacher_id, vals)
+
+
+@app.post("/api/workload/subjects")
+def wl_subjects_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        vals = wl_check_subject(wl_clean_fields(body, WL_SUBJECT_FIELDS), True)
+        return _wl_insert_row(cur, "wl_subjects", _WL_SUBJECT_COLS, vals)
+
+
+@app.put("/api/workload/subjects/{subject_id}")
+def wl_subjects_update(subject_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        vals = wl_check_subject(wl_clean_fields(body, WL_SUBJECT_FIELDS), False)
+        return _wl_update_row(cur, "wl_subjects", _WL_SUBJECT_COLS, subject_id, vals)
+
+
+def _wl_import_guard(noun: str) -> None:
+    # ตอนที่ _db_write_blocked() เป็นจริง TEACHERS/SUBJECTS ในหน่วยความจำคือข้อมูลตั้งต้นที่มากับโค้ด
+    # ไม่ใช่ของโรงเรียน ดึงเข้ามาจะได้รายการผิดชุดพร้อมรหัสที่ผูกผิดตัว ซึ่งแก้ทีหลังยากมาก
+    if _db_write_blocked():
+        raise HTTPException(
+            503, f"เซิร์ฟเวอร์ยังโหลดข้อมูลของโรงเรียนไม่สำเร็จ จึงยังดึง{noun}จากโปรแกรมจัดตารางไม่ได้ "
+                 "รอสักครู่แล้วลองใหม่ หรือแจ้งผู้ดูแลระบบ")
+
+
+def _wl_teacher_from_sched(t: dict[str, Any]) -> tuple:
+    return (t["id"], str(t.get("name") or ""), t.get("code"), t.get("department_id"),
+            t.get("dept_order"), bool(t.get("active", True)))
+
+
+def _wl_subject_from_sched(s: dict[str, Any]) -> tuple:
+    return (s["id"], str(s.get("code") or ""), str(s.get("name") or ""), s.get("type") or "common",
+            s.get("department_id"), s.get("duration") or 1, bool(s.get("is_activity")),
+            bool(s.get("is_elective")), bool(s.get("active", True)))
+
+
+# ช่องที่คัดลอกจากโปรแกรมจัดตาราง = ช่องตัวตนเท่านั้น ไม่มีช่องเงื่อนไขของเครื่องจัดคาบแม้ช่องเดียว
+# (fixed_room_id ห้องที่ใช้ได้ credits ฯลฯ ยังเป็นของเว็บตาราง) ลำดับต้องตรงกับตัวแปลงแถวข้างบน
+_WL_IMPORTS: dict[str, tuple[str, str, tuple[str, ...], Callable[[dict[str, Any]], tuple]]] = {
+    "teachers": ("wl_teachers", "ครู",
+                 ("sched_id", "name", "code", "department_id", "dept_order", "active"),
+                 _wl_teacher_from_sched),
+    "subjects": ("wl_subjects", "วิชา",
+                 ("sched_id", "code", "name", "type", "department_id", "duration",
+                  "is_activity", "is_elective", "active"),
+                 _wl_subject_from_sched),
+}
+
+
+def _wl_import_from_scheduler(request: Request, kind: str, source: list[dict[str, Any]],
+                              write: bool) -> dict[str, int]:
+    """ดึงครูหรือวิชาจากโปรแกรมจัดตาราง (write=False = ดูก่อน ไม่เขียนอะไรเลย)
+
+    อ่านลิสต์ต้นทางอย่างเดียว ไม่แก้ dict ในลิสต์ · จับคู่ด้วย sched_id ผ่าน wl_import_plan เท่านั้น
+    ON CONFLICT DO NOTHING แล้วนับจาก rowcount: admin สองคนกดพร้อมกันต้องไม่ได้ 500
+    หรือแถวซ้ำ แถวที่ชนนับเป็น linked
+    """
+    table, noun, cols, to_row = _WL_IMPORTS[kind]
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        _wl_import_guard(noun)
+        cur.execute(f"SELECT id, sched_id, name FROM {table}")
+        existing = [dict(zip(("id", "sched_id", "name"), r)) for r in cur.fetchall()]
+        plan = wl_import_plan(list(source), existing)
+        created = len(plan["create"])
+        if write:
+            created = 0
+            sql = (f"INSERT INTO {table} ({', '.join(cols)}) "
+                   f"VALUES ({', '.join(['%s'] * len(cols))}) ON CONFLICT (sched_id) DO NOTHING")
+            for row in plan["create"]:
+                cur.execute(sql, to_row(row))
+                created += 1 if cur.rowcount == 1 else 0
+        return {"created": created,
+                "linked": len(plan["already"]) + len(plan["create"]) - created,
+                "skipped": len(plan["skipped"])}
+
+
+@app.get("/api/workload/teachers/import-from-scheduler")
+def wl_teachers_import_preview(request: Request) -> dict[str, int]:
+    """ดูก่อนดึง: ตัวเลขที่ POST จะทำ โดยไม่เขียนอะไรเลย"""
+    return _wl_import_from_scheduler(request, "teachers", TEACHERS, write=False)
+
+
+@app.post("/api/workload/teachers/import-from-scheduler")
+def wl_teachers_import(request: Request) -> dict[str, int]:
+    """คัดลอกครูจากโปรแกรมจัดตารางครั้งแรก · อ่าน TEACHERS อย่างเดียว ไม่เขียน"""
+    return _wl_import_from_scheduler(request, "teachers", TEACHERS, write=True)
+
+
+@app.get("/api/workload/subjects/import-from-scheduler")
+def wl_subjects_import_preview(request: Request) -> dict[str, int]:
+    """ดูก่อนดึงวิชา: ตัวเลขที่ POST จะทำ โดยไม่เขียนอะไรเลย"""
+    return _wl_import_from_scheduler(request, "subjects", SUBJECTS, write=False)
+
+
+@app.post("/api/workload/subjects/import-from-scheduler")
+def wl_subjects_import(request: Request) -> dict[str, int]:
+    """คัดลอกวิชาจากโปรแกรมจัดตารางครั้งแรก · อ่าน SUBJECTS อย่างเดียว ไม่เขียน
+
+    ไม่มีปุ่มนี้ วิชาที่พิมพ์เองทุกแถวจะไม่มี sched_id และกลายเป็นวิชาซ้ำในขั้นที่ 3
+    """
+    return _wl_import_from_scheduler(request, "subjects", SUBJECTS, write=True)
+
+
+def _check_term_status(status: str) -> None:
+    if status not in TERM_STATUSES:
+        raise ValueError(f"สถานะเทอมไม่ถูกต้อง: {status!r}")
+
+
+def term_label(year: int, semester: int) -> str:
+    return f"{semester}/{year}"
+
+
+def _term_number(value: Any) -> int | None:
+    """ตัวเลขเทอม/ปี จากค่าที่อาจเป็นข้อความ -> int หรือ None เมื่อบอกไม่ได้
+
+    SCHOOL_CONFIG เก็บ "term" กับ "year" เป็นข้อความ ("1", "2568") ส่วน
+    CURRENT_TERM เก็บเป็นจำนวนเต็ม ทั้งสองที่ต้องอ่านได้ด้วยตัวเดียวกัน
+    bool เป็น int ในไพทอน — True ไม่ใช่ปีการศึกษา จึงเช็ค type ตรง ๆ
+    """
+    if type(value) is int:
+        return value
+    if isinstance(value, str):
+        t = value.strip()
+        if t.isdecimal():
+            return int(t)
+    return None
+
+
+def running_term_identity(current: dict[str, Any] | None,
+                          config: dict[str, Any] | None) -> dict[str, Any] | None:
+    """เทอมที่ข้อมูลในหน่วยความจำ "เป็นของ" -> {year, semester, label} หรือ None
+
+    ใช้เมื่อ app_terms ยังไม่มีแถว active ให้ปิด แต่ตารางที่ลงไว้ต้องมีที่เก็บ
+    CURRENT_TERM มาก่อน (เป็นสำเนาของแถวที่เคยมี) ช่องไหนว่างค่อยถอยไปเอาจาก
+    SCHOOL_CONFIG ซึ่งคือบันทึกของโรงเรียนเองว่ากำลังอยู่เทอมไหน — เป็นแหล่งที่
+    ถูกต้องที่สุดเมื่อยังไม่เคยมีแถวเทอมเลย
+
+    คืน None เมื่อบอกไม่ได้จริง ๆ (ผู้เรียกต้องปฏิเสธ ไม่ใช่เดาปีแล้วเก็บผิดที่)
+    ฟังก์ชันบริสุทธิ์: ไม่อ่านตัวแปรรวม ไม่แก้อะไร
+    """
+    current = current or {}
+    config = config or {}
+    year = _term_number(current.get("year"))
+    if year is None:
+        year = _term_number(config.get("year"))
+    semester = _term_number(current.get("semester"))
+    if semester is None:
+        semester = _term_number(config.get("term"))
+    if year is None or semester is None:
+        return None
+    if not 2500 <= year <= 2700 or semester not in (1, 2):
+        return None
+    return {"year": year, "semester": semester, "label": term_label(year, semester)}
+
+
+def _require_db() -> None:
+    """For the endpoints that write a term. The listing never raises."""
+    if _STORE_KIND != "postgres":
+        raise HTTPException(400, "ยังไม่ได้ต่อฐานข้อมูล จึงใช้ระบบเทอมไม่ได้")
+
+
+def _term_dict(r) -> dict[str, Any]:
+    return {"id": r[0], "year": r[1], "semester": r[2], "label": r[3],
+            "status": r[4], "slots": r[5],
+            "opened_at": r[6].isoformat() if r[6] else None,
+            "closed_at": r[7].isoformat() if r[7] else None,
+            "bytes": r[8]}
+
+
+def _terms_list() -> list[dict[str, Any]]:
+    """The terms, newest first — enough to choose one, not to load it."""
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            cur.execute(f"SELECT {_TERM_COLUMNS} FROM app_terms "
+                        "ORDER BY year DESC, semester DESC, id DESC")
+            rows = cur.fetchall()
+        conn.commit()
+    return [_term_dict(r) for r in rows]
+
+
+def _term_row(term_id: int) -> dict[str, Any] | None:
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            cur.execute(f"SELECT {_TERM_COLUMNS} FROM app_terms WHERE id = %s", (term_id,))
+            row = cur.fetchone()
+        conn.commit()
+    return _term_dict(row) if row else None
+
+
+def _term_active() -> dict[str, Any] | None:
+    """The row the database says is active, or None. The only source of truth."""
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            cur.execute(f"SELECT {_TERM_COLUMNS} FROM app_terms WHERE status = 'active'")
+            row = cur.fetchone()
+        conn.commit()
+    return _term_dict(row) if row else None
+
+
+def _term_blob(term_id: int) -> bytes | None:
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            cur.execute("SELECT data FROM app_terms WHERE id = %s", (term_id,))
+            row = cur.fetchone()
+        conn.commit()
+    return bytes(row[0]) if row else None
+
+
+# ดัชนี "ครู/ห้อง/วิชาที่เทอมที่ปิดแล้วยังใช้อยู่" — สร้างจากการแกะสำเนาทุกเทอมที่ปิด
+# (หลาย MB ต่อเทอม) จึงเก็บไว้ในตัวแปรนี้และล้างเมื่อมีอะไรเขียนลง app_terms
+# _ENTITY_INDEX_GEN นับรอบการล้าง: ดัชนีที่เริ่มสร้างก่อนการล้างจะไม่ถูกเก็บ
+# ไม่งั้นการสร้างที่ค้างอยู่ข้ามการสร้าง/ปลดล็อกเทอมจะเก็บของเก่าไว้ถาวร
+_ENTITY_INDEX: dict[str, set[int]] | None = None
+_ENTITY_INDEX_GEN = 0
+_ENTITY_INDEX_LOCK = _threading.Lock()
+
+
+def _invalidate_entity_index() -> None:
+    global _ENTITY_INDEX, _ENTITY_INDEX_GEN
+    with _ENTITY_INDEX_LOCK:
+        _ENTITY_INDEX_GEN += 1
+        _ENTITY_INDEX = None
+
+
+def _invalidates_entity_index(fn):
+    """ฟังก์ชันที่เขียน app_terms ต้องล้างดัชนีทุกครั้ง แม้เขียนไม่สำเร็จ
+
+    ล้างใน finally: การเขียนที่พังกลางทางอาจ commit ไปแล้วก็ได้ ล้างเกินไม่เสียหาย
+    (สร้างใหม่ครั้งถัดไป) แต่ไม่ล้างคือปล่อยให้ดัชนีเก่าอนุญาตให้ลบของที่ใช้อยู่
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def inner(*a, **k):
+        try:
+            return fn(*a, **k)
+        finally:
+            _invalidate_entity_index()
+    return inner
+
+
+@_invalidates_entity_index
+def _term_insert(year: int, semester: int, label: str, status: str,
+                 blob: bytes, slots: int) -> int:
+    _check_term_status(status)
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            cur.execute(
+                "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, "
+                "CASE WHEN %s = 'closed' THEN now() ELSE NULL END) RETURNING id",
+                (year, semester, label, status, blob, slots, status))
+            new_id = cur.fetchone()[0]
+        conn.commit()
+    return new_id
+
+
+@_invalidates_entity_index
+def _term_set_status(term_id: int, status: str) -> None:
+    _check_term_status(status)
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            cur.execute(
+                "UPDATE app_terms SET status = %s, "
+                "closed_at = CASE WHEN %s = 'closed' THEN now() ELSE NULL END "
+                "WHERE id = %s", (status, status, term_id))
+        conn.commit()
+
+
+@_invalidates_entity_index
+def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
+                 year: int, semester: int, label: str, new_blob: bytes,
+                 old_year: int | None = None, old_semester: int | None = None,
+                 old_label: str | None = None) -> tuple[int | None, int]:
+    """Close the running term and open the next one, in ONE transaction.
+
+    -> (id of the row the old term ended up in, id of the new active row)
+
+    Two paths, because the table has to be told which one applies.
+
+    · The old term ALREADY HAS A ROW (old_id). That row holds this
+      (year, semester), so closing it is an UPDATE of that row (its file gets
+      the final data) — inserting a second "closed" copy would break
+      UNIQUE (year, semester).
+    · The old term has NO ROW AT ALL (old_id is None, old_year/old_semester
+      given). This is the school's very first term: app_terms is empty, so
+      there is nothing to UPDATE and the running term has to be INSERTed as a
+      'closed' row right here, in this same transaction, or its lessons are
+      thrown away by the caller's SLOTS.clear() and stored nowhere. The caller
+      is responsible for refusing before anything is cleared when this row
+      would collide with an existing (year, semester).
+
+    Either way only one row may be 'active' at a time, so the old term's row is
+    settled before the new one goes in. One commit: if the second insert fails,
+    the old term is still the active one rather than the school having none.
+
+    The row is authoritative for `id` and `status`: the `current_term` inside
+    either stored blob must not be trusted for those two fields.
+    """
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            closed_id = old_id
+            if old_id is not None:
+                cur.execute(
+                    "UPDATE app_terms SET status = 'closed', data = %s, slots = %s, "
+                    "closed_at = now() WHERE id = %s", (old_blob, old_slots, old_id))
+            elif old_year is not None and old_semester is not None:
+                cur.execute(
+                    "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+                    "VALUES (%s, %s, %s, 'closed', %s, %s, now()) RETURNING id",
+                    (old_year, old_semester,
+                     old_label or term_label(old_year, old_semester),
+                     old_blob, old_slots))
+                closed_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+                "VALUES (%s, %s, %s, 'active', %s, 0, NULL) RETURNING id",
+                (year, semester, label, new_blob))
+            new_id = cur.fetchone()[0]
+        conn.commit()
+    return closed_id, new_id
+
+
+@_invalidates_entity_index
+def _term_swap_active(old_id: int | None, old_blob: bytes | None, old_slots: int,
+                      new_id: int, old_year: int | None = None,
+                      old_semester: int | None = None,
+                      old_label: str | None = None) -> int | None:
+    """Close the running term and re-open a closed one, in ONE transaction.
+
+    -> the id of the row the old term ended up in, or None when it had none
+    and no (old_year, old_semester) was given to make one.
+
+    The mirror of _term_rotate: the REQUESTED row already exists and only its
+    status changes, and its stored data must stay exactly as it was. The
+    running term is settled the same two ways as there — an UPDATE of its own
+    row, or, when no row is active (old_id is None), an INSERT of a 'closed'
+    row for it, because _apply_snapshot is about to write the requested term's
+    lessons over live memory and the running term would otherwise be gone.
+    Same ordering the unique index forces: the old term is settled before the
+    other becomes 'active'. If the requested row is gone (rowcount 0) the
+    transaction is abandoned, so the school is never left with no active term.
+    """
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            _terms_schema(cur)
+            closed_id = old_id
+            if old_id is not None:
+                cur.execute(
+                    "UPDATE app_terms SET status = 'closed', data = %s, slots = %s, "
+                    "closed_at = now() WHERE id = %s", (old_blob, old_slots, old_id))
+            elif old_year is not None and old_semester is not None:
+                cur.execute(
+                    "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+                    "VALUES (%s, %s, %s, 'closed', %s, %s, now()) RETURNING id",
+                    (old_year, old_semester,
+                     old_label or term_label(old_year, old_semester),
+                     old_blob, old_slots))
+                closed_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE app_terms SET status = 'active', closed_at = NULL "
+                "WHERE id = %s AND status = 'closed'", (new_id,))
+            if cur.rowcount != 1:
+                raise RuntimeError("term row to unlock not found or not closed")
+        conn.commit()
+    return closed_id
+
+
+# Who created, closed or unlocked which term, and when. No connection details,
+# no exception text: only a fixed Thai sentence written by this program.
+_TERM_LOG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_term_log (
+    id      bigserial PRIMARY KEY,
+    term_id bigint,
+    action  text NOT NULL,
+    detail  text NOT NULL,
+    at      timestamptz NOT NULL DEFAULT now()
+)
+"""
+
+
+def _term_log(term_id: int, action: str, detail: str) -> None:
+    """Record a term event. NEVER raises: a broken log must not stop a term change."""
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_TERM_LOG_SCHEMA)
+                cur.execute("INSERT INTO app_term_log (term_id, action, detail) "
+                            "VALUES (%s, %s, %s)", (term_id, action, detail))
+            conn.commit()
+    except Exception:                              # noqa: BLE001
+        pass
+
+
+# ── กันลบครู ห้อง วิชา ที่เทอมเก่ายังใช้อยู่ ─────────────────────────────────
+# ลบแล้วคาบในเทอมที่ปิดจะอ้างถึงของที่ไม่มีแล้ว ให้ทำเครื่องหมาย "active": False
+# (ไม่ปฏิบัติงานแล้ว) แทน ช่อง active ที่หายไปในสำเนาเก่าถือว่าเป็น True เสมอ
+def _is_active(rec: dict[str, Any]) -> bool:
+    return bool((rec or {}).get("active", True))
+
+
+_ACTIVE_TRUE = frozenset({"true", "1", "yes", "on"})
+_ACTIVE_FALSE = frozenset({"false", "0", "no", "off", "", "null", "none"})
+
+
+def _coerce_active(v: Any) -> bool:
+    """ค่า active จากหน้าเว็บ → bool จริง · "false" ต้องไม่กลายเป็นจริง
+
+    ค่าที่แปลไม่ออก (เช่น "abc", list) ปฏิเสธ 400 ดีกว่าเดาแล้วปลดครูออกเงียบ ๆ
+    """
+    if v is None or isinstance(v, bool):
+        return bool(v)
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        t = v.strip().lower()
+        if t in _ACTIVE_TRUE:
+            return True
+        if t in _ACTIVE_FALSE:
+            return False
+    raise HTTPException(400, "ค่า active ต้องเป็นจริงหรือเท็จ")
+
+
+def _body_with_active(body: dict[str, Any]) -> dict[str, Any]:
+    """สำเนา body ที่ active เป็น bool จริง (แปลก่อนแก้ข้อมูล จะได้ 400 โดยไม่แก้ครึ่งทาง)"""
+    if isinstance(body, dict) and "active" in body:
+        return {**body, "active": _coerce_active(body["active"])}
+    return body
+
+
+def _int_ids(values) -> set[int]:
+    """รหัสที่เป็นจำนวนเต็มจริง ไม่รวม 0/None/bool (0 = ยังไม่ได้เลือก)"""
+    return {v for v in values if type(v) is int and v}
+
+
+def _slot_teacher_ids_all(slot: dict[str, Any]) -> set[int]:
+    """ครูทุกคนที่คาบหนึ่งอ้างถึง — อ่านตรงจากคีย์ ไม่พึ่ง is_elective
+
+    teacher_id · co_teacher_id (ครูสอนร่วม) · activity_teacher_ids (ครูผู้ดูแลคาบกิจกรรม)
+    · elective_options[].teacher_id (ครูของแต่ละวิชาในคาบเสรี) — ชุดเดียวกับ
+    _slot_teachers แต่ไม่ผ่านเงื่อนไข is_elective เพราะสำเนาเก่าอาจไม่มีคีย์นั้น
+    """
+    out = {slot.get("teacher_id"), slot.get("co_teacher_id")}
+    out |= set(slot.get("activity_teacher_ids") or [])
+    out |= {o.get("teacher_id") for o in (slot.get("elective_options") or [])
+            if isinstance(o, dict)}
+    return _int_ids(out)
+
+
+def _slot_subject_ids_all(slot: dict[str, Any]) -> set[int]:
+    out = {slot.get("subject_id")}
+    out |= {o.get("subject_id") for o in (slot.get("elective_options") or [])
+            if isinstance(o, dict)}
+    return _int_ids(out)
+
+
+def _term_entity_index() -> dict[str, set[int]]:
+    """ครู/ห้อง/วิชาที่มีคาบอ้างถึงในเทอมที่ปิดแล้ว (เปิดไม่ได้ = ว่าง ไม่ยกข้อผิดพลาด)
+
+    เปิดทางให้ลบ (fail open) ทุกกรณีที่อ่านเทอมไม่ได้: ไม่มีฐานข้อมูล ต่อไม่ติด ไฟล์เสีย
+    คีย์หาย ผู้เรียกคือตัวกันลบเท่านั้น ถ้าที่นี่ยกข้อผิดพลาด เซิร์ฟเวอร์ที่ไม่มีฐานข้อมูล
+    จะลบครูไม่ได้เลย ทั้งที่ไม่มีเทอมปิดให้ปกป้อง ห้ามเพิ่ม raise ที่นี่
+    ไฟล์เสียหนึ่งไฟล์ถูกข้ามเฉพาะไฟล์นั้น ไม่บังเทอมอื่น
+    """
+    global _ENTITY_INDEX
+    try:
+        if _STORE_KIND != "postgres":
+            return {"teachers": set(), "rooms": set(), "subjects": set()}
+        with _ENTITY_INDEX_LOCK:
+            cached = _ENTITY_INDEX
+            gen = _ENTITY_INDEX_GEN
+        if cached is not None:
+            return {k: set(v) for k, v in cached.items()}
+        index: dict[str, set[int]] = {"teachers": set(), "rooms": set(), "subjects": set()}
+        complete = True
+        for term in _terms_list():
+            try:
+                if term.get("status") != "closed":
+                    continue
+                blob = _term_blob(term["id"])
+            except Exception:                      # noqa: BLE001
+                # อ่านจากฐานไม่ได้ (อาจชั่วคราว) — ข้ามเทอมนี้ และไม่เก็บแคช
+                # ไม่งั้นดัชนีที่ขาดเทอมไปจะค้างจนกว่าจะมีการล้าง
+                complete = False
+                continue
+            if blob is None:
+                continue
+            try:
+                snap = _unpack(blob)
+                t_ids: set[int] = set()
+                r_ids: set[int] = set()
+                s_ids: set[int] = set()
+                for slot in (snap.get("slots") or []):
+                    if not isinstance(slot, dict):
+                        continue
+                    t_ids |= _slot_teacher_ids_all(slot)
+                    r_ids |= _int_ids(_slot_rooms(slot))
+                    s_ids |= _slot_subject_ids_all(slot)
+                index["teachers"] |= t_ids
+                index["rooms"] |= r_ids
+                index["subjects"] |= s_ids
+            except Exception:                      # noqa: BLE001
+                # ไฟล์เสียแบบถาวร: ข้ามไฟล์นี้ แต่เก็บแคชได้ ไม่งั้นจะแกะไฟล์ทั้งหมดซ้ำทุกคำขอลบ
+                continue
+        if complete:
+            with _ENTITY_INDEX_LOCK:
+                if gen == _ENTITY_INDEX_GEN:
+                    _ENTITY_INDEX = {k: set(v) for k, v in index.items()}
+        return index
+    except Exception:                              # noqa: BLE001
+        return {"teachers": set(), "rooms": set(), "subjects": set()}
+
+
+def entity_delete_block(kind: str, entity_id: int, index: dict[str, set[int]],
+                        label: str) -> str | None:
+    """ข้อความไทยเมื่อห้ามลบ · None เมื่อลบได้ ฟังก์ชันล้วน"""
+    if entity_id in index.get(kind, set()):
+        return f"{label} มีคาบอยู่ในเทอมที่ปิดแล้ว ลบไม่ได้ — ให้ทำเครื่องหมายว่าไม่ปฏิบัติงานแล้วแทน"
+    return None
+
+
+def _refuse_delete_if_in_closed_term(kind: str, entity_id: int, name: str | None,
+                                     noun: str) -> None:
+    label = f"{noun} {name}" if name else f"{noun}รหัส {entity_id}"
+    msg = entity_delete_block(kind, entity_id, _term_entity_index(), label)
+    if msg:
+        raise HTTPException(409, msg)
+
+
+def new_term_preview() -> dict[str, Any]:
+    """What a new term will start with and what will be cleared. Changes nothing."""
+    total = 0
+    for r in REQUIREMENTS:
+        try:
+            total += int(r.get("weekly_count") or 0)
+        except (TypeError, ValueError):
+            pass
+    return {"requirements": len(REQUIREMENTS), "teachers": len(TEACHERS),
+            "periods_total": total, "curricula": len(CURRICULA),
+            "slots_to_clear": len(SLOTS)}
+
+
+def _nothing_a_term_change_would_destroy() -> bool:
+    """ไม่มีอะไรจะเสียจริง ๆ ไหม ถ้าเปลี่ยนเทอมตอนนี้
+
+    มีแค่สองอย่างที่ถูกล้างหรือเขียนทับ: SLOTS (คาบที่ลงตาราง) กับ PARKED
+    (คาบที่ยกออกมาพัก) ที่เหลือ — ครู วิชา แผนการสอน หลักสูตร — ติดไปเทอมใหม่
+    ทั้งหมด ไม่ได้หายไปไหน
+
+    เครื่องที่เพิ่งติดตั้งยังไม่มีคาบเลย จึงไม่ต้องแทรกแถวเทอมเปล่า ๆ ไว้
+    (ซึ่งจะจองคู่ (ปี, ภาคเรียน) นั้นทิ้งไว้เปล่า ๆ) และไม่ต้องปฏิเสธการสร้าง
+    เทอมแรกด้วยเหตุผลที่ยังไม่มีของจะเสีย
+    """
+    return not SLOTS and not PARKED
+
+
+def _archive_target_or_refuse(requested: tuple[int, int] | None,
+                              existing: list[dict[str, Any]],
+                              what: str) -> dict[str, Any]:
+    """แถวที่เทอมที่กำลังใช้งานอยู่จะถูกเก็บลงไป เมื่อ app_terms ไม่มีแถว active
+
+    บนเครื่องจริง app_terms ว่างเปล่า (ไม่เคยสร้างเทอมเลย) การกด "สร้างเทอมใหม่"
+    ครั้งแรกจึงไม่มีแถวให้ปิด — ถ้าปล่อยผ่าน คาบทั้งเทอมจะถูกล้างโดยไม่ถูกเก็บ
+    ที่ไหนเลย ฟังก์ชันนี้หาแถวปลายทางให้ หรือปฏิเสธ 409 เมื่อหาไม่ได้
+
+    **ต้องเรียกก่อน SLOTS.clear() ทุกครั้ง** การปฏิเสธหลังล้างคือบั๊กเดิมทั้งดุ้น
+    """
+    archive = running_term_identity(CURRENT_TERM, SCHOOL_CONFIG)
+    n = len(SLOTS)
+    if archive is None:
+        raise HTTPException(
+            409, f"ยังไม่มีเทอมใดถูกบันทึกไว้ และระบบบอกไม่ได้ว่าตารางที่ลงไว้ตอนนี้ "
+                 f"({n} คาบ) เป็นของเทอมไหน จึง{what}ไม่ได้ เพราะตารางเดิมจะไม่มี"
+                 "ที่เก็บ — กรุณาตั้งปีการศึกษาและภาคเรียนในหน้าตั้งค่าให้ถูกต้องก่อน")
+    label = archive["label"]
+    pair = (archive["year"], archive["semester"])
+    if requested is not None and pair == requested:
+        raise HTTPException(
+            409, f"ตารางที่ลงไว้ตอนนี้ ({n} คาบ) เป็นของเทอม {label} และยังไม่เคยถูก"
+                 f"บันทึกเป็นเทอม ถ้า{what} {label} ซ้ำชื่อเดิม ตารางเดิมจะไม่มีที่เก็บ "
+                 "— เลือกปีการศึกษาหรือภาคเรียนให้ต่างจากเทอมที่กำลังใช้อยู่")
+    if any(t.get("year") == archive["year"] and t.get("semester") == archive["semester"]
+           for t in existing):
+        raise HTTPException(
+            409, f"ตารางที่ลงไว้ตอนนี้ ({n} คาบ) เป็นของเทอม {label} ซึ่งยังไม่เคยถูก"
+                 f"บันทึกเป็นเทอม แต่มีเทอม {label} เก็บไว้ในรายการแล้ว จึง{what}ไม่ได้ "
+                 "เพราะตารางเดิมจะไม่มีที่เก็บ — ตรวจรายการเทอม และปีการศึกษา"
+                 "กับภาคเรียนในหน้าตั้งค่าก่อน")
+    return archive
+
+
+@app.get("/api/terms/preview")
+def terms_preview():
+    return new_term_preview()
+
+
+@app.post("/api/terms")
+def create_term(body: dict[str, Any]):
+    """Save the running term as a closed file, clear the lessons, open a new term."""
+    _require_db()
+    year = body.get("year") if isinstance(body, dict) else None
+    semester = body.get("semester") if isinstance(body, dict) else None
+    # bool is an int in Python; True is not a year.
+    if type(year) is not int or not 2500 <= year <= 2700:
+        raise HTTPException(400, "ปีการศึกษาต้องเป็นตัวเลข พ.ศ. 2500–2700")
+    if type(semester) is not int or semester not in (1, 2):
+        raise HTTPException(400, "ภาคเรียนต้องเป็น 1 หรือ 2")
+    label = term_label(year, semester)
+    try:
+        existing = _terms_list()
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    if any(t["year"] == year and t["semester"] == semester for t in existing):
+        raise HTTPException(409, f"มีเทอม {label} อยู่แล้ว")
+    # Send what is queued first, or the term file loses the last edits.
+    _flush_pending(blocking=True)
+    if _db_write_blocked():
+        raise HTTPException(
+            409, "เซิร์ฟเวอร์ยังไม่ยอมเขียนข้อมูลลงฐาน จึงสร้างเทอมใหม่ไม่ได้ — "
+                 "ยืนยันข้อมูลที่ถืออยู่ก่อน")
+
+    # The database, not memory, says which term is active: a restored old backup
+    # blanks CURRENT_TERM while the table still holds an active row, and trusting
+    # memory then would hit app_terms_one_active on every retry. Memory is only
+    # a cross-check; when the two disagree the row wins.
+    try:
+        active_row = _term_active()
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    has_old = active_row is not None
+    old_id = active_row["id"] if has_old else None
+
+    # No active row — the school's very first term, which is what the live
+    # server is sitting on. The running timetable has no row of its own, so it
+    # gets one INSERTed as 'closed' inside the rotate, and every reason that
+    # can fail is checked HERE, before a single lesson is cleared: refusing
+    # after SLOTS.clear() is the data loss this exists to stop.
+    archive = None
+    if not has_old and not _nothing_a_term_change_would_destroy():
+        archive = _archive_target_or_refuse(
+            (year, semester), existing, "สร้างเทอมใหม่")
+    old_label = ((active_row.get("label") or old_id) if has_old
+                 else (archive["label"] if archive else None))
+
+    old = dict(CURRENT_TERM)
+    old_slots = len(SLOTS)
+    # In-place, never `SLOTS = []`: curriculum.py holds a live alias to this list.
+    saved_slots = list(SLOTS)
+    saved_parked = list(PARKED)
+    saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    try:
+        # The file being stored is a closed term, so it must say so: the status
+        # is set BEFORE packing. (The row stays authoritative for id and status.)
+        # Inside the try: if packing raises, the live term must not stay "closed".
+        CURRENT_TERM["status"] = "closed"
+        if archive is not None:
+            # CURRENT_TERM may be blank (nothing ever named this term); the file
+            # about to be stored has to say which term it is. Inside the try, so
+            # the restore below (CURRENT_TERM.update(old)) puts it all back.
+            CURRENT_TERM.update({"year": archive["year"],
+                                 "semester": archive["semester"],
+                                 "label": archive["label"]})
+        old_blob = _pack(_snapshot())
+        SLOTS.clear()
+        PARKED.clear()      # lifted-out lessons point at last term's plan
+        CURRENT_TERM.update({"id": None, "year": year, "semester": semester,
+                             "label": label, "status": "active"})
+        SCHOOL_CONFIG["term"], SCHOOL_CONFIG["year"] = str(semester), str(year)
+        # The new row's id is not known yet by construction (RETURNING id), so
+        # this snapshot carries id None; readers take id and status from the row.
+        closed_id, new_id = _term_rotate(
+            old_id, old_blob, old_slots, year, semester, label, _pack(_snapshot()),
+            old_year=archive["year"] if archive else None,
+            old_semester=archive["semester"] if archive else None,
+            old_label=archive["label"] if archive else None)
+    except Exception:                              # noqa: BLE001
+        # Nothing was committed: put the memory back as it was (in place, and
+        # idempotent whichever step failed).
+        SLOTS[:] = saved_slots
+        PARKED[:] = saved_parked
+        CURRENT_TERM.update(old)
+        SCHOOL_CONFIG.update(saved_cfg)
+        raise HTTPException(500, "สร้างเทอมใหม่ไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง")
+    CURRENT_TERM["id"] = new_id
+    # The rotate has committed. The log is a record of it, never a condition of it:
+    # _term_log swallows its own failures.
+    if closed_id is not None:
+        _term_log(closed_id, "close", f"ปิดเทอม {old_label} ({old_slots} คาบ)")
+    _term_log(new_id, "create", f"สร้างเทอม {label}")
+    _save_state()
+    save_error, save_pending = _flush_after_term_change("สร้างเทอมใหม่แล้ว")
+    return {"closed": _term_row(closed_id) if closed_id is not None else None,
+            "active": _term_row(new_id),
+            "save_error": save_error,
+            "save_pending": save_pending}
+
+
+def _flush_after_term_change(done: str) -> tuple[str | None, bool]:
+    """Make a committed term change durable; never raises. -> (save_error, save_pending)
+
+    _save_state only queues the blob; until it is sent, app_state would still
+    hold the old term while app_terms says otherwise. The change has committed,
+    so a failure here must not tell the school it did not happen.
+    save_error: None, or a fixed sentence once an error is actually known. None
+    does NOT prove the write landed (the writer thread may already hold the
+    blob); the save chip fed by /api/state/version is the authority, so
+    save_pending is reported alongside. Fixed text: _STORE_ERROR can carry
+    connection details.
+    """
+    flush_failed = False
+    try:
+        _flush_pending(blocking=True)
+    except Exception:                              # noqa: BLE001
+        flush_failed = True
+    save_error = None
+    if flush_failed or _STORE_ERROR:
+        save_error = (f"{done} แต่ข้อมูลยังบันทึกลงฐานข้อมูลไม่สำเร็จ "
+                      "ระบบจะลองบันทึกซ้ำ อย่าปิดหน้านี้จนกว่าจะบันทึกได้")
+    return save_error, _pending_blob is not None
+
+
+@app.get("/api/terms")
+def list_terms():
+    """Every saved term, newest first.
+
+    Like the history list, this answers rather than raises when there is no
+    database: the screen has to open and say why it cannot be used.
+    """
+    if _STORE_KIND != "postgres":
+        return {"available": False, "terms": [],
+                "reason": "ยังไม่ได้ต่อฐานข้อมูล จึงใช้ระบบเทอมไม่ได้"}
+    try:
+        return {"available": True, "terms": _terms_list()}
+    except Exception:                              # noqa: BLE001
+        return {"available": False, "terms": [],
+                "reason": "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"}
+
+
+@app.get("/api/terms/log")
+def terms_log():
+    """Term events, newest first. Answers rather than raises, like the listing."""
+    if _STORE_KIND != "postgres":
+        return {"available": False, "log": [],
+                "reason": "ยังไม่ได้ต่อฐานข้อมูล จึงใช้ระบบเทอมไม่ได้"}
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_TERM_LOG_SCHEMA)
+                cur.execute("SELECT id, term_id, action, detail, at FROM app_term_log "
+                            "ORDER BY at DESC, id DESC LIMIT 500")
+                rows = cur.fetchall()
+            conn.commit()
+    except Exception:                              # noqa: BLE001
+        return {"available": False, "log": [],
+                "reason": "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"}
+    return {"available": True,
+            "log": [{"id": r[0], "term_id": r[1], "action": r[2], "detail": r[3],
+                     "at": r[4].isoformat() if r[4] else None} for r in rows]}
+
+
+# ── สถิติย้อนหลังรายเทอม ─────────────────────────────────────────────────────
+def term_stats_of(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """สถิติของสำเนาหนึ่งเทอม ฟังก์ชันล้วน คีย์ที่หายถือว่าว่าง
+
+    by_teacher นับคาบที่ครูอยู่ในห้องทุกแบบ (ครูหลัก ครูสอนร่วม ครูผู้ดูแลกิจกรรม
+    ครูของวิชาในคาบเสรี) คนละหนึ่งครั้งต่อคาบ และบทเรียนที่ใช้ร่วมหลายห้อง
+    (_shared_lesson_key: คาบกิจกรรม/คาบเสรี) นับครั้งเดียวต่อครู ไม่งั้นครูลูกเสือ
+    ที่มีชื่อใน 14 ห้องจะถูกนับเป็น 14 คาบ · คาบที่ไม่มี key นับทีละคาบ
+
+    slots = จำนวนช่องที่ลงแล้ว นับทุกช่องตรง ๆ ไม่ dedup
+    by_department เป็นตัวเลขภาระงาน จึง dedup แบบเดียวกัน: บทเรียนร่วมหนึ่งบทนับ
+    หนึ่งครั้งต่อกลุ่มสาระ (ผลรวมของมันจึงอาจน้อยกว่า slots)
+    กลุ่มสาระใช้ของวิชาก่อน ถ้าไม่มีใช้ของครูเจ้าของคาบ (เหมือนที่ใช้ในตัวจัดตาราง)
+    ไม่รู้ = "ไม่ระบุ"
+    rooms_used / subjects_open = จำนวนห้อง / วิชา ที่มีคาบอ้างถึงอย่างน้อยหนึ่งคาบ
+    """
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+
+    def rows(key: str) -> list[dict[str, Any]]:
+        return [r for r in (snapshot.get(key) or []) if isinstance(r, dict)]
+
+    dept_name = {d.get("id"): d.get("name") for d in rows("departments")}
+    teacher_dept = {t.get("id"): t.get("department_id") for t in rows("teachers")}
+    subject_dept = {s.get("id"): s.get("department_id") for s in rows("subjects")}
+    slots = rows("slots")
+    by_department: dict[str, int] = {}
+    by_teacher: dict[int, int] = {}
+    rooms: set[int] = set()
+    subjects: set[int] = set()
+    seen_t: set[tuple] = set()
+    seen_d: set[tuple] = set()
+    for sl in slots:
+        key = _shared_lesson_key(sl)
+        # กลุ่มสาระ: วิชาก่อน ถ้าไม่มีใช้ของครูเจ้าของคาบ ไม่รู้ = "ไม่ระบุ"
+        dep = subject_dept.get(sl.get("subject_id")) or teacher_dept.get(sl.get("teacher_id"))
+        name = dept_name.get(dep) or "ไม่ระบุ"
+        if key is None or (name, key) not in seen_d:
+            by_department[name] = by_department.get(name, 0) + 1
+            if key is not None:
+                seen_d.add((name, key))
+        for t in _slot_teacher_ids_all(sl):
+            if key is not None:
+                if (t, key) in seen_t:
+                    continue
+                seen_t.add((t, key))
+            by_teacher[t] = by_teacher.get(t, 0) + 1
+        rooms |= _int_ids(_slot_rooms(sl))
+        subjects |= _slot_subject_ids_all(sl)
+    return {"slots": len(slots), "by_department": by_department,
+            "by_teacher": by_teacher, "rooms_used": len(rooms),
+            "subjects_open": len(subjects)}
+
+
+@app.get("/api/terms/stats")
+def terms_stats():
+    """สถิติของทุกเทอม เก่าไปใหม่ อ่านอย่างเดียว ไม่แตะข้อมูลที่ใช้งานอยู่
+
+    เทอมที่ใช้งานอยู่คิดจากข้อมูลในหน่วยความจำ (สำเนาในฐานเป็นของตอนสร้างเทอม ไม่ใช่ของตอนนี้)
+    เทอมที่ปิดแล้วอ่านจากสำเนา ไฟล์ที่อ่านไม่ออกขึ้น error แทนตัวเลข ไม่ทำให้ทั้งรายการพัง
+    """
+    _require_db()
+    try:
+        terms = sorted(_terms_list(), key=lambda t: (t["year"], t["semester"], t["id"]))
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    out = []
+    for t in terms:
+        head = {"id": t["id"], "label": t["label"]}
+        try:
+            if t["status"] == "active":
+                snap = _snapshot()
+            else:
+                blob = _term_blob(t["id"])
+                snap = _unpack(blob) if blob is not None else None
+            if snap is None:
+                raise ValueError("no blob")
+            out.append({**head, **term_stats_of(snap)})
+        except Exception:                          # noqa: BLE001
+            out.append({**head, **term_stats_of({}), "error": "อ่านข้อมูลของเทอมนี้ไม่ได้"})
+    return {"terms": out}
+
+
+@app.get("/api/terms/{term_id}/data")
+def term_data(term_id: int):
+    """The stored copy of one term, for the browser to show and print.
+
+    A pure read. It must NOT call _apply_snapshot or touch any module-level
+    data: viewing happens in the browser, and everyone else keeps being served
+    the live term. Mutating server state here would move every open browser in
+    the school to the old term at once.
+    """
+    _require_db()
+    try:
+        row = _term_row(term_id)
+        # The active row's stored copy is whatever was packed when the term was
+        # created; the live data is in memory. Serving it would show last
+        # rotation's timetable as the current one, so it is refused, and the
+        # blob is not even read.
+        blob = _term_blob(term_id) if row and row["status"] == "closed" else None
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    if row is None:
+        raise HTTPException(404, "ไม่พบเทอมนี้")
+    if row["status"] != "closed":
+        raise HTTPException(
+            409, "นี่คือเทอมที่ใช้งานอยู่ และแสดงอยู่บนหน้าจอแล้ว — "
+                 "ดูได้จากหน้าตารางตามปกติ ไม่ต้องเปิดจากสำเนาที่เก็บไว้")
+    if blob is None:
+        raise HTTPException(404, "ไม่พบเทอมนี้")
+    try:
+        data = _unpack(blob)
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(500, "อ่านข้อมูลของเทอมนี้ไม่ได้")
+    # The row is authoritative for id and status: a blob is packed before its
+    # row's id exists (always None) and may say "active" for a closed term.
+    # Without this the browser would believe a closed term is editable.
+    data["current_term"] = {"id": row["id"], "year": row["year"],
+                            "semester": row["semester"], "label": row["label"],
+                            "status": row["status"]}
+    return data
+
+
+def unlock_check(term: dict[str, Any], typed: str) -> str | None:
+    """Thai reason an unlock is refused, or None when allowed. Pure."""
+    if term["status"] != "closed":
+        return "เทอมนี้ไม่ได้ปิดอยู่"
+    if typed.strip() != term["label"]:
+        return "พิมพ์ชื่อเทอมให้ตรงก่อน"
+    return None
+
+
+@app.post("/api/terms/{term_id}/unlock")
+def unlock_term(term_id: int, body: dict[str, Any]):
+    """Re-open a closed term (made by mistake): close the active one, load this one."""
+    _require_db()
+    typed = body.get("confirm") if isinstance(body, dict) else None
+    if not isinstance(typed, str):
+        raise HTTPException(400, "พิมพ์ชื่อเทอมให้ตรงก่อน")
+    try:
+        row = _term_row(term_id)
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    if row is None:
+        raise HTTPException(404, "ไม่พบเทอมนี้")
+    refused = unlock_check(row, typed)
+    if refused:
+        raise HTTPException(409 if row["status"] != "closed" else 400, refused)
+    # The running term's last edits must reach its own row before it is closed.
+    _flush_pending(blocking=True)
+    if _db_write_blocked():
+        raise HTTPException(
+            409, "เซิร์ฟเวอร์ยังไม่ยอมเขียนข้อมูลลงฐาน จึงปลดล็อกเทอมไม่ได้ — "
+                 "ยืนยันข้อมูลที่ถืออยู่ก่อน")
+    # The database, not memory, says which term is active (see create_term).
+    try:
+        active_row = _term_active()
+        new_blob = _term_blob(term_id)
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    if new_blob is None:
+        raise HTTPException(404, "ไม่พบเทอมนี้")
+    try:
+        new_data = _unpack(new_blob)
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(500, "อ่านข้อมูลของเทอมนี้ไม่ได้ ข้อมูลปัจจุบันยังอยู่ครบ")
+    has_old = active_row is not None
+    old_id = active_row["id"] if has_old else None
+
+    # Rows exist but none is active: the running timetable has no row of its
+    # own, and _apply_snapshot below is about to write this term's lessons over
+    # it. Same treatment as create_term — give the running term a 'closed' row
+    # in the same transaction, and refuse here, before anything is applied,
+    # when it cannot be given one.
+    # ไม่ใส่เงื่อนไข _nothing_a_term_change_would_destroy() ตรงนี้ โดยตั้งใจ (ต่างจาก create_term):
+    # _apply_snapshot เขียนทับทั้งครู ห้อง แผนการสอน หลักสูตร และ GROUPS/SCHOOL_CONFIG/CURRENT_TERM
+    # แม้ SLOTS กับ PARKED จะว่างอยู่ ดังนั้นต้องเก็บเทอมเดิมหรือปฏิเสธเสมอ อย่าลบหรือทำให้สองจุดเหมือนกัน
+    archive = None
+    if not has_old:
+        try:
+            existing = _terms_list()
+        except Exception:                          # noqa: BLE001
+            raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+        archive = _archive_target_or_refuse(
+            (row["year"], row["semester"]), existing, "ปลดล็อกเทอม")
+    old_label = ((active_row.get("label") or old_id) if has_old
+                 else (archive["label"] if archive else None))
+
+    old = dict(CURRENT_TERM)
+    old_slots = len(SLOTS)
+    saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+    try:
+        # The file stored for the closing term says so (row stays authoritative).
+        # Built on a copy: the live CURRENT_TERM is not touched until the swap.
+        snap = _snapshot()
+        snap["current_term"] = {**snap["current_term"], "status": "closed"}
+        if archive is not None:
+            # CURRENT_TERM may be blank; the stored file has to name its term.
+            snap["current_term"].update({"year": archive["year"],
+                                         "semester": archive["semester"],
+                                         "label": archive["label"]})
+        old_blob = _pack(snap)
+        _apply_snapshot(new_data)
+        # From the row, not the blob: the blob's current_term has id None.
+        CURRENT_TERM.update({"id": row["id"], "year": row["year"],
+                             "semester": row["semester"], "label": row["label"],
+                             "status": "active"})
+        closed_id = _term_swap_active(
+            old_id, old_blob, old_slots, term_id,
+            old_year=archive["year"] if archive else None,
+            old_semester=archive["semester"] if archive else None,
+            old_label=archive["label"] if archive else None)
+    except Exception:                              # noqa: BLE001
+        # Nothing was committed: put the running term back as it was.
+        try:
+            _apply_snapshot(_unpack(old_blob))
+        except Exception:                          # noqa: BLE001
+            pass
+        CURRENT_TERM.update(old)
+        SCHOOL_CONFIG.update(saved_cfg)
+        raise HTTPException(500, "ปลดล็อกเทอมไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง")
+    if closed_id is not None:
+        _term_log(closed_id, "close", f"ปิดเทอม {old_label} ({old_slots} คาบ)")
+    _term_log(term_id, "unlock", f"ปลดล็อกเทอม {row['label']}")
+    _save_state()
+    save_error, save_pending = _flush_after_term_change("ปลดล็อกเทอมแล้ว")
+    return {"closed": _term_row(closed_id) if closed_id is not None else None,
+            "active": _term_row(term_id),
+            "save_error": save_error,
+            "save_pending": save_pending}
+
+
 # The newest snapshot waiting to go out, and the thread that sends it.
 #
 # Saving runs after every edit, and a save now means a network round trip to
@@ -13648,6 +15539,15 @@ def _save_state_to_file() -> None:
         pass
 
 
+def _db_write_blocked() -> bool:
+    """True while _save_state() is refusing to write to the database.
+
+    One expression for the refusal itself, the /api/state/info report and
+    anything that must not write a row the live data would not follow.
+    """
+    return bool(_DB_HAD_DATA and globals().get("_STATE_SOURCE") not in ("snapshot", None))
+
+
 def _save_state() -> None:
     """Keep the data. Never let a failed save break a request.
 
@@ -13662,7 +15562,7 @@ def _save_state() -> None:
     if _STORE_KIND != "postgres":
         _save_state_to_file()
         return
-    if _DB_HAD_DATA and globals().get("_STATE_SOURCE") not in ("snapshot", None):
+    if _db_write_blocked():
         # Something is stored, and it is not what this process is holding.
         # Keep it on disk only; /api/state/info reports the refusal so the
         # school is told rather than left to find out.
@@ -14994,8 +16894,13 @@ def _clean_print_sheet(raw: Any) -> dict[str, Any]:
 
 @app.put("/api/school/config")
 def update_school_config(body: dict[str, Any]):
+    # เมื่อมีเทอมแล้ว แถวใน app_terms เป็นเจ้าของว่านี่คือเทอมไหน — ปีกับภาคเรียน
+    # ที่ส่งมาถูกเมินเงียบ ๆ (ไม่ยกข้อผิดพลาด) เปลี่ยนได้ที่หน้ารายการเทอมเท่านั้น
+    term_locked = CURRENT_TERM.get("id") is not None
     for k in ("schoolName", "term", "year", "directorName", "deputyName", "logoUrl",
               "max_consecutive", "prefer_consecutive", "min_last_period"):
+        if term_locked and k in ("term", "year"):
+            continue
         if k in body:
             SCHOOL_CONFIG[k] = body[k]
     # ขนาดตัวอักษรในช่องตาราง — เก็บไว้กับการตั้งค่าโรงเรียนเพื่อให้ทุกเครื่อง
@@ -15066,7 +16971,7 @@ def state_info():
         # is holding is the shipped data and the school's own copy is still
         # stored. Said out loud, because a server that quietly stops saving
         # looks exactly like one that is saving.
-        "write_blocked": bool(_DB_HAD_DATA and _STATE_SOURCE != "snapshot"),
+        "write_blocked": _db_write_blocked(),
         "counts": {
             "groups": len(_flat_groups()), "teachers": len(TEACHERS),
             "subjects": len(SUBJECTS), "rooms": len(ROOMS),

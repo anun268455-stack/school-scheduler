@@ -3,6 +3,8 @@ import type {
   Building, Department, LessonRequirement, Period, Room,
   ElectivePool, PoolTeacherCandidate, RequirementProblemReport, SchoolConfig, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
+import type { TermMeta } from "../utils/terms";
+import { blockedReason, gateRequest, setWriteBlock } from "./writeGate";
 
 // In production (GitHub Pages), use the Render backend URL via env var
 // In development, use the Vite proxy at /api
@@ -11,6 +13,10 @@ const BASE_URL = import.meta.env.VITE_API_URL
   : "/api";
 
 const api = axios.create({ baseURL: BASE_URL, timeout: 180_000 });
+
+// ด่านขาออกตอนดูเทอมที่ปิด — กติกาและเหตุผลอยู่ที่ api/writeGate.ts (ใช้ร่วมกับ subClient)
+api.interceptors.request.use(gateRequest);
+export { setWriteBlock, blockedReason };
 
 /**
  * สร้างตาราง รอได้นานกว่าคำขออื่น
@@ -1436,6 +1442,10 @@ export const fetchYardRescue = (p: { group_id: number; day: number; period: numb
  * detail is a developer's string, and a 422 puts a list there, not text.
  */
 export const errorDetail = (e: unknown, fallback: string): string => {
+  // ด่านกันแก้ไขตอนดูเทอมที่ปิด — ข้อความของด่านคือเหตุผลจริง ข้อความสำรองของผู้เรียก
+  // (เช่น "ย้ายไม่ได้ — ช่องนั้นไม่ว่าง") จะผิดความจริง
+  const blocked = blockedReason(e);
+  if (blocked) return blocked;
   // แถวที่ถูกปฏิเสธจาก bulk — เหตุผลอยู่ในตัว error เอง ไม่ได้อยู่ใน response
   if (e instanceof BulkRejected) {
     const reasons = Array.from(new Set(e.result.rejected.map((x) => x.reason)));
@@ -1445,3 +1455,94 @@ export const errorDetail = (e: unknown, fallback: string): string => {
   const d = r?.data?.detail;
   return r?.status === 400 && typeof d === "string" && d.trim() ? d : fallback;
 };
+
+// ── ภาคเรียน ─────────────────────────────────────────────────────────────────
+// เทอมที่ปิดแล้วเปิดดูในเบราว์เซอร์ได้อย่างเดียว เซิร์ฟเวอร์ไม่ถูกแตะ
+
+/**
+ * Listing. `available: false` is a normal answer (no database), not an error:
+ * the server replies 200 with an empty list and a Thai `reason`.
+ */
+export const fetchTerms = () =>
+  api.get<{ available: boolean; terms: TermMeta[]; reason?: string }>("/terms")
+    .then((r) => r.data);
+
+export interface TermPreview {
+  requirements: number;
+  teachers: number;
+  periods_total: number;
+  curricula: number;
+  slots_to_clear: number;
+}
+
+export const fetchTermPreview = () =>
+  api.get<TermPreview>("/terms/preview").then((r) => r.data);
+
+/**
+ * `save_error: null` does NOT prove the term was saved: the write is only
+ * queued. `save_pending: true` means it is still on its way. The authoritative
+ * answer is /state/version (`pending`, `saved_at`, `store`, `store_error`).
+ */
+export interface CreateTermResult {
+  closed: TermMeta | null;
+  active: TermMeta;
+  save_error: string | null;
+  save_pending: boolean;
+}
+
+export const createTerm = (year: number, semester: number) =>
+  api.post<CreateTermResult>("/terms", { year, semester }).then((r) => r.data);
+
+/** The stored copy of a CLOSED term. The active term answers 409 — never ask. */
+export interface TermSnapshot {
+  groups?: StudentGroup[];
+  teachers?: Teacher[];
+  subjects?: Subject[];
+  rooms?: Room[];
+  requirements?: LessonRequirement[];
+  slots?: TimetableSlot[];
+  periods?: Period[];
+  departments?: Department[];
+  buildings?: Building[];
+  school_config?: Partial<SchoolConfig>;
+  current_term?: Pick<TermMeta, "id" | "year" | "semester" | "label" | "status">;
+}
+
+export const fetchTermData = (id: number) =>
+  api.get<TermSnapshot>(`/terms/${id}/data`).then((r) => r.data);
+
+export interface UnlockTermResult {
+  active: TermMeta;
+  closed: TermMeta | null;
+  save_error?: string | null;
+  save_pending?: boolean;
+}
+
+export const unlockTerm = (id: number, confirm: string) =>
+  api.post<UnlockTermResult>(`/terms/${id}/unlock`, { confirm }).then((r) => r.data);
+
+export interface TermStatsRow {
+  id: number;
+  label: string;
+  slots: number;
+  by_department: Record<string, number>;
+  by_teacher: Record<string, number>;
+  rooms_used: number;
+  subjects_open: number;
+  error?: string;
+}
+
+export const fetchTermStats = () =>
+  api.get<{ terms: TermStatsRow[] }>("/terms/stats").then((r) => r.data);
+
+export interface TermLogEntry {
+  id: number;
+  term_id: number | null;
+  action: string;
+  detail: string | null;
+  at: string | null;
+}
+
+export const fetchTermLog = () =>
+  api.get<{ available: boolean; log: TermLogEntry[]; reason?: string }>("/terms/log")
+    .then((r) => r.data);
