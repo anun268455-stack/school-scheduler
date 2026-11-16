@@ -12,6 +12,7 @@ import LoginPage from "./pages/LoginPage";
 import RoundsPage from "./pages/RoundsPage";
 import SetupPage from "./pages/SetupPage";
 import SubjectsPage from "./pages/SubjectsPage";
+import SummaryPage from "./pages/SummaryPage";
 import TeachersPage from "./pages/TeachersPage";
 import { headRound, roundChip, type Round, type Term } from "./round";
 import { listRounds } from "./roundApi";
@@ -39,19 +40,6 @@ const HEAD_TABS: ShellTab<PageKey>[] = [
 // หน้าแรกหลังล็อกอิน: admin เริ่มที่หลักสูตร ("ทำหลักสูตรก่อน" แบบข้อ 4.5) · หัวหน้าเริ่มที่งานของกลุ่ม
 const ADMIN_HOME: PageKey = "curriculum";
 const HEAD_HOME: PageKey = "fill";
-
-function ComingSoon(props: { title: string; admin: boolean }) {
-  return (
-    <EmptyState
-      title={`${props.title} — กำลังจะมา`}
-      hint={
-        props.admin
-          ? "หน้านี้ยังไม่เปิดใช้ จะตามมาในรุ่นถัดไปของเว็บ · ระหว่างนี้ใช้เมนูหลักสูตร ทะเบียนครู ทะเบียนวิชา และรหัสเข้าได้ตามปกติ"
-          : "หน้านี้ยังไม่เปิดใช้ จะตามมาในรุ่นถัดไปของเว็บ · ระหว่างนี้ยังไม่ต้องทำอะไร"
-      }
-    />
-  );
-}
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(() => loadSession());
@@ -81,6 +69,8 @@ export default function App() {
   const [curriculumFocus, setCurriculumFocus] = useState<(Term & { curriculumId?: number }) | null>(null);
   const [deptView, setDeptView] = useState<{ round: Round; departmentId: number } | null>(null);
   const [roundFocus, setRoundFocus] = useState<number | null>(null);
+  // ลิงก์ "ดูทั้งหมด · พิมพ์" จากหน้ากรอก: หน้าสรุปเปิดที่รอบและกลุ่มนั้น
+  const [summaryFocus, setSummaryFocus] = useState<{ roundId: number; deptId: number } | null>(null);
   const token = session?.token ?? null;
 
   useEffect(() => {
@@ -165,6 +155,7 @@ export default function App() {
     setCurriculumFocus(null);
     setDeptView(null);
     setRoundFocus(null);
+    setSummaryFocus(null);
     setSession(null);
   };
 
@@ -211,19 +202,24 @@ export default function App() {
   const tabs = admin ? ADMIN_TABS : HEAD_TABS;
   // หน้าที่เลือกไว้ต้องอยู่ในเมนูของบทบาทนี้ ไม่งั้นกลับหน้าแรกของบทบาท (กันหัวหน้าค้างที่หน้าของ admin)
   const current: PageKey = page !== null && tabs.some((t) => t.key === page) ? page : admin ? ADMIN_HOME : HEAD_HOME;
-  const tabLabel = tabs.find((t) => t.key === current)?.label ?? "";
   // admin มีชื่อเป็นบทบาทอยู่แล้ว ไม่ต้องเขียนซ้ำ
   const who = session.label === ROLE_TEXT[session.role] ? session.label : `${session.label} · ${ROLE_TEXT[session.role]}`;
   const chip = rounds ? roundChip(rounds) : null;
 
   // กดแท็บเอง = เริ่มหน้านั้นตามปกติ (ทิ้งลิงก์ข้ามหน้าที่ค้างไว้)
-  // หัวหน้าเปิดแท็บของกลุ่ม = โหลดรอบใหม่ — ผู้ดูแลระบบอาจเพิ่งเปิดหรือปิดรอบระหว่างที่หัวหน้าอยู่แท็บอื่น
+  // เปิดแท็บของกลุ่ม/สรุป = โหลดรอบใหม่ — ผู้ดูแลระบบอาจเพิ่งเปิดหรือปิดรอบระหว่างที่อยู่แท็บอื่น
   const goTab = (key: PageKey) => {
     setPage(key);
     setCurriculumFocus(null);
     setDeptView(null);
     setRoundFocus(null);
-    if (key === "fill") reloadRounds();
+    setSummaryFocus(null);
+    if (key === "fill" || key === "summary") reloadRounds();
+  };
+  const openSummary = (round: Round, deptId: number) => {
+    setSummaryFocus({ roundId: round.id, deptId });
+    setDeptView(null);
+    setPage("summary");
   };
   const openCurriculum = (focus: Term & { curriculumId?: number }) => {
     setCurriculumFocus(focus);
@@ -233,6 +229,7 @@ export default function App() {
   // หน้ากรอกใช้รอบตัวล่าสุดจากรายการ (สถานะเปลี่ยนได้ระหว่างเปิดอยู่ เช่น ถูกปิดรอบจากอีกแท็บ)
   const viewRound = deptView ? (rounds?.find((r) => r.id === deptView.round.id) ?? deptView.round) : null;
   const fillRound = rounds ? headRound(rounds) : null;
+  const headDept = session.departmentId;
 
   return (
     <AppShell
@@ -260,6 +257,7 @@ export default function App() {
             onOpenCurriculum={openCurriculum}
             onBack={() => setDeptView(null)}
             onDeptChange={(departmentId) => setDeptView({ round: viewRound, departmentId })}
+            onOpenSummary={() => openSummary(viewRound, deptView.departmentId)}
           />
         ) : (
           <RoundsPage
@@ -281,14 +279,15 @@ export default function App() {
         <CodesPage />
       ) : current === "fill" ? (
         // รอบที่เปิดให้กรอก หรือรอบที่ปิดล่าสุด (อ่านอย่างเดียว) · ยังไม่มีรอบเลย = ข้อความเดิม
-        fillRound && session.departmentId !== null ? (
+        fillRound && headDept !== null ? (
           <HeadFillPage
-            key={`${fillRound.id}-${session.departmentId}`}
+            key={`${fillRound.id}-${headDept}`}
             round={fillRound}
-            deptId={session.departmentId}
+            deptId={headDept}
             mode="head"
             onRoundChanged={reloadRounds}
             onOpenCurriculum={openCurriculum}
+            onOpenSummary={() => openSummary(fillRound, headDept)}
           />
         ) : rounds === null ? (
           roundsError ? (
@@ -305,9 +304,18 @@ export default function App() {
             hint="เมื่อผู้ดูแลระบบเปิดรอบให้กลุ่มสาระกรอก หน้านี้จะแสดงรายวิชาของกลุ่มให้ใส่ครูผู้สอน"
           />
         )
-      ) : (
-        <ComingSoon title={tabLabel} admin={admin} />
-      )}
+      ) : current === "summary" ? (
+        // admin เลือกกลุ่มได้ · หัวหน้าเห็นกลุ่มตัวเอง (เซิร์ฟเวอร์ให้แค่แถวของกลุ่มตัวเองอยู่แล้ว)
+        <SummaryPage
+          key={summaryFocus ? `${summaryFocus.roundId}-${summaryFocus.deptId}` : "summary"}
+          mode={admin ? "admin" : "head"}
+          rounds={rounds}
+          roundsError={roundsError}
+          onReloadRounds={reloadRounds}
+          deptId={session.departmentId}
+          focus={summaryFocus}
+        />
+      ) : null}
     </AppShell>
   );
 }

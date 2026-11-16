@@ -50,8 +50,9 @@ export function AppShell<K extends string>(props: Props<K>) {
   }, [props.active, tabs.length]);
 
   return (
-    <div className="min-h-screen">
-      <header className="border-b border-line bg-surface">
+    <div className="min-h-screen print:min-h-0">
+      {/* print:hidden — หน้าสรุปพิมพ์จากเบราว์เซอร์ แถบบนและแท็บต้องไม่ติดไปบนกระดาษ */}
+      <header className="border-b border-line bg-surface print:hidden">
         {/* จอกว้าง: โลโก้ · ชิปรอบ ······ ใคร · ออกจากระบบ (แถวเดียว)
             จอแคบ: โลโก้ ······ ออกจากระบบ / ชิปรอบ · ใคร (สองแถว) — ใช้ order สลับตำแหน่ง ลำดับใน DOM คงเดิม */}
         <div className="mx-auto flex max-w-page flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
@@ -71,7 +72,7 @@ export function AppShell<K extends string>(props: Props<K>) {
 
       {tabs.length > 0 && (
         // เส้นล่างของแถบวาดด้วยเงาด้านใน แท็บที่เลือก (พื้นขาว) จึงทับเส้นได้โดยไม่ต้องยื่นออกนอกกรอบที่เลื่อนได้
-        <nav aria-label={props.navLabel ?? "เมนู"} className="shadow-[inset_0_-1px_0_var(--line)]">
+        <nav aria-label={props.navLabel ?? "เมนู"} className="shadow-[inset_0_-1px_0_var(--line)] print:hidden">
           {/* relative: ให้ offsetLeft ของแท็บนับจากแถบนี้ (ใช้ในการเลื่อนข้างบน) */}
           <div ref={stripRef} className="no-scrollbar relative mx-auto flex max-w-page gap-1 overflow-x-auto px-4 pt-2 sm:px-6">
             {tabs.map((t) => {
@@ -94,7 +95,7 @@ export function AppShell<K extends string>(props: Props<K>) {
         </nav>
       )}
 
-      <main className="mx-auto w-full max-w-page px-4 py-6 sm:px-6 sm:py-8">{props.children}</main>
+      <main className="mx-auto w-full max-w-page px-4 py-6 sm:px-6 sm:py-8 print:max-w-none print:p-0">{props.children}</main>
     </div>
   );
 }

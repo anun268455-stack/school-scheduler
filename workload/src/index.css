@@ -31,6 +31,8 @@
   /* แถบความคืบหน้า: สีตัวอักษรของ ok/warn เข้มเกินไปเมื่อเป็นแถบยาว จึงมีสีแถบของมันเอง (ตามภาพ) */
   --ok-bar: #3d8b57;
   --warn-bar: #d0911d;
+  /* ช่องรหัสวิชาของหน้าสรุป "พื้นเหลืองอ่อน" แบบชีต Excel เดิม — คนละสีกับแถวที่ยังไม่ยืนยัน (warn-faint) */
+  --sheet-code: #fff2bf;
 }
 
 @layer base {
@@ -68,8 +70,40 @@
   .input:focus { border-color: var(--brand); outline: none; box-shadow: 0 0 0 3px var(--brand-soft); }
 }
 
+@layer components {
+  /* ป้ายชั้นของหน้าสรุป (sheets.ts levelTone) — หกระดับหกสีอ่อนที่ไม่ซ้ำกัน ตัวอักษรเข้มพอทั้งบนจอและกระดาษ
+     ไม่ใช้แดง (แดงเป็นของข้อผิดพลาดและการตีกลับเท่านั้น) · ป้ายมีคำ "ม.N" เสมอ พิมพ์ขาวดำก็ยังอ่านได้ */
+  .lv-1 { background: #e5edfb; color: #2d4f9c; }
+  .lv-2 { background: #e2f2e6; color: #1e6b34; }
+  .lv-3 { background: #fde7d6; color: #8a4512; }
+  .lv-4 { background: #eee6f8; color: #5b3a8c; }
+  .lv-5 { background: #fae3f0; color: #8b2a63; }
+  .lv-6 { background: #dcefed; color: #17605c; }
+  .lv-x { background: var(--line2); color: var(--muted); }
+  .sheet-code { background: var(--sheet-code); }
+  /* ตารางของหน้าสรุป: ความกว้างคอลัมน์ตายตัวตาม <col style="--w"> (SummaryPage.tsx) ทั้งบนจอและกระดาษ */
+  .sheet-table { table-layout: fixed; }
+  .sheet-col { width: var(--w); }
+}
+
 @layer utilities {
   /* แท็บบนโทรศัพท์เลื่อนแนวนอนในแถบของมันเอง — ซ่อนแถบเลื่อนที่กินที่ */
   .no-scrollbar { scrollbar-width: none; }
   .no-scrollbar::-webkit-scrollbar { display: none; }
+}
+
+/* พิมพ์หน้าสรุปจากเบราว์เซอร์ (แบบข้อ 6): A4 แนวตั้ง · ไม่มีแถบบน/แท็บ/ปุ่ม (คลาส print:hidden ที่ตัวมันเอง)
+   · หัวตาราง (thead) ซ้ำทุกหน้า · บรรทัดไม่ถูกตัดครึ่งข้ามหน้า และก้อนเล็กไม่แตกข้ามหน้า (tbody.keep) */
+@media print {
+  @page { size: A4 portrait; margin: 10mm 8mm 12mm; }
+  html, body { background: #fff; }
+  body { font-size: 10pt; line-height: 1.35; }
+  .sheet-table thead { display: table-header-group; }
+  .sheet-table tr { break-inside: avoid; }
+  .sheet-table tbody.keep { break-inside: avoid; }
+  /* เบราว์เซอร์ตัดสีพื้นตอนพิมพ์โดยปริยาย — ป้ายชั้น ช่องรหัสวิชา และแถวที่ยังไม่ยืนยันต้องติดไปบนกระดาษ */
+  .lv-1, .lv-2, .lv-3, .lv-4, .lv-5, .lv-6, .lv-x, .sheet-code, .sheet-pending {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }

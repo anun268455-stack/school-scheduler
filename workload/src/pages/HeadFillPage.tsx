@@ -56,6 +56,8 @@ export default function HeadFillPage(props: {
   onBack?: () => void;
   /** admin: เปลี่ยนกลุ่มสาระที่ดู */
   onDeptChange?: (deptId: number) => void;
+  /** ลิงก์ "ดูทั้งหมด · พิมพ์" → หน้าสรุปอัตรากำลังของรอบและกลุ่มนี้ */
+  onOpenSummary?: () => void;
 }) {
   const { round, deptId, mode } = props;
   const roundChanged = useRef(props.onRoundChanged);
@@ -483,6 +485,7 @@ export default function HeadFillPage(props: {
             error={loadsError}
             onRetry={() => setLoadsTick((n) => n + 1)}
             keep={mode === "admin" ? (l) => l.department_id === deptId || related.has(l.teacher_id) : undefined}
+            onOpenSummary={props.onOpenSummary}
           />
         </div>
       )}
@@ -1271,6 +1274,7 @@ function LoadsCard(props: {
   error: string | null;
   onRetry: () => void;
   keep?: (l: TeacherLoad) => boolean;
+  onOpenSummary?: () => void;
 }) {
   const bars = props.loads ? loadBars(props.loads, props.mode === "admin" ? "total" : "own", props.keep) : null;
   return (
@@ -1309,6 +1313,16 @@ function LoadsCard(props: {
           </ul>
           <p className="mt-3 text-sm text-muted">แถบสีส้ม = ยอดรวมทั้งรอบถึงค่ามากสุดของกลุ่ม (ครูที่คาบหนักที่สุด)</p>
         </>
+      )}
+      {props.onOpenSummary && (
+        // ชีตแบบรายวิชาและแบบครูผู้สอนของกลุ่มนี้ (แทนชีต Excel เดิม) — พิมพ์ได้
+        <div className="mt-3 border-t border-line2 pt-3">
+          <button type="button" className="font-medium text-brand hover:underline" onClick={props.onOpenSummary}
+            data-testid="open-summary">
+            ดูทั้งหมด · พิมพ์
+          </button>
+          <p className="text-sm text-muted">สรุปอัตรากำลังแบบรายวิชาและแบบครูผู้สอนของกลุ่มนี้</p>
+        </div>
       )}
     </Card>
   );
