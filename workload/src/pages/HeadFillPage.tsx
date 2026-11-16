@@ -6,9 +6,10 @@ import { apiErrorText, listDepartments, listTeachers } from "../api";
 import { departmentName, roomRange, SET_KIND_TEXT, thaiDateTime } from "../curriculum";
 import { listRooms } from "../curriculumApi";
 import {
-  bulkConfirmIds, changeRow, deptStatusLabel, deptStatusTone, editState, fillLevels, fillProgress, filterOptions, filterRows,
+  bulkConfirmTargets, changeRow, deptStatusLabel, deptStatusTone, editState, fillLevels, fillProgress, filterOptions, filterRows,
   groupBySubject, loadBars, optionState, optionTeacherPatch, refreshDue, releasePending, retryFields, rowPatch, rowState,
-  settlePending, shownFields, subjectLine, submitState, teacherChoices, teacherDraft, teacherNamer, type AutoFields,
+  settlePending, shownFields, subjectLine, submitState, teacherChoices, teacherDraft, teacherNamer, unsavedDraftsText,
+  type AutoFields,
   type DeptStatus, type PendingEdit, type FillFilter, type OptionTeacher, type Round, type RoundOption, type RoundRow,
   type SubjectGroup, type TeacherChoice, type TeacherLoad, type Term,
 } from "../round";
@@ -224,11 +225,29 @@ export default function HeadFillPage(props: {
     (id: number, patch: RowPatch) => write(() => updateRow(id, patch), (r) => upsertRows([r])),
     [write, upsertRows],
   );
+  // แถวที่มีร่างครูยังไม่บันทึก (RowItem บอกขึ้นมา) — "ยืนยันแถวที่เลือก" ข้ามแถวเหล่านี้ · กล่องยืนยันการส่งบอกจำนวน
+  // ร่างอยู่ในแถว แถวที่ถูกถอด (พับการ์ด/กรองออก) ร่างหายไปด้วย จึงถอนออกจากชุดนี้ตอนถอดแถว
+  const [drafts, setDrafts] = useState<ReadonlySet<number>>(() => new Set());
+  const onDraft = useCallback((id: number, on: boolean) => {
+    setDrafts((cur) => {
+      if (cur.has(id) === on) return cur;
+      const next = new Set(cur);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+  // "ใส่ครูให้แถวที่เลือก" = เลือกครูโดยตั้งใจ ทับร่างของแถวเหล่านั้น — ล้างร่างทุกแถวที่ใส่สำเร็จ แม้แถวบนเซิร์ฟเวอร์ไม่เปลี่ยน
+  // (ใส่ครูคนเดิมให้แถวที่ยืนยันแล้ว ร่างจะไม่หมดอายุเอง แล้วจอแสดงร่างแทนครูที่เพิ่งใส่)
+  const [draftResets, setDraftResets] = useState<ReadonlyMap<number, number>>(() => new Map());
   const bulk = useCallback(
     (ids: number[], set: Pick<RowPatch, "teacher_id" | "confirmed">) =>
       write(() => bulkRows(ids, set), (rows) => {
         upsertRows(rows);
         onSelect(ids, false);
+        if ("teacher_id" in set) {
+          setDraftResets((cur) => new Map([...cur, ...ids.map((id): [number, number] => [id, (cur.get(id) ?? 0) + 1])]));
+        }
       }),
     [write, upsertRows, onSelect],
   );
@@ -437,6 +456,7 @@ export default function HeadFillPage(props: {
               verdict={submitState(progress!, dept?.status ?? "filling", round.status)}
               statusKnown={dept !== null}
               ask={askSubmit}
+              drafts={drafts.size}
               submitting={submitting}
               error={submitError}
               onAsk={() => {
@@ -493,6 +513,9 @@ export default function HeadFillPage(props: {
                     kit={kit}
                     save={saveRow}
                     bulk={bulk}
+                    drafts={drafts}
+                    onDraft={onDraft}
+                    draftResets={draftResets}
                     onCurriculum={openCurriculum}
                   />
                 ))}
@@ -549,6 +572,8 @@ function ProgressCard(props: {
   verdict: { can: boolean; reason: string | null };
   statusKnown: boolean;
   ask: boolean;
+  /** แถวที่มีร่างครูยังไม่บันทึก — เตือนในกล่องยืนยันการส่ง ไม่บล็อก */
+  drafts: number;
   submitting: boolean;
   error: string | null;
   onAsk: () => void;
@@ -589,6 +614,9 @@ function ProgressCard(props: {
       {props.mode === "head" && props.ask && (
         <div className="mt-4 rounded-xl border border-line bg-bg p-3" role="group" aria-label="ยืนยันการส่ง">
           <p>ส่งแล้วจะแก้ไม่ได้จนกว่าผู้ดูแลระบบจะตีกลับ — ตรวจชื่อครูครบแล้วใช่ไหม</p>
+          {unsavedDraftsText(props.drafts) && (
+            <p className="mt-1 font-medium text-warn" data-testid="unsaved-drafts">{unsavedDraftsText(props.drafts)}</p>
+          )}
           <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="primary" onClick={props.onSubmit} disabled={props.submitting || !canSubmit} autoFocus>
               {props.submitting ? "กำลังส่ง..." : "ยืนยันส่ง"}
@@ -672,6 +700,9 @@ function SubjectCard(props: {
   kit: Kit;
   save: (id: number, patch: RowPatch) => Promise<string | null>;
   bulk: (ids: number[], set: Pick<RowPatch, "teacher_id" | "confirmed">) => Promise<string | null>;
+  drafts: ReadonlySet<number>;
+  onDraft: (id: number, on: boolean) => void;
+  draftResets: ReadonlyMap<number, number>;
   onCurriculum: (curriculumId: number) => void;
 }) {
   const g = props.group;
@@ -715,7 +746,8 @@ function SubjectCard(props: {
       {props.open && (
         <div id={bodyId}>
           {props.editable && (
-            <BulkBar rows={props.rows} selected={props.selected} onSelect={props.onSelect} kit={props.kit} bulk={props.bulk} />
+            <BulkBar rows={props.rows} selected={props.selected} onSelect={props.onSelect} kit={props.kit} bulk={props.bulk}
+              drafts={props.drafts} />
           )}
           <div aria-hidden className={`hidden border-t border-line2 px-4 py-2 text-sm text-muted sm:px-5 lg:grid ${ROW_COLS}`}>
             <span />
@@ -727,7 +759,8 @@ function SubjectCard(props: {
           <ul className="divide-y divide-line2 border-t border-line2">
             {props.rows.map((r) => (
               <RowItem key={r.id} row={r} editable={props.editable} selected={props.selected.has(r.id)}
-                onSelect={props.onSelect} kit={props.kit} save={props.save} curriculum={several && r.curriculum_name !== r.group_name} />
+                onSelect={props.onSelect} kit={props.kit} save={props.save} curriculum={several && r.curriculum_name !== r.group_name}
+                onDraft={props.onDraft} draftReset={props.draftResets.get(r.id) ?? 0} />
             ))}
           </ul>
           {hidden > 0 && (
@@ -745,9 +778,11 @@ function BulkBar(props: {
   onSelect: (ids: number[], on: boolean) => void;
   kit: Kit;
   bulk: (ids: number[], set: Pick<RowPatch, "teacher_id" | "confirmed">) => Promise<string | null>;
+  drafts: ReadonlySet<number>;
 }) {
   const picked = props.rows.filter((r) => props.selected.has(r.id));
-  const confirm = bulkConfirmIds(props.rows, props.selected);
+  // แถวที่มีร่างครูยังไม่บันทึกถูกข้าม: ยืนยันตอนนี้ = ยืนยันครูบนเซิร์ฟเวอร์ ไม่ใช่ครูที่จอแสดง (round.ts bulkConfirmTargets)
+  const confirm = bulkConfirmTargets(props.rows, props.selected, props.drafts);
   const all = props.rows.length > 0 && picked.length === props.rows.length;
   const [assigning, setAssigning] = useState(false);
   const [teacher, setTeacher] = useState<number | null>(null);
@@ -796,6 +831,7 @@ function BulkBar(props: {
       {picked.length > 0 && confirm.noTeacher > 0 && (
         <p className="mt-1 text-sm text-muted">แถวที่เลือก {fmt(confirm.noTeacher)} แถวยังไม่มีครู — ใส่ครูก่อนจึงยืนยันได้</p>
       )}
+      {confirm.reason && <p className="mt-1 text-sm font-medium text-warn" data-testid="bulk-skip">{confirm.reason}</p>}
       {assigning && (
         <form onSubmit={assign} className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-bg p-2.5"
           aria-label="ใส่ครูให้แถวที่เลือก">
@@ -833,8 +869,12 @@ const RowItem = memo(function RowItem(props: {
   save: (id: number, patch: RowPatch) => Promise<string | null>;
   /** บอกชื่อหลักสูตรของแถวใต้ชื่อห้อง (การ์ดที่รวมหลายหลักสูตร และชื่อหลักสูตรไม่ใช่ชื่อห้องเดียวกัน) */
   curriculum: boolean;
+  /** บอกหน้าว่าแถวนี้มี/ไม่มีร่างครูที่ยังไม่บันทึก */
+  onDraft: (id: number, on: boolean) => void;
+  /** เพิ่มขึ้นเมื่อ "ใส่ครูให้แถวที่เลือก" ใส่ครูให้แถวนี้สำเร็จ — ร่างครูของแถวถูกแทน */
+  draftReset: number;
 }) {
-  const { row, kit, editable } = props;
+  const { row, kit, editable, onDraft } = props;
   // ค่าที่ค้างของแถว (round.ts): ครูที่เลือกแล้วแต่ยังไม่กดบันทึกครู (ร่าง) · คาบคู่ที่บันทึกไม่สำเร็จ — คงอยู่บนจอ ไม่ถูกแทนด้วย
   // ค่าจากเซิร์ฟเวอร์เงียบ ๆ แต่แต่ละช่องใช้ได้เฉพาะขณะที่แถวบนเซิร์ฟเวอร์ยังเป็นสถานะเดิมของช่องนั้น (settlePending) —
   // ยืนยัน/ใส่ครูทีละหลายแถวแล้วแถวเปลี่ยน จอต้องแสดงครูที่เซิร์ฟเวอร์ยืนยันจริง ไม่ใช่ร่างคู่กับ "ยืนยันแล้ว"
@@ -844,9 +884,21 @@ const RowItem = memo(function RowItem(props: {
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const detailId = useId();
+  // ใส่ครูให้แถวที่เลือกสำเร็จ → ร่างครูของแถวนี้ถูกแทนด้วยครูที่เพิ่งใส่ (ระหว่างวาด ไม่มีเฟรมที่จอยังแสดงร่าง)
+  // ข้อความผิดพลาดของร่างนั้น (บันทึกครูไม่สำเร็จ) หายไปด้วย กฎเดียวกับร่างที่หมดอายุข้างล่าง
+  const [seenReset, setSeenReset] = useState(props.draftReset);
+  let held = pending;
+  if (props.draftReset !== seenReset) {
+    setSeenReset(props.draftReset);
+    if (pending && "teacher_id" in pending.values) {
+      held = releasePending(pending, ["teacher_id"]);
+      setPending(held);
+      if (!detail) setError(null);
+    }
+  }
   // ปรับตามแถวใหม่ระหว่างวาด (ไม่ใช่ effect) — ไม่มีสักเฟรมที่จอแสดงค่าที่ค้างคู่กับสถานะของแถวใหม่
-  const live = settlePending(pending, row);
-  if (live !== pending) {
+  const live = settlePending(held, row);
+  if (live !== held) {
     setPending(live);
     // ข้อความผิดพลาดเป็นของค่าที่ค้างซึ่งหมดอายุแล้ว · ฟอร์มรายละเอียดที่เปิดอยู่เก็บข้อความของมันไว้
     if (!detail) setError(null);
@@ -885,6 +937,12 @@ const RowItem = memo(function RowItem(props: {
     if (c.save) void commit(c.save, "double");
   };
   const draft = teacherDraft(row, live);
+  const hasDraft = draft !== null;
+  useEffect(() => {
+    if (!hasDraft) return;
+    onDraft(row.id, true);
+    return () => onDraft(row.id, false);
+  }, [onDraft, row.id, hasDraft]);
   const saveTeacher = () => {
     if (draft && editable && !saving) void commit({ teacher_id: draft.teacher_id }, "teacher");
   };

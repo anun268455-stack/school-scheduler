@@ -813,6 +813,29 @@ export function bulkConfirmIds(
   };
 }
 
+/** "ยืนยันแถวที่เลือก" เมื่อบางแถวมีร่างครูที่ยังไม่บันทึก: ข้ามแถวเหล่านั้น — ยืนยันตอนนี้คือยืนยันครูบนเซิร์ฟเวอร์ (ครูเทอมก่อน)
+ *  ไม่ใช่ครูที่จอแสดงเป็นร่าง แล้วร่างก็หายเงียบ ๆ (ตรวจซ้ำรอบแก้สุดท้าย) · ปุ่มยืนยันของแถวเดียวก็ซ่อนเมื่อมีร่างด้วยเหตุเดียวกัน
+ *  skipped = แถวที่เลือกซึ่งมีร่าง ทุกสถานะ (แถวที่ยืนยันแล้วแต่กำลังเปลี่ยนครูก็มีร่างค้างที่ต้องกดบันทึกหรือยกเลิกเหมือนกัน)
+ *  · แถวที่ไม่มีครูแต่มีร่าง นับเป็นข้าม (ให้กดบันทึกครู) ไม่ใช่ "ยังไม่มีครู" · ids ว่างแต่ skipped > 0 = ปุ่มปิดพร้อม reason เดียวกัน */
+export function bulkConfirmTargets(
+  rows: readonly Pick<RoundRow, "id" | "teacher_id" | "confirmed">[],
+  selected: ReadonlySet<number>,
+  drafts: ReadonlySet<number>,
+): { ids: number[]; noTeacher: number; skipped: number; reason: string | null } {
+  const skip = new Set(rows.filter((r) => selected.has(r.id) && drafts.has(r.id)).map((r) => r.id));
+  const rest = bulkConfirmIds(rows.filter((r) => !skip.has(r.id)), selected);
+  return {
+    ...rest,
+    skipped: skip.size,
+    reason: skip.size ? `ข้าม ${skip.size} แถวที่เลือกครูไว้แต่ยังไม่กดบันทึกครู — กดบันทึกครูหรือยกเลิกก่อน` : null,
+  };
+}
+
+/** บรรทัดเตือนในกล่องยืนยันการส่ง: ร่างครูที่ยังไม่บันทึกจะไม่ไปกับการส่ง (ไม่บล็อก — เซิร์ฟเวอร์ตัดสินความครบจากค่าที่บันทึกแล้ว) */
+export function unsavedDraftsText(drafts: number): string | null {
+  return drafts > 0 ? `มี ${drafts} แถวที่เลือกครูไว้แต่ยังไม่กดบันทึกครู — ถ้าส่งตอนนี้ ครูที่เลือกไว้จะไม่ถูกบันทึก` : null;
+}
+
 // ---- คาบรายครู (ด้านข้าง) ----
 
 export type LoadBar = {

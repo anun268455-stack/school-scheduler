@@ -15,7 +15,7 @@ import {
   isRoundPreview, isRoundRow, isTeacherLoad, loadBars, openBlocker, optionState, optionTeacherPatch, previewLines,
   previewWarnings, reviewActions, roundActions, roundChip, roundLabel, roundStats, ROUND_STATUS_TEXT, roundStatusTone,
   releasePending, rowPatch, rowState, settlePending, shownFields, subjectLine, submitState, teacherChoices, teacherNamer,
-  termReadiness, changeRow, teacherDraft, retryFields, reviewGap, refreshDue, REFRESH_GAP_MS,
+  termReadiness, changeRow, teacherDraft, retryFields, reviewGap, refreshDue, REFRESH_GAP_MS, bulkConfirmTargets, unsavedDraftsText,
   type DeptStatus, type OptionTeacher, type Round, type RoundOption, type RoundPreview, type RoundRow, type TeacherLoad,
 } from "../../workload/src/round.ts";
 
@@ -619,6 +619,38 @@ test("bulkConfirmIds: ยืนยันได้เฉพาะแถวที�
   eq(bulkConfirmIds(rows, new Set([1, 2, 3, 5, 99])), { ids: [1], noTeacher: 2 });
   eq(bulkConfirmIds(rows, new Set()), { ids: [], noTeacher: 0 });
   eq(bulkConfirmIds(rows, new Set([1, 4])), { ids: [1, 4], noTeacher: 0 });
+});
+
+test("bulkConfirmTargets (re-review): ยืนยันแถวที่เลือกข้ามแถวที่มีร่างครูไม่บันทึก — ไม่ยืนยันครูเดิมแทนครูที่จอแสดง", () => {
+  // repro ตรง ๆ: การ์ด ท21102 เก้าห้อง ครูเทอมก่อนยังไม่ยืนยันทุกแถว · ม.1/1 (id 13) เลือกครูใหม่ไว้แต่ยังไม่กดบันทึกครู · เลือกทั้งหมด
+  const rows = [13, 14, 15, 16, 17, 18, 19, 20, 21].map((id) => W({ id, teacher_id: 1, confirmed: false, from_plan: true }));
+  const all = new Set(rows.map((r) => r.id));
+  const t = bulkConfirmTargets(rows, all, new Set([13]));
+  eq(t.ids, [14, 15, 16, 17, 18, 19, 20, 21]);
+  eq([t.skipped, t.noTeacher], [1, 0]);
+  eq(t.reason, "ข้าม 1 แถวที่เลือกครูไว้แต่ยังไม่กดบันทึกครู — กดบันทึกครูหรือยกเลิกก่อน");
+  // ไม่มีร่าง = เหมือน bulkConfirmIds เดิม
+  eq(bulkConfirmTargets(rows, all, new Set()), { ...bulkConfirmIds(rows, all), skipped: 0, reason: null });
+  // ทุกแถวที่เลือกมีร่าง → ไม่มีอะไรให้ยืนยัน (ปุ่มปิด) พร้อมเหตุผลเดียวกัน
+  const only = bulkConfirmTargets(rows, new Set([13, 14]), new Set([13, 14, 99]));
+  eq([only.ids, only.skipped, only.reason], [[], 2, "ข้าม 2 แถวที่เลือกครูไว้แต่ยังไม่กดบันทึกครู — กดบันทึกครูหรือยกเลิกก่อน"]);
+  // ร่างของแถวที่ไม่ได้เลือก ไม่นับ · แถวที่ยืนยันแล้วแต่มีร่าง (กำลังเปลี่ยนครู) นับว่าข้าม — มีร่างค้างที่ต้องบันทึกหรือยกเลิกเหมือนกัน
+  const mixed = [W({ id: 1 }), W({ id: 2, confirmed: true }), W({ id: 3, teacher_id: null }), W({ id: 4 })];
+  eq(bulkConfirmTargets(mixed, new Set([1, 2, 3]), new Set([4])), { ids: [1], noTeacher: 1, skipped: 0, reason: null });
+  eq(bulkConfirmTargets(mixed, new Set([1, 2, 3]), new Set([2, 4])), {
+    ids: [1], noTeacher: 1, skipped: 1, reason: "ข้าม 1 แถวที่เลือกครูไว้แต่ยังไม่กดบันทึกครู — กดบันทึกครูหรือยกเลิกก่อน" });
+  // แถวที่ยังไม่มีครูแต่เลือกครูเป็นร่างไว้: บอกให้กดบันทึกครู (ข้าม) ไม่ใช่ "ใส่ครูก่อน"
+  eq(bulkConfirmTargets(mixed, new Set([1, 3]), new Set([3])), {
+    ids: [1], noTeacher: 0, skipped: 1, reason: "ข้าม 1 แถวที่เลือกครูไว้แต่ยังไม่กดบันทึกครู — กดบันทึกครูหรือยกเลิกก่อน" });
+  // ไม่แก้ของที่ส่งเข้ามา
+  const snap = JSON.stringify(rows);
+  bulkConfirmTargets(rows, all, new Set([13]));
+  eq(JSON.stringify(rows), snap);
+});
+
+test("unsavedDraftsText: กล่องยืนยันการส่งบอกจำนวนร่างครูที่ยังไม่บันทึก (ไม่บล็อกการส่ง)", () => {
+  eq(unsavedDraftsText(0), null);
+  eq(unsavedDraftsText(2), "มี 2 แถวที่เลือกครูไว้แต่ยังไม่กดบันทึกครู — ถ้าส่งตอนนี้ ครูที่เลือกไว้จะไม่ถูกบันทึก");
 });
 
 test("loadBars: แถบหลักคือ own (head) · บอกยอดรวมทุกกลุ่มเมื่อมากกว่า · เรียงมากไปน้อย · ยอดถึงค่ามากสุดของกลุ่มเป็นสีเตือน", () => {
