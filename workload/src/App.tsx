@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   apiErrorText, clearSession, loadSession, logout, me, saveSession, setSessionExpiredHandler,
 } from "./api";
@@ -7,14 +7,15 @@ import CodesPage from "./pages/CodesPage";
 import type { SeedResult } from "./curriculum";
 import { loadSeedSummary, saveSeedSummary } from "./curriculumApi";
 import CurriculumPage from "./pages/CurriculumPage";
+import HeadFillPage from "./pages/HeadFillPage";
 import LoginPage from "./pages/LoginPage";
 import RoundsPage from "./pages/RoundsPage";
 import SetupPage from "./pages/SetupPage";
 import SubjectsPage from "./pages/SubjectsPage";
 import TeachersPage from "./pages/TeachersPage";
-import { roundChip, type Round, type Term } from "./round";
+import { headRound, roundChip, type Round, type Term } from "./round";
 import { listRounds } from "./roundApi";
-import { AppShell, BrandMark, Button, Chip, EmptyState, type ShellTab } from "./ui";
+import { AppShell, BrandMark, Button, Chip, EmptyState, Notice, type ShellTab } from "./ui";
 
 const ROLE_TEXT = { admin: "ผู้ดูแลระบบ", head: "หัวหน้ากลุ่มสาระ" } as const;
 
@@ -69,11 +70,15 @@ export default function App() {
     setSeedSummary(r);
     saveSeedSummary(r);
   };
-  // รายการรอบสำหรับชิปบนแถบบน — โหลดครั้งแรกหลังยืนยัน session แล้วหน้ารอบส่งรายการใหม่มาทุกครั้งที่โหลด
-  // โหลดไม่ได้ = ไม่แสดงชิป (เป็นแค่ป้ายบอก ไม่ขวางการใช้งาน)
+  // รายการรอบสำหรับชิปบนแถบบนและหน้ากรอกของกลุ่ม — โหลดครั้งแรกหลังยืนยัน session แล้วหน้ารอบส่งรายการใหม่มาทุกครั้งที่โหลด
+  // หน้ากรอก (ส่ง · 409) และการเปิดแท็บของหัวหน้าสั่งโหลดใหม่ด้วย roundsTick · โหลดซ้ำไม่ได้ = เก็บรายการเดิมไว้
+  // (หน้ากรอกที่เปิดอยู่จะไม่ถูกถอดพร้อมค่าที่พิมพ์ค้าง) · ชิปเป็นแค่ป้ายบอก ไม่ขวางการใช้งาน
   const [rounds, setRounds] = useState<Round[] | null>(null);
+  const [roundsError, setRoundsError] = useState<string | null>(null);
+  const [roundsTick, setRoundsTick] = useState(0);
+  const reloadRounds = useCallback(() => setRoundsTick((n) => n + 1), []);
   // ลิงก์ข้ามหน้า (ไม่มี react-router): หน้าหลักสูตรเปิดที่ภาคเรียนนี้ · หน้าแถวของกลุ่ม · รอบเก่าที่เปิดดูอยู่ก่อนไปหน้าแถว
-  const [curriculumFocus, setCurriculumFocus] = useState<Term | null>(null);
+  const [curriculumFocus, setCurriculumFocus] = useState<(Term & { curriculumId?: number }) | null>(null);
   const [deptView, setDeptView] = useState<{ round: Round; departmentId: number } | null>(null);
   const [roundFocus, setRoundFocus] = useState<number | null>(null);
   const token = session?.token ?? null;
@@ -81,21 +86,24 @@ export default function App() {
   useEffect(() => {
     if (token === null || checking) {
       setRounds(null);
+      setRoundsError(null);
       return;
     }
     let cancelled = false;
     listRounds().then(
       (list) => {
-        if (!cancelled) setRounds(list);
+        if (cancelled) return;
+        setRounds(list);
+        setRoundsError(null);
       },
-      () => {
-        if (!cancelled) setRounds(null);
+      (err) => {
+        if (!cancelled) setRoundsError(apiErrorText(err));
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [token, checking]);
+  }, [token, checking, roundsTick]);
 
   useEffect(() => {
     setSessionExpiredHandler((message) => {
@@ -209,17 +217,22 @@ export default function App() {
   const chip = rounds ? roundChip(rounds) : null;
 
   // กดแท็บเอง = เริ่มหน้านั้นตามปกติ (ทิ้งลิงก์ข้ามหน้าที่ค้างไว้)
+  // หัวหน้าเปิดแท็บของกลุ่ม = โหลดรอบใหม่ — ผู้ดูแลระบบอาจเพิ่งเปิดหรือปิดรอบระหว่างที่หัวหน้าอยู่แท็บอื่น
   const goTab = (key: PageKey) => {
     setPage(key);
     setCurriculumFocus(null);
     setDeptView(null);
     setRoundFocus(null);
+    if (key === "fill") reloadRounds();
   };
-  const openCurriculum = (term: Term) => {
-    setCurriculumFocus(term);
+  const openCurriculum = (focus: Term & { curriculumId?: number }) => {
+    setCurriculumFocus(focus);
     setDeptView(null);
     setPage("curriculum");
   };
+  // หน้ากรอกใช้รอบตัวล่าสุดจากรายการ (สถานะเปลี่ยนได้ระหว่างเปิดอยู่ เช่น ถูกปิดรอบจากอีกแท็บ)
+  const viewRound = deptView ? (rounds?.find((r) => r.id === deptView.round.id) ?? deptView.round) : null;
+  const fillRound = rounds ? headRound(rounds) : null;
 
   return (
     <AppShell
@@ -236,12 +249,17 @@ export default function App() {
         <CurriculumPage admin={admin} seedSummary={seedSummary} onSeedSummary={keepSeedSummary}
           focus={curriculumFocus ?? undefined} />
       ) : current === "rounds" && admin ? (
-        deptView ? (
-          // หน้าแถวของกลุ่ม (หน้าเดียวกับของหัวหน้า ในโหมดของ admin) เป็นงานถัดไป — ระหว่างนี้บอกตรง ๆ และพากลับได้
-          <EmptyState
-            title="หน้าแถวของกลุ่ม — กำลังจะมา"
-            hint={`หน้ารายวิชาของกลุ่มสาระในรอบ ${deptView.round.label} จะตามมาในรุ่นถัดไปของเว็บ · ระหว่างนี้ดูความคืบหน้าของกลุ่มได้ที่ภาพรวมรอบ`}
-            action={<Button onClick={() => setDeptView(null)}>กลับไปภาพรวมรอบ</Button>}
+        deptView && viewRound ? (
+          // หน้าแถวของกลุ่ม = หน้าเดียวกับของหัวหน้า ในโหมดของผู้ดูแลระบบ (เลือกกลุ่มได้ แก้ได้ทุกสถานะกลุ่ม ไม่มีปุ่มส่ง)
+          <HeadFillPage
+            key={`${viewRound.id}-${deptView.departmentId}`}
+            round={viewRound}
+            deptId={deptView.departmentId}
+            mode="admin"
+            onRoundChanged={reloadRounds}
+            onOpenCurriculum={openCurriculum}
+            onBack={() => setDeptView(null)}
+            onDeptChange={(departmentId) => setDeptView({ round: viewRound, departmentId })}
           />
         ) : (
           <RoundsPage
@@ -250,7 +268,8 @@ export default function App() {
             onOpenCurriculum={openCurriculum}
             onOpenDepartment={(round, departmentId) => {
               setDeptView({ round, departmentId });
-              setRoundFocus(round.id);
+              // กลับมาแล้วเปิดรอบเก่ารอบเดิม — เฉพาะรอบที่ปิดแล้ว · รอบปัจจุบันกลับไปหน้าปกติ (ปิดรอบไปแล้วหน้าเห็นการ์ดเปิดรอบ)
+              setRoundFocus(round.status === "closed" ? round.id : null);
             }}
           />
         )
@@ -261,10 +280,31 @@ export default function App() {
       ) : current === "codes" && admin ? (
         <CodesPage />
       ) : current === "fill" ? (
-        <EmptyState
-          title="ยังไม่มีรอบอัตรากำลังที่เปิดอยู่"
-          hint="เมื่อผู้ดูแลระบบเปิดรอบให้กลุ่มสาระกรอก หน้านี้จะแสดงรายวิชาของกลุ่มให้ใส่ครูผู้สอน"
-        />
+        // รอบที่เปิดให้กรอก หรือรอบที่ปิดล่าสุด (อ่านอย่างเดียว) · ยังไม่มีรอบเลย = ข้อความเดิม
+        fillRound && session.departmentId !== null ? (
+          <HeadFillPage
+            key={`${fillRound.id}-${session.departmentId}`}
+            round={fillRound}
+            deptId={session.departmentId}
+            mode="head"
+            onRoundChanged={reloadRounds}
+            onOpenCurriculum={openCurriculum}
+          />
+        ) : rounds === null ? (
+          roundsError ? (
+            <div className="space-y-3">
+              <Notice tone="bad" role="alert">โหลดรอบอัตรากำลังไม่ได้: {roundsError}</Notice>
+              <Button onClick={reloadRounds}>ลองโหลดใหม่</Button>
+            </div>
+          ) : (
+            <p role="status" className="text-muted">กำลังโหลดรอบอัตรากำลัง...</p>
+          )
+        ) : (
+          <EmptyState
+            title="ยังไม่มีรอบอัตรากำลังที่เปิดอยู่"
+            hint="เมื่อผู้ดูแลระบบเปิดรอบให้กลุ่มสาระกรอก หน้านี้จะแสดงรายวิชาของกลุ่มให้ใส่ครูผู้สอน"
+          />
+        )
       ) : (
         <ComingSoon title={tabLabel} admin={admin} />
       )}

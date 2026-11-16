@@ -1,7 +1,9 @@
-// ตรรกะล้วนของรอบอัตรากำลัง — import ได้เฉพาะ import type (node รันตรง ๆ ใน tests/ts/wlround.ts)
+// ตรรกะล้วนของรอบอัตรากำลัง — node รันตรง ๆ ใน tests/ts/wlround.ts: import ได้เฉพาะ import type และฟังก์ชันจาก
+// curriculum.ts (ไฟล์ล้วนอีกไฟล์ ไม่มี React/axios) — ระดับชั้นและการเรียงห้องต้องเป็นกฎเดียวกับหน้าหลักสูตรและเซิร์ฟเวอร์
 // ป้ายสถานะของรอบและของกลุ่มอยู่ที่นี่ที่เดียว (แผน "สัญญาที่ทุก task ใช้ร่วมกัน") · ตัวเลขของกลุ่มนับเป็น "รายการ"
 // = แถววิชา + ตัวเลือกคาบเสรี/กิจกรรมของกลุ่ม ตาม wl_fill_counts ของเซิร์ฟเวอร์ (ชื่อคีย์ rows แต่รวมตัวเลือกด้วย)
-import type { Term, Unconverted } from "./curriculum";
+import { classSort, KIND_TEXT, levelOf, type Term, type Unconverted } from "./curriculum";
+import type { WlTeacher } from "./types";
 import type { Tone } from "./ui";
 
 // Term = {year, semester} · Unconverted = {source, ref, reason} (แผนการสอนที่แปลงไม่ได้ — แสดงเฉพาะ reason) ใช้ชนิดเดียวกับหน้าหลักสูตร
@@ -445,4 +447,313 @@ export function isRoundOption(d: unknown): d is RoundOption {
 export function isTeacherLoad(d: unknown): d is TeacherLoad {
   return isObj(d) && isInt(d.teacher_id) && isText(d.name) && isIdOrNull(d.department_id) && isCount(d.total)
     && isCount(d.own);
+}
+
+// ════ หน้ากรอกของหัวหน้ากลุ่มสาระ (งานที่ 8) ════════════════════════════════
+// หัวหน้าใส่ครูอย่างเดียว (แบบข้อ 4.5) · ตัวนับ ข้อความส่งไม่ได้ และข้อความแก้ไม่ได้ เป็นกฎเดียวกับเซิร์ฟเวอร์
+// (wl_fill_counts · wl_submit_blocker · wl_can_edit) — จอกับเซิร์ฟเวอร์ต้องไม่บอกคนละอย่าง
+
+/** สถานะของรายการหนึ่งรายการ: ยังไม่มีครู · มีครูแต่ยังไม่ยืนยัน · ครบ (มีครูและยืนยันแล้ว) */
+export type ItemState = "missing" | "unconfirmed" | "done";
+
+/** แถว: ดูว่ามีครูผู้สอนก่อน แล้วค่อยดูธงยืนยัน (_wl_row_state) — แถวที่ธงยืนยันค้างแต่ไม่มีครูยังเป็น "ยังไม่มีครู"
+ *  · ครูสอนร่วมอย่างเดียวไม่นับว่ามีครู (ครูผู้สอนคือคนที่รับแถวนี้) */
+export function rowState(row: Pick<RoundRow, "teacher_id" | "confirmed">): ItemState {
+  if (row.teacher_id === null) return "missing";
+  return row.confirmed ? "done" : "unconfirmed";
+}
+
+/** ตัวเลือก: หนึ่งรายการไม่ว่ามีครูกี่คน (_wl_option_state) · ไม่มีครูสักคน = ยังไม่มีครู · ครูทุกคนยืนยัน = ครบ */
+export function optionState(option: Pick<RoundOption, "teachers">): ItemState {
+  const teachers = option.teachers.filter((t) => t.teacher_id !== null);
+  if (teachers.length === 0) return "missing";
+  return teachers.every((t) => t.confirmed) ? "done" : "unconfirmed";
+}
+
+export type FillProgress = { total: number; confirmed: number; missingTeacher: number };
+
+/** ความคืบหน้าของกลุ่ม — นับแบบ wl_fill_counts: รายการ = แถว + ตัวเลือก · ที่เหลือ (total − confirmed − missingTeacher) = ยังไม่ยืนยัน */
+export function fillProgress(
+  rows: readonly Pick<RoundRow, "teacher_id" | "confirmed">[],
+  options: readonly Pick<RoundOption, "teachers">[],
+): FillProgress {
+  const states = [...rows.map(rowState), ...options.map(optionState)];
+  return {
+    total: states.length,
+    confirmed: states.filter((s) => s === "done").length,
+    missingTeacher: states.filter((s) => s === "missing").length,
+  };
+}
+
+export type Verdict = { can: boolean; reason: string | null };
+const YES: Verdict = { can: true, reason: null };
+const no = (reason: string): Verdict => ({ can: false, reason });
+
+// ข้อความของ wl_can_edit / wl_dept_submit (ตัวทดสอบเทียบชิ้นข้อความกับ mock_api.py) — ตัวเลขไม่คั่นหลักพันเหมือนเซิร์ฟเวอร์
+const CLOSED_EDIT = "รอบอัตรากำลังนี้ปิดแล้ว จึงแก้ไม่ได้อีก (เก็บไว้เป็นหลักฐานย้อนหลัง)";
+const NOT_OPEN = "รอบอัตรากำลังนี้ยังไม่เปิดให้กลุ่มสาระกรอก";
+
+/** กดส่งได้ไหม และถ้าไม่ได้เพราะอะไร — ลำดับเดียวกับ POST .../submit: รอบ → สถานะกลุ่ม → รายการที่ยังไม่ครบ (wl_submit_blocker) */
+export function submitState(progress: FillProgress, deptStatus: DeptStatusKey, roundStatus: RoundStatus): Verdict {
+  if (roundStatus === "closed") return no("รอบอัตรากำลังนี้ปิดแล้ว จึงส่งไม่ได้");
+  if (roundStatus !== "filling") return no(NOT_OPEN);
+  if (deptStatus === "submitted" || deptStatus === "approved") return no(DEPT_STATUS_TEXT[deptStatus]);
+  const missing = progress.missingTeacher;
+  const unconfirmed = Math.max(0, progress.total - progress.confirmed - missing);
+  if (!missing && !unconfirmed) return YES;
+  const bits = [...(missing ? [`ยังไม่มีครู ${missing} รายการ`] : []), ...(unconfirmed ? [`ยังไม่ยืนยัน ${unconfirmed} รายการ`] : [])];
+  return no(`ยังส่งไม่ได้ — ${bits.join(" · ")} (นับทั้งแถววิชาและตัวเลือกคาบเสรี/กิจกรรมของกลุ่ม) ใส่ครูและยืนยันให้ครบก่อน`);
+}
+
+/** แก้แถว/ครูของตัวเลือกของกลุ่มนี้ได้ไหม (wl_can_edit — หน้านี้แสดงแค่กลุ่มเดียว จึงไม่มีกรณีกลุ่มอื่น)
+ *  admin: รอบเตรียม/เปิดให้กรอก แก้ได้ทุกสถานะกลุ่ม · หัวหน้า: รอบเปิดให้กรอก และกลุ่มกำลังกรอกหรือถูกตีกลับ · รอบปิด: ห้ามทุกคน */
+export function editState(mode: "head" | "admin", roundStatus: RoundStatus, deptStatus: DeptStatusKey | null): Verdict {
+  if (roundStatus === "closed") return no(CLOSED_EDIT);
+  if (mode === "admin") return YES;
+  if (roundStatus !== "filling") return no(NOT_OPEN);
+  if (deptStatus === "filling" || deptStatus === "returned") return YES;
+  if (deptStatus === "submitted" || deptStatus === "approved") {
+    return no(`กลุ่มสาระนี้${DEPT_STATUS_TEXT[deptStatus]} จึงแก้ไม่ได้ — ถ้าต้องแก้ ให้ผู้ดูแลระบบตีกลับก่อน`);
+  }
+  return no("ไม่พบสถานะของกลุ่มสาระนี้ในรอบ จึงยังแก้ไม่ได้ แจ้งผู้ดูแลระบบ");
+}
+
+// ---- การ์ดวิชา ----
+
+type GroupRow = Pick<RoundRow, "id" | "line_id" | "code" | "name" | "weekly" | "kind" | "credits" | "curriculum_name"
+  | "curriculum_id" | "group_name">;
+
+/** การ์ดวิชาหนึ่งใบ = วิชาเดียวกัน (รหัส ชื่อ คาบ/สัปดาห์ ประเภท หน่วยกิต) จากทุกหลักสูตรของกลุ่ม
+ *  · curricula = หลักสูตรที่แถวของการ์ดมาจาก (ไม่ซ้ำ ตามลำดับห้อง) สำหรับลิงก์ "จากหลักสูตร …" (ตรวจย้อนได้)
+ *  · curriculumName = ชื่อหลักสูตรเหล่านั้นต่อกันด้วย " · " */
+export type SubjectGroup<R extends GroupRow = RoundRow> = {
+  key: string;
+  code: string;
+  name: string;
+  weekly: number;
+  kind: RowKind;
+  credits: number | null;
+  curricula: { id: number; name: string }[];
+  curriculumName: string;
+  rows: R[];
+};
+
+const cmpText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+// ระดับที่ไม่มีเลข (ห้องที่ไม่ใช่รูป ม.N/…) ไว้ท้าย
+const levelRank = (groupName: string): number => {
+  const lv = levelOf(groupName);
+  return lv === null ? Number.POSITIVE_INFINITY : Number(lv.slice(2));
+};
+
+/** จัดแถวเป็นการ์ดวิชา: เรียงตามระดับของห้องแรก → รหัสวิชา → ห้องแรก · แถวในการ์ดเรียงแบบห้อง (ม.1/2 ก่อน ม.1/10) · ไม่แก้ลิสต์เดิม
+ *  รวมข้ามหลักสูตร ไม่ใช่การ์ดละบรรทัดหลักสูตร: หลักสูตรที่ตั้งต้นจากโปรแกรมจัดตารางส่วนใหญ่มีห้องเดียว (ห้องที่รายวิชาต่างกันนิดเดียว
+ *  ก็แยกหลักสูตร) การ์ดละบรรทัดจึงกลายเป็นการ์ดละห้อง — ใส่ครูให้หลายห้องไม่ได้ และไม่ตรงกับชีตเดิมที่วิชาละก้อน
+ *  คาบ/สัปดาห์หรือหน่วยกิตต่างกัน = คนละการ์ด (หัวการ์ดบอกค่าเดียว) */
+export function groupBySubject<R extends GroupRow>(rows: readonly R[]): SubjectGroup<R>[] {
+  const bySubject = new Map<string, R[]>();
+  for (const r of rows) {
+    const key = [r.code, r.name, r.weekly, r.kind, r.credits ?? ""].join("|");
+    const list = bySubject.get(key);
+    if (list) list.push(r);
+    else bySubject.set(key, [r]);
+  }
+  const groups: SubjectGroup<R>[] = [];
+  for (const [key, list] of bySubject) {
+    const sorted = [...list].sort((a, b) => classSort(a.group_name, b.group_name) || a.id - b.id);
+    const curricula: { id: number; name: string }[] = [];
+    for (const r of sorted) {
+      if (!curricula.some((c) => c.id === r.curriculum_id)) curricula.push({ id: r.curriculum_id, name: r.curriculum_name });
+    }
+    const f = sorted[0];
+    groups.push({
+      key, code: f.code, name: f.name, weekly: f.weekly, kind: f.kind, credits: f.credits,
+      curricula, curriculumName: curricula.map((c) => c.name).join(" · "), rows: sorted,
+    });
+  }
+  return groups.sort((a, b) =>
+    levelRank(a.rows[0].group_name) - levelRank(b.rows[0].group_name)
+    || cmpText(a.code, b.code)
+    || classSort(a.rows[0].group_name, b.rows[0].group_name)
+    || cmpText(a.key, b.key));
+}
+
+/** บรรทัดรองของการ์ดวิชา: "พื้นฐาน · 1.5 หน่วยกิต · 3 คาบ/สัปดาห์ · 12 ห้อง" */
+export function subjectLine(g: Pick<SubjectGroup<GroupRow>, "kind" | "credits" | "weekly" | "rows">): string {
+  return [
+    KIND_TEXT[g.kind],
+    ...(g.credits !== null ? [`${fmt(g.credits)} หน่วยกิต`] : []),
+    `${fmt(g.weekly)} คาบ/สัปดาห์`,
+    `${fmt(g.rows.length)} ห้อง`,
+  ].join(" · ");
+}
+
+// ---- ตัวกรอง ----
+
+export type FillFilter = {
+  /** all · todo = ยังไม่ครบ (ยังไม่มีครู + ยังไม่ยืนยัน) · done = ยืนยันแล้ว */
+  state: "all" | "todo" | "done";
+  /** "ม.1" … · null = ทุกชั้น */
+  level: string | null;
+  query: string;
+};
+
+const stateOk = (s: ItemState, want: FillFilter["state"]): boolean =>
+  want === "all" || (want === "done" ? s === "done" : s !== "done");
+const queryOf = (q: string): string => q.trim().toLowerCase();
+const hit = (q: string, texts: readonly string[]): boolean => q === "" || texts.some((t) => t.toLowerCase().includes(q));
+
+/** แถวที่ผ่านตัวกรอง · ค้นด้วยรหัสวิชา ชื่อวิชา ชื่อห้อง ชื่อครูผู้สอนและครูสอนร่วม (ไม่สนช่องว่างหัวท้ายและตัวพิมพ์) */
+export function filterRows<R extends Pick<RoundRow, "teacher_id" | "co_teacher_id" | "confirmed" | "group_name" | "code" | "name">>(
+  rows: readonly R[],
+  filter: FillFilter,
+  teacherName: (id: number) => string,
+): R[] {
+  const q = queryOf(filter.query);
+  return rows.filter((r) => {
+    if (!stateOk(rowState(r), filter.state)) return false;
+    if (filter.level !== null && levelOf(r.group_name) !== filter.level) return false;
+    const people = [r.teacher_id, r.co_teacher_id].filter((t): t is number => t !== null).map(teacherName);
+    return hit(q, [r.code, r.name, r.group_name, ...people]);
+  });
+}
+
+/** ตัวเลือกคาบเสรี/กิจกรรมที่ผ่านตัวกรอง · ระดับดูจากห้องของชุด · ค้นด้วยรหัส ชื่อวิชา ชื่อชุด ห้อง และชื่อครู */
+export function filterOptions<O extends Pick<RoundOption, "code" | "name" | "set" | "teachers">>(
+  options: readonly O[],
+  filter: FillFilter,
+  teacherName: (id: number) => string,
+): O[] {
+  const q = queryOf(filter.query);
+  return options.filter((o) => {
+    if (!stateOk(optionState(o), filter.state)) return false;
+    if (filter.level !== null && !o.set.group_names.some((g) => levelOf(g) === filter.level)) return false;
+    const people = o.teachers.map((t) => t.teacher_id).filter((t): t is number => t !== null).map(teacherName);
+    return hit(q, [o.code, o.name, o.set.name, ...o.set.group_names, ...people]);
+  });
+}
+
+/** ระดับชั้นที่มีในแถวและตัวเลือกของกลุ่ม (ปุ่ม ม.1 … ของตัวกรอง) เรียงตามเลข */
+export function fillLevels(
+  rows: readonly Pick<RoundRow, "group_name">[],
+  options: readonly Pick<RoundOption, "set">[],
+): string[] {
+  const names = [...rows.map((r) => r.group_name), ...options.flatMap((o) => o.set.group_names)];
+  const levels = new Set(names.map(levelOf).filter((l): l is string => l !== null));
+  return [...levels].sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)));
+}
+
+// ---- ครู ----
+
+type TeacherRef = Pick<WlTeacher, "id" | "name" | "department_id" | "active">;
+// เรียงชื่อแบบพจนานุกรมไทย (ไม่สนสระหน้า เ แ โ) — ตัวเลือกยาวร้อยกว่าคน คนอ่านหาตามที่คุ้น · เป็นแค่ลำดับบนจอ ไม่ต้องตรงกับเซิร์ฟเวอร์
+const thaiOrder = new Intl.Collator("th").compare;
+
+export type TeacherChoice = { id: number; name: string; own: boolean };
+
+/** ตัวเลือกครูของแถว/ตัวเลือก: เฉพาะครูที่ยังปฏิบัติงาน (สเปก: ครูทุกคนที่ยังปฏิบัติงาน) · กลุ่มตัวเองก่อน แล้วตามชื่อ
+ *  · ชื่อซ้ำเป็นคนละตัวเลือก (อ้างด้วย id เสมอ) · ครูที่ไม่ปฏิบัติงานแล้วแต่อยู่ในแถว หน้าแสดงชื่อในแถวนั้นเอง ไม่อยู่ในตัวเลือกใหม่ */
+export function teacherChoices(teachers: readonly TeacherRef[], deptId: number | null): TeacherChoice[] {
+  return teachers
+    .filter((t) => t.active)
+    .map((t) => ({ id: t.id, name: t.name, own: deptId !== null && t.department_id === deptId }))
+    .sort((a, b) => Number(b.own) - Number(a.own) || thaiOrder(a.name, b.name) || a.id - b.id);
+}
+
+/** ชื่อครูจากทะเบียน (รวมคนที่ไม่ปฏิบัติงานแล้ว — แถวเก่ายังต้องเห็นชื่อ) · รหัสที่ไม่รู้จัก = "ครูรหัส N" ไม่ใช่ช่องว่าง */
+export function teacherNamer(teachers: readonly Pick<WlTeacher, "id" | "name">[]): (id: number) => string {
+  const names = new Map(teachers.map((t) => [t.id, t.name]));
+  return (id) => names.get(id) ?? `ครูรหัส ${id}`;
+}
+
+// ---- ส่งเฉพาะช่องที่เปลี่ยน ----
+// PUT ที่มีช่อง teacher_id = ยืนยันอัตโนมัติแม้เป็นครูคนเดิม (เซิร์ฟเวอร์ถือว่าคนเลือกครูเอง) ถ้าหน้าส่งทั้งแถว แถวที่ครูมาจาก
+// เทอมก่อนจะกลายเป็น "ยืนยันแล้ว" ตอนแก้แค่หมายเหตุ — ข้อห้ามเหนือทุกอย่าง ("ยังไม่ยืนยัน" หายได้เพราะคนกดเท่านั้น)
+
+const ROW_KEYS = ["teacher_id", "co_teacher_id", "lab_room_id", "is_double", "note", "confirmed"] as const;
+const OPTION_TEACHER_KEYS = ["room_id", "note", "confirmed"] as const;
+
+function changed<T, K extends keyof T>(before: T, after: Partial<T>, keys: readonly K[]): Partial<Pick<T, K>> {
+  const out: Partial<Pick<T, K>> = {};
+  for (const k of keys) {
+    if (!(k in after)) continue;
+    let v = after[k] as T[K];
+    // เซิร์ฟเวอร์ตัดช่องว่างหัวท้ายของหมายเหตุ — พิมพ์ช่องว่างเพิ่มอย่างเดียวไม่ใช่การแก้
+    if (k === "note" && typeof v === "string") v = v.trim() as T[K];
+    if (v !== before[k]) out[k] = v;
+  }
+  return out;
+}
+
+/** ช่องของแถวที่หัวหน้าแก้ได้และค่าเปลี่ยนจริง (WL_ROW_FIELDS) — ไม่มีคีย์ของช่องที่ค่าเท่าเดิม และไม่มีช่องวิชา/ห้อง/คาบ */
+export function rowPatch(
+  before: Pick<RoundRow, (typeof ROW_KEYS)[number]>,
+  after: Partial<RoundRow>,
+): Partial<Pick<RoundRow, (typeof ROW_KEYS)[number]>> {
+  return changed(before, after, ROW_KEYS);
+}
+
+/** ห้อง/หมายเหตุ/ยืนยัน ของครูในตัวเลือกที่เปลี่ยนจริง — ไม่ส่ง teacher_id (เปลี่ยนครู = เอาออกแล้วเพิ่มใหม่) */
+export function optionTeacherPatch(
+  before: Pick<OptionTeacher, (typeof OPTION_TEACHER_KEYS)[number]>,
+  after: Partial<OptionTeacher>,
+): Partial<Pick<OptionTeacher, (typeof OPTION_TEACHER_KEYS)[number]>> {
+  return changed(before, after, OPTION_TEACHER_KEYS);
+}
+
+/** "ยืนยันแถวที่เลือก": เฉพาะแถวที่เลือกซึ่งมีครูและยังไม่ยืนยัน — แถวที่ไม่มีครูยืนยันไปก็ยังส่งไม่ได้ (นับแยกไว้บอกให้ใส่ครูก่อน) */
+export function bulkConfirmIds(
+  rows: readonly Pick<RoundRow, "id" | "teacher_id" | "confirmed">[],
+  selected: ReadonlySet<number>,
+): { ids: number[]; noTeacher: number } {
+  const picked = rows.filter((r) => selected.has(r.id));
+  return {
+    ids: picked.filter((r) => rowState(r) === "unconfirmed").map((r) => r.id),
+    noTeacher: picked.filter((r) => r.teacher_id === null).length,
+  };
+}
+
+// ---- คาบรายครู (ด้านข้าง) ----
+
+export type LoadBar = {
+  teacherId: number;
+  name: string;
+  /** ตัวเลขของแถบ: own (หัวหน้า — ส่วนจากกลุ่มตัวเอง) หรือ total (admin) */
+  value: number;
+  total: number;
+  /** ความยาวแถบ 0–100 เทียบกับค่ามากสุดในรายการ */
+  pct: number;
+  /** ยอดรวมทั้งรอบถึงค่ามากสุดของกลุ่ม — คนที่คาบหนักสุด หรือครูข้ามกลุ่มที่ยอดรวมเกินคนในกลุ่ม */
+  warn: boolean;
+  /** ยอดรวมทุกกลุ่มเมื่อมากกว่าตัวเลขของแถบ · ไม่มากกว่า = null */
+  more: number | null;
+};
+
+/** แถบคาบรายครูจาก GET .../loads (เซิร์ฟเวอร์นับ หน้าไม่นับเอง) · เรียงมากไปน้อย แล้วตามชื่อ · keep = กรองครูที่แสดง (admin) */
+export function loadBars(
+  loads: readonly TeacherLoad[],
+  by: "own" | "total",
+  keep?: (load: TeacherLoad) => boolean,
+): LoadBar[] {
+  const list = keep ? loads.filter(keep) : [...loads];
+  const max = list.reduce((m, l) => Math.max(m, l[by]), 0);
+  return list
+    .map((l) => ({
+      teacherId: l.teacher_id,
+      name: l.name,
+      value: l[by],
+      total: l.total,
+      pct: max > 0 ? Math.round((l[by] * 100) / max) : 0,
+      warn: max > 0 && l.total >= max,
+      more: l.total > l[by] ? l.total : null,
+    }))
+    .sort((a, b) => b.value - a.value || thaiOrder(a.name, b.name) || a.teacherId - b.teacherId);
+}
+
+/** รอบที่หน้ากรอกของหัวหน้าแสดง: รอบที่เปิดให้กรอก · ไม่มี → รอบที่ปิดล่าสุด (อ่านอย่างเดียว) · ไม่มีเลย → null
+ *  (รอบที่กำลังเตรียมหัวหน้าไม่เห็น — เซิร์ฟเวอร์ไม่ส่งมาอยู่แล้ว) */
+export function headRound<R extends Pick<Round, "status" | "year" | "semester">>(rounds: readonly R[]): R | null {
+  const open = rounds.find((r) => r.status === "filling");
+  if (open) return open;
+  const closed = rounds.filter((r) => r.status === "closed").sort((a, b) => b.year - a.year || b.semester - a.semester);
+  return closed[0] ?? null;
 }

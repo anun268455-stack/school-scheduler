@@ -9,11 +9,13 @@
  */
 import { readFileSync } from "node:fs";
 import {
-  checkCloseLabel, checkReturnNote, checkRoundForm, closedRounds, currentRound, defaultOpenTerm, DEPT_STATUS_TEXT, deptProgress,
-  deptStatusLabel, deptStatusTone, isDeptStatus, isOptionTeacher, isRound, isRoundDetail, isRoundOption, isRoundPreview,
-  isRoundRow, isTeacherLoad, openBlocker, previewLines, previewWarnings, reviewActions, roundActions, roundChip,
-  roundLabel, roundStats, ROUND_STATUS_TEXT, roundStatusTone, termReadiness,
-  type DeptStatus, type Round, type RoundPreview,
+  bulkConfirmIds, checkCloseLabel, checkReturnNote, checkRoundForm, closedRounds, currentRound, defaultOpenTerm,
+  DEPT_STATUS_TEXT, deptProgress, deptStatusLabel, deptStatusTone, editState, fillLevels, fillProgress, filterOptions,
+  filterRows, groupBySubject, headRound, isDeptStatus, isOptionTeacher, isRound, isRoundDetail, isRoundOption,
+  isRoundPreview, isRoundRow, isTeacherLoad, loadBars, openBlocker, optionState, optionTeacherPatch, previewLines,
+  previewWarnings, reviewActions, roundActions, roundChip, roundLabel, roundStats, ROUND_STATUS_TEXT, roundStatusTone,
+  rowPatch, rowState, subjectLine, submitState, teacherChoices, teacherNamer, termReadiness,
+  type DeptStatus, type OptionTeacher, type Round, type RoundOption, type RoundPreview, type RoundRow, type TeacherLoad,
 } from "../../workload/src/round.ts";
 
 const fails: string[] = [];
@@ -330,6 +332,331 @@ test("isRoundRow / isRoundOption / isOptionTeacher / isTeacherLoad (รูปใ
   const load = { teacher_id: 4, name: "ครู ก", department_id: 1, total: 18, own: 12 };
   ok(isTeacherLoad(load) && isTeacherLoad({ ...load, department_id: null }), "ยอดคาบถูกรูป");
   ok(!isTeacherLoad({ ...load, total: -1 }) && !isTeacherLoad({ ...load, own: "12" }), "ยอดคาบผิดรูป");
+});
+
+// ══ หน้ากรอกของหัวหน้ากลุ่มสาระ (งานที่ 8) ══════════════════════════════════
+// จุดที่ต้องไม่พลาด: นับแบบเดียวกับ wl_fill_counts (แถวครบ = มีครูและยืนยัน · ตัวเลือกครบ = มีครูและครูทุกคนยืนยัน)
+// · ข้อความส่งไม่ได้/แก้ไม่ได้เป็นคำเดียวกับเซิร์ฟเวอร์ · **การแก้ช่องอื่นของแถวจากเทอมก่อนต้องไม่ส่ง teacher_id/confirmed**
+// (PUT ที่มี teacher_id = ยืนยันอัตโนมัติแม้ค่าเดิม — แถวจะกลายเป็นยืนยันโดยไม่มีคนกด) · ครูที่ไม่ปฏิบัติงานแล้วไม่อยู่ในตัวเลือก
+
+// แถวรูปจริงของ GET .../rows (ครูจากเทอมก่อน ยังไม่ยืนยัน)
+const W = (p: Partial<RoundRow> = {}): RoundRow => ({
+  id: 1, round_id: 1, line_id: 10, curriculum_id: 2, curriculum_name: "ม.1 ห้องปกติ", group_id: 1, group_name: "ม.1/1",
+  subject_id: 7, code: "ท21102", name: "ภาษาไทยพื้นฐาน 2", credits: 1.5, weekly: 3, kind: "basic", department_id: 1,
+  teacher_id: 4, co_teacher_id: null, lab_room_id: null, is_double: false, note: "", confirmed: false, from_plan: true,
+  flag: null, ...p,
+});
+const OT = (p: Partial<OptionTeacher> = {}): OptionTeacher => ({
+  id: 1, round_id: 1, option_id: 8, set_id: 2, teacher_id: 4, room_id: null, note: "", confirmed: false, from_plan: true, ...p,
+});
+const O = (p: Partial<RoundOption> = {}): RoundOption => ({
+  id: 8, set_id: 2, subject_id: 11, code: "ส30201", name: "ประวัติศาสตร์ไทย", department_id: 1,
+  set: { id: 2, year: 2569, semester: 2, kind: "elective", name: "เสรี ม.4", group_ids: [40, 41], group_names: ["ม.4/1", "ม.4/2"],
+    weekly: 2, is_double: false },
+  teachers: [OT()], ...p,
+});
+const names: Record<number, string> = { 4: "นางกุลจิรา ยะศะนพ", 5: "นายรัฐชานนท์ กรุ่นทิพย์", 6: "นางสาวณิชาภา ภู่ด้วง" };
+const nameOf = (id: number): string => names[id] ?? `ครูรหัส ${id}`;
+
+test("rowState: ดูว่ามีครูก่อน แล้วค่อยดูธงยืนยัน (แถวที่ยืนยันแต่ไม่มีครู = ยังไม่มีครู) · มีแต่ครูสอนร่วม = ยังไม่มีครู", () => {
+  eq(rowState(W()), "unconfirmed");
+  eq(rowState(W({ confirmed: true })), "done");
+  eq(rowState(W({ teacher_id: null })), "missing");
+  eq(rowState(W({ teacher_id: null, confirmed: true })), "missing");
+  // _wl_row_state ของเซิร์ฟเวอร์ดูแค่ teacher_id — ครูสอนร่วมอย่างเดียวไม่นับว่ามีครู
+  eq(rowState(W({ teacher_id: null, co_teacher_id: 5, confirmed: true })), "missing");
+});
+
+test("optionState: ไม่มีครูสักคน = ยังไม่มีครู · มีคนที่ยังไม่ยืนยัน = ยังไม่ยืนยัน · ครูทุกคนยืนยัน = ครบ", () => {
+  eq(optionState(O({ teachers: [] })), "missing");
+  eq(optionState(O({ teachers: [OT({ teacher_id: null, confirmed: true })] })), "missing");
+  eq(optionState(O()), "unconfirmed");
+  eq(optionState(O({ teachers: [OT({ confirmed: true }), OT({ id: 2, teacher_id: 5, confirmed: false })] })), "unconfirmed");
+  eq(optionState(O({ teachers: [OT({ confirmed: true }), OT({ id: 2, teacher_id: 5, confirmed: true })] })), "done");
+  // ครูที่ไม่มีรหัส (null) ไม่นับ — ตัวเลือกที่เหลือคนจริงยืนยันครบคือครบ
+  eq(optionState(O({ teachers: [OT({ confirmed: true }), OT({ id: 2, teacher_id: null, confirmed: false })] })), "done");
+});
+
+test("fillProgress นับแบบ wl_fill_counts: รายการ = แถว + ตัวเลือก · ไม่แก้ลิสต์เดิม", () => {
+  const rows = [
+    W({ id: 1, confirmed: true }), W({ id: 2 }), W({ id: 3, teacher_id: null }),
+    W({ id: 4, teacher_id: null, confirmed: true }), W({ id: 5, teacher_id: null, co_teacher_id: 5 }),
+  ];
+  const options = [O({ id: 8, teachers: [] }), O({ id: 9, teachers: [OT({ confirmed: true })] }), O({ id: 10 })];
+  const before = JSON.stringify([rows, options]);
+  eq(fillProgress(rows, options), { total: 8, confirmed: 2, missingTeacher: 4 });
+  eq(JSON.stringify([rows, options]), before);
+  eq(fillProgress([], []), { total: 0, confirmed: 0, missingTeacher: 0 });
+});
+
+test("submitState: ข้อความตรงกับ wl_submit_blocker (มีตัวเลข · เฉพาะส่วนที่ไม่เป็นศูนย์) · ครบ = ส่งได้", () => {
+  const both = submitState({ total: 108, confirmed: 84, missingTeacher: 4 }, "filling", "filling");
+  eq(both, {
+    can: false,
+    reason: "ยังส่งไม่ได้ — ยังไม่มีครู 4 รายการ · ยังไม่ยืนยัน 20 รายการ (นับทั้งแถววิชาและตัวเลือกคาบเสรี/กิจกรรมของกลุ่ม) ใส่ครูและยืนยันให้ครบก่อน",
+  });
+  const unconf = submitState({ total: 108, confirmed: 84, missingTeacher: 0 }, "returned", "filling");
+  ok(!unconf.can && unconf.reason!.includes("ยังไม่ยืนยัน 24 รายการ") && !unconf.reason!.includes("ยังไม่มีครู"), String(unconf.reason));
+  const miss = submitState({ total: 108, confirmed: 105, missingTeacher: 3 }, "filling", "filling");
+  ok(!miss.can && miss.reason!.includes("ยังไม่มีครู 3 รายการ") && !miss.reason!.includes("ยังไม่ยืนยัน"), String(miss.reason));
+  eq(submitState({ total: 108, confirmed: 108, missingTeacher: 0 }, "filling", "filling"), { can: true, reason: null });
+  eq(submitState({ total: 108, confirmed: 108, missingTeacher: 0 }, "returned", "filling"), { can: true, reason: null });
+  // กลุ่มที่ไม่มีรายการเลย: เซิร์ฟเวอร์ไม่ขวาง (ไม่มีอะไรค้าง)
+  eq(submitState({ total: 0, confirmed: 0, missingTeacher: 0 }, "filling", "filling"), { can: true, reason: null });
+});
+
+test("submitState: สถานะกลุ่ม/รอบที่ส่งไม่ได้ (ส่งแล้ว · ตรวจผ่าน · รอบปิด · รอบยังเตรียม) — รอบตัดสินก่อน", () => {
+  const full = { total: 108, confirmed: 108, missingTeacher: 0 };
+  eq(submitState(full, "submitted", "filling"), { can: false, reason: "ส่งแล้ว รอผู้ดูแลระบบตรวจ" });
+  eq(submitState(full, "approved", "filling"), { can: false, reason: "ตรวจผ่านแล้ว" });
+  const closed = submitState(full, "filling", "closed");
+  ok(!closed.can && closed.reason!.includes("ปิดแล้ว"), String(closed.reason));
+  eq(submitState(full, "submitted", "closed").reason, closed.reason);
+  const prep = submitState(full, "filling", "preparing");
+  eq(prep, { can: false, reason: "รอบอัตรากำลังนี้ยังไม่เปิดให้กลุ่มสาระกรอก" });
+  // ยังไม่ครบ + ส่งแล้ว → บอกว่าส่งแล้ว (ไม่ใช่ตัวเลขที่ค้าง)
+  eq(submitState({ total: 5, confirmed: 1, missingTeacher: 1 }, "submitted", "filling").reason, "ส่งแล้ว รอผู้ดูแลระบบตรวจ");
+});
+
+test("submitState/editState: ข้อความเป็นชิ้นเดียวกับของเซิร์ฟเวอร์ (wl_submit_blocker · wl_can_edit ใน mock_api.py)", () => {
+  const src = readFileSync(new URL("../../mock_api.py", import.meta.url), "utf8");
+  const body = (fn: string): string => {
+    const at = src.indexOf(`def ${fn}(`);
+    ok(at >= 0, `หา ${fn} ใน mock_api.py ไม่เจอ`);
+    return src.slice(at, src.indexOf("\ndef ", at + 5));
+  };
+  const blocker = body("wl_submit_blocker");
+  for (const piece of ["ยังส่งไม่ได้ — ", "ยังไม่มีครู {missing} รายการ", "ยังไม่ยืนยัน {unconfirmed} รายการ", "' · '",
+    "(นับทั้งแถววิชาและตัวเลือกคาบเสรี/กิจกรรมของกลุ่ม) ", "ใส่ครูและยืนยันให้ครบก่อน"]) {
+    ok(blocker.includes(piece), `wl_submit_blocker ไม่มี ${JSON.stringify(piece)} แล้ว — แก้ submitState ให้ตรง`);
+  }
+  const canEdit = body("wl_can_edit");
+  for (const text of [editState("head", "closed", "filling").reason!, editState("head", "preparing", "filling").reason!,
+    "จึงแก้ไม่ได้ — ถ้าต้องแก้ ให้ผู้ดูแลระบบตีกลับก่อน", editState("head", "filling", null).reason!]) {
+    ok(canEdit.includes(text), `wl_can_edit ไม่มีข้อความ ${JSON.stringify(text)}`);
+  }
+});
+
+test("editState ตาม wl_can_edit: หัวหน้าแก้ได้เมื่อรอบเปิดให้กรอกและกลุ่มกำลังกรอก/ถูกตีกลับ · admin แก้ได้ทุกสถานะกลุ่ม · รอบปิดห้ามทุกคน", () => {
+  eq(editState("head", "filling", "filling"), { can: true, reason: null });
+  eq(editState("head", "filling", "returned"), { can: true, reason: null });
+  eq(editState("head", "filling", "submitted"), {
+    can: false, reason: "กลุ่มสาระนี้ส่งแล้ว รอผู้ดูแลระบบตรวจ จึงแก้ไม่ได้ — ถ้าต้องแก้ ให้ผู้ดูแลระบบตีกลับก่อน",
+  });
+  eq(editState("head", "filling", "approved").reason, "กลุ่มสาระนี้ตรวจผ่านแล้ว จึงแก้ไม่ได้ — ถ้าต้องแก้ ให้ผู้ดูแลระบบตีกลับก่อน");
+  eq(editState("head", "preparing", "filling"), { can: false, reason: "รอบอัตรากำลังนี้ยังไม่เปิดให้กลุ่มสาระกรอก" });
+  const closed = { can: false, reason: "รอบอัตรากำลังนี้ปิดแล้ว จึงแก้ไม่ได้อีก (เก็บไว้เป็นหลักฐานย้อนหลัง)" };
+  eq(editState("head", "closed", "filling"), closed);
+  eq(editState("admin", "closed", "filling"), closed);
+  for (const s of ["filling", "submitted", "returned", "approved", null] as const) {
+    eq(editState("admin", "filling", s), { can: true, reason: null });
+    eq(editState("admin", "preparing", s), { can: true, reason: null });
+  }
+  ok(!editState("head", "filling", null).can, "หัวหน้าที่ไม่มีสถานะกลุ่มต้องแก้ไม่ได้");
+});
+
+test("groupBySubject: การ์ดละวิชา (รหัส ชื่อ คาบ ประเภท หน่วยกิต เดียวกัน) รวมทุกหลักสูตร · เรียงตามระดับของห้องแรกแล้วรหัสวิชา · แถวเรียงแบบห้อง · ไม่แก้ลิสต์เดิม", () => {
+  const rows = [
+    W({ id: 1, line_id: 30, code: "ท31102", name: "ภาษาไทย 4", group_name: "ม.4/2", curriculum_name: "ม.4 วิทย์", curriculum_id: 5 }),
+    W({ id: 2, line_id: 10, group_name: "ม.1/10" }),
+    W({ id: 3, line_id: 10, group_name: "ม.1/2" }),
+    W({ id: 4, line_id: 20, code: "ท21101", name: "ภาษาไทยพื้นฐาน 1", group_name: "ม.1/1", weekly: 2, credits: 1, kind: "additional" }),
+    W({ id: 5, line_id: 30, code: "ท31102", name: "ภาษาไทย 4", group_name: "ม.4/1", curriculum_name: "ม.4 วิทย์", curriculum_id: 5 }),
+    W({ id: 6, line_id: 10, group_name: "ม.1/1" }),
+    W({ id: 7, line_id: 40, code: "ก00001", name: "แนะแนว", group_name: "ห้องสมุด", kind: "activity", credits: null }),
+    // วิชาเดียวกันจากอีกหลักสูตร = การ์ดเดียวกัน (ข้อมูลจริง: หลักสูตรส่วนใหญ่มีห้องเดียว) · การ์ดบอกทุกหลักสูตรที่แถวมาจาก
+    W({ id: 8, line_id: 11, group_name: "ม.1/11", curriculum_name: "ม.1 พิเศษ", curriculum_id: 3 }),
+    // รหัสเดียวกันแต่คาบ/สัปดาห์ต่างกัน = คนละการ์ด (หัวการ์ดบอกคาบเดียว)
+    W({ id: 9, line_id: 12, group_name: "ม.1/12", curriculum_name: "ม.1 เข้ม", curriculum_id: 4, weekly: 4 }),
+  ];
+  const before = JSON.stringify(rows);
+  const g = groupBySubject(rows);
+  eq(JSON.stringify(rows), before);
+  eq(g.map((x) => x.rows.map((r) => r.id)), [[4], [6, 3, 2, 8], [9], [5, 1], [7]]);
+  eq(g[1].rows.map((r) => r.group_name), ["ม.1/1", "ม.1/2", "ม.1/10", "ม.1/11"]);
+  eq({ ...g[0], rows: g[0].rows.length }, {
+    key: "ท21101|ภาษาไทยพื้นฐาน 1|2|additional|1", code: "ท21101", name: "ภาษาไทยพื้นฐาน 1", weekly: 2, kind: "additional",
+    credits: 1, curricula: [{ id: 2, name: "ม.1 ห้องปกติ" }], curriculumName: "ม.1 ห้องปกติ", rows: 1,
+  });
+  eq(g[1].curricula, [{ id: 2, name: "ม.1 ห้องปกติ" }, { id: 3, name: "ม.1 พิเศษ" }]);
+  eq(g[1].curriculumName, "ม.1 ห้องปกติ · ม.1 พิเศษ");
+  eq([g[2].weekly, g[2].curricula.map((c) => c.id)], [4, [4]]);
+  eq(new Set(g.map((x) => x.key)).size, g.length);
+  eq(groupBySubject([]), []);
+});
+
+test("groupBySubject: ส33102 สองครูสลับห้อง ม.6/1–6/14 จาก 11 หลักสูตร → การ์ดเดียว 14 ห้อง เรียงแบบตัวเลข", () => {
+  const rooms = Array.from({ length: 14 }, (_, i) => `ม.6/${14 - i}`);
+  const rows = rooms.map((room, i) => W({
+    id: 100 + i, line_id: 500 + (i % 11), curriculum_id: 60 + (i % 11), curriculum_name: `หลักสูตร ${i % 11}`,
+    code: "ส33102", name: "ประวัติศาสตร์ 6", group_name: room, weekly: 1, credits: 0.5, teacher_id: i % 2 ? 5 : 6,
+  }));
+  const g = groupBySubject(rows);
+  eq(g.length, 1);
+  eq(g[0].rows.map((r) => r.group_name), Array.from({ length: 14 }, (_, i) => `ม.6/${i + 1}`));
+  eq(g[0].curricula.length, 11);
+});
+
+test("subjectLine: ประเภท · หน่วยกิต · คาบ/สัปดาห์ · จำนวนห้อง (ไม่มีหน่วยกิต = ไม่มีส่วนนั้น)", () => {
+  const g = groupBySubject([W({ id: 1 }), W({ id: 2, group_name: "ม.1/2" })])[0];
+  eq(subjectLine(g), "พื้นฐาน · 1.5 หน่วยกิต · 3 คาบ/สัปดาห์ · 2 ห้อง");
+  const a = groupBySubject([W({ kind: "activity", credits: null, weekly: 1 })])[0];
+  eq(subjectLine(a), "กิจกรรมพัฒนาผู้เรียน · 1 คาบ/สัปดาห์ · 1 ห้อง");
+});
+
+test("filterRows: สามสถานะ · ระดับชั้น · ค้นรหัส/ชื่อวิชา/ห้อง/ชื่อครู (ครูสอนร่วมด้วย) · ไม่สนช่องว่างหัวท้ายและตัวพิมพ์", () => {
+  const rows = [
+    W({ id: 1, confirmed: true }),
+    W({ id: 2, group_name: "ม.1/2" }),
+    W({ id: 3, group_name: "ม.2/1", teacher_id: null, code: "ท22102", name: "ภาษาไทย 4" }),
+    W({ id: 4, group_name: "ม.4/1", teacher_id: 6, co_teacher_id: 5, confirmed: true, code: "ENG31101", name: "English 1" }),
+    W({ id: 5, group_name: "ม.4/2", teacher_id: null, confirmed: true }),
+  ];
+  const ids = (f: Parameters<typeof filterRows>[1]) => filterRows(rows, f, nameOf).map((r) => r.id);
+  const all = { state: "all" as const, level: null, query: "" };
+  eq(ids(all), [1, 2, 3, 4, 5]);
+  // ยังไม่ยืนยัน = ทุกแถวที่ยังไม่ครบ (มีครูแต่ยังไม่ยืนยัน + ยังไม่มีครู · แถวยืนยันที่ไม่มีครูก็ยังไม่ครบ)
+  eq(ids({ ...all, state: "todo" }), [2, 3, 5]);
+  eq(ids({ ...all, state: "done" }), [1, 4]);
+  eq(ids({ ...all, level: "ม.1" }), [1, 2]);
+  eq(ids({ ...all, level: "ม.4", state: "done" }), [4]);
+  eq(ids({ ...all, level: "ม.6" }), []);
+  eq(ids({ ...all, query: "  ท22102 " }), [3]);
+  eq(ids({ ...all, query: "english" }), [4]);
+  eq(ids({ ...all, query: "ม.1/2" }), [2]);
+  eq(ids({ ...all, query: "กุลจิรา" }), [1, 2]);
+  eq(ids({ ...all, query: "รัฐชานนท์" }), [4]);
+  eq(ids({ ...all, query: "   " }), [1, 2, 3, 4, 5]);
+  eq(ids({ state: "todo", level: "ม.1", query: "กุลจิรา" }), [2]);
+  const before = JSON.stringify(rows);
+  filterRows(rows, { state: "todo", level: "ม.1", query: "x" }, nameOf);
+  eq(JSON.stringify(rows), before);
+});
+
+test("filterOptions: สถานะของตัวเลือก · ระดับจากห้องของชุด · ค้นรหัส/ชื่อวิชา/ชื่อชุด/ครู", () => {
+  const opts = [
+    O({ id: 1 }),
+    O({ id: 2, code: "ง30201", name: "งานช่าง", teachers: [OT({ teacher_id: 5, confirmed: true })] }),
+    O({ id: 3, teachers: [], set: { ...O().set, name: "กิจกรรมชุมนุม ม.1", group_names: ["ม.1/1"], group_ids: [1] } }),
+  ];
+  const ids = (f: Parameters<typeof filterOptions>[1]) => filterOptions(opts, f, nameOf).map((o) => o.id);
+  const all = { state: "all" as const, level: null, query: "" };
+  eq(ids(all), [1, 2, 3]);
+  eq(ids({ ...all, state: "todo" }), [1, 3]);
+  eq(ids({ ...all, state: "done" }), [2]);
+  eq(ids({ ...all, level: "ม.1" }), [3]);
+  eq(ids({ ...all, level: "ม.4" }), [1, 2]);
+  eq(ids({ ...all, query: " ชุมนุม" }), [3]);
+  eq(ids({ ...all, query: "รัฐชานนท์" }), [2]);
+  eq(ids({ ...all, query: "ง30201" }), [2]);
+});
+
+test("fillLevels: ระดับที่มีในแถวและตัวเลือก เรียงตามเลข ไม่ซ้ำ", () => {
+  eq(fillLevels([W({ group_name: "ม.4/1" }), W({ group_name: "ม.1/2" }), W({ group_name: "ม.10/1" }), W({ group_name: "ห้องสมุด" })],
+    [O({ set: { ...O().set, group_names: ["ม.6/1", "ม.1/1"] } })]), ["ม.1", "ม.4", "ม.6", "ม.10"]);
+  eq(fillLevels([], []), []);
+});
+
+test("teacherChoices: เฉพาะครูที่ยังปฏิบัติงาน · กลุ่มตัวเองก่อน แล้วตามชื่อ (เรียงแบบพจนานุกรมไทย) · ชื่อซ้ำเป็นสองตัวเลือกด้วย id", () => {
+  const teachers = [
+    { id: 1, name: "นายรัฐชานนท์ กรุ่นทิพย์", department_id: 2, active: true },
+    { id: 2, name: "นางสมใจ ดีมาก", department_id: 1, active: true },
+    { id: 3, name: "นางกุลจิรา ยะศะนพ", department_id: 1, active: false },
+    { id: 4, name: "นางเพ็ญพรรณ เนติประเสริฐ", department_id: 1, active: true },
+    { id: 9, name: "นางสมใจ ดีมาก", department_id: 1, active: true },
+    { id: 5, name: "นางลินดา จั่นเพ็ชร์", department_id: null, active: true },
+  ];
+  const before = JSON.stringify(teachers);
+  const c = teacherChoices(teachers, 1);
+  eq(JSON.stringify(teachers), before);
+  eq(c.map((x) => x.id), [4, 2, 9, 5, 1]);
+  eq(c.find((x) => x.id === 3), undefined);
+  eq(c.map((x) => x.own), [true, true, true, false, false]);
+  eq(c[0], { id: 4, name: "นางเพ็ญพรรณ เนติประเสริฐ", own: true });
+  eq(c.filter((x) => x.name === "นางสมใจ ดีมาก").map((x) => x.id), [2, 9]);
+});
+
+test("teacherNamer: ชื่อจากทะเบียน (รวมครูที่ไม่ปฏิบัติงานแล้ว) · ไม่รู้จัก = ครูรหัส N", () => {
+  const n = teacherNamer([{ id: 3, name: "นางกุลจิรา ยะศะนพ", active: false }, { id: 4, name: "นายก", active: true }]);
+  eq(n(3), "นางกุลจิรา ยะศะนพ");
+  eq(n(4), "นายก");
+  eq(n(77), "ครูรหัส 77");
+});
+
+test("rowPatch: ส่งเฉพาะช่องที่เปลี่ยน — แก้หมายเหตุของแถวจากเทอมก่อนต้องไม่มี teacher_id และ confirmed", () => {
+  const prev = W({ teacher_id: 4, confirmed: false, from_plan: true });
+  const p = rowPatch(prev, { ...prev, note: "ห้องคอมพิวเตอร์ 2" });
+  eq(p, { note: "ห้องคอมพิวเตอร์ 2" });
+  ok(!("teacher_id" in p) && !("confirmed" in p), JSON.stringify(p));
+  eq(rowPatch(prev, { ...prev }), {});
+  eq(rowPatch(prev, { teacher_id: 4 }), {});
+  eq(rowPatch(prev, { teacher_id: 5 }), { teacher_id: 5 });
+  eq(rowPatch(prev, { teacher_id: null }), { teacher_id: null });
+  eq(rowPatch(prev, { co_teacher_id: 6, lab_room_id: 30, is_double: true }), { co_teacher_id: 6, lab_room_id: 30, is_double: true });
+  eq(rowPatch(prev, { is_double: false, lab_room_id: null }), {});
+  // หมายเหตุตัดช่องว่างหัวท้ายแบบเซิร์ฟเวอร์ — พิมพ์ช่องว่างเพิ่มอย่างเดียวไม่ใช่การแก้
+  eq(rowPatch(W({ note: "ห้องคอม" }), { note: "  ห้องคอม " }), {});
+  eq(rowPatch(W({ note: "ห้องคอม" }), { note: " ห้องคอม 2 " }), { note: "ห้องคอม 2" });
+  eq(rowPatch(prev, { confirmed: true }), { confirmed: true });
+  // ช่องวิชา/ห้อง/คาบ ไม่ใช่ของหัวหน้า — ไม่หลุดเข้า patch แม้ส่งมา
+  eq(rowPatch(prev, { ...prev, weekly: 9, code: "X", group_id: 99 } as Partial<RoundRow>), {});
+});
+
+test("optionTeacherPatch: ส่งเฉพาะห้อง/หมายเหตุ/ยืนยันที่เปลี่ยน — ไม่มี teacher_id ถ้าไม่ได้เปลี่ยนครู", () => {
+  const prev = OT({ room_id: null, note: "", confirmed: false });
+  eq(optionTeacherPatch(prev, { ...prev, room_id: 30 }), { room_id: 30 });
+  eq(optionTeacherPatch(prev, { ...prev, note: " ใช้ห้องดนตรี " }), { note: "ใช้ห้องดนตรี" });
+  eq(optionTeacherPatch(prev, { ...prev }), {});
+  eq(optionTeacherPatch(prev, { confirmed: true }), { confirmed: true });
+  // เปลี่ยนครูของตัวเลือก = เอาออกแล้วเพิ่มใหม่ (PUT ที่มี teacher_id ยืนยันอัตโนมัติ) — patch ไม่พาไปด้วยแม้ค่าต่าง
+  eq(optionTeacherPatch(prev, { ...prev, teacher_id: 9, note: "x" }), { note: "x" });
+});
+
+test("bulkConfirmIds: ยืนยันได้เฉพาะแถวที่เลือกซึ่งมีครูและยังไม่ยืนยัน · นับแถวที่ยังไม่มีครู", () => {
+  const rows = [W({ id: 1 }), W({ id: 2, confirmed: true }), W({ id: 3, teacher_id: null }), W({ id: 4 }),
+    W({ id: 5, teacher_id: null, confirmed: true })];
+  eq(bulkConfirmIds(rows, new Set([1, 2, 3, 5, 99])), { ids: [1], noTeacher: 2 });
+  eq(bulkConfirmIds(rows, new Set()), { ids: [], noTeacher: 0 });
+  eq(bulkConfirmIds(rows, new Set([1, 4])), { ids: [1, 4], noTeacher: 0 });
+});
+
+test("loadBars: แถบหลักคือ own (head) · บอกยอดรวมทุกกลุ่มเมื่อมากกว่า · เรียงมากไปน้อย · ยอดถึงค่ามากสุดของกลุ่มเป็นสีเตือน", () => {
+  const L = (p: Partial<TeacherLoad>): TeacherLoad => ({ teacher_id: 1, name: "ก", department_id: 1, total: 0, own: 0, ...p });
+  const loads = [
+    L({ teacher_id: 1, name: "นางสาวณิชาภา ภู่ด้วง", own: 18, total: 18 }),
+    L({ teacher_id: 2, name: "นางเพ็ญพรรณ เนติประเสริฐ", own: 24, total: 24 }),
+    L({ teacher_id: 3, name: "นายรัฐชานนท์ กรุ่นทิพย์", own: 6, total: 26, department_id: 2 }),
+    L({ teacher_id: 4, name: "นางกุลจิรา ยะศะนพ", own: 18, total: 18 }),
+    L({ teacher_id: 5, name: "นายว่าง", own: 0, total: 0 }),
+  ];
+  const before = JSON.stringify(loads);
+  const bars = loadBars(loads, "own");
+  eq(JSON.stringify(loads), before);
+  eq(bars.map((b) => b.teacherId), [2, 4, 1, 3, 5]);
+  eq(bars[0], { teacherId: 2, name: "นางเพ็ญพรรณ เนติประเสริฐ", value: 24, total: 24, pct: 100, warn: true, more: null });
+  eq(bars[1].pct, 75);
+  eq(bars[1].warn, false);
+  // ครูที่สอนข้ามกลุ่ม: แถบของกลุ่มนี้สั้น แต่ยอดรวมทั้งรอบเกินค่ามากสุดของกลุ่ม → เตือน และบอกยอดรวม
+  eq([bars[3].value, bars[3].pct, bars[3].warn, bars[3].more], [6, 25, true, 26]);
+  eq([bars[4].value, bars[4].pct, bars[4].warn], [0, 0, false]);
+  // admin: ยอดรวมทั้งรอบ (own = total) · กรองเฉพาะครูที่เกี่ยวกับกลุ่ม
+  const admin = loadBars(loads.map((l) => ({ ...l, own: l.total })), "total", (l) => l.department_id === 1);
+  eq(admin.map((b) => [b.teacherId, b.value, b.more]), [[2, 24, null], [4, 18, null], [1, 18, null], [5, 0, null]]);
+  eq(loadBars([L({ own: 0, total: 0 })], "own")[0].warn, false);
+  eq(loadBars([], "own"), []);
+});
+
+test("headRound: รอบที่เปิดให้กรอก · ไม่มี → รอบที่ปิดล่าสุด (อ่านอย่างเดียว) · ไม่มีรอบ → null", () => {
+  const c1 = R({ id: 1, year: 2569, semester: 1, label: "1/2569", status: "closed" });
+  const c2 = R({ id: 2, year: 2569, semester: 2, label: "2/2569", status: "closed" });
+  const f3 = R({ id: 3, year: 2570, semester: 1, label: "1/2570", status: "filling" });
+  eq(headRound([c1, f3, c2])?.id, 3);
+  eq(headRound([c1, c2])?.id, 2);
+  eq(headRound([c2, c1])?.id, 2);
+  eq(headRound([]), null);
+  // หัวหน้าไม่เห็นรอบที่กำลังเตรียม (เซิร์ฟเวอร์ไม่ส่ง) — ถ้าหลุดมาก็ไม่ใช้
+  eq(headRound([R({ id: 4, status: "preparing" })]), null);
+  eq(headRound([R({ id: 4, status: "preparing" }), c1])?.id, 1);
 });
 
 if (fails.length) {
