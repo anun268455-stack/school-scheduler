@@ -94,9 +94,15 @@ def test_kind_from_code():
     assert mock_api.wl_kind_from_code("ท21102", False) == "basic"
     assert mock_api.wl_kind_from_code("ท21204", False) == "additional"
     assert mock_api.wl_kind_from_code("ก21901", True) == "activity"
+    # รหัสที่ขึ้นต้นด้วยอักษรสองตัว (วิชาภาษาต่างประเทศ ห้องเรียนพิเศษ) — หลักที่ 3 ของตัวเลข ไม่ใช่ตัวอักษรที่ 4
+    assert mock_api.wl_kind_from_code("EN21204", False) == "additional"
+    assert mock_api.wl_kind_from_code("EN21102", False) == "basic"
+    assert mock_api.wl_kind_from_code("SC21295", False) == "additional"
     # รหัสสั้นหรือว่างเดาไม่ได้ = พื้นฐาน (admin แก้ได้) ไม่ใช่พัง
     assert mock_api.wl_kind_from_code("", False) == "basic"
     assert mock_api.wl_kind_from_code("ก21", False) == "basic"
+    assert mock_api.wl_kind_from_code("FREE", False) == "basic"
+    assert mock_api.wl_kind_from_code(None, False) == "basic"
 
 
 def test_plan_row_kind_and_credits_come_from_the_subject():
@@ -274,6 +280,95 @@ def test_activity_windows_at_different_hours_are_separate_sets():
     assert _load(prop, 5 + T) == 2
 
 
+def test_rooms_sharing_one_option_at_the_same_hour_are_one_window():
+    # กฎ "คาบเดียวกัน" ของโปรแกรมจัดตาราง (_same_activity): ช่องคาบเสรีรายห้องชั่วโมงเดียวกันที่มีตัวเลือก
+    # (วิชา, ครู) ร่วมกันอย่างน้อยหนึ่งตัว คือหน้าต่างเดียว — ครู 7 ยืนสอนชั่วโมงเดียว ไม่ใช่สอง
+    prop = mock_api.wl_round_proposal(_src(slots=[
+        _elective_slot(1, 11, 2, 7, [_opt(5, 7), _opt(6, 8)]),
+        _elective_slot(2, 12, 2, 7, [_opt(5, 7), _opt(7, 9)])]))
+    assert len(prop["sets"]) == 1, prop["sets"]
+    s = prop["sets"][0]
+    assert (s["group_ids"], s["weekly"]) == ([11, 12], 1)
+    assert [(o["subject_id"], o["teacher_id"]) for o in s["options"]] == [
+        (5 + S, 7 + T), (6 + S, 8 + T), (7 + S, 9 + T)]
+    assert _load(prop, 7 + T) == 1 and _load(prop, 9 + T) == 1
+
+
+def test_windows_at_the_same_hour_with_nothing_in_common_stay_apart():
+    # ม.1/1 กับ ม.1/4 มีคาบเสรีพุธคาบ 7 ทั้งคู่ แต่ไม่มีอะไรเปิดร่วมกัน = สองหน้าต่าง
+    prop = mock_api.wl_round_proposal(_src(slots=[
+        _elective_slot(1, 11, 2, 7, [_opt(5, 7)]), _elective_slot(2, 14, 2, 7, [_opt(6, 8)])]))
+    assert sorted(s["group_ids"] for s in prop["sets"]) == [[11], [14]]
+
+
+def test_partly_overlapping_rooms_count_each_hour_once():
+    # ม.1/1 จันทร์+อังคาร · ม.1/2 จันทร์+พุธ ตัวเลือกเดียวกัน = ครูสอน 3 ชั่วโมง ไม่ใช่ 4
+    opts = [_opt(5, 7)]
+    prop = mock_api.wl_round_proposal(_src(slots=[
+        _elective_slot(1, 11, 0, 6, opts), _elective_slot(2, 11, 1, 6, opts),
+        _elective_slot(3, 12, 0, 6, opts), _elective_slot(4, 12, 2, 6, opts)]))
+    assert _load(prop, 7 + T) == 3, prop["sets"]
+    got = sorted((s["group_ids"], s["weekly"]) for s in prop["sets"])
+    assert got == [([11], 1), ([11, 12], 1), ([12], 1)], got
+
+
+def test_per_class_window_in_a_pool_room_with_other_teachers_is_lifted():
+    # ช่องที่มาจากชุดมี elective_pool_id เสมอ — ช่องรายห้องในห้องของชุด คนละชั่วโมง วิชาเดียวกันแต่คนละครู
+    # คือการสอนอีกชุดหนึ่ง ทิ้งไปเงียบ ๆ จะทำให้ครู 20/21 มียอด 0
+    pool = {"id": 4, "name": "วิชาเสรี ม.1/1-2", "group_ids": [11, 12], "weekly": 1, "is_double": False,
+            "day": 2, "period": 6, "options": [_opt(5, 7), _opt(6, 8)]}
+    placed = [_elective_slot(1, 11, 2, 6, pool["options"], elective_pool_id=4),
+              _elective_slot(2, 12, 2, 6, pool["options"], elective_pool_id=4)]
+    extra = _elective_slot(3, 11, 4, 1, [_opt(5, 20), _opt(6, 21)])
+    prop = mock_api.wl_round_proposal(_src(pools=[pool], slots=placed + [extra]))
+    assert len(prop["sets"]) == 2, prop["sets"]
+    assert _load(prop, 20 + T) == 1 and _load(prop, 21 + T) == 1
+    assert _load(prop, 7 + T) == 1          # ช่องของชุดไม่ถูกนับซ้ำ
+
+
+def test_pool_cells_without_pool_id_fall_back_to_room_hour_and_options():
+    # ช่องเก่าที่ไม่มี elective_pool_id: ห้องอยู่ในชุด ชั่วโมงเดียวกับชุด และ (วิชา, ครู) ชุดเดียวกัน = มาจากชุด
+    pool = {"id": 4, "name": "วิชาเสรี ม.1/1-2", "group_ids": [11, 12], "weekly": 2, "is_double": True,
+            "day": 2, "period": 6, "options": [_opt(5, 7), _opt(6, 8)]}
+    cells = [_elective_slot(1, 11, 2, 6, pool["options"], is_double_start=True),
+             _elective_slot(2, 11, 2, 7, pool["options"], is_double_cont=True),
+             _elective_slot(3, 12, 2, 6, pool["options"], is_double_start=True),
+             _elective_slot(4, 12, 2, 7, pool["options"], is_double_cont=True)]
+    prop = mock_api.wl_round_proposal(_src(pools=[pool], slots=cells))
+    assert [s["name"] for s in prop["sets"]] == ["วิชาเสรี ม.1/1-2"], prop["sets"]
+    assert _load(prop, 7 + T) == 2
+
+
+def test_pool_room_at_another_hour_with_the_pool_teachers_is_lifted():
+    # ห้องของชุด วิชาและครูชุดเดียวกับชุด แต่คนละชั่วโมง (ไม่มีรหัสชุด) = ครูสอนเพิ่มอีกชั่วโมง ไม่ใช่สำเนาของชุด
+    pool = {"id": 4, "name": "วิชาเสรี ม.1/1-2", "group_ids": [11, 12], "weekly": 1, "is_double": False,
+            "day": 2, "period": 6, "options": [_opt(5, 7), _opt(6, 8)]}
+    cells = [_elective_slot(1, 11, 2, 6, pool["options"], elective_pool_id=4),
+             _elective_slot(2, 12, 2, 6, pool["options"], elective_pool_id=4),
+             _elective_slot(3, 11, 4, 6, pool["options"]),      # คาบเดียวกับชุด แต่คนละวัน
+             _elective_slot(4, 12, 2, 8, pool["options"])]      # วันเดียวกับชุด แต่คนละคาบ
+    prop = mock_api.wl_round_proposal(_src(pools=[pool], slots=cells))
+    assert [s["group_ids"] for s in prop["sets"]] == [[11, 12], [11], [12]], prop["sets"]
+    assert _load(prop, 7 + T) == 3
+
+
+def test_cell_at_the_pool_hour_with_other_teachers_is_not_the_pool():
+    # ห้องของชุด ชั่วโมงของชุด ไม่มีรหัสชุด วิชาเดียวกันแต่คนละครู — ตารางถือว่าคนละคาบ (_same_activity)
+    pool = {"id": 4, "name": "วิชาเสรี ม.1/1-2", "group_ids": [11, 12], "weekly": 1, "is_double": False,
+            "day": 2, "period": 6, "options": [_opt(5, 7), _opt(6, 8)]}
+    cells = [_elective_slot(1, 12, 2, 6, pool["options"], elective_pool_id=4),
+             _elective_slot(2, 11, 2, 6, [_opt(5, 20), _opt(6, 21)])]
+    prop = mock_api.wl_round_proposal(_src(pools=[pool], slots=cells))
+    assert len(prop["sets"]) == 2, prop["sets"]
+    assert _load(prop, 20 + T) == 1 and _load(prop, 21 + T) == 1
+
+
+def test_cells_naming_a_pool_that_no_longer_exists_are_lifted():
+    opts = [_opt(5, 7)]
+    prop = mock_api.wl_round_proposal(_src(slots=[_elective_slot(1, 11, 2, 6, opts, elective_pool_id=99)]))
+    assert [(s["kind"], s["group_ids"]) for s in prop["sets"]] == [("elective", [11])]
+
+
 def test_elective_slots_already_in_a_pool_are_not_duplicated():
     pool = {"id": 4, "name": "วิชาเสรี ม.1/1-2", "group_ids": [11, 12], "weekly": 1,
             "is_double": False, "options": [_opt(5, 7), _opt(6, 8)]}
@@ -349,6 +444,40 @@ def test_activity_subject_slot_with_a_plan_row_is_not_lifted_again():
     assert prop["unconverted"] == []
 
 
+def test_plan_rows_covered_by_a_level_activity_block_are_not_counted_twice():
+    # โรงเรียนเก็บแถวแนะแนวไว้ในแผน แล้วลงแนะแนวเป็นกิจกรรมทั้งระดับแบบครูประจำชั้น — ตารางนับว่า
+    # ช่องกิจกรรมนั้นคือการลงแถวแผน (ตัวจัดตารางไม่วางซ้ำ) รอบจึงต้องมีการสอนนี้ครั้งเดียว
+    reqs = [_req(i, gid, 3, 20 + i, 1) for i, gid in enumerate((11, 12, 13), start=1)]
+    block = [_slot(i, gid, 0, 7, subject_id=3, teacher_id=20 + i, activity_teacher_ids=[],
+                   is_activity_block=True, activity_key="ACT-0-7-1")
+             for i, gid in enumerate((11, 12, 13), start=1)]
+    prop = mock_api.wl_round_proposal(_src(requirements=reqs, slots=block))
+    assert prop["rows"] == [], prop["rows"]
+    assert prop["counts"]["served_skipped"] == 3
+    assert prop["counts"]["sets_activity"] == 3
+    for t in (21, 22, 23):
+        assert _load(prop, t + T) == 1, (t, _load(prop, t + T))
+    assert prop["unconverted"] == []
+
+
+def test_ordinary_hour_left_over_from_a_block_covered_plan_row_is_kept():
+    # แถวแผน 2 คาบ: คาบหนึ่งเป็นกิจกรรมทั้งระดับ อีกคาบตัวจัดตารางวางเป็นคาบธรรมดา (นับว่าขาดอีก 1)
+    # แถวแผนถูกข้ามเพราะกิจกรรมครอบแล้ว คาบธรรมดาที่เหลือต้องไม่หายไปด้วย
+    prop = mock_api.wl_round_proposal(_src(
+        requirements=[_req(1, 11, 3, 6, 2)],
+        slots=[_slot(1, 11, 0, 7, subject_id=3, teacher_id=6, is_activity_block=True, activity_key="ACT-1"),
+               _slot(2, 11, 3, 2, subject_id=3, teacher_id=6)]))
+    assert prop["rows"] == []
+    assert _load(prop, 6 + T) == 2, prop["sets"]
+    # วิชาธรรมดา (ไม่ใช่วิชากิจกรรม) ที่โรงเรียนลงเป็นกิจกรรมทั้งระดับ ก็ต้องไม่ทำคาบที่เหลือหาย
+    prop = mock_api.wl_round_proposal(_src(
+        requirements=[_req(1, 11, 2, 6, 2)],
+        slots=[_slot(1, 11, 0, 7, subject_id=2, teacher_id=6, is_activity_block=True, activity_key="ACT-1"),
+               _slot(2, 11, 3, 2, subject_id=2, teacher_id=6)]))
+    assert prop["rows"] == [] and prop["unconverted"] == []
+    assert _load(prop, 6 + T) == 2, prop["sets"]
+
+
 def test_activity_without_supervisor_is_reported_not_made_into_a_set():
     # คำตัดสินข้อ Q2a: ไม่มีครูคุมเลย → ไม่สร้างชุด แต่ต้องบอก admin ไม่ทิ้งเงียบ ๆ
     slots = [_slot(1, 11, 3, 7, subject_id=4, is_activity_block=True),
@@ -373,7 +502,19 @@ def test_ordinary_slots_are_not_lifted():
     prop = mock_api.wl_round_proposal(_src(
         requirements=[_req(1, 11, 1, 3, 1)],
         slots=[_slot(1, 11, 0, 0, subject_id=1, teacher_id=3)]))
-    assert len(prop["rows"]) == 1 and prop["sets"] == []
+    assert len(prop["rows"]) == 1 and prop["sets"] == [] and prop["unconverted"] == []
+
+
+def test_taught_ordinary_slot_without_plan_row_is_reported_once():
+    # คาบที่คลิกเพิ่มเองในตาราง (ไม่ต้องมีแถวแผน) — ไม่ยกเป็นแถว แต่ต้องบอก admin
+    # หนึ่งเรื่องต่อห้อง+วิชา ไม่ว่ากี่คาบ · คาบที่ไม่มีครูไม่ใช่การสอน ไม่ต้องบอก
+    prop = mock_api.wl_round_proposal(_src(slots=[
+        _slot(1, 11, 0, 0, subject_id=1, teacher_id=3), _slot(2, 11, 1, 0, subject_id=1, teacher_id=3),
+        _slot(3, 12, 0, 0, subject_id=1, teacher_id=None)]))
+    assert prop["rows"] == [] and prop["sets"] == []
+    assert [(u["source"], u["ref"]) for u in prop["unconverted"]] == [("slot", 1)], prop["unconverted"]
+    reason = prop["unconverted"][0]["reason"]
+    assert "ท21102" in reason and "ม.1/1" in reason and "แผนการสอน" in reason, reason
 
 
 # ── ทุกการสอนในตารางไปโผล่ในรอบ ─────────────────────────────────────────
@@ -414,6 +555,8 @@ def test_every_taught_slot_appears_somewhere_in_the_round():
         _slot(12, 12, 3, 7, subject_id=4, activity_teacher_ids=[14, 15], is_activity_block=True),
         _slot(13, 13, 3, 7, subject_id=4, teacher_id=16, is_activity_block=True),
         _slot(14, 14, 4, 0, subject_id=8, is_activity_block=True, is_free_period=True),
+        _slot(15, 13, 0, 4, subject_id=2, teacher_id=17),                     # คาบที่เพิ่มเอง ไม่มีแถวแผน
+        _slot(16, 13, 1, 4, subject_id=2, teacher_id=17),
     ]
     prop = mock_api.wl_round_proposal(_src(requirements=reqs, pools=[pool], slots=slots, served={6}))
     have = set()
@@ -423,13 +566,18 @@ def test_every_taught_slot_appears_somewhere_in_the_round():
                 have.add((t, r["subject_id"]))
     for s in prop["sets"]:
         have |= {(o["teacher_id"], o["subject_id"]) for o in s["options"] if o["teacher_id"] is not None}
+    cell_of = {s["id"]: (s["group_id"], s["subject_id"]) for s in slots}
+    reported = {cell_of[u["ref"]] for u in prop["unconverted"] if u["source"] == "slot"}
     want = set()
     for slot in slots:
-        want |= {(t + T, sid + S) for t, sid in _slot_teachings(slot)}
+        teachings = {(t + T, sid + S) for t, sid in _slot_teachings(slot)}
+        want |= teachings
+        # การสอนทุกช่องต้องอยู่ในรอบ หรืออยู่ในรายการที่ admin ต้องเพิ่มเอง (หนึ่งเรื่องต่อห้อง+วิชา)
+        if teachings - have:
+            assert (slot["group_id"], slot["subject_id"]) in reported, (slot["id"], sorted(teachings - have))
     assert want, "ตารางสังเคราะห์ไม่มีการสอนเลย — ตัวทดสอบนี้ไม่ได้ตรวจอะไร"
-    missing = want - have
-    assert not missing, sorted(missing)
-    assert prop["unconverted"] == [], prop["unconverted"]
+    assert sorted(want - have) == [(17 + T, 2 + S)], sorted(want - have)
+    assert [(u["source"], u["ref"]) for u in prop["unconverted"]] == [("slot", 15)], prop["unconverted"]
     # ไม่มีอะไรถูกนับซ้ำ: แนะแนวของครู 6 ได้ 1 · ครู 7 สอนวิชาเสรีในคาบเสรีรายห้อง 1 (แถวแผนถูกข้าม)
     assert _load(prop, 6 + T) == 1 and _load(prop, 7 + T) == 1
     assert prop["counts"] == {"rows": 4, "sets_elective": 2, "sets_activity": 3,
@@ -460,6 +608,18 @@ def test_unknown_teacher_and_group_are_reported_not_fatal():
         assert re.search(r"[฀-๿]", u["reason"]), u["reason"]     # เหตุผลภาษาไทย
     assert "77" in prop["unconverted"][0]["reason"]
     assert "99" in prop["unconverted"][1]["reason"]
+
+
+def test_pool_with_no_name_and_no_rooms_is_not_fatal():
+    # ชุดที่ยังไม่ได้ตั้งชื่อและยังไม่ได้เลือกห้อง ต้องไม่ทำให้การเปิดรอบทั้งรอบล้ม
+    prop = mock_api.wl_round_proposal(_src(
+        requirements=[_req(1, 11, 1, 3, 1)],
+        pools=[{"id": 7, "name": "", "group_ids": [], "weekly": 1, "is_double": False,
+                "options": [_opt(5, 7)]}]))
+    assert len(prop["rows"]) == 1
+    assert len(prop["sets"]) == 1 and prop["sets"][0]["name"].startswith("คาบเสรี")
+    assert prop["sets"][0]["group_ids"] == []
+    assert [(u["source"], u["ref"]) for u in prop["unconverted"]] == [("pool", 7)], prop["unconverted"]
 
 
 def test_one_problem_is_reported_once():
