@@ -15,7 +15,7 @@ import {
   isRoundPreview, isRoundRow, isTeacherLoad, loadBars, openBlocker, optionState, optionTeacherPatch, previewLines,
   previewWarnings, reviewActions, roundActions, roundChip, roundLabel, roundStats, ROUND_STATUS_TEXT, roundStatusTone,
   releasePending, rowPatch, rowState, settlePending, shownFields, subjectLine, submitState, teacherChoices, teacherNamer,
-  termReadiness,
+  termReadiness, changeRow, teacherDraft, retryFields, reviewGap, refreshDue, REFRESH_GAP_MS,
   type DeptStatus, type OptionTeacher, type Round, type RoundOption, type RoundPreview, type RoundRow, type TeacherLoad,
 } from "../../workload/src/round.ts";
 
@@ -681,11 +681,20 @@ test("ค่าที่เลือกค้าง (I1): เลือกคร�
   eq(shownFields(assignedX, settlePending(held, assignedX)), { teacher_id: 6, is_double: false });
 });
 
-test("ค่าที่เลือกค้าง: หมดอายุเมื่อครู/สถานะยืนยัน/คาบคู่บนเซิร์ฟเวอร์เปลี่ยน · ช่องอื่นเปลี่ยนไม่กระทบ · บันทึกสำเร็จแล้วปล่อยเฉพาะช่องนั้น", () => {
+test("ค่าที่เลือกค้าง: หมดอายุทีละช่อง — ครูเมื่อครู/สถานะยืนยันบนเซิร์ฟเวอร์เปลี่ยน · คาบคู่เมื่อคาบคู่เปลี่ยน · ช่องอื่นไม่กระทบ · บันทึกสำเร็จแล้วปล่อยเฉพาะช่องนั้น", () => {
   const r = W({ teacher_id: 4, co_teacher_id: null, confirmed: false, is_double: false });
   const held = holdPending(null, r, { teacher_id: 6 });
   eq(settlePending(held, { ...r, teacher_id: null }), null);
-  eq(settlePending(held, { ...r, is_double: true }), null);
+  eq(settlePending(held, { ...r, confirmed: true }), null);
+  // ครูที่เป็นร่างไม่ผูกกับคาบคู่: ติ๊กคาบคู่ของแถวเดียวกันแล้วบันทึกสำเร็จ ร่างครูต้องยังอยู่ (C1 — ไม่งั้นร่างหายเงียบ ๆ)
+  ok(settlePending(held, { ...r, is_double: true }) === held, "คาบคู่บนเซิร์ฟเวอร์เปลี่ยน ร่างครูต้องอยู่");
+  const dbl = holdPending(null, r, { is_double: true });
+  eq(settlePending(dbl, { ...r, is_double: true }), null);
+  ok(settlePending(dbl, { ...r, teacher_id: 9, confirmed: true }) === dbl, "ครูเปลี่ยน คาบคู่ที่ค้างไม่ต้องหาย");
+  // ค้างทั้งสองช่อง แล้วช่องหนึ่งหมดอายุ → เหลือช่องที่ยังใช้ได้
+  const two = holdPending(held, r, { is_double: true });
+  eq(settlePending(two, { ...r, is_double: true }), { values: { teacher_id: 6 }, base: two.base });
+  eq(settlePending(two, { ...r, confirmed: true }), { values: { is_double: true }, base: two.base });
   // หมายเหตุ/ครูสอนร่วม/ห้องเปลี่ยน (เช่น หัวหน้าแก้ครูสอนร่วมเพื่อให้เลือกครูได้) — ไม่ได้ขัดกับครูที่ค้าง ลองบันทึกใหม่ได้
   ok(settlePending(held, { ...r, note: "x", co_teacher_id: 9, lab_room_id: 3 }) === held, "ช่องอื่นต้องไม่ทำให้ค่าที่ค้างหาย");
   // เพิ่มค่าค้างอีกช่อง: base เดิม (สถานะของแถวตอนเลือกครั้งแรก)
@@ -703,6 +712,96 @@ test("ค่าที่เลือกค้าง: หมดอายุเม
   eq(settlePending(null, r), null);
   // ล้างครู (null) เป็นค่าที่ค้างได้ ต้องแสดง null ไม่ใช่ตกไปใช้ครูเดิม
   eq(shownFields(r, holdPending(null, r, { teacher_id: null })), { teacher_id: null, is_double: false });
+});
+
+test("C1: เลือกครูในช่อง (ลูกศร/อักษร/เมาส์ = change) ไม่บันทึก — เป็นร่างจนกดบันทึกครู · คาบคู่บันทึกทันที", () => {
+  // แถวจากเทอมก่อน: ครู 4 ยังไม่ยืนยัน
+  const r = W({ teacher_id: 4, confirmed: false, from_plan: true, is_double: false });
+  // ArrowDown สามครั้ง = change สามครั้ง → ไม่มีอะไรให้บันทึกเลยสักครั้ง ร่างเป็นครูคนสุดท้าย
+  let p: ReturnType<typeof changeRow>["pending"] = null;
+  for (const t of [5, 6, 7]) {
+    const c = changeRow(p, r, { teacher_id: t });
+    eq(c.save, null);
+    p = c.pending;
+  }
+  eq(teacherDraft(r, p), { teacher_id: 7 });
+  eq(shownFields(r, p), { teacher_id: 7, is_double: false });
+  // แถวบนเซิร์ฟเวอร์ยังเป็นครู 4 ยังไม่ยืนยัน (ไม่มีคำขอ) — ป้าย "ยังไม่ยืนยัน" ยังอยู่
+  eq(rowState(r), "unconfirmed");
+  // ไม่มีค่าไหนของช่องครูที่ทำให้บันทึกตอน change — ทุกครู · ล้างครู · ครูเดิม
+  for (const t of [null, 1, 4, 99]) eq(changeRow(p, r, { teacher_id: t }).save, null);
+  // เลือกกลับมาที่ครูเดิม = ไม่มีร่าง (ยืนยันครูเดิมใช้ปุ่มยืนยัน)
+  eq(changeRow(p, r, { teacher_id: 4 }).pending, null);
+  eq(teacherDraft(r, changeRow(p, r, { teacher_id: 4 }).pending), null);
+  // ล้างครูเป็นร่างได้ (null ไม่ใช่ "ไม่มีร่าง")
+  const cleared = changeRow(null, r, { teacher_id: null }).pending;
+  eq(teacherDraft(r, cleared), { teacher_id: null });
+  eq(shownFields(r, cleared).teacher_id, null);
+  // คาบคู่: บันทึกทันที (ไม่แตะการยืนยัน) ค้างไว้ระหว่างบันทึก · ร่างครูไม่ติดไปกับการบันทึกคาบคู่
+  const d = changeRow(p, r, { is_double: true });
+  eq(d.save, { is_double: true });
+  eq(teacherDraft(r, d.pending), { teacher_id: 7 });
+  eq(shownFields(r, d.pending), { teacher_id: 7, is_double: true });
+  // บันทึกคาบคู่สำเร็จ: เซิร์ฟเวอร์ตอบแถวที่คาบคู่เปลี่ยน → ร่างครูยังอยู่ (ยังไม่มีใครกดบันทึกครู)
+  const after = releasePending(d.pending, ["is_double"]);
+  const r2 = { ...r, is_double: true, from_plan: false };
+  eq(teacherDraft(r2, after), { teacher_id: 7 });
+  eq(shownFields(r2, after), { teacher_id: 7, is_double: true });
+  // คาบคู่ถูกแก้จากอีกแท็บระหว่างมีร่างครู แล้วคนติ๊กคาบคู่อีกที: ค่าที่ติ๊กใหม่ผูกกับคาบคู่ปัจจุบันของแถว ไม่ใช่ของตอนเลือกครู
+  const elsewhere = { ...r, is_double: true };
+  const again = changeRow(p, elsewhere, { is_double: false });
+  eq([again.save, shownFields(elsewhere, again.pending), teacherDraft(elsewhere, again.pending)],
+    [{ is_double: false }, { teacher_id: 7, is_double: false }, { teacher_id: 7 }]);
+  // ลองบันทึกอีกครั้ง (ช่องที่บันทึกทันทีที่ไม่สำเร็จ) ไม่รวมครูที่เป็นร่าง — ครูบันทึกด้วยปุ่มบันทึกครูเท่านั้น
+  eq(retryFields(r, d.pending), { is_double: true });
+  eq(retryFields(r, p), null);
+  eq(retryFields(r, null), null);
+});
+
+test("C1: ร่างครูหมดอายุเมื่อแถวบนเซิร์ฟเวอร์เปลี่ยนจากทางอื่น (ยืนยัน/ใส่ครูทีละหลายแถว · อีกแท็บ) — จอแสดงค่าจริง", () => {
+  const r = W({ teacher_id: 4, confirmed: false });
+  const p = changeRow(null, r, { teacher_id: 6 }).pending;
+  eq(teacherDraft({ ...r, confirmed: true }, p), null);
+  eq(shownFields({ ...r, confirmed: true }, p).teacher_id, 4);
+  eq(teacherDraft({ ...r, teacher_id: 8, confirmed: true }, p), null);
+  // หมายเหตุ/ครูสอนร่วมเปลี่ยน ร่างยังอยู่
+  eq(teacherDraft({ ...r, note: "x", co_teacher_id: 3 }, p), { teacher_id: 6 });
+  // แถวที่ยังไม่มีครู: เลือกครู = ร่าง
+  const empty = W({ teacher_id: null, confirmed: false, from_plan: false });
+  const e = changeRow(null, empty, { teacher_id: 5 });
+  eq([e.save, teacherDraft(empty, e.pending)], [null, { teacher_id: 5 }]);
+  eq(changeRow(e.pending, empty, { teacher_id: null }).pending, null);
+});
+
+test("reviewGap: กลุ่มที่ส่งแล้ว/ตรวจผ่านแต่รายการไม่ครบ — ข้อความเดียวกับ 409 ของ wl_approve_blocker", () => {
+  eq(reviewGap(D({ status: "submitted", rows: 12, confirmed: 12, missing_teacher: 0 })), null);
+  eq(reviewGap(D({ status: "submitted", rows: 12, confirmed: 6, missing_teacher: 6 })),
+    "ตรวจผ่านไม่ได้ — ตั้งแต่กลุ่มส่งมา มีรายการที่ยังไม่มีครู 6 รายการ ตีกลับให้กลุ่มกรอกก่อน");
+  eq(reviewGap(D({ status: "submitted", rows: 12, confirmed: 10, missing_teacher: 1 })),
+    "ตรวจผ่านไม่ได้ — ตั้งแต่กลุ่มส่งมา มีรายการที่ยังไม่มีครู 1 รายการ · ยังไม่ยืนยัน 1 รายการ ตีกลับให้กลุ่มกรอกก่อน");
+  const ap = reviewGap(D({ status: "approved", rows: 12, confirmed: 11, missing_teacher: 0 }));
+  ok(ap !== null && ap.includes("ยังไม่ยืนยัน 1 รายการ") && ap.includes("ตีกลับ") && hasThai(ap), String(ap));
+  // กำลังกรอก/ถูกตีกลับ: ไม่ใช่เรื่องของการตรวจ (หัวหน้ายังกรอกอยู่)
+  eq(reviewGap(D({ status: "filling", rows: 12, confirmed: 0, missing_teacher: 3 })), null);
+  eq(reviewGap(D({ status: "returned", rows: 12, confirmed: 0, missing_teacher: 3 })), null);
+  // ข้อความชิ้นเดียวกับเซิร์ฟเวอร์
+  const src = readFileSync(new URL("../../mock_api.py", import.meta.url), "utf8");
+  const at = src.indexOf("def wl_approve_blocker(");
+  ok(at >= 0, "หา wl_approve_blocker ใน mock_api.py ไม่เจอ");
+  const body = src.slice(at, src.indexOf("\ndef ", at + 5));
+  for (const piece of ["ตรวจผ่านไม่ได้ — ตั้งแต่กลุ่มส่งมา มีรายการที่", "ยังไม่มีครู {missing} รายการ", "ยังไม่ยืนยัน {unconfirmed} รายการ",
+    "' · '", " ตีกลับให้กลุ่มกรอกก่อน"]) {
+    ok(body.includes(piece), `wl_approve_blocker ไม่มี ${JSON.stringify(piece)} แล้ว — แก้ reviewGap ให้ตรง`);
+  }
+});
+
+test("refreshDue: โหลดสถานะใหม่เมื่อกลับมาที่หน้าต่าง — ไม่ถี่กว่าทุก REFRESH_GAP_MS (focus กับ visibilitychange มาคู่กัน)", () => {
+  ok(REFRESH_GAP_MS >= 1000 && REFRESH_GAP_MS <= 10000, String(REFRESH_GAP_MS));
+  eq(refreshDue(null, 5), true);
+  eq(refreshDue(1000, 1000 + REFRESH_GAP_MS - 1), false);
+  eq(refreshDue(1000, 1000 + REFRESH_GAP_MS), true);
+  // นาฬิกาถอยหลัง (เปลี่ยนเวลาเครื่อง) ไม่ค้างไม่โหลดตลอดไป
+  eq(refreshDue(10_000_000, 5), true);
 });
 
 if (fails.length) {

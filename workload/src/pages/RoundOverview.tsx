@@ -3,7 +3,7 @@ import type { AxiosError } from "axios";
 import { apiErrorText } from "../api";
 import { departmentName, thaiDateTime } from "../curriculum";
 import {
-  checkReturnNote, deptProgress, deptStatusLabel, deptStatusTone, reviewActions, ROUND_STATUS_TEXT, roundStats,
+  checkReturnNote, deptProgress, deptStatusLabel, deptStatusTone, reviewActions, reviewGap, ROUND_STATUS_TEXT, roundStats,
   roundStatusTone, type DeptStatus, type Round, type Unconverted,
 } from "../round";
 import { approveDept, getRound, listDeptStatuses, returnDept } from "../roundApi";
@@ -186,6 +186,10 @@ function DeptCard(props: {
   const { dept: d } = props;
   const progress = deptProgress(d);
   const acts = reviewActions(props.round.status, d.status);
+  // ส่งแล้ว/ตรวจผ่านแล้วแต่ตอนนี้ไม่ครบ (หลักสูตรเพิ่มแถวว่างให้หลังส่ง · admin ล้างครู) — ตรวจผ่านไม่ได้ ต้องตีกลับ (final-review I2)
+  // ข้อความเดียวกับ 409 ของเซิร์ฟเวอร์ (wl_approve_blocker) ปุ่มจึงบอกเหตุก่อนกด ไม่ต้องกดแล้วค่อยรู้
+  const gap = reviewGap(d);
+  const gapId = useId();
   const submitted = when(d.submitted_at);
   const reviewed = when(d.reviewed_at);
   // เวลาที่บอกบนการ์ดตามสถานะ: ส่งเมื่อ (รอตรวจ) · ตรวจผ่านเมื่อ · ตีกลับเมื่อ — "ใคร" = ชื่อเรียกของรหัสที่ใช้
@@ -219,12 +223,18 @@ function DeptCard(props: {
         className="mt-3"
         value={d.confirmed}
         max={d.rows}
-        tone={d.status === "approved" ? "ok" : "brand"}
+        tone={d.status === "approved" && !gap ? "ok" : "brand"}
         label={`${props.name}: ยืนยันแล้ว ${fmt(d.confirmed)} จาก ${fmt(d.rows)} รายการ`}
       />
+      {gap && (
+        <Notice tone="warn" role="status" id={gapId} className="mt-3 break-words px-3 py-2 text-[15px]" data-testid="dept-gap">
+          {gap}
+        </Notice>
+      )}
       <div className="mt-4 flex flex-wrap gap-2">
         {acts.approve && (
-          <Button variant="primary" disabled={props.disabled} onClick={props.onApprove}>
+          <Button variant="primary" disabled={props.disabled || gap !== null} onClick={props.onApprove}
+            aria-describedby={gap ? gapId : undefined} data-testid="approve">
             {props.working && !props.returning ? "กำลังบันทึก..." : "ตรวจผ่าน"}
           </Button>
         )}

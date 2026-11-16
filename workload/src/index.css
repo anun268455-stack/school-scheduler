@@ -68,6 +68,8 @@
   input.input,
   select.input { height: 38px; }
   .input:focus { border-color: var(--brand); outline: none; box-shadow: 0 0 0 3px var(--brand-soft); }
+  /* ช่องเลือกครูของหน้ากรอก (HeadFillPage TeacherSelect): <select> โปร่งใสวางทับชื่อที่ขึ้นบรรทัดใหม่ได้ — วงโฟกัสอยู่ที่กรอบ */
+  .picker:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 }
 
 @layer components {

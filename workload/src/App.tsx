@@ -71,6 +71,8 @@ export default function App() {
   const [roundFocus, setRoundFocus] = useState<number | null>(null);
   // ลิงก์ "ดูทั้งหมด · พิมพ์" จากหน้ากรอก: หน้าสรุปเปิดที่รอบและกลุ่มนั้น
   const [summaryFocus, setSummaryFocus] = useState<{ roundId: number; deptId: number } | null>(null);
+  // กดแท็บ "อัตรากำลังของกลุ่ม" ที่เปิดอยู่ซ้ำ = ขอดูสถานะกลุ่มล่าสุด (หน้ากรอกไม่ถูกถอด จึงต้องบอกมันเอง)
+  const [fillRefresh, setFillRefresh] = useState(0);
   const token = session?.token ?? null;
 
   useEffect(() => {
@@ -209,6 +211,7 @@ export default function App() {
   // กดแท็บเอง = เริ่มหน้านั้นตามปกติ (ทิ้งลิงก์ข้ามหน้าที่ค้างไว้)
   // เปิดแท็บของกลุ่ม/สรุป = โหลดรอบใหม่ — ผู้ดูแลระบบอาจเพิ่งเปิดหรือปิดรอบระหว่างที่อยู่แท็บอื่น
   const goTab = (key: PageKey) => {
+    if (key === current && key === "fill") setFillRefresh((n) => n + 1);
     setPage(key);
     setCurriculumFocus(null);
     setDeptView(null);
@@ -288,6 +291,7 @@ export default function App() {
             onRoundChanged={reloadRounds}
             onOpenCurriculum={openCurriculum}
             onOpenSummary={() => openSummary(fillRound, headDept)}
+            refresh={fillRefresh}
           />
         ) : rounds === null ? (
           roundsError ? (

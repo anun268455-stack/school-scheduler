@@ -362,6 +362,19 @@ export function reviewActions(roundStatus: RoundStatus, deptStatus: DeptStatusKe
   };
 }
 
+/** กลุ่มที่ส่งแล้ว/ตรวจผ่านแล้วแต่รายการไม่ครบ — แถวผูกกับบรรทัดหลักสูตร การแก้หลักสูตรระหว่างเปิดให้กรอกเพิ่มแถวไม่มีครูให้กลุ่มที่ส่งแล้ว
+ *  ได้ และ admin ล้างครูของกลุ่มที่ส่งแล้วได้ · submitted → ข้อความเดียวกับ 409 ของ wl_approve_blocker (ปุ่มตรวจผ่านกดไม่ได้ บอกเหตุนี้)
+ *  · approved → เตือนให้ตีกลับ · สถานะอื่น (หัวหน้ายังกรอกอยู่) หรือครบแล้ว → null · ตัวเลขไม่คั่นหลักพันเหมือนเซิร์ฟเวอร์ */
+export function reviewGap(d: Pick<DeptStatus, "status" | "rows" | "confirmed" | "missing_teacher">): string | null {
+  if (d.status !== "submitted" && d.status !== "approved") return null;
+  const missing = d.missing_teacher;
+  const unconfirmed = Math.max(0, d.rows - d.confirmed - missing);
+  if (!missing && !unconfirmed) return null;
+  return d.status === "submitted"
+    ? `ตรวจผ่านไม่ได้ — ตั้งแต่กลุ่มส่งมา มีรายการที่${gapBits(missing, unconfirmed)} ตีกลับให้กลุ่มกรอกก่อน`
+    : `ตรวจผ่านแล้ว แต่ภายหลังมีรายการที่${gapBits(missing, unconfirmed)} — ตีกลับให้กลุ่มกรอกให้ครบ`;
+}
+
 /** กล่องยืนยันปิดรอบ: ต้องพิมพ์ชื่อรอบให้ตรง (ตัดช่องว่างหัวท้ายแบบเซิร์ฟเวอร์) · ตรง → null */
 export function checkCloseLabel(typed: string, label: string): string | null {
   return typed.trim() === label ? null : `พิมพ์ ${label} ให้ตรงเพื่อยืนยันการปิดรอบ`;
@@ -493,6 +506,11 @@ const no = (reason: string): Verdict => ({ can: false, reason });
 const CLOSED_EDIT = "รอบอัตรากำลังนี้ปิดแล้ว จึงแก้ไม่ได้อีก (เก็บไว้เป็นหลักฐานย้อนหลัง)";
 const NOT_OPEN = "รอบอัตรากำลังนี้ยังไม่เปิดให้กลุ่มสาระกรอก";
 
+/** "ยังไม่มีครู N รายการ · ยังไม่ยืนยัน M รายการ" เฉพาะส่วนที่ไม่เป็นศูนย์ — ชิ้นเดียวกับ wl_submit_blocker และ wl_approve_blocker */
+function gapBits(missing: number, unconfirmed: number): string {
+  return [...(missing ? [`ยังไม่มีครู ${missing} รายการ`] : []), ...(unconfirmed ? [`ยังไม่ยืนยัน ${unconfirmed} รายการ`] : [])].join(" · ");
+}
+
 /** กดส่งได้ไหม และถ้าไม่ได้เพราะอะไร — ลำดับเดียวกับ POST .../submit: รอบ → สถานะกลุ่ม → รายการที่ยังไม่ครบ (wl_submit_blocker) */
 export function submitState(progress: FillProgress, deptStatus: DeptStatusKey, roundStatus: RoundStatus): Verdict {
   if (roundStatus === "closed") return no("รอบอัตรากำลังนี้ปิดแล้ว จึงส่งไม่ได้");
@@ -501,8 +519,7 @@ export function submitState(progress: FillProgress, deptStatus: DeptStatusKey, r
   const missing = progress.missingTeacher;
   const unconfirmed = Math.max(0, progress.total - progress.confirmed - missing);
   if (!missing && !unconfirmed) return YES;
-  const bits = [...(missing ? [`ยังไม่มีครู ${missing} รายการ`] : []), ...(unconfirmed ? [`ยังไม่ยืนยัน ${unconfirmed} รายการ`] : [])];
-  return no(`ยังส่งไม่ได้ — ${bits.join(" · ")} (นับทั้งแถววิชาและตัวเลือกคาบเสรี/กิจกรรมของกลุ่ม) ใส่ครูและยืนยันให้ครบก่อน`);
+  return no(`ยังส่งไม่ได้ — ${gapBits(missing, unconfirmed)} (นับทั้งแถววิชาและตัวเลือกคาบเสรี/กิจกรรมของกลุ่ม) ใส่ครูและยืนยันให้ครบก่อน`);
 }
 
 /** แก้แถว/ครูของตัวเลือกของกลุ่มนี้ได้ไหม (wl_can_edit — หน้านี้แสดงแค่กลุ่มเดียว จึงไม่มีกรณีกลุ่มอื่น)
@@ -700,10 +717,14 @@ export function optionTeacherPatch(
   return changed(before, after, OPTION_TEACHER_KEYS);
 }
 
-// ---- ค่าที่เลือกค้างในแถว (ครู · คาบคู่ ที่บันทึกทันทีที่เปลี่ยน แต่บันทึกไม่สำเร็จ) ----
-// จอคงค่าที่คนเลือกไว้ให้เห็นว่าไม่ได้บันทึก (Review Focus 2) แต่ค่านั้นใช้ได้เฉพาะขณะที่แถวบนเซิร์ฟเวอร์ยังเป็นสถานะเดียวกับตอนเลือก
-// แถวเปลี่ยนจากทางอื่น (ยืนยัน/ใส่ครูทีละหลายแถว · อีกแท็บ) → ค่าที่ค้างหมดอายุ ไม่งั้นจอจะแสดงครูคนหนึ่งคู่กับ "ยืนยันแล้ว"
-// ของอีกคนที่เซิร์ฟเวอร์ยืนยันไป · ครูสอนร่วม ห้อง หมายเหตุ ไม่อยู่ในสถานะนี้ (แก้ครูสอนร่วมแล้วลองบันทึกครูที่ค้างใหม่ได้)
+// ---- ค่าที่เลือกค้างในแถว (ครูที่เป็นร่าง · คาบคู่ที่บันทึกไม่สำเร็จ) ----
+// ครูผู้สอน: เลือกในช่องแล้วเป็น "ร่าง" ยังไม่บันทึก จนคนกดบันทึกครู (หรือ Enter) — <select> ยิง change ทุกครั้งที่กดลูกศรหรือ
+// พิมพ์อักษรขณะโฟกัสอยู่ (Chrome/Edge บน Windows/Linux) และการบันทึกครูคือการยืนยันแถว (สเปก 4.1) ปุ่มลูกศรที่หลุดมาครั้งเดียว
+// จึงยืนยันครูอีกคนแทนคนได้ (final-review C1 · ข้อห้ามข้อ 3) · คาบคู่บันทึกทันทีที่ติ๊ก (ไม่แตะการยืนยัน) ค้างไว้เฉพาะตอนไม่สำเร็จ
+// จอคงค่าที่คนเลือกไว้ให้เห็นว่ายังไม่ได้บันทึก (Review Focus 2) แต่แต่ละช่องใช้ได้เฉพาะขณะที่แถวบนเซิร์ฟเวอร์ยังเป็นสถานะเดิม
+// ของช่องนั้น: ครู ↔ ครูและธงยืนยันของแถว (ยืนยัน/ใส่ครูทีละหลายแถว · อีกแท็บ → ร่างหมดอายุ ไม่งั้นจอแสดงครูคนหนึ่งคู่กับ
+// "ยืนยันแล้ว" ของอีกคน) · คาบคู่ ↔ คาบคู่ (บันทึกคาบคู่สำเร็จแล้วร่างครูของแถวเดียวกันต้องไม่หายเงียบ ๆ)
+// ครูสอนร่วม ห้อง หมายเหตุ ไม่อยู่ในสถานะนี้ (แก้ครูสอนร่วมแล้วบันทึกครูที่เป็นร่างต่อได้)
 
 export type AutoFields = Partial<Pick<RoundRow, "teacher_id" | "is_double">>;
 type HeldState = Pick<RoundRow, "teacher_id" | "confirmed" | "is_double">;
@@ -711,18 +732,26 @@ type HeldState = Pick<RoundRow, "teacher_id" | "confirmed" | "is_double">;
 export type PendingEdit = { values: AutoFields; base: HeldState };
 
 const heldState = (row: HeldState): HeldState => ({ teacher_id: row.teacher_id, confirmed: row.confirmed, is_double: row.is_double });
-const sameState = (a: HeldState, b: HeldState): boolean =>
-  a.teacher_id === b.teacher_id && a.confirmed === b.confirmed && a.is_double === b.is_double;
+const DEPENDS: Record<keyof AutoFields, readonly (keyof HeldState)[]> = {
+  teacher_id: ["teacher_id", "confirmed"],
+  is_double: ["is_double"],
+};
 
-/** ค่าที่ค้างหลังรู้แถวล่าสุดจากเซิร์ฟเวอร์: แถวยังเป็นสถานะเดิม → ตัวเดิม · เปลี่ยนไปแล้ว → null (จอแสดงค่าจริงของเซิร์ฟเวอร์) */
+/** ค่าที่ค้างหลังรู้แถวล่าสุดจากเซิร์ฟเวอร์ ทีละช่อง: ทุกช่องยังใช้ได้ → ตัวเดิม · บางช่องหมดอายุ → เหลือช่องที่ใช้ได้
+ *  · หมดทุกช่อง → null (จอแสดงค่าจริงของเซิร์ฟเวอร์) */
 export function settlePending(p: PendingEdit | null, row: HeldState): PendingEdit | null {
-  return p && sameState(p.base, row) ? p : null;
+  if (!p) return null;
+  const keys = Object.keys(p.values) as (keyof AutoFields)[];
+  const live = keys.filter((k) => DEPENDS[k].every((f) => p.base[f] === row[f]));
+  if (live.length === keys.length) return p;
+  if (live.length === 0) return null;
+  return { values: Object.fromEntries(live.map((k) => [k, p.values[k]])) as AutoFields, base: p.base };
 }
 
-/** เลือกค่าใหม่ในแถว: ต่อยอดค่าที่ค้างที่ยังใช้ได้ (base เดิม) · ไม่มีหรือหมดอายุแล้ว = เริ่มจากสถานะปัจจุบันของแถว */
+/** เลือกค่าใหม่ในแถว: ต่อยอดช่องที่ค้างที่ยังใช้ได้ · base = สถานะปัจจุบันของแถว (ช่องที่ยังใช้ได้มีสถานะเท่าเดิมอยู่แล้ว) */
 export function holdPending(p: PendingEdit | null, row: HeldState, values: AutoFields): PendingEdit {
   const live = settlePending(p, row);
-  return live ? { values: { ...live.values, ...values }, base: live.base } : { values: { ...values }, base: heldState(row) };
+  return { values: { ...(live?.values ?? {}), ...values }, base: heldState(row) };
 }
 
 /** บันทึกช่องเหล่านี้สำเร็จ → ปล่อยออกจากค่าที่ค้าง · ไม่เหลือช่องไหน = null */
@@ -731,6 +760,36 @@ export function releasePending(p: PendingEdit | null, keys: readonly (keyof Auto
   const values = { ...p.values };
   for (const k of keys) delete values[k];
   return Object.keys(values).length ? { values, base: p.base } : null;
+}
+
+export type RowChange = { pending: PendingEdit | null; save: AutoFields | null };
+
+/** ช่องครู/คาบคู่ของแถวเปลี่ยน (change ของ <select> หรือช่องติ๊ก) → ค่าที่ค้างใหม่ และสิ่งที่ต้องบันทึกตอนนี้
+ *  ครู: เป็นร่างเสมอ ไม่บันทึก (save ไม่มี teacher_id ไม่ว่าค่าใด) · เลือกกลับมาที่ครูเดิมของแถว = ไม่มีร่าง (ยืนยันครูเดิมใช้ปุ่มยืนยัน)
+ *  คาบคู่: บันทึกทันที และค้างไว้ระหว่างบันทึก (ไม่สำเร็จก็ยังเห็นค่าที่ติ๊ก) */
+export function changeRow(p: PendingEdit | null, row: HeldState, values: AutoFields): RowChange {
+  let pending = settlePending(p, row);
+  if ("teacher_id" in values) {
+    const teacher = values.teacher_id ?? null;
+    pending = teacher === row.teacher_id
+      ? releasePending(pending, ["teacher_id"])
+      : holdPending(pending, row, { teacher_id: teacher });
+  }
+  if (!("is_double" in values)) return { pending, save: null };
+  const save = { is_double: Boolean(values.is_double) };
+  return { pending: holdPending(pending, row, save), save };
+}
+
+/** ครูที่เป็นร่างของแถว (ยังไม่บันทึก) — มี = แสดงปุ่มบันทึกครู/ยกเลิก · null = ไม่มีร่าง (หรือหมดอายุแล้ว) */
+export function teacherDraft(row: HeldState, p: PendingEdit | null): { teacher_id: number | null } | null {
+  const v = settlePending(p, row)?.values;
+  return v && "teacher_id" in v ? { teacher_id: v.teacher_id ?? null } : null;
+}
+
+/** "ลองบันทึกอีกครั้ง" ของช่องที่บันทึกทันทีแล้วไม่สำเร็จ (คาบคู่) — ไม่รวมครูที่เป็นร่าง: ครูบันทึกด้วยปุ่มบันทึกครูเท่านั้น */
+export function retryFields(row: HeldState, p: PendingEdit | null): AutoFields | null {
+  const v = settlePending(p, row)?.values;
+  return v && "is_double" in v ? { is_double: Boolean(v.is_double) } : null;
 }
 
 /** ค่าที่ช่องครู/คาบคู่ของแถวแสดง: ค่าที่ค้าง (ถ้ายังใช้ได้) ไม่งั้นค่าจากเซิร์ฟเวอร์ */
@@ -798,4 +857,14 @@ export function headRound<R extends Pick<Round, "status" | "year" | "semester">>
   if (open) return open;
   const closed = rounds.filter((r) => r.status === "closed").sort((a, b) => b.year - a.year || b.semester - a.semester);
   return closed[0] ?? null;
+}
+
+// ---- โหลดสถานะใหม่เมื่อกลับมาที่หน้า ----
+
+/** ช่วงห่างอย่างน้อยของการโหลดสถานะกลุ่มใหม่ตอนหน้าต่างกลับมา — สลับแท็บกลับมาได้ทั้ง visibilitychange และ focus พร้อมกัน */
+export const REFRESH_GAP_MS = 2000;
+
+/** หน้าต่างกลับมา (focus · visibilitychange): ควรโหลดสถานะใหม่ไหม · ไม่เคยโหลด = ควร · นาฬิกาถอยหลัง (ตั้งเวลาเครื่องใหม่) = ควร */
+export function refreshDue(lastAt: number | null, now: number): boolean {
+  return lastAt === null || now < lastAt || now - lastAt >= REFRESH_GAP_MS;
 }

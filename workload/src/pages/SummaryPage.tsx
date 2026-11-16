@@ -27,6 +27,8 @@ const VIEWS = [
 const COUNT_NOTE =
   "คาบเสรี/กิจกรรมนับครั้งเดียวต่อชุด (ไม่คูณจำนวนห้อง) ยอดของครูที่สอนคาบเสรีจึงอาจมากกว่ายอดตามแผนในโปรแกรมจัดตาราง";
 
+const CO_TEACHER_NOTE = "ครูผู้สอน 2 คือครูสอนร่วม — ครูอีกคนที่เข้าสอนห้องนั้นด้วยกัน (นับคาบให้ทั้งสองคน)";
+
 const num = (n: number | null): string => (n === null ? "—" : formatNumber(n));
 
 // ความกว้างคอลัมน์ (%) — ตารางเป็น table-layout: fixed (.sheet-table/.sheet-col ใน index.css) ทั้งบนจอและกระดาษ
@@ -221,6 +223,8 @@ export default function SummaryPage(props: {
         </header>
         <div className="mt-3 space-y-0.5 text-sm text-muted print:text-[8.5pt] print:text-ink">
           <p data-testid="count-note">{COUNT_NOTE}</p>
+          {/* หัวคอลัมน์เป็นคำตามแบบฟอร์มเดิมคำต่อคำ (สเปก §2) — ความหมายบอกที่บรรทัดหมายเหตุนี้ ทั้งบนจอและบนกระดาษ */}
+          {view === "subject" && <p data-testid="co-teacher-note">{CO_TEACHER_NOTE}</p>}
           {pending && <p data-testid="pending-note" className="font-medium text-warn">{pending} (แถวพื้นเหลืองจาง)</p>}
         </div>
 
@@ -278,7 +282,7 @@ function SubjectSheetView(props: { blocks: SubjectBlock[] }) {
               <th className={TH}>ประเภทวิชา</th>
               <th className={TH}>ห้องที่เรียน</th>
               <th className={TH}>ครูผู้สอน 1</th>
-              <th className={TH}>ครูผู้สอน 2 <span className="block text-xs font-normal">(ครูสอนร่วม)</span></th>
+              <th className={TH}>ครูผู้สอน 2</th>
             </tr>
           </thead>
           {props.blocks.map((b) => (

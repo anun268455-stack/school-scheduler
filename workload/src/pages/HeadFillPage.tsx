@@ -1,12 +1,15 @@
-import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode,
+} from "react";
 import type { AxiosError } from "axios";
 import { apiErrorText, listDepartments, listTeachers } from "../api";
 import { departmentName, roomRange, SET_KIND_TEXT, thaiDateTime } from "../curriculum";
 import { listRooms } from "../curriculumApi";
 import {
-  bulkConfirmIds, deptStatusLabel, deptStatusTone, editState, fillLevels, fillProgress, filterOptions, filterRows,
-  groupBySubject, holdPending, loadBars, optionState, optionTeacherPatch, releasePending, rowPatch, rowState, settlePending,
-  shownFields, subjectLine, submitState, teacherChoices, teacherNamer, type AutoFields, type DeptStatus, type PendingEdit, type FillFilter, type OptionTeacher, type Round, type RoundOption, type RoundRow,
+  bulkConfirmIds, changeRow, deptStatusLabel, deptStatusTone, editState, fillLevels, fillProgress, filterOptions, filterRows,
+  groupBySubject, loadBars, optionState, optionTeacherPatch, refreshDue, releasePending, retryFields, rowPatch, rowState,
+  settlePending, shownFields, subjectLine, submitState, teacherChoices, teacherDraft, teacherNamer, type AutoFields,
+  type DeptStatus, type PendingEdit, type FillFilter, type OptionTeacher, type Round, type RoundOption, type RoundRow,
   type SubjectGroup, type TeacherChoice, type TeacherLoad, type Term,
 } from "../round";
 import {
@@ -21,7 +24,8 @@ import { useRegistryList } from "../useRegistryList";
 // หน้าเดียวกันเป็นโหมดผู้ดูแลระบบจาก "เปิดดู" ของภาพรวมรอบ: เลือกกลุ่มได้ แก้ได้ทุกสถานะกลุ่ม (wl_can_edit) ไม่มีปุ่มส่ง
 //
 // ทุกการบันทึกส่งเฉพาะช่องที่เปลี่ยน (rowPatch) — PUT ที่มี teacher_id = ยืนยันอัตโนมัติ แถวจากเทอมก่อนจึงห้ามมี teacher_id ติดไป
-// ตอนแก้ช่องอื่น · ใช้แถวที่เซิร์ฟเวอร์ตอบกลับแทนค่าบนจอเสมอ (ไม่เดาสถานะยืนยันเอง)
+// ตอนแก้ช่องอื่น · เลือกครูในช่องเป็นร่างจนกดบันทึกครู (ไม่บันทึกตอน change — changeRow ใน round.ts) · ใช้แถวที่เซิร์ฟเวอร์ตอบกลับ
+// แทนค่าบนจอเสมอ (ไม่เดาสถานะยืนยันเอง)
 // 409/404 (ส่งแล้ว รอบปิด รายการหายจากที่อื่น) → ข้อความไทยของเซิร์ฟเวอร์ที่แถวนั้น แล้วโหลดสถานะใหม่ทั้งหน้า ค่าที่พิมพ์ค้างในแถวนั้นยังอยู่
 
 type Mode = "head" | "admin";
@@ -58,6 +62,8 @@ export default function HeadFillPage(props: {
   onDeptChange?: (deptId: number) => void;
   /** ลิงก์ "ดูทั้งหมด · พิมพ์" → หน้าสรุปอัตรากำลังของรอบและกลุ่มนี้ */
   onOpenSummary?: () => void;
+  /** ตัวนับที่ App เพิ่มเมื่อกดแท็บของหน้านี้ซ้ำ — ขอดูสถานะกลุ่มล่าสุด (หน้าไม่ถูกถอด ไม่งั้นสถานะค้างจนกด F5) */
+  refresh?: number;
 }) {
   const { round, deptId, mode } = props;
   const roundChanged = useRef(props.onRoundChanged);
@@ -88,11 +94,22 @@ export default function HeadFillPage(props: {
   const [statuses, setStatuses] = useState<DeptStatus[] | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusTick, setStatusTick] = useState(0);
+  // สถานะของกลุ่มนี้ที่เห็นล่าสุด — โหลดใหม่แล้วเปลี่ยน (ตีกลับ/ส่ง/ตรวจผ่านจากที่อื่น) = รายการและยอดคาบอาจเปลี่ยนตามด้วย
+  const seenStatus = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     let cancelled = false;
     listDeptStatuses(round.id).then(
       (list) => {
         if (cancelled) return;
+        const mine = list.find((d) => d.department_id === deptId)?.status ?? null;
+        // โหลดรายการใหม่เฉพาะหัวหน้า และเฉพาะตอนสถานะเปลี่ยน ไม่ใช่ทุกครั้งที่กลับมาที่หน้าต่าง: คำขอรายการที่ค้างอยู่ตอนคน
+        // กดบันทึกแถวอาจตอบทีหลังแล้วทับแถวที่เพิ่งบันทึกด้วยค่าเก่า · หัวหน้าตอนสถานะเปลี่ยน หน้าอ่านอย่างเดียวหรือการบันทึกได้
+        // 409 อยู่แล้ว (ไม่มีการบันทึกที่สำเร็จให้ถูกทับ) · admin แก้ได้ทุกสถานะ สถานะเปลี่ยนไม่ได้แปลว่าแถวเปลี่ยน
+        if (mode === "head" && seenStatus.current !== undefined && seenStatus.current !== mine) {
+          setItemsTick((n) => n + 1);
+          setLoadsTick((n) => n + 1);
+        }
+        seenStatus.current = mine;
         setStatuses(list);
         setStatusError(null);
       },
@@ -103,7 +120,34 @@ export default function HeadFillPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [round.id, round.status, statusTick]);
+  }, [round.id, round.status, deptId, mode, statusTick]);
+
+  // หน้าต่างกลับมา (สลับแท็บ/โปรแกรมกลับมา) หรือกดแท็บของหน้านี้ซ้ำ → สถานะกลุ่มและรอบล่าสุด (final-review M3)
+  // admin ตีกลับระหว่างที่หัวหน้าเปิดหน้าค้างไว้ ต้องเห็นหมายเหตุและแก้ได้ ไม่ใช่ค้าง "ส่งแล้ว … อ่านอย่างเดียว" จนกด F5
+  const lastRefresh = useRef<number | null>(null);
+  const refreshStatus = useCallback((force: boolean) => {
+    const now = Date.now();
+    if (!force && !refreshDue(lastRefresh.current, now)) return;
+    lastRefresh.current = now;
+    setStatusTick((n) => n + 1);
+    roundChanged.current();
+  }, []);
+  useEffect(() => {
+    const onFocus = () => refreshStatus(false);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshStatus(false);
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refreshStatus]);
+  const firstRefresh = useRef(props.refresh);
+  useEffect(() => {
+    if (props.refresh !== firstRefresh.current) refreshStatus(true);
+  }, [props.refresh, refreshStatus]);
 
   const [loads, setLoads] = useState<TeacherLoad[] | null>(null);
   const [loadsError, setLoadsError] = useState<string | null>(null);
@@ -381,7 +425,9 @@ export default function HeadFillPage(props: {
       {!ready ? (
         !itemsError && <p role="status" className="text-muted">กำลังโหลดรายการของกลุ่ม...</p>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start">
+        // แผงคาบรายครูอยู่ข้างรายการเฉพาะจอ ≥ 1280 (xl) — จอ 1024–1279 (โน้ตบุ๊ก 1366 ที่ย่อ 125% ≈ 1093) แผงอยู่ใต้รายการ
+        // ให้คอลัมน์ครูผู้สอนกว้างพออ่านชื่อเต็ม (final-review I1)
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start">
           <div className="min-w-0 space-y-4">
             <ProgressCard
               mode={mode}
@@ -671,13 +717,11 @@ function SubjectCard(props: {
           {props.editable && (
             <BulkBar rows={props.rows} selected={props.selected} onSelect={props.onSelect} kit={props.kit} bulk={props.bulk} />
           )}
-          <div aria-hidden className="hidden border-t border-line2 px-4 py-2 text-sm text-muted sm:px-5 md:grid md:grid-cols-[1.5rem_5.5rem_minmax(0,1.35fr)_minmax(0,1fr)_2.75rem_minmax(0,1fr)_8.5rem] md:gap-x-3">
+          <div aria-hidden className={`hidden border-t border-line2 px-4 py-2 text-sm text-muted sm:px-5 lg:grid ${ROW_COLS}`}>
             <span />
             <span>ห้อง</span>
             <span>ครูผู้สอน</span>
-            <span>ครูสอนร่วม</span>
-            <span>คาบคู่</span>
-            <span>ห้องปฏิบัติการ · หมายเหตุ</span>
+            <span>รายละเอียด (ครูสอนร่วม · คาบคู่ · ห้องปฏิบัติการ · หมายเหตุ)</span>
             <span className="text-right">สถานะ</span>
           </div>
           <ul className="divide-y divide-line2 border-t border-line2">
@@ -773,6 +817,11 @@ function BulkBar(props: {
 
 // ---- แถว ----
 
+// คอลัมน์ของแถวบนจอ ≥ 1024 (lg): เลือก · ห้อง · ครูผู้สอน (กว้างสุด ไม่ต่ำกว่า 13rem — งานหลักของหัวหน้าคืออ่านชื่อครูแล้วยืนยัน)
+// · รายละเอียด (ครูสอนร่วม คาบคู่ ห้องปฏิบัติการ หมายเหตุ ที่ใช้ไม่บ่อย รวมช่องเดียว) · สถานะ · จอแคบกว่าเป็นการ์ดซ้อน (ครูเต็มบรรทัด)
+// เขียนเต็มทั้งคลาส tailwind หาคลาสจากข้อความในไฟล์
+const ROW_COLS = "lg:grid-cols-[1.5rem_5.5rem_minmax(13rem,2fr)_minmax(0,1fr)_8.5rem] lg:gap-x-3";
+
 type DetailForm = Pick<RoundRow, "co_teacher_id" | "lab_room_id" | "note">;
 
 const RowItem = memo(function RowItem(props: {
@@ -786,16 +835,16 @@ const RowItem = memo(function RowItem(props: {
   curriculum: boolean;
 }) {
   const { row, kit, editable } = props;
-  // ค่าที่กดแล้วแต่ยังบันทึกไม่สำเร็จ (ครู · คาบคู่) — คงอยู่บนจอพร้อมข้อความ ไม่ถูกแทนด้วยค่าจากเซิร์ฟเวอร์เงียบ ๆ
-  // แต่ใช้ได้เฉพาะขณะที่แถวบนเซิร์ฟเวอร์ยังเป็นสถานะเดิม (settlePending) — ยืนยัน/ใส่ครูทีละหลายแถวแล้วแถวเปลี่ยน
-  // จอต้องแสดงครูที่เซิร์ฟเวอร์ยืนยันจริง ไม่ใช่ครูที่ค้างคู่กับ "ยืนยันแล้ว"
+  // ค่าที่ค้างของแถว (round.ts): ครูที่เลือกแล้วแต่ยังไม่กดบันทึกครู (ร่าง) · คาบคู่ที่บันทึกไม่สำเร็จ — คงอยู่บนจอ ไม่ถูกแทนด้วย
+  // ค่าจากเซิร์ฟเวอร์เงียบ ๆ แต่แต่ละช่องใช้ได้เฉพาะขณะที่แถวบนเซิร์ฟเวอร์ยังเป็นสถานะเดิมของช่องนั้น (settlePending) —
+  // ยืนยัน/ใส่ครูทีละหลายแถวแล้วแถวเปลี่ยน จอต้องแสดงครูที่เซิร์ฟเวอร์ยืนยันจริง ไม่ใช่ร่างคู่กับ "ยืนยันแล้ว"
   const [pending, setPending] = useState<PendingEdit | null>(null);
   const [detail, setDetail] = useState<DetailForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const detailId = useId();
-  // ปรับตามแถวใหม่ระหว่างวาด (ไม่ใช่ effect) — ไม่มีสักเฟรมที่จอแสดงครูที่ค้างคู่กับสถานะของแถวใหม่
+  // ปรับตามแถวใหม่ระหว่างวาด (ไม่ใช่ effect) — ไม่มีสักเฟรมที่จอแสดงค่าที่ค้างคู่กับสถานะของแถวใหม่
   const live = settlePending(pending, row);
   if (live !== pending) {
     setPending(live);
@@ -803,14 +852,14 @@ const RowItem = memo(function RowItem(props: {
     if (!detail) setError(null);
   }
 
-  // auto = ครู/คาบคู่ (บันทึกทันทีที่เปลี่ยน) · detail = ฟอร์มรายละเอียด · confirm = ปุ่มยืนยัน (ไม่แตะค่าที่ค้างอยู่)
-  const commit = async (fields: Partial<RoundRow>, from: "auto" | "detail" | "confirm") => {
+  // teacher = ปุ่มบันทึกครู/Enter (เลือกครูเอง = ยืนยัน ในคำขอเดียว) · double = ช่องติ๊กคาบคู่ (บันทึกทันที ไม่แตะการยืนยัน)
+  // · detail = ฟอร์มรายละเอียด · confirm = ปุ่มยืนยัน (ไม่แตะค่าที่ค้างอยู่)
+  const commit = async (fields: Partial<RoundRow>, from: "teacher" | "double" | "detail" | "confirm") => {
     if (busy.current) return;
-    if (from === "auto") setPending((p) => holdPending(p, row, fields as AutoFields));
     const patch = rowPatch(row, fields);
     const finish = () => {
       setError(null);
-      if (from === "auto") {
+      if (from === "teacher" || from === "double") {
         setPending((p) => releasePending(p, Object.keys(fields) as (keyof AutoFields)[]));
       } else if (from === "detail") {
         setDetail(null);
@@ -829,6 +878,27 @@ const RowItem = memo(function RowItem(props: {
     if (err) setError(err);
     else finish();
   };
+  // change ของช่องครู/ช่องติ๊ก: ครูเป็นร่างเสมอ (ปุ่มลูกศร/อักษรที่หลุดมาไม่ยืนยันใคร — final-review C1) · คาบคู่บันทึกทันที
+  const change = (values: AutoFields) => {
+    const c = changeRow(live, row, values);
+    setPending(c.pending);
+    if (c.save) void commit(c.save, "double");
+  };
+  const draft = teacherDraft(row, live);
+  const saveTeacher = () => {
+    if (draft && editable && !saving) void commit({ teacher_id: draft.teacher_id }, "teacher");
+  };
+  const cancelTeacher = () => {
+    setPending((p) => releasePending(settlePending(p, row), ["teacher_id"]));
+    setError(null);
+  };
+  const onTeacherKey = (e: KeyboardEvent<HTMLSelectElement>) => {
+    // Enter = ตั้งใจบันทึก (เหมือนกดปุ่มบันทึกครู) · ลูกศร/อักษรเปลี่ยนแค่ร่าง
+    if (e.key === "Enter" && draft) {
+      e.preventDefault();
+      saveTeacher();
+    }
+  };
   const discard = () => {
     setPending(null);
     setDetail(null);
@@ -837,32 +907,24 @@ const RowItem = memo(function RowItem(props: {
 
   const { teacher_id: teacherId, is_double: isDouble } = shownFields(row, live);
   const hasPending = live !== null;
-  // อ่านอย่างเดียวแต่มีค่าที่ค้างจากการบันทึกที่ถูกปฏิเสธ → ยังแสดงตัวแก้ (ปิดไว้) ให้เห็นว่าค่าไหนไม่ได้บันทึก
+  const retry = retryFields(row, live);
+  // อ่านอย่างเดียวแต่มีค่าที่ค้าง (ร่าง หรือการบันทึกที่ถูกปฏิเสธ) → ยังแสดงตัวแก้ (ปิดไว้) ให้เห็นว่าค่าไหนไม่ได้บันทึก
   const showEditors = editable || hasPending || detail !== null;
   const state = rowState(row);
   const lock = !editable || saving;
   const openDetail = () => setDetail({ co_teacher_id: row.co_teacher_id, lab_room_id: row.lab_room_id, note: row.note });
   const coText = row.co_teacher_id !== null ? teacherText(row.co_teacher_id, kit) : null;
   const labText = row.lab_room_id !== null ? roomText(row.lab_room_id, kit) : null;
-  const editButton = editable && !detail && (
-    <Button size="sm" variant="ghost" onClick={openDetail} aria-label={`แก้ครูสอนร่วม ห้องปฏิบัติการ และหมายเหตุ ของ ${row.group_name}`}>
-      แก้
-    </Button>
-  );
-  const doubleBox = (
-    <input type="checkbox" checked={isDouble} disabled={lock} aria-label={`คาบคู่ ${row.group_name}`}
-      onChange={(e) => void commit({ is_double: e.target.checked }, "auto")} />
-  );
 
   return (
     <li
       data-testid={`row-${row.id}`}
       data-state={state}
-      className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 sm:px-5 md:grid-cols-[1.5rem_5.5rem_minmax(0,1.35fr)_minmax(0,1fr)_2.75rem_minmax(0,1fr)_8.5rem] ${
+      className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 px-4 py-3 sm:px-5 ${ROW_COLS} ${
         state === "done" ? "" : "bg-warn-faint"
       }`}
     >
-      <div className="col-start-1 row-start-1 flex">
+      <div className="col-start-1 row-start-1 flex min-h-[38px] items-center">
         {editable ? (
           <input type="checkbox" checked={props.selected} aria-label={`เลือก ${row.group_name}`}
             onChange={(e) => props.onSelect([row.id], e.target.checked)} />
@@ -870,54 +932,81 @@ const RowItem = memo(function RowItem(props: {
           <span aria-hidden className="w-[1.05rem]" />
         )}
       </div>
-      <div className="col-start-2 row-start-1 min-w-0">
+      <div className="col-start-2 row-start-1 flex min-h-[38px] min-w-0 flex-col justify-center">
         <div className="font-semibold">{row.group_name}</div>
         {props.curriculum && <div className="break-words text-xs text-muted">หลักสูตร {row.curriculum_name}</div>}
       </div>
-      <div className="col-start-3 row-start-1 flex flex-wrap items-center justify-end gap-2 justify-self-end md:col-start-7 md:flex-col md:items-end md:gap-1">
-        <RowStatus row={row} canConfirm={editable && !(live && "teacher_id" in live.values)} saving={saving}
+      <div className="col-start-3 row-start-1 flex min-h-[38px] flex-wrap items-center justify-end gap-2 justify-self-end lg:col-start-5 lg:flex-col lg:items-end lg:justify-center lg:gap-1">
+        <RowStatus row={row} canConfirm={editable && !draft} saving={saving}
           onConfirm={() => void commit({ confirmed: true }, "confirm")} />
       </div>
 
-      <div className="col-span-3 min-w-0 md:col-span-1 md:col-start-3 md:row-start-1">
+      <div className="col-span-3 min-w-0 lg:col-span-1 lg:col-start-3 lg:row-start-1">
         {showEditors ? (
-          <TeacherSelect value={teacherId} kit={kit} disabled={lock || !kit.teachersReady} empty="— ยังไม่มีครู —"
-            label={`ครูผู้สอน ${row.group_name}`} testId="teacher" onChange={(v) => void commit({ teacher_id: v }, "auto")} />
+          <>
+            <TeacherSelect value={teacherId} kit={kit} disabled={lock || !kit.teachersReady} empty="— ยังไม่มีครู —"
+              label={`ครูผู้สอน ${row.group_name}`} testId="teacher" draft={draft !== null}
+              onChange={(v) => change({ teacher_id: v })} onKeyDown={onTeacherKey} />
+            {draft && (editable || !error) && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="teacher-draft">
+                {editable ? (
+                  <>
+                    <Button size="sm" variant="primary" onClick={saveTeacher} disabled={saving} data-testid="save-teacher"
+                      aria-label={`บันทึกครู ${row.group_name}`}>
+                      {saving ? "กำลังบันทึก..." : "บันทึกครู"}
+                    </Button>
+                    <Button size="sm" onClick={cancelTeacher} disabled={saving} data-testid="cancel-teacher"
+                      aria-label={`ยกเลิกครูที่เลือก ${row.group_name}`}>
+                      ยกเลิก
+                    </Button>
+                    <span className="text-sm text-muted">
+                      {draft.teacher_id === null
+                        ? "ยังไม่ได้บันทึก — บันทึกแล้วแถวนี้กลับเป็นยังไม่มีครู"
+                        : "ยังไม่ได้บันทึก — บันทึกแล้วนับว่ายืนยันครูคนนี้"}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm text-muted">ครูที่เลือกไว้ยังไม่ได้บันทึก</span>
+                    <Button size="sm" onClick={discard}>ทิ้งค่าที่ยังไม่ได้บันทึก</Button>
+                  </>
+                )}
+              </div>
+            )}
+          </>
         ) : (
-          <span className="break-words" data-testid="teacher-text">{row.teacher_id !== null ? teacherText(row.teacher_id, kit) : "—"}</span>
+          <span className="block break-words leading-6 lg:pt-1.5" data-testid="teacher-text">
+            {row.teacher_id !== null ? teacherText(row.teacher_id, kit) : "—"}
+          </span>
         )}
       </div>
 
-      {/* จอกว้าง: คอลัมน์ของตาราง */}
-      <div className="hidden min-w-0 break-words md:col-start-4 md:row-start-1 md:block">{coText ?? <span className="text-muted">—</span>}</div>
-      <div className="hidden md:col-start-5 md:row-start-1 md:flex md:justify-center">
-        {showEditors ? doubleBox : row.is_double ? <span aria-label="คาบคู่">✓</span> : <span className="text-muted">—</span>}
-      </div>
-      <div className="hidden min-w-0 items-center justify-between gap-2 md:col-start-6 md:row-start-1 md:flex">
-        <div className="min-w-0 break-words">
-          {labText && <div>{labText}</div>}
-          {row.note && <div className="text-[15px] text-muted">{row.note}</div>}
-          {!labText && !row.note && <span className="text-muted">—</span>}
-        </div>
-        {editButton}
-      </div>
-
-      {/* จอแคบ: แถวเป็นการ์ดซ้อน — รายละเอียดรวมเป็นบรรทัดเดียว */}
-      <div className="col-span-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[15px] text-muted md:hidden">
-        {coText && <span className="break-words">ครูสอนร่วม {coText}</span>}
-        {labText && <span className="break-words">ห้องปฏิบัติการ {labText}</span>}
-        {row.note && <span className="break-words">หมายเหตุ: {row.note}</span>}
+      {/* รายละเอียดที่ใช้ไม่บ่อยรวมช่องเดียว: จอกว้างเป็นคอลัมน์ที่ 4 · จอแคบเป็นบรรทัดใต้ครู */}
+      <div className="col-span-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[15px] text-muted lg:col-span-1 lg:col-start-4 lg:row-start-1 lg:min-h-[38px]"
+        data-testid="row-detail">
+        {coText && <span className="break-words">ครูสอนร่วม <span className="text-ink">{coText}</span></span>}
+        {labText && <span className="break-words">ห้องปฏิบัติการ <span className="text-ink">{labText}</span></span>}
+        {row.note && <span className="break-words">หมายเหตุ: <span className="text-ink">{row.note}</span></span>}
         {showEditors ? (
-          <label className="flex items-center gap-1.5">{doubleBox}คาบคู่</label>
+          <label className="flex items-center gap-1.5">
+            <input type="checkbox" checked={isDouble} disabled={lock} aria-label={`คาบคู่ ${row.group_name}`}
+              onChange={(e) => change({ is_double: e.target.checked })} />
+            คาบคู่
+          </label>
         ) : (
           row.is_double && <span>คาบคู่</span>
         )}
-        {editButton}
+        {!showEditors && !coText && !labText && !row.note && !row.is_double && <span aria-hidden>—</span>}
+        {editable && !detail && (
+          <Button size="sm" variant="ghost" onClick={openDetail} aria-label={`แก้ครูสอนร่วม ห้องปฏิบัติการ และหมายเหตุ ของ ${row.group_name}`}>
+            แก้
+          </Button>
+        )}
       </div>
 
       {detail && (
         <form
-          className="col-span-3 rounded-xl border border-line bg-surface p-3 md:col-span-7"
+          className="col-span-3 rounded-xl border border-line bg-surface p-3 lg:col-span-5"
           aria-label={`รายละเอียดของ ${row.group_name}`}
           onSubmit={(e) => {
             e.preventDefault();
@@ -952,12 +1041,12 @@ const RowItem = memo(function RowItem(props: {
       )}
 
       {error && (
-        <div role="alert" className="col-span-3 flex flex-wrap items-center gap-2 text-[15px] text-bad md:col-span-7" data-testid="row-error">
+        <div role="alert" className="col-span-3 flex flex-wrap items-center gap-2 text-[15px] text-bad lg:col-span-5" data-testid="row-error">
           <span className="min-w-0 break-words">บันทึกไม่สำเร็จ: {error}</span>
           {hasPending && (
             <>
-              {editable && (
-                <Button size="sm" onClick={() => live && void commit(live.values, "auto")} disabled={saving}>ลองบันทึกอีกครั้ง</Button>
+              {editable && retry && (
+                <Button size="sm" onClick={() => void commit(retry, "double")} disabled={saving}>ลองบันทึกอีกครั้ง</Button>
               )}
               <Button size="sm" onClick={discard} disabled={saving}>คืนค่าเดิม</Button>
             </>
@@ -1024,6 +1113,8 @@ function roomText(id: number, kit: Kit): string {
   return kit.rooms.get(id) ?? `ห้องที่ไม่มีแล้ว (รหัส ${id})`;
 }
 
+// ช่องเลือกครู: ชื่อที่เลือกแสดงเป็นข้อความที่ขึ้นบรรทัดใหม่ได้ (ไม่ถูกตัดเหมือนข้อความใน <select> — งานของหัวหน้าคือ "อ่านชื่อครู
+// แล้วยืนยัน" final-review I1) · <select> จริงวางทับโปร่งใสทั้งช่อง: คลิก/แตะ/คีย์บอร์ด/โปรแกรมอ่านหน้าจอ ใช้ตัวเลือกของเบราว์เซอร์ตามเดิม
 function TeacherSelect(props: {
   id?: string;
   value: number | null;
@@ -1033,26 +1124,41 @@ function TeacherSelect(props: {
   label?: string;
   testId?: string;
   autoFocus?: boolean;
+  /** ค่าที่แสดงเป็นร่างที่ยังไม่บันทึก — กรอบสีหลักให้เห็นต่างจากค่าที่บันทึกแล้ว */
+  draft?: boolean;
   onChange: (value: number | null) => void;
+  onKeyDown?: (e: KeyboardEvent<HTMLSelectElement>) => void;
 }) {
   const { value, kit } = props;
   // ค่าปัจจุบันที่ไม่อยู่ในตัวเลือก (ไม่ปฏิบัติงานแล้ว · ทะเบียนยังไม่มา) → ตัวเลือกที่กดไม่ได้ ให้ช่องยังบอกชื่อเดิม
   const extra = value !== null && (!kit.teachersReady || kit.teacherKind(value) !== "active");
   return (
-    <select
-      id={props.id}
-      className="input w-full"
-      value={value ?? ""}
-      disabled={props.disabled}
-      aria-label={props.label}
-      data-testid={props.testId}
-      autoFocus={props.autoFocus}
-      onChange={(e) => props.onChange(e.target.value === "" ? null : Number(e.target.value))}
-    >
-      <option value="">{props.empty}</option>
-      {extra && <option value={value} disabled>{teacherText(value, kit)}</option>}
-      {kit.teacherOptions}
-    </select>
+    <div className={`picker relative flex min-h-[38px] w-full items-center rounded-lg border py-1.5 pl-3 pr-8 leading-6 ${
+      props.draft ? "border-brand bg-brand-soft" : "border-line bg-surface"} ${props.disabled ? "opacity-50" : ""}`}>
+      <span aria-hidden className={`min-w-0 break-words ${value === null ? "text-muted" : "text-ink"}`}
+        data-testid={props.testId ? `${props.testId}-name` : undefined}>
+        {value === null ? props.empty : teacherText(value, kit)}
+      </span>
+      <svg aria-hidden viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted">
+        <path d="M5 8l5 5 5-5" />
+      </svg>
+      <select
+        id={props.id}
+        className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+        value={value ?? ""}
+        disabled={props.disabled}
+        aria-label={props.label}
+        data-testid={props.testId}
+        autoFocus={props.autoFocus}
+        onChange={(e) => props.onChange(e.target.value === "" ? null : Number(e.target.value))}
+        onKeyDown={props.onKeyDown}
+      >
+        <option value="">{props.empty}</option>
+        {extra && <option value={value} disabled>{teacherText(value, kit)}</option>}
+        {kit.teacherOptions}
+      </select>
+    </div>
   );
 }
 
@@ -1279,7 +1385,7 @@ function LoadsCard(props: {
   const bars = props.loads ? loadBars(props.loads, props.mode === "admin" ? "total" : "own", props.keep) : null;
   return (
     <Card as="aside" aria-label="คาบรายครู" data-testid="loads"
-      className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+      className="xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto">
       <h3 className="text-lg font-semibold">{props.mode === "admin" ? "คาบรายครูที่เกี่ยวกับกลุ่มนี้" : "คาบรายครูของกลุ่ม"}</h3>
       <p className="text-sm text-muted">
         {props.mode === "admin"
