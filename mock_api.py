@@ -15706,6 +15706,46 @@ def wl_curricula_log(request: Request, year: str | None = None,
                 for i, at, by, action, detail in cur.fetchall()]
 
 
+# ── รายการห้องให้หน้าเว็บ (อ่านอย่างเดียว ทุก session) ───────────────────────────────
+# หน้าหลักสูตรต้องติ๊กห้องเรียน และหน้ากรอกต้องเลือกห้องปฏิบัติการ แต่ route ของเว็บตารางไม่ได้อยู่ใต้ /api/workload/
+# (ไม่ตรวจ session ของเว็บนี้) — สอง route นี้อ่าน GROUPS/ROOMS แล้วสร้าง dict ใหม่ ไม่คืนตัวจริงออกไป
+# ใครแก้ผลที่ได้ก็ไม่โดนข้อมูลของโปรแกรมจัดตาราง · ไม่ถามฐานข้อมูลนอกจากตรวจ session
+_WL_CLASS_KEY_RE = _re.compile(r"^\s*ม\.?\s*(\d+)\s*/\s*(\d+)\s*(.*)$")
+
+
+def wl_class_key(name: Any) -> tuple:
+    """ลำดับของห้องเรียนแบบคนอ่าน — กฎเดียวกับ classSort ใน workload/src/curriculum.ts (หน้าเว็บเรียงซ้ำด้วยตัวนั้น)
+
+    ชั้น · เลขห้องแบบเลข (ม.1/2 ก่อน ม.1/10) · ส่วนต่อท้าย (ม.4/6 → ม.4/6ก → ม.4/7) · ชื่อที่ไม่ใช่รูป ม.N/… ไว้ท้าย
+    """
+    s = str(name or "")
+    m = _WL_CLASS_KEY_RE.match(s)
+    if m:
+        return (0, int(m.group(1)), int(m.group(2)), m.group(3), "")
+    return (1, 0, 0, "", s)
+
+
+@app.get("/api/workload/groups")
+def wl_groups_list(request: Request) -> list[dict[str, Any]]:
+    """ห้องเรียนที่ใส่ในหลักสูตรได้ [{id, name}] — ชุดเดียวกับที่ route เขียนของหลักสูตรรับ (_wl_group_names)
+    และที่การตั้งต้นจากโปรแกรมจัดตารางใช้ (src["groups"] = _flat_groups() ทั้งห้องแม่และห้องย่อย) · ชื่อเดียวกับ group_names"""
+    with _wl_db() as cur:
+        wl_require_session(request, cur)
+    names = _wl_group_names()
+    out = [{"id": gid, "name": _wl_group_label(gid, names)} for gid in names]
+    return sorted(out, key=lambda g: (wl_class_key(g["name"]), str(g["id"])))
+
+
+@app.get("/api/workload/rooms")
+def wl_rooms_list(request: Request) -> list[dict[str, Any]]:
+    """ห้องของโปรแกรมจัดตาราง [{id, name}] เรียงตามชื่อ — ห้องปฏิบัติการของแถว/ห้องของตัวเลือก (หน้ากรอก งานที่ 8)
+    ชุดเดียวกับที่ route ของแถวรับ (_wl_refuse_unknown_room ตรวจกับ ROOMS ทั้งหมด)"""
+    with _wl_db() as cur:
+        wl_require_session(request, cur)
+    out = [{"id": r.get("id"), "name": str(r.get("name") or f"ห้องรหัส {r.get('id')}")} for r in ROOMS]
+    return sorted(out, key=lambda r: (r["name"], str(r["id"])))
+
+
 # ── route ของหลักสูตร: เขียน (admin เท่านั้น · ภาคเรียนที่รอบปิดแล้ว 409) ──────────────
 @app.post("/api/workload/curricula/seed")
 def wl_curricula_seed(request: Request, body: Any = Body(None)) -> dict[str, Any]:

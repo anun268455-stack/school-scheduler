@@ -4,6 +4,7 @@ import {
 } from "./api";
 import { canManageRegistry, parseSession, type Session } from "./auth";
 import CodesPage from "./pages/CodesPage";
+import CurriculumPage from "./pages/CurriculumPage";
 import LoginPage from "./pages/LoginPage";
 import SetupPage from "./pages/SetupPage";
 import SubjectsPage from "./pages/SubjectsPage";
@@ -29,8 +30,8 @@ const HEAD_TABS: ShellTab<PageKey>[] = [
   { key: "fill", label: "อัตรากำลังของกลุ่ม" },
   { key: "summary", label: "สรุปอัตรากำลัง" },
 ];
-// หน้าแรกหลังล็อกอิน: admin เริ่มที่ทะเบียนครูเหมือนขั้นที่ 1 (สามแท็บแรกยังเป็นหน้าว่าง) · หัวหน้าเริ่มที่งานของกลุ่ม
-const ADMIN_HOME: PageKey = "teachers";
+// หน้าแรกหลังล็อกอิน: admin เริ่มที่หลักสูตร ("ทำหลักสูตรก่อน" แบบข้อ 4.5) · หัวหน้าเริ่มที่งานของกลุ่ม
+const ADMIN_HOME: PageKey = "curriculum";
 const HEAD_HOME: PageKey = "fill";
 
 function ComingSoon(props: { title: string; admin: boolean }) {
@@ -39,7 +40,7 @@ function ComingSoon(props: { title: string; admin: boolean }) {
       title={`${props.title} — กำลังจะมา`}
       hint={
         props.admin
-          ? "หน้านี้ยังไม่เปิดใช้ จะตามมาในรุ่นถัดไปของเว็บ · ระหว่างนี้ใช้เมนูทะเบียนครู ทะเบียนวิชา และรหัสเข้าได้ตามปกติ"
+          ? "หน้านี้ยังไม่เปิดใช้ จะตามมาในรุ่นถัดไปของเว็บ · ระหว่างนี้ใช้เมนูหลักสูตร ทะเบียนครู ทะเบียนวิชา และรหัสเข้าได้ตามปกติ"
           : "หน้านี้ยังไม่เปิดใช้ จะตามมาในรุ่นถัดไปของเว็บ · ระหว่างนี้ยังไม่ต้องทำอะไร"
       }
     />
@@ -172,7 +173,10 @@ export default function App() {
       onLogout={onLogout}
       navLabel={admin ? "เมนูผู้ดูแลระบบ" : "เมนูหัวหน้ากลุ่มสาระ"}
     >
-      {current === "teachers" && admin ? (
+      {current === "curriculum" ? (
+        // ทุกบทบาทเปิดดูได้ · ปุ่มแก้มีเฉพาะ admin (เซิร์ฟเวอร์บังคับซ้ำ: หัวหน้าเขียนได้ 403)
+        <CurriculumPage admin={admin} />
+      ) : current === "teachers" && admin ? (
         <TeachersPage />
       ) : current === "subjects" && admin ? (
         <SubjectsPage />
