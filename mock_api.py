@@ -16666,6 +16666,687 @@ def wl_rounds_close(round_id: int, request: Request, body: Any = Body(None)) -> 
         return _wl_round_detail(cur, dict(zip(_WL_ROUND_COLS, cur.fetchone())))
 
 
+# ── ขั้นที่ 2: หัวหน้ากลุ่มสาระใส่ครู · ส่ง-ตรวจผ่าน-ตีกลับ · ยอดคาบรายครู (สเปกขั้นที่ 2 ข้อ 4.4 ข. ค. และ 4.5) ──────────
+# หัวหน้ากลุ่มสาระแก้ได้แค่ช่องของตัวเอง (ครูผู้สอน ครูสอนร่วม ห้องปฏิบัติการ คาบคู่ หมายเหตุ ยืนยัน) ของแถว/ตัวเลือกที่บรรทัด
+# หรือตัวเลือกอยู่ในกลุ่มตัวเอง — วิชา คาบ ห้องเรียน แก้ที่หลักสูตรโดย admin · สิทธิ์ตัดสินที่ wl_can_edit ที่เดียว
+# ลำดับล็อกของทุกการเขียน: แถวรอบ (FOR SHARE) → สถานะกลุ่ม → แถวที่จะเขียน · แถวรอบมาก่อนเสมอ เพราะการปิดรอบ (FOR UPDATE)
+# และการแก้หลักสูตร + sync (FOR NO KEY UPDATE แล้ว FOR UPDATE ทุกแถวของรอบ) ล็อกแถวรอบก่อนเหมือนกัน: ถ้าเราเขียนแถวก่อนแล้วค่อย
+# ขอแถวรอบ sync ที่ถือแถวรอบอยู่และรอแถวของเราอยู่ = deadlock · ระหว่างที่เราถือแถวรอบ บรรทัด/ตัวเลือกจึงไม่ถูกลบหรือย้ายกลุ่ม
+# สถานะกลุ่ม: การเขียนอ่าน FOR SHARE · การส่ง/ตรวจผ่าน/ตีกลับ FOR UPDATE — การบันทึกที่ยังไม่ commit ถูกรอแล้วนับก่อนตัดสินว่า
+# ส่งได้ไหม และการบันทึกที่มาหลังการส่งเห็นว่าส่งแล้ว (409) · ทุกการเขียนตั้ง from_plan เป็นเท็จ = งานของคนแล้ว (_wl_entered)
+
+WL_ROW_FIELDS: frozenset[str] = frozenset({"teacher_id", "co_teacher_id", "lab_room_id", "is_double", "note", "confirmed"})
+WL_OPTION_TEACHER_FIELDS: frozenset[str] = frozenset({"teacher_id", "room_id", "note", "confirmed"})
+WL_OPTION_TEACHER_ADD_FIELDS: frozenset[str] = frozenset({"teacher_id", "room_id", "note"})
+WL_BULK_FIELDS: frozenset[str] = frozenset({"ids", "set"})
+WL_BULK_SET_FIELDS: frozenset[str] = frozenset({"teacher_id", "confirmed"})
+WL_RETURN_FIELDS: frozenset[str] = frozenset({"note"})
+WL_BULK_MAX: int = 2000
+WL_DEPT_STATUS_TEXT: dict[str, str] = {"filling": "กำลังกรอก", "submitted": "ส่งแล้ว รอผู้ดูแลระบบตรวจ",
+                                       "returned": "ถูกตีกลับให้แก้", "approved": "ตรวจผ่านแล้ว"}
+WL_ROW_MISSING: str = "ไม่พบแถวนี้ในรอบ (อาจถูกลบตามหลักสูตร) โหลดหน้าใหม่แล้วดูอีกครั้ง"
+WL_OPTION_MISSING: str = "ไม่พบตัวเลือกนี้ (อาจถูกลบจากหลักสูตร) โหลดหน้าใหม่แล้วดูอีกครั้ง"
+WL_OPTION_TEACHER_MISSING: str = "ไม่พบครูของตัวเลือกนี้ (อาจถูกเอาออกหรือถูกลบตามหลักสูตร) โหลดหน้าใหม่แล้วดูอีกครั้ง"
+# ขอบเขตของการอ่าน: _WL_ALL = ทุกกลุ่ม (admin) · None = บรรทัด/ตัวเลือกที่ไม่มีกลุ่มสาระ · ตัวเลข = กลุ่มนั้น
+_WL_ALL = "all"
+_WL_ROUND_LOCK_COLS = ("id", "year", "semester", "label", "status")
+_WL_DEPT_STATUS_COLS = ("department_id", "status", "submitted_at", "submitted_by", "reviewed_at", "reviewed_by", "note")
+_WL_OPTION_TEACHER_COLS = ("id", "round_id", "option_id", "teacher_id", "room_id", "note", "confirmed", "from_plan")
+_WL_ROW_EDIT_COLS = ("teacher_id", "co_teacher_id", "lab_room_id", "is_double", "note", "confirmed", "from_plan")
+_WL_OPTION_TEACHER_EDIT_COLS = ("teacher_id", "room_id", "note", "confirmed", "from_plan")
+
+
+def wl_can_edit(session: dict[str, Any], round_status: str, dept_status: str | None, dept: int | None) -> str | None:
+    """ใครแก้แถว/ครูของตัวเลือกได้ (ฟังก์ชันล้วน) · คืนข้อความไทยเมื่อห้าม · None = แก้ได้
+
+    · รอบปิดแล้ว: ห้ามทุกคน (หลักฐานย้อนหลัง)
+    · admin: รอบที่กำลังเตรียมหรือเปิดให้กรอก แก้ได้ทุกกลุ่มทุกสถานะ — ตรวจแล้วแก้เองได้โดยไม่ต้องตีกลับ
+    · หัวหน้ากลุ่มสาระ: รอบเปิดให้กรอก · บรรทัด/ตัวเลือกของกลุ่มตัวเอง (ไม่มีกลุ่ม = ไม่ใช่ของหัวหน้าคนไหน)
+      · สถานะกลุ่มยังกรอกอยู่หรือถูกตีกลับ — ส่งแล้วหรือตรวจผ่านแล้วแก้ไม่ได้จนกว่าผู้ดูแลระบบจะตีกลับ
+    route แปลงเป็นรหัส HTTP ด้วย _wl_refuse_edit
+    """
+    if round_status == "closed":
+        return "รอบอัตรากำลังนี้ปิดแล้ว จึงแก้ไม่ได้อีก (เก็บไว้เป็นหลักฐานย้อนหลัง)"
+    role = session.get("role")
+    if role == "admin":
+        if round_status in ("preparing", "filling"):
+            return None
+        return f"รอบอัตรากำลังนี้อยู่ในสถานะที่แก้ไม่ได้ ({round_status})"
+    if role != "head":
+        return "รหัสนี้ไม่มีสิทธิ์แก้รอบอัตรากำลัง"
+    if round_status != "filling":
+        return "รอบอัตรากำลังนี้ยังไม่เปิดให้กลุ่มสาระกรอก"
+    if dept is None or dept != session.get("department_id"):
+        return "รายการนี้เป็นของกลุ่มสาระอื่น หัวหน้ากลุ่มสาระแก้ได้เฉพาะของกลุ่มตัวเอง"
+    if dept_status in ("filling", "returned"):
+        return None
+    if dept_status in ("submitted", "approved"):
+        return f"กลุ่มสาระนี้{WL_DEPT_STATUS_TEXT[dept_status]} จึงแก้ไม่ได้ — ถ้าต้องแก้ ให้ผู้ดูแลระบบตีกลับก่อน"
+    return "ไม่พบสถานะของกลุ่มสาระนี้ในรอบ จึงยังแก้ไม่ได้ แจ้งผู้ดูแลระบบ"
+
+
+def _wl_refuse_edit(session: dict[str, Any], round_status: str, dept_status: str | None, dept: int | None) -> None:
+    reason = wl_can_edit(session, round_status, dept_status, dept)
+    if reason is None:
+        return
+    # ของกลุ่มอื่น หรือรอบที่หัวหน้ายังไม่เห็น = ไม่มีสิทธิ์ (403) · สถานะไม่เปิดให้แก้ (ปิดแล้ว ส่งแล้ว ตรวจผ่านแล้ว) = ขัดกับ
+    # สถานะตอนนี้ (409) ซึ่งหน้าเว็บรู้ว่าต้องโหลดสถานะใหม่ (Review Focus 2) · รอบปิดแล้วเป็น 409 สำหรับทุกคน
+    head_scope = (session.get("role") == "head" and round_status == "filling"
+                  and dept is not None and dept == session.get("department_id"))
+    forbidden = round_status != "closed" and session.get("role") != "admin" and not head_scope
+    raise HTTPException(403 if forbidden else 409, reason)
+
+
+def wl_apply_teacher_change(fields: dict[str, Any]) -> dict[str, Any]:
+    """เลือกครูเองคือคนตัดสินแล้ว → ยืนยัน (ฟังก์ชันล้วน คืน dict ใหม่): มี teacher_id และไม่ได้ส่ง confirmed → confirmed=True
+    ส่ง confirmed มาด้วยใช้ค่าที่ส่ง · การแก้ช่องอื่น (หมายเหตุ ห้อง ครูสอนร่วม) ไม่ยืนยันให้ — "ยังไม่ยืนยัน" หายได้เพราะคนกดเท่านั้น"""
+    out = dict(fields)
+    if "teacher_id" in out and "confirmed" not in out:
+        out["confirmed"] = True
+    return out
+
+
+def _wl_row_state(row: dict[str, Any]) -> str:
+    if row.get("teacher_id") is None:
+        return "missing"
+    return "done" if row.get("confirmed") else "unconfirmed"
+
+
+def _wl_option_state(option: dict[str, Any]) -> str:
+    # ตัวเลือกหนึ่งตัวนับเป็นหนึ่งรายการไม่ว่ามีครูกี่คน: ไม่มีครูสักคน = ยังไม่มีครู · มีครูที่ยังไม่ยืนยันสักคน = ยังไม่ยืนยัน
+    teachers = [t for t in option.get("teachers") or [] if t.get("teacher_id") is not None]
+    if not teachers:
+        return "missing"
+    return "done" if all(t.get("confirmed") for t in teachers) else "unconfirmed"
+
+
+def wl_fill_counts(rows: list[dict[str, Any]], options: list[dict[str, Any]]) -> dict[str, int]:
+    """ความคืบหน้าของกลุ่ม (ฟังก์ชันล้วน) — แถวหนึ่งแถวหรือตัวเลือกหนึ่งตัวเป็นหนึ่งรายการ
+    {rows: จำนวนรายการ, confirmed: มีครูและยืนยันแล้ว, missing_teacher: ยังไม่มีครู} · ที่เหลือ = มีครูแต่ยังไม่ยืนยัน
+    นิยามเดียวกับ wl_submit_blocker: ส่งได้เมื่อ confirmed == rows"""
+    states = [_wl_row_state(r) for r in rows] + [_wl_option_state(o) for o in options]
+    return {"rows": len(states), "confirmed": states.count("done"), "missing_teacher": states.count("missing")}
+
+
+def wl_submit_blocker(rows: list[dict[str, Any]], options: list[dict[str, Any]]) -> str | None:
+    """เหตุที่กลุ่มยังส่งไม่ได้ (ฟังก์ชันล้วน) · None = ส่งได้ — แถวที่ยังไม่มีครูหรือยังไม่ยืนยัน · ตัวเลือกที่ไม่มีครูสักคน
+    หรือมีครูที่ยังไม่ยืนยัน · ข้อความมี "ยังไม่มีครู N" และ "ยังไม่ยืนยัน M" (เฉพาะที่ไม่เป็นศูนย์) หน้าเว็บใช้เงื่อนไขเดียวกัน"""
+    c = wl_fill_counts(rows, options)
+    missing = c["missing_teacher"]
+    unconfirmed = c["rows"] - c["confirmed"] - missing
+    if not missing and not unconfirmed:
+        return None
+    bits = ([f"ยังไม่มีครู {missing} รายการ"] if missing else []) + \
+           ([f"ยังไม่ยืนยัน {unconfirmed} รายการ"] if unconfirmed else [])
+    return (f"ยังส่งไม่ได้ — {' · '.join(bits)} (นับทั้งแถววิชาและตัวเลือกคาบเสรี/กิจกรรมของกลุ่ม) "
+            "ใส่ครูและยืนยันให้ครบก่อน")
+
+
+def wl_teacher_loads(rows: list[dict[str, Any]], options: list[dict[str, Any]]) -> dict[int, int]:
+    """ยอดคาบต่อสัปดาห์ของครูแต่ละคน — กฎนับคาบตัวเดียวของเว็บนี้ อยู่ที่เซิร์ฟเวอร์ (สเปก 4.4 ข. · ฟังก์ชันล้วน)
+
+    แถว: คาบ/สัปดาห์ให้ครูผู้สอนและครูสอนร่วมเท่ากัน (ทั้งสองคนเข้าห้องจริง) · คนเดียวกันทั้งสองช่องได้ครั้งเดียว
+    ตัวเลือกของชุด: คาบ/สัปดาห์ของชุดให้ครูแต่ละคนครั้งเดียวต่อชุด ไม่คูณจำนวนห้อง — นักเรียนหลายห้องมาเรียนรวมในคาบเดียวกัน
+      ครูคนเดียวอยู่หลายตัวเลือกของชุดเดียวกัน (หรือซ้ำในตัวเลือกเดียว) ก็ยังเป็นคาบเดียวกัน
+    rows = [{teacher_id, co_teacher_id, weekly}] · options = [{set_id, set: {weekly}, teachers: [{teacher_id}]}]
+    (รูปเดียวกับที่ GET /rounds/{id}/rows คืน) · ครูธรรมดาได้เท่ากับ teacherLoad ของโปรแกรมจัดตาราง (tests/py/wlflow.py
+    เทียบไฟล์คำตอบร่วม) · ครูคาบเสรีได้มากกว่าโดยตั้งใจ: ยอดตามแผนของโปรแกรมจัดตารางไม่อ่าน ELECTIVE_POOLS
+    """
+    out: dict[int, int] = {}
+    for r in rows:
+        for t in {r.get("teacher_id"), r.get("co_teacher_id")} - {None}:
+            out[t] = out.get(t, 0) + int(r.get("weekly") or 0)
+    seen: set[tuple] = set()
+    for o in options:
+        weekly = int((o.get("set") or {}).get("weekly") or 0)
+        for x in o.get("teachers") or []:
+            t = x.get("teacher_id")
+            if t is None or (o.get("set_id"), t) in seen:
+                continue
+            seen.add((o.get("set_id"), t))
+            out[t] = out.get(t, 0) + weekly
+    return out
+
+
+# ── ตัวช่วยของ route ในส่วนนี้ ──
+def _wl_ref_id(field: str, v: Any, nullable: bool = True) -> int | None:
+    if v is None and nullable:
+        return None
+    if type(v) is not int or not 0 < v <= _WL_BIGINT_MAX:
+        raise HTTPException(400, f"ช่อง {field} ต้องเป็นรหัส (จำนวนเต็มบวก)" + (" หรือว่าง" if nullable else ""))
+    return v
+
+
+def _wl_room_value(field: str, v: Any) -> int | None:
+    if v is None:
+        return None
+    if type(v) is not int or not 0 < v <= _WL_INT4_MAX:
+        raise HTTPException(400, f"ช่อง {field} ต้องเป็นรหัสห้อง (จำนวนเต็ม) หรือว่าง")
+    return v
+
+
+def _wl_note_value(v: Any) -> str:
+    # หมายเหตุว่างเก็บเป็น '' (NOT NULL) · ตัดช่องว่างหัวท้าย หมายเหตุที่มีแต่ช่องว่างจึงไม่นับเป็นงานของคน (_wl_entered)
+    return (_wl_text("note", v, False) or "").strip()
+
+
+def _wl_row_values(f: dict[str, Any]) -> dict[str, Any]:
+    """ตรวจชนิดของช่องในแถว (ยังไม่ดูฐานข้อมูล) · ครูและห้องที่เลือกใหม่ตรวจกับทะเบียนทีหลัง เมื่อรู้ว่าแก้ได้"""
+    out: dict[str, Any] = {}
+    for k in ("teacher_id", "co_teacher_id"):
+        if k in f:
+            out[k] = _wl_ref_id(k, f[k])
+    if "lab_room_id" in f:
+        out["lab_room_id"] = _wl_room_value("lab_room_id", f["lab_room_id"])
+    if "is_double" in f:
+        out["is_double"] = _wl_bool("is_double", f["is_double"])
+    if "note" in f:
+        out["note"] = _wl_note_value(f["note"])
+    if "confirmed" in f:
+        out["confirmed"] = _wl_bool("confirmed", f["confirmed"])
+    return out
+
+
+def _wl_option_teacher_values(f: dict[str, Any], adding: bool) -> dict[str, Any]:
+    # ครูของตัวเลือกต้องมีครูเสมอ (เอาครูออก = DELETE) ส่ง teacher_id ว่างจึงเป็น 400
+    out: dict[str, Any] = {}
+    if adding or "teacher_id" in f:
+        out["teacher_id"] = _wl_ref_id("teacher_id", f.get("teacher_id"), nullable=False)
+    if "room_id" in f:
+        out["room_id"] = _wl_room_value("room_id", f["room_id"])
+    if "note" in f:
+        out["note"] = _wl_note_value(f["note"])
+    if "confirmed" in f:
+        out["confirmed"] = _wl_bool("confirmed", f["confirmed"])
+    return out
+
+
+def _wl_refuse_unknown_room(field: str, room_id: Any) -> None:
+    # ห้องเป็นทะเบียนของโปรแกรมจัดตาราง (อ่านอย่างเดียว) · ตรวจเฉพาะค่าที่เลือกใหม่ ห้องเดิมที่ถูกลบไปแล้วยังค้างได้
+    if room_id is not None and room_id not in {r.get("id") for r in ROOMS}:
+        raise HTTPException(400, f"ไม่พบห้องรหัส {room_id} ในโปรแกรมจัดตาราง (ช่อง {field})")
+
+
+def _wl_refuse_bad_teacher(cur, field: str, teacher_id: Any) -> None:
+    """ครูที่เลือกใหม่ต้องมีในทะเบียนและยังปฏิบัติงาน · ผู้เรียกเรียกเฉพาะค่าที่เปลี่ยน — ครูที่ถูกทำเครื่องหมายไม่ปฏิบัติงานแล้ว
+    ยังค้างในแถวเดิมได้ ชื่อยังแสดง (Review Focus 3) จนหัวหน้าเลือกคนใหม่ · ไม่ปฏิบัติงาน = 409 (รายชื่อบนหน้าเว็บเก่าแล้ว)"""
+    if teacher_id is None:
+        return
+    cur.execute("SELECT name, active FROM wl_teachers WHERE id = %s", (teacher_id,))
+    hit = cur.fetchone()
+    if hit is None:
+        raise HTTPException(400, f"ไม่พบครูรหัส {teacher_id} ในทะเบียนครู (ช่อง {field})")
+    if not hit[1]:
+        raise HTTPException(409, f"{hit[0]} ถูกทำเครื่องหมายว่าไม่ปฏิบัติงานแล้ว จึงเลือกใหม่ไม่ได้ "
+                                 "— โหลดรายชื่อครูใหม่แล้วเลือกคนอื่น")
+
+
+def _wl_round_for_write(cur, round_id: Any) -> dict[str, Any]:
+    """แถวรอบ FOR SHARE — ทุกการเขียนของส่วนนี้เรียกก่อนแตะ wl_rows / wl_option_teachers / wl_dept_status (ลำดับล็อกข้างบน)"""
+    row = None
+    if type(round_id) is int and 0 < round_id <= _WL_BIGINT_MAX:
+        cur.execute(f"SELECT {', '.join(_WL_ROUND_LOCK_COLS)} FROM wl_rounds WHERE id = %s FOR SHARE", (round_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise HTTPException(404, WL_ROUND_MISSING)
+    return dict(zip(_WL_ROUND_LOCK_COLS, row))
+
+
+def _wl_dept_status_of(cur, round_id: int, dept: Any) -> str | None:
+    """สถานะของกลุ่มในรอบ อ่าน FOR SHARE (การเขียนแถว) · บรรทัด/ตัวเลือกที่ไม่มีกลุ่มไม่มีสถานะ = None"""
+    if dept is None:
+        return None
+    cur.execute("SELECT status FROM wl_dept_status WHERE round_id = %s AND department_id = %s FOR SHARE", (round_id, dept))
+    hit = cur.fetchone()
+    return hit[0] if hit else None
+
+
+def _wl_dept_status_for_review(cur, round_id: int, dept: Any) -> str:
+    """สถานะของกลุ่มในรอบ อ่าน FOR UPDATE (ส่ง ตรวจผ่าน ตีกลับ) · ไม่มี = 404"""
+    hit = None
+    if type(dept) is int and abs(dept) <= _WL_INT4_MAX:
+        cur.execute("SELECT status FROM wl_dept_status WHERE round_id = %s AND department_id = %s FOR UPDATE",
+                    (round_id, dept))
+        hit = cur.fetchone()
+    if hit is None:
+        raise HTTPException(404, "ไม่พบกลุ่มสาระนี้ในรอบอัตรากำลังนี้")
+    return hit[0]
+
+
+def _wl_read_scope(session: dict[str, Any], rnd: dict[str, Any], department_id: Any) -> Any:
+    """ขอบเขตที่ผู้ขออ่านได้ · หัวหน้า: กลุ่มตัวเองเสมอ (ค่าที่ส่งมาถูกเมิน) และรอบต้องเปิดให้กรอกแล้ว
+    · admin: ไม่ส่ง = ทุกกลุ่ม · none = บรรทัด/ตัวเลือกที่ไม่มีกลุ่ม · ตัวเลข = กลุ่มนั้น"""
+    if session.get("role") != "admin":
+        if rnd["status"] == "preparing":
+            raise HTTPException(403, "รอบอัตรากำลังนี้ยังไม่เปิดให้กลุ่มสาระกรอก")
+        return session.get("department_id")
+    text = str(department_id).strip() if department_id is not None else ""
+    if text == "":
+        return _WL_ALL
+    if text == "none":
+        return None
+    if _re.fullmatch(r"\d{1,9}", text):
+        return int(text)
+    raise HTTPException(400, "ช่อง department_id ต้องเป็นรหัสกลุ่มสาระ หรือ none (บรรทัดที่ไม่มีกลุ่มสาระ)")
+
+
+def _wl_option_teacher_out(row: dict[str, Any], set_id: Any) -> dict[str, Any]:
+    """แถวของ wl_option_teachers → รูป "ครูของตัวเลือก" ในสัญญา (เติม set_id)"""
+    return {"id": row["id"], "round_id": row["round_id"], "option_id": row["option_id"], "set_id": set_id,
+            "teacher_id": row["teacher_id"], "room_id": row["room_id"], "note": row["note"],
+            "confirmed": row["confirmed"], "from_plan": row["from_plan"]}
+
+
+def _wl_round_options(cur, rnd: dict[str, Any], scope: Any, names: dict[Any, str]) -> list[dict[str, Any]]:
+    """ตัวเลือกของชุดในภาคเรียนของรอบ ตามขอบเขต — ตัวเลือก + set (ชุดของมัน ไม่มี options) + teachers (ครูของตัวเลือกในรอบนี้)
+    หัวหน้าเห็นแค่ตัวเลือกของกลุ่มตัวเอง (สเปกหลักข้อทดสอบ 9) · เรียงตามชุดแล้วตัวเลือก"""
+    cur.execute(f"SELECT {', '.join(_WL_TERM_SET_COLS)} FROM wl_term_sets WHERE year = %s AND semester = %s ORDER BY id",
+                (rnd["year"], rnd["semester"]))
+    sets: dict[Any, dict[str, Any]] = {}
+    for v in cur.fetchall():
+        s = dict(zip(_WL_TERM_SET_COLS, v))
+        gids = _wl_sorted_groups(list(s["group_ids"] or []), names)
+        sets[s["id"]] = {**s, "group_ids": gids, "group_names": [_wl_group_label(g, names) for g in gids]}
+    if not sets:
+        return []
+    where, params = "set_id = ANY(%s)", [sorted(sets)]
+    if scope is None:
+        where += " AND department_id IS NULL"
+    elif scope != _WL_ALL:
+        where += " AND department_id = %s"
+        params.append(scope)
+    cur.execute(f"SELECT {', '.join(_WL_OPTION_COLS)} FROM wl_term_set_options WHERE {where} ORDER BY id", tuple(params))
+    options = [dict(zip(_WL_OPTION_COLS, v)) for v in cur.fetchall()]
+    if not options:
+        return []
+    cur.execute(f"SELECT {', '.join(_WL_OPTION_TEACHER_COLS)} FROM wl_option_teachers "
+                "WHERE round_id = %s AND option_id = ANY(%s) ORDER BY id", (rnd["id"], [o["id"] for o in options]))
+    teachers: dict[Any, list[dict[str, Any]]] = {}
+    for v in cur.fetchall():
+        t = dict(zip(_WL_OPTION_TEACHER_COLS, v))
+        teachers.setdefault(t["option_id"], []).append(t)
+    return [{**o, "set": dict(sets[o["set_id"]]),
+             "teachers": [_wl_option_teacher_out(t, o["set_id"]) for t in teachers.get(o["id"], [])]}
+            for o in sorted(options, key=lambda o: (o["set_id"], o["id"]))]
+
+
+def _wl_round_items(cur, rnd: dict[str, Any], scope: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """แถว (รูป "แถว (ของรอบ)") และตัวเลือก (_wl_round_options) ของรอบตามขอบเขต — ทุก route ในส่วนนี้อ่านผ่านตัวนี้"""
+    where, params = "r.round_id = %s", [rnd["id"]]
+    if scope is None:
+        where += " AND l.department_id IS NULL"
+    elif scope != _WL_ALL:
+        where += " AND l.department_id = %s"
+        params.append(scope)
+    names = _wl_group_names()
+    cur.execute(_wl_round_rows_sql(where), tuple(params))
+    rows = [_wl_round_row_out(v, names) for v in cur.fetchall()]
+    return rows, _wl_round_options(cur, rnd, scope, names)
+
+
+def _wl_rows_out(cur, ids: list[int]) -> list[dict[str, Any]]:
+    cur.execute(_wl_round_rows_sql("r.id = ANY(%s)"), (ids,))
+    names = _wl_group_names()
+    return [_wl_round_row_out(v, names) for v in cur.fetchall()]
+
+
+_WL_ROW_LOCK_COLS = ("id", "group_id", "teacher_id", "co_teacher_id", "lab_room_id", "department_id")
+
+
+def _wl_rows_for_write(cur, ids: list[int]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """แถวที่จะเขียน + แถวรอบของมัน — หารอบจากแถวก่อน (ไม่ล็อก) แล้วล็อกแถวรอบ FOR SHARE แล้วจึงอ่านแถวอีกครั้งพร้อมกลุ่มสาระ
+    ของบรรทัด (ระหว่างนี้บรรทัดย้ายกลุ่มหรือถูกลบไม่ได้แล้ว) · แถวที่หายไปแล้ว = 404 · หลายรอบในคำขอเดียว = 400"""
+    if not ids or any(not 0 < i <= _WL_BIGINT_MAX for i in ids):
+        raise HTTPException(404, WL_ROW_MISSING)
+    cur.execute("SELECT DISTINCT round_id FROM wl_rows WHERE id = ANY(%s)", (ids,))
+    rounds = [r[0] for r in cur.fetchall()]
+    if len(rounds) > 1:
+        raise HTTPException(400, "แถวที่เลือกต้องอยู่ในรอบเดียวกัน")
+    if not rounds:
+        raise HTTPException(404, WL_ROW_MISSING)
+    rnd = _wl_round_for_write(cur, rounds[0])
+    cur.execute("SELECT r.id, r.group_id, r.teacher_id, r.co_teacher_id, r.lab_room_id, l.department_id FROM wl_rows r "
+                "JOIN wl_curriculum_lines l ON l.id = r.line_id WHERE r.round_id = %s AND r.id = ANY(%s)", (rnd["id"], ids))
+    rows = [dict(zip(_WL_ROW_LOCK_COLS, v)) for v in cur.fetchall()]
+    if len(rows) != len(ids):
+        raise HTTPException(404, WL_ROW_MISSING if len(ids) == 1 else
+                            f"ไม่พบ {len(ids) - len(rows):,} แถวจากที่เลือก (อาจถูกลบตามหลักสูตร) "
+                            "จึงไม่ได้บันทึกแถวไหนเลย โหลดหน้าใหม่แล้วเลือกอีกครั้ง")
+    return rows, rnd
+
+
+def _wl_check_row_change(cur, rows: list[dict[str, Any]], vals: dict[str, Any]) -> None:
+    """ตรวจค่าที่จะเขียนกับค่าตอนนี้ของทุกแถว — ทั้งหมดผ่านหรือไม่เขียนเลย · ตรวจครู/ห้องเฉพาะเมื่อมีแถวที่ค่าเปลี่ยนจริง"""
+    if "teacher_id" in vals or "co_teacher_id" in vals:
+        names = _wl_group_names()
+        for r in rows:
+            t, co = vals.get("teacher_id", r["teacher_id"]), vals.get("co_teacher_id", r["co_teacher_id"])
+            if t is not None and t == co:
+                raise HTTPException(400, f"ครูผู้สอนกับครูสอนร่วมต้องเป็นคนละคน (ห้อง {_wl_group_label(r['group_id'], names)})")
+    for k in ("teacher_id", "co_teacher_id"):
+        if k in vals and any(r[k] != vals[k] for r in rows):
+            _wl_refuse_bad_teacher(cur, k, vals[k])
+    if "lab_room_id" in vals and any(r["lab_room_id"] != vals["lab_room_id"] for r in rows):
+        _wl_refuse_unknown_room("lab_room_id", vals["lab_room_id"])
+
+
+def _wl_write_rows(cur, ids: list[int], vals: dict[str, Any]) -> None:
+    vals = {**wl_apply_teacher_change(vals), "from_plan": False}
+    keys = [k for k in _WL_ROW_EDIT_COLS if k in vals]
+    cur.execute(f"UPDATE wl_rows SET {', '.join(k + ' = %s' for k in keys)} WHERE id = ANY(%s) RETURNING id",
+                (*(vals[k] for k in keys), ids))
+    # แถวถูกลบไปพร้อมกันพอดี (ไม่ควรเกิดเพราะถือแถวรอบอยู่ แต่ถ้าเกิดต้องไม่สำเร็จเงียบ ๆ) → 404 และไม่มีแถวไหนถูกเขียน
+    if len(cur.fetchall()) != len(ids):
+        raise HTTPException(404, WL_ROW_MISSING if len(ids) == 1 else
+                            "บางแถวที่เลือกถูกลบไปพร้อมกัน จึงไม่ได้บันทึกแถวไหนเลย โหลดหน้าใหม่แล้วเลือกอีกครั้ง")
+
+
+def _wl_bulk_ids(v: Any) -> list[int]:
+    if not isinstance(v, list) or not v or any(type(i) is not int or not 0 < i <= _WL_BIGINT_MAX for i in v):
+        raise HTTPException(400, "ช่อง ids ต้องเป็นรายการรหัสแถว (จำนวนเต็ม) อย่างน้อยหนึ่งแถว")
+    ids = list(dict.fromkeys(v))
+    if len(ids) > WL_BULK_MAX:
+        raise HTTPException(400, f"เลือกได้ครั้งละไม่เกิน {WL_BULK_MAX:,} แถว")
+    return ids
+
+
+def _wl_option_for_write(cur, option_id: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """ตัวเลือก + แถวรอบของภาคเรียนของมัน (FOR SHARE) · ตัวเลือกอ่าน FOR KEY SHARE ก่อนเพิ่มครู: การลบตัวเลือกที่แข่งกันต้องรอ
+    เรา commit ก่อน — ไม่อย่างนั้น FK ของ option_id (DEFERRED) ล้มตอน COMMIT กลายเป็น 500 · ไม่มีรอบหรือไม่มีตัวเลือก = 404"""
+    hit = None
+    if type(option_id) is int and 0 < option_id <= _WL_BIGINT_MAX:
+        cur.execute("SELECT o.id, s.year, s.semester FROM wl_term_set_options o JOIN wl_term_sets s ON s.id = o.set_id "
+                    "WHERE o.id = %s", (option_id,))
+        hit = cur.fetchone()
+    if hit is None:
+        raise HTTPException(404, WL_OPTION_MISSING)
+    cur.execute(f"SELECT {', '.join(_WL_ROUND_LOCK_COLS)} FROM wl_rounds WHERE year = %s AND semester = %s FOR SHARE",
+                (hit[1], hit[2]))
+    r = cur.fetchone()
+    if r is None:
+        raise HTTPException(404, f"ภาคเรียน {term_label(hit[1], hit[2])} ยังไม่มีรอบอัตรากำลัง จึงยังใส่ครูของตัวเลือกไม่ได้")
+    cur.execute("SELECT id, set_id, department_id FROM wl_term_set_options WHERE id = %s FOR KEY SHARE", (option_id,))
+    o = cur.fetchone()
+    if o is None:
+        raise HTTPException(404, WL_OPTION_MISSING)
+    return {"id": o[0], "set_id": o[1], "department_id": o[2]}, dict(zip(_WL_ROUND_LOCK_COLS, r))
+
+
+def _wl_option_teacher_for_write(cur, ot_id: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """ครูของตัวเลือก + แถวรอบ (FOR SHARE ก่อนอ่านอีกครั้งพร้อมกลุ่มสาระของตัวเลือก) · ไม่มี = 404"""
+    hit = None
+    if type(ot_id) is int and 0 < ot_id <= _WL_BIGINT_MAX:
+        cur.execute("SELECT round_id FROM wl_option_teachers WHERE id = %s", (ot_id,))
+        hit = cur.fetchone()
+    if hit is None:
+        raise HTTPException(404, WL_OPTION_TEACHER_MISSING)
+    rnd = _wl_round_for_write(cur, hit[0])
+    cur.execute("SELECT t.id, t.option_id, t.teacher_id, t.room_id, o.set_id, o.department_id FROM wl_option_teachers t "
+                "JOIN wl_term_set_options o ON o.id = t.option_id WHERE t.id = %s", (ot_id,))
+    v = cur.fetchone()
+    if v is None:
+        raise HTTPException(404, WL_OPTION_TEACHER_MISSING)
+    return dict(zip(("id", "option_id", "teacher_id", "room_id", "set_id", "department_id"), v)), rnd
+
+
+def _wl_refuse_teacher_in_option(cur, round_id: int, option_id: int, teacher_id: int, skip_id: Any = None) -> None:
+    # ครูคนเดียวกันสองแถวในตัวเลือกเดียวไม่มีความหมาย (ยอดคาบนับครั้งเดียวอยู่แล้ว) — กันกดเพิ่มซ้ำ
+    cur.execute("SELECT id FROM wl_option_teachers WHERE round_id = %s AND option_id = %s AND teacher_id = %s",
+                (round_id, option_id, teacher_id))
+    if any(r[0] != skip_id for r in cur.fetchall()):
+        raise HTTPException(409, "ครูคนนี้อยู่ในตัวเลือกนี้แล้ว")
+
+
+def _wl_dept_views(cur, rnd: dict[str, Any], scope: Any) -> list[dict[str, Any]]:
+    """สถานะกลุ่ม (รูปในสัญญา) + ความคืบหน้า {rows, confirmed, missing_teacher} ของ wl_fill_counts · scope = ทุกกลุ่มหรือกลุ่มเดียว"""
+    where, params = "round_id = %s", [rnd["id"]]
+    if scope != _WL_ALL:
+        where += " AND department_id = %s"
+        params.append(scope)
+    cur.execute(f"SELECT {', '.join(_WL_DEPT_STATUS_COLS)} FROM wl_dept_status WHERE {where} ORDER BY department_id",
+                tuple(params))
+    statuses = [dict(zip(_WL_DEPT_STATUS_COLS, v)) for v in cur.fetchall()]
+    rows, options = _wl_round_items(cur, rnd, scope)
+    out = []
+    for st in statuses:
+        d = st["department_id"]
+        counts = wl_fill_counts([r for r in rows if r["department_id"] == d],
+                                [o for o in options if o["department_id"] == d])
+        out.append({"department_id": d, "status": st["status"], "submitted_at": _wl_iso(st["submitted_at"]),
+                    "submitted_by": st["submitted_by"], "reviewed_at": _wl_iso(st["reviewed_at"]),
+                    "reviewed_by": st["reviewed_by"], "note": st["note"], **counts})
+    return out
+
+
+# ── route: อ่าน ──
+@app.get("/api/workload/rounds/{round_id}/rows")
+def wl_round_rows(round_id: int, request: Request, department_id: str | None = None) -> dict[str, Any]:
+    """แถวและตัวเลือกของรอบ {rows, options} · หัวหน้า: กลุ่มตัวเองเสมอ (department_id ที่ส่งมาถูกเมิน) รอบต้องไม่ใช่ preparing
+    · admin: ไม่ส่ง department_id = ทุกกลุ่ม · none = บรรทัดที่ไม่มีกลุ่ม · ตัวเลข = กลุ่มนั้น"""
+    with _wl_db() as cur:
+        sess = wl_require_session(request, cur)
+        rnd = _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING)
+        rows, options = _wl_round_items(cur, rnd, _wl_read_scope(sess, rnd, department_id))
+        return {"rows": rows, "options": options}
+
+
+@app.get("/api/workload/rounds/{round_id}/departments")
+def wl_round_departments(round_id: int, request: Request) -> list[dict[str, Any]]:
+    """สถานะของทุกกลุ่มพร้อมความคืบหน้า (admin) · หัวหน้าได้เฉพาะกลุ่มตัวเอง (รายการที่มีตัวเดียว รูปเดียวกัน)"""
+    with _wl_db() as cur:
+        sess = wl_require_session(request, cur)
+        rnd = _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING)
+        return _wl_dept_views(cur, rnd, _wl_read_scope(sess, rnd, None))
+
+
+@app.get("/api/workload/rounds/{round_id}/loads")
+def wl_round_loads(round_id: int, request: Request) -> list[dict[str, Any]]:
+    """ยอดคาบรายครู [{teacher_id, name, department_id, total, own}] — total = ยอดทั้งรอบ (wl_teacher_loads)
+
+    admin: ครูที่ยังปฏิบัติงานทุกคน + คนที่ไม่ปฏิบัติงานแล้วแต่ยังมีคาบในรอบ · own = total
+    หัวหน้า (สเปก 4.4 ค.): ครูกลุ่มตัวเอง ∪ ครูในแถว/ตัวเลือกของกลุ่มตัวเอง · total เป็นยอดจริงทั้งรอบ (ครูที่สอนข้ามกลุ่มคือคน
+    ที่เสี่ยงคาบเกินที่สุด) · own = ส่วนจากแถว/ตัวเลือกของกลุ่มตัวเอง · ส่งแค่ตัวเลข ไม่มีแถวหรือชื่อครูนอกชุดนี้
+    """
+    with _wl_db() as cur:
+        sess = wl_require_session(request, cur)
+        rnd = _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING)
+        scope = _wl_read_scope(sess, rnd, None)
+        rows, options = _wl_round_items(cur, rnd, _WL_ALL)
+        total = wl_teacher_loads(rows, options)
+        related: set[Any] = set()
+        own = total
+        if scope != _WL_ALL:
+            mine = [r for r in rows if r["department_id"] == scope]
+            mine_opts = [o for o in options if o["department_id"] == scope]
+            own = wl_teacher_loads(mine, mine_opts)
+            related = ({t for r in mine for t in (r["teacher_id"], r["co_teacher_id"]) if t is not None}
+                       | {x["teacher_id"] for o in mine_opts for x in o["teachers"] if x["teacher_id"] is not None})
+        cur.execute("SELECT id, name, department_id, dept_order, active FROM wl_teachers")
+        teachers = [dict(zip(("id", "name", "department_id", "dept_order", "active"), v)) for v in cur.fetchall()]
+        teachers.sort(key=lambda t: (t["department_id"] is None, t["department_id"] or 0,
+                                     t["dept_order"] is None, t["dept_order"] or 0, t["id"]))
+        out = []
+        for t in teachers:
+            n = total.get(t["id"], 0)
+            if scope == _WL_ALL:
+                keep = t["active"] or n > 0
+            else:
+                keep = t["id"] in related or (t["department_id"] == scope and (t["active"] or n > 0))
+            if keep:
+                out.append({"teacher_id": t["id"], "name": t["name"], "department_id": t["department_id"],
+                            "total": n, "own": own.get(t["id"], 0)})
+        return out
+
+
+# ── route: เขียนแถว ──
+@app.post("/api/workload/rows/bulk")
+def wl_rows_bulk(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """{ids, set: {teacher_id?, confirmed?}} — ใส่ครูคนเดียวหรือยืนยันหลายแถวพร้อมกัน ทั้งหมดหรือไม่เลย: แถวที่ไม่มี (404)
+    ของกลุ่มอื่น (403) สถานะไม่เปิดให้แก้ (409) หรือค่าที่ใช้ไม่ได้กับแถวใดแถวหนึ่ง → ไม่มีแถวไหนถูกเขียน · คืน {rows}"""
+    with _wl_db() as cur:
+        sess = wl_require_session(request, cur)
+        f = wl_clean_fields(body, WL_BULK_FIELDS)
+        ids = _wl_bulk_ids(f.get("ids"))
+        if not isinstance(f.get("set"), dict):
+            raise HTTPException(400, 'ช่อง set ต้องเป็นออบเจ็กต์ เช่น {"confirmed": true} หรือ {"teacher_id": 12}')
+        vals = _wl_row_values(wl_clean_fields(f["set"], WL_BULK_SET_FIELDS))
+        if not vals:
+            raise HTTPException(400, "ช่อง set ต้องมี teacher_id หรือ confirmed อย่างน้อยหนึ่งช่อง")
+        rows, rnd = _wl_rows_for_write(cur, ids)
+        depts = sorted({r["department_id"] for r in rows if r["department_id"] is not None})
+        status: dict[Any, str] = {}
+        if depts:
+            # หลายกลุ่ม (admin) ล็อกตามลำดับรหัสกลุ่มเสมอ ไม่ให้สองคำขอถือคนละกลุ่มแล้วรอกันเอง
+            cur.execute("SELECT department_id, status FROM wl_dept_status WHERE round_id = %s AND department_id = ANY(%s) "
+                        "ORDER BY department_id FOR SHARE", (rnd["id"], depts))
+            status = {d: s for d, s in cur.fetchall()}
+        for d in depts + ([None] if any(r["department_id"] is None for r in rows) else []):
+            _wl_refuse_edit(sess, rnd["status"], status.get(d), d)
+        _wl_check_row_change(cur, rows, vals)
+        _wl_write_rows(cur, ids, vals)
+        return {"rows": _wl_rows_out(cur, ids)}
+
+
+@app.put("/api/workload/rows/{row_id}")
+def wl_rows_update(row_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """แก้ช่องของหัวหน้าในแถวหนึ่งแถว (WL_ROW_FIELDS เท่านั้น — ช่องวิชาตอบ 400 บอกชื่อช่อง) · คืนแถวในรูปสัญญา
+    เลือกครูเองแล้วยืนยันให้ (wl_apply_teacher_change) · ครูที่เลือกใหม่ต้องมีจริงและยังปฏิบัติงาน · ทุกการเขียนตั้ง from_plan เท็จ"""
+    with _wl_db() as cur:
+        sess = wl_require_session(request, cur)
+        vals = _wl_row_values(wl_clean_fields(body, WL_ROW_FIELDS))
+        if not vals:
+            raise HTTPException(400, "ไม่มีช่องที่จะแก้ ส่งอย่างน้อยหนึ่งช่อง")
+        rows, rnd = _wl_rows_for_write(cur, [row_id])
+        dept = rows[0]["department_id"]
+        _wl_refuse_edit(sess, rnd["status"], _wl_dept_status_of(cur, rnd["id"], dept), dept)
+        _wl_check_row_change(cur, rows, vals)
+        _wl_write_rows(cur, [row_id], vals)
+        return _wl_rows_out(cur, [row_id])[0]
+
+
+# ── route: ครูของตัวเลือก ──
+@app.post("/api/workload/options/{option_id}/teachers")
+def wl_option_teachers_add(option_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """เพิ่มครูในตัวเลือกของชุดคาบเสรี/กิจกรรม {teacher_id, room_id?, note?} — คนเพิ่มเองจึงยืนยันแล้ว (confirmed=True)
+    ตัวเลือกหนึ่งมีครูได้หลายคน คนเดิมซ้ำในตัวเลือกเดียว = 409 · คืน "ครูของตัวเลือก" ในรูปสัญญา"""
+    with _wl_db() as cur:
+        sess = wl_require_session(request, cur)
+        vals = _wl_option_teacher_values(wl_clean_fields(body, WL_OPTION_TEACHER_ADD_FIELDS), adding=True)
+        _wl_refuse_unknown_room("room_id", vals.get("room_id"))
+        opt, rnd = _wl_option_for_write(cur, option_id)
+        _wl_refuse_edit(sess, rnd["status"], _wl_dept_status_of(cur, rnd["id"], opt["department_id"]), opt["department_id"])
+        _wl_refuse_bad_teacher(cur, "teacher_id", vals["teacher_id"])
+        _wl_refuse_teacher_in_option(cur, rnd["id"], opt["id"], vals["teacher_id"])
+        cur.execute(f"INSERT INTO wl_option_teachers (round_id, option_id, teacher_id, room_id, note, confirmed, from_plan) "
+                    f"VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {', '.join(_WL_OPTION_TEACHER_COLS)}",
+                    (rnd["id"], opt["id"], vals["teacher_id"], vals.get("room_id"), vals.get("note", ""), True, False))
+        return _wl_option_teacher_out(dict(zip(_WL_OPTION_TEACHER_COLS, cur.fetchone())), opt["set_id"])
+
+
+@app.put("/api/workload/option-teachers/{option_teacher_id}")
+def wl_option_teachers_update(option_teacher_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """แก้ครู ห้อง หมายเหตุ ยืนยัน ของครูของตัวเลือกหนึ่งแถว (WL_OPTION_TEACHER_FIELDS) · เปลี่ยนครู = ยืนยัน"""
+    with _wl_db() as cur:
+        sess = wl_require_session(request, cur)
+        vals = _wl_option_teacher_values(wl_clean_fields(body, WL_OPTION_TEACHER_FIELDS), adding=False)
+        if not vals:
+            raise HTTPException(400, "ไม่มีช่องที่จะแก้ ส่งอย่างน้อยหนึ่งช่อง")
+        ot, rnd = _wl_option_teacher_for_write(cur, option_teacher_id)
+        _wl_refuse_edit(sess, rnd["status"], _wl_dept_status_of(cur, rnd["id"], ot["department_id"]), ot["department_id"])
+        if "teacher_id" in vals and vals["teacher_id"] != ot["teacher_id"]:
+            _wl_refuse_bad_teacher(cur, "teacher_id", vals["teacher_id"])
+            _wl_refuse_teacher_in_option(cur, rnd["id"], ot["option_id"], vals["teacher_id"], skip_id=ot["id"])
+        if "room_id" in vals and vals["room_id"] != ot["room_id"]:
+            _wl_refuse_unknown_room("room_id", vals["room_id"])
+        vals = {**wl_apply_teacher_change(vals), "from_plan": False}
+        keys = [k for k in _WL_OPTION_TEACHER_EDIT_COLS if k in vals]
+        cur.execute(f"UPDATE wl_option_teachers SET {', '.join(k + ' = %s' for k in keys)} WHERE id = %s "
+                    f"RETURNING {', '.join(_WL_OPTION_TEACHER_COLS)}", (*(vals[k] for k in keys), ot["id"]))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(404, WL_OPTION_TEACHER_MISSING)
+        return _wl_option_teacher_out(dict(zip(_WL_OPTION_TEACHER_COLS, row)), ot["set_id"])
+
+
+@app.delete("/api/workload/option-teachers/{option_teacher_id}")
+def wl_option_teachers_delete(option_teacher_id: int, request: Request) -> dict[str, Any]:
+    """เอาครูออกจากตัวเลือก — ลบแถวของ wl_option_teachers เท่านั้น (ทะเบียนครูไม่ถูกแตะ ไม่มี route ลบครูหรือวิชา)"""
+    with _wl_db() as cur:
+        sess = wl_require_session(request, cur)
+        ot, rnd = _wl_option_teacher_for_write(cur, option_teacher_id)
+        _wl_refuse_edit(sess, rnd["status"], _wl_dept_status_of(cur, rnd["id"], ot["department_id"]), ot["department_id"])
+        cur.execute("DELETE FROM wl_option_teachers WHERE id = %s", (ot["id"],))
+        if cur.rowcount == 0:
+            raise HTTPException(404, WL_OPTION_TEACHER_MISSING)
+        return {"ok": True}
+
+
+# ── route: ส่ง ตรวจผ่าน ตีกลับ ──
+@app.post("/api/workload/rounds/{round_id}/departments/{dept}/submit")
+def wl_dept_submit(round_id: int, dept: int, request: Request) -> dict[str, Any]:
+    """หัวหน้าส่งกลุ่มตัวเองให้ตรวจ: รอบเปิดให้กรอก · สถานะ filling/returned · ทุกแถวและตัวเลือกมีครูและยืนยันแล้ว
+    (wl_submit_blocker) · ส่งแล้วหัวหน้าแก้ไม่ได้จนกว่าจะถูกตีกลับ · คืนสถานะกลุ่ม (รูปเดียวกับ GET .../departments)"""
+    with _wl_db() as cur:
+        sess = wl_require_session(request, cur)
+        if sess["role"] != "head":
+            raise HTTPException(403, "การส่งเป็นของหัวหน้ากลุ่มสาระ — ผู้ดูแลระบบตรวจผ่านหรือตีกลับแทน")
+        rnd = _wl_round_for_write(cur, round_id)
+        if rnd["status"] == "closed":
+            raise HTTPException(409, f"รอบอัตรากำลัง {rnd['label']} ปิดแล้ว จึงส่งไม่ได้")
+        if rnd["status"] != "filling":
+            raise HTTPException(403, "รอบอัตรากำลังนี้ยังไม่เปิดให้กลุ่มสาระกรอก")
+        if dept != sess["department_id"]:
+            raise HTTPException(403, "หัวหน้ากลุ่มสาระส่งได้เฉพาะกลุ่มของตัวเอง")
+        st = _wl_dept_status_for_review(cur, rnd["id"], dept)
+        if st not in ("filling", "returned"):
+            raise HTTPException(409, f"กลุ่มสาระนี้{WL_DEPT_STATUS_TEXT.get(st, st)} จึงส่งซ้ำไม่ได้")
+        blocker = wl_submit_blocker(*_wl_round_items(cur, rnd, dept))
+        if blocker:
+            raise HTTPException(409, blocker)
+        cur.execute("UPDATE wl_dept_status SET status = %s, submitted_at = now(), submitted_by = %s "
+                    "WHERE round_id = %s AND department_id = %s", ("submitted", str(sess.get("label") or ""), rnd["id"], dept))
+        return _wl_dept_views(cur, rnd, dept)[0]
+
+
+def _wl_review_target(cur, round_id: int, dept: int, allowed: tuple[str, ...], need: str, verb: str) -> dict[str, Any]:
+    """ส่วนร่วมของตรวจผ่าน/ตีกลับ (ผู้เรียกตรวจว่าเป็น admin แล้ว): รอบไม่ปิด · สถานะกลุ่ม (FOR UPDATE) อยู่ใน allowed"""
+    rnd = _wl_round_for_write(cur, round_id)
+    if rnd["status"] == "closed":
+        raise HTTPException(409, f"รอบอัตรากำลัง {rnd['label']} ปิดแล้ว จึง{verb}ไม่ได้")
+    st = _wl_dept_status_for_review(cur, rnd["id"], dept)
+    if st not in allowed:
+        raise HTTPException(409, f"{verb}ได้เฉพาะกลุ่มที่{need} — ตอนนี้กลุ่มสาระนี้{WL_DEPT_STATUS_TEXT.get(st, st)}")
+    return rnd
+
+
+@app.post("/api/workload/rounds/{round_id}/departments/{dept}/approve")
+def wl_dept_approve(round_id: int, dept: int, request: Request) -> dict[str, Any]:
+    """admin ตรวจผ่านกลุ่มที่ส่งแล้ว (submitted → approved) · reviewed_by = ชื่อเรียกของรหัสที่ใช้"""
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        rnd = _wl_review_target(cur, round_id, dept, ("submitted",), "ส่งแล้ว", "ตรวจผ่าน")
+        cur.execute("UPDATE wl_dept_status SET status = %s, reviewed_at = now(), reviewed_by = %s "
+                    "WHERE round_id = %s AND department_id = %s", ("approved", str(sess.get("label") or ""), rnd["id"], dept))
+        return _wl_dept_views(cur, rnd, dept)[0]
+
+
+@app.post("/api/workload/rounds/{round_id}/departments/{dept}/return")
+def wl_dept_return(round_id: int, dept: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """admin ตีกลับ {note} (จาก submitted หรือ approved → returned) — หมายเหตุห้ามว่าง เพราะเป็นสิ่งเดียวที่บอกหัวหน้าว่าต้องแก้อะไร
+    ตีกลับแล้วหัวหน้าแก้และส่งใหม่ได้"""
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        note = wl_clean_fields(body, WL_RETURN_FIELDS).get("note")
+        if not isinstance(note, str) or not note.strip():
+            raise HTTPException(400, "ต้องเขียนหมายเหตุบอกกลุ่มสาระว่าต้องแก้อะไร (ช่อง note ห้ามว่าง)")
+        note = _wl_text("note", note, True)
+        rnd = _wl_review_target(cur, round_id, dept, ("submitted", "approved"), "ส่งแล้วหรือตรวจผ่านแล้ว", "ตีกลับ")
+        cur.execute("UPDATE wl_dept_status SET status = %s, reviewed_at = now(), reviewed_by = %s, note = %s "
+                    "WHERE round_id = %s AND department_id = %s",
+                    ("returned", str(sess.get("label") or ""), note, rnd["id"], dept))
+        return _wl_dept_views(cur, rnd, dept)[0]
+
+
 def _check_term_status(status: str) -> None:
     if status not in TERM_STATUSES:
         raise ValueError(f"สถานะเทอมไม่ถูกต้อง: {status!r}")

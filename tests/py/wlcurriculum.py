@@ -212,7 +212,7 @@ class FakeCur:
 
     def _select(self, s, params):
         # ล็อกแถว (FOR UPDATE / FOR SHARE) ไม่มีความหมายในของปลอมที่มีคำขอเดียว — ตัวทดสอบดูจาก cur.log ว่าขอไว้
-        s = re.sub(r" FOR (UPDATE|SHARE|NO KEY UPDATE)$", "", s)
+        s = re.sub(r" FOR (UPDATE|SHARE|NO KEY UPDATE|KEY SHARE)$", "", s)
         if " JOIN " in s:
             return self._select_join(s, params)
         m = re.fullmatch(r"SELECT (DISTINCT )?(.+?) FROM (\w+)(?: WHERE (.+?))?(?: GROUP BY (\w+))?"
