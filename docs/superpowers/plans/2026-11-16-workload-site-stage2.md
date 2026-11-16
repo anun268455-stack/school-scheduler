@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** admin เปิดรอบอัตรากำลังที่ยกแถวมาจากแผนการสอนและตารางที่จัดเสร็จแล้ว หัวหน้ากลุ่มสาระยืนยัน/แก้ครูของกลุ่มตัวเองแล้วกดส่ง admin ตรวจผ่านหรือตีกลับ ทุกคนเห็นคาบรายครู และทั้งเว็บมีหน้าตาใหม่ที่สบายตา โดยข้อมูลของโปรแกรมจัดตารางไม่ถูกแตะ
+**Goal:** admin ทำหลักสูตรของภาคเรียนในเว็บนี้ (ตั้งต้นจากโปรแกรมจัดตารางหรือเทอมก่อน) แล้วเปิดรอบอัตรากำลังที่แถวมาจากหลักสูตร หัวหน้ากลุ่มสาระใส่ครูอย่างเดียวแล้วกดส่ง admin ตรวจผ่านหรือตีกลับ ทุกคนเปิดดูหลักสูตรและสรุปได้ และทั้งเว็บมีหน้าตาใหม่ที่สบายตา โดยข้อมูลของโปรแกรมจัดตารางไม่ถูกแตะ
 
-**Architecture:** ฝั่งเซิร์ฟเวอร์เพิ่มตาราง SQL 5 ตาราง (`wl_rounds` `wl_rows` `wl_sets` `wl_set_options` `wl_dept_status`) และ route ใต้ `/api/workload/` ใน `mock_api.py` ต่อจากบล็อกของขั้นที่ 1 · การแปลงแผนการสอน + ชุดคาบเสรี + ช่องในตาราง เป็นแถวของรอบ เป็นฟังก์ชันล้วนตัวเดียว · กฎนับคาบรายครูอยู่ที่เซิร์ฟเวอร์ตัวเดียว · ฝั่งหน้าเว็บมีชุดชิ้นส่วนหน้าตา (`workload/src/ui/`) ที่ทุกหน้าใช้ และตรรกะล้วนของรอบ (`workload/src/round.ts`) ที่ทดสอบด้วย node ได้
+**Architecture:** ฝั่งเซิร์ฟเวอร์เพิ่มตารางหลักสูตรของภาคเรียน และตารางของรอบ (แถว = บรรทัดหลักสูตร × ห้อง ที่เก็บแค่ช่องของหัวหน้า) ใน `mock_api.py` ต่อจากบล็อกของขั้นที่ 1 · การแปลงแผนการสอน + ชุดคาบเสรี + ช่องในตาราง เป็นฟังก์ชันล้วนตัวเดียว (Task 1) ใช้ตั้งต้นหลักสูตรและใส่ครูเทอมก่อน · กฎนับคาบรายครูอยู่ที่เซิร์ฟเวอร์ตัวเดียว · ฝั่งหน้าเว็บมีชุดชิ้นส่วนหน้าตา (`workload/src/ui/`) ที่ทุกหน้าใช้ และตรรกะล้วนของรอบ (`workload/src/round.ts`) ที่ทดสอบด้วย node ได้
 
 **Tech Stack:** FastAPI (ไม่มี Pydantic) · psycopg 3 + PostgreSQL · React 18 + Vite + TypeScript + Tailwind (มีอยู่แล้วใน `workload/`) · ตัวทดสอบของ repo (`bash tests/run.sh`) · ไม่มี dependency ใหม่ทั้งสองฝั่ง
 
-**Spec:** `docs/superpowers/specs/2026-11-16-workload-stage2-design.md` (ผู้ใช้อนุมัติ 16 พ.ย.) — สร้างบน `docs/superpowers/specs/2026-11-06-workload-entry-site-design.md` ("สเปกหลัก")
+**Spec:** `docs/superpowers/specs/2026-11-16-workload-stage2-design.md` (ผู้ใช้อนุมัติ 16 พ.ย. · **ข้อ 4.5 "หลักสูตรมาก่อน" ชนะข้อ 4.1–4.3 ที่ขัดกัน**) — สร้างบน `docs/superpowers/specs/2026-11-06-workload-entry-site-design.md` ("สเปกหลัก")
 ภาพทิศทางหน้าตา: `docs/superpowers/specs/2026-11-16-workload-stage2/mockup-head.png` · `mockup-admin.png`
 
 ---
@@ -35,9 +35,12 @@
 | สิ่ง | รูป JSON ที่ route คืน |
 |---|---|
 | รอบ | `{id, year, semester, label, status: "preparing"\|"filling"\|"closed", opened_at, closed_at, counts: {rows, sets, unconverted}}` · `label` = `"2/2569"` |
-| แถว | `{id, round_id, department_id\|null, group_id, group_name, subject_id\|null, code, name, credits\|null, weekly, kind: "basic"\|"additional"\|"activity", teacher_id\|null, co_teacher_id\|null, lab_room_id\|null, is_double, note, confirmed, from_plan, flag\|null}` |
-| ชุด | `{id, round_id, kind: "elective"\|"activity", name, group_ids, group_names, weekly, is_double, options: [ตัวเลือก]}` |
-| ตัวเลือก | `{id, set_id, subject_id\|null, code, name, department_id\|null, teacher_id\|null, room_id\|null, note, confirmed, from_plan}` |
+| หลักสูตร | `{id, year, semester, name, level, note, group_ids, group_names, lines: [บรรทัด]}` |
+| บรรทัดหลักสูตร | `{id, curriculum_id, subject_id\|null, code, name, credits\|null, weekly, kind: "basic"\|"additional"\|"activity", department_id\|null, sort}` |
+| ชุด (ของภาคเรียน) | `{id, year, semester, kind: "elective"\|"activity", name, group_ids, group_names, weekly, is_double, options: [{id, set_id, subject_id\|null, code, name, department_id\|null}]}` |
+| บันทึกหลักสูตร | `{id, at, by, action, detail}` (ข้อความไทย) |
+| แถว (ของรอบ) | `{id, round_id, line_id, curriculum_id, curriculum_name, group_id, group_name, subject_id\|null, code, name, credits\|null, weekly, kind, department_id\|null, teacher_id\|null, co_teacher_id\|null, lab_room_id\|null, is_double, note, confirmed, from_plan, flag\|null}` — ช่องวิชาอ่านจากบรรทัดหลักสูตร (join) ไม่ได้เก็บในแถว |
+| ครูของตัวเลือก | `{id, round_id, option_id, set_id, teacher_id\|null, room_id\|null, note, confirmed, from_plan}` — ตัวเลือกหนึ่งมีได้หลายแถว |
 | สถานะกลุ่ม | `{department_id, status: "filling"\|"submitted"\|"returned"\|"approved", submitted_at, submitted_by, reviewed_at, reviewed_by, note}` |
 | ยอดคาบ | `{teacher_id, name, department_id, total, own}` · `own` = ส่วนที่มาจากกลุ่มของผู้ขอ (admin: เท่ากับ `total`) |
 
@@ -50,7 +53,7 @@
 1. **หัวหน้ากลุ่ม ก ส่งคำขอตรงไปที่แถว/ตัวเลือก/สถานะของกลุ่ม ข** → 403 ไทย ไม่ใช่สำเร็จเงียบ ๆ และไม่ใช่ 500 (Task 3, Task 4)
 2. **รอบถูกปิด หรือกลุ่มถูกส่งแล้ว ขณะอีกคนยังเปิดหน้ากรอกค้างไว้** → การบันทึกถัดไปถูกปฏิเสธ 409 ไทยที่บอกเหตุผล และหน้าเว็บโหลดสถานะใหม่ ไม่ใช่ทิ้งค่าที่พิมพ์เงียบ ๆ (Task 3, Task 8)
 3. **ครูที่ทำเครื่องหมาย "ไม่ปฏิบัติงานแล้ว" แต่ยังอยู่ในแถวของรอบ** → ชื่อยังแสดงในแถวนั้น (ไม่กลายเป็นช่องว่าง) แต่ไม่มีให้เลือกใหม่ (Task 3, Task 8)
-4. **แผนการสอนอ้างครู/วิชา/ห้องที่ไม่มีในทะเบียนแล้ว** → แถวยังถูกสร้าง ช่องที่หาไม่เจอว่าง และรายการ "แปลงไม่ได้" บอกว่าอะไร ไม่ใช่ 500 ทั้งรอบ (Task 1, Task 2)
+4. **admin ลบบรรทัดหลักสูตรหรือเอาห้องออก ขณะหัวหน้ากลุ่มใส่ครูไว้แล้ว** → ไม่ลบเงียบ ๆ ต้องได้ 409 บอกจำนวนแถวที่มีครู และต้องยืนยันซ้ำ (Task 2, Task 3) · แผนการสอนอ้างครู/วิชา/ห้องที่ไม่มีแล้ว → รายการ "แปลงไม่ได้" ไม่ใช่ 500 (Task 1)
 5. **หัวหน้ากลุ่มเปิดจากโทรศัพท์ กลุ่มมี 258 แถว** → แถวจัดกลุ่มตามวิชาแบบพับได้ ตัวกรองทำงาน หน้าไม่เลื่อนแนวนอนทั้งหน้า (Task 8)
 
 ---
@@ -59,15 +62,16 @@
 
 | ไฟล์ | หน้าที่ |
 |---|---|
-| `mock_api.py` (แก้) | ตาราง 5 ตาราง · ฟังก์ชันล้วนแปลงแผนเป็นรอบ · กฎนับคาบ · route ของรอบ แถว ชุด สถานะกลุ่ม ยอดคาบ — ต่อท้ายบล็อก `/api/workload/` ของขั้นที่ 1 ตามแบบของไฟล์ |
-| `tests/py/wlround.py` · `wlrows.py` · `wlflow.py` | ตัวทดสอบฝั่งเซิร์ฟเวอร์ |
+| `mock_api.py` (แก้) | ตารางหลักสูตรและของรอบ · ฟังก์ชันล้วนแปลงแผน (Task 1) · กฎนับคาบ · route ของหลักสูตร รอบ แถว ครูของตัวเลือก สถานะกลุ่ม ยอดคาบ — ต่อท้ายบล็อก `/api/workload/` ของขั้นที่ 1 ตามแบบของไฟล์ |
+| `tests/py/wlround.py` · `wlcurriculum.py` · `wlopen.py` · `wlrows.py` · `wlflow.py` | ตัวทดสอบฝั่งเซิร์ฟเวอร์ |
 | `tests/fixtures/seed_teacher_loads.json` | คำตอบร่วม: ยอดคาบรายครูจาก `teacherLoads` ของโปรแกรมจัดตารางบนข้อมูลตั้งต้น |
 | `tests/ts/wlloads.ts` | ยืนยันว่าไฟล์คำตอบร่วมตรงกับ `teacherLoads` จริง |
 | `workload/src/ui/` (ใหม่) | ชิ้นส่วนหน้าตา: `AppShell.tsx` `Button.tsx` `Card.tsx` `Chip.tsx` `Progress.tsx` `Segmented.tsx` `StatTile.tsx` `Notice.tsx` `EmptyState.tsx` `index.ts` |
 | `workload/src/index.css` · `workload/tailwind.config.js` (แก้) | โทเค็นสีและตัวอักษรของสเปกข้อ 6 |
 | `workload/src/round.ts` (ใหม่) + `tests/ts/wlround.ts` | ตรรกะล้วนของรอบ: ป้ายสถานะ จัดกลุ่มแถว ตัวกรอง ความคืบหน้า เงื่อนไขกดส่ง |
 | `workload/src/roundApi.ts` (ใหม่) | ตัวเรียก route ของรอบ (ใช้ axios instance เดิมจาก `api.ts`) |
-| `workload/src/pages/RoundsPage.tsx` · `RoundOverview.tsx` · `RoundRowsEditor.tsx` · `SetsEditor.tsx` · `HeadFillPage.tsx` · `SummaryPage.tsx` (ใหม่) | หน้าจอขั้นที่ 2 |
+| `workload/src/curriculum.ts` (ใหม่) + `tests/ts/wlcurriculum.ts` | ตรรกะล้วนของหน้าหลักสูตร |
+| `workload/src/pages/CurriculumPage.tsx` · `CurriculumEditor.tsx` · `RoundsPage.tsx` · `RoundOverview.tsx` · `HeadFillPage.tsx` · `SummaryPage.tsx` (ใหม่) | หน้าจอขั้นที่ 2 |
 | `workload/src/sheets.ts` (ใหม่) + `tests/ts/wlsheets.ts` | ตรรกะล้วนของหน้าสรุปแบบรายวิชาและแบบครูผู้สอน |
 | `workload/src/pages/*.tsx` เดิม · `App.tsx` (แก้) | ย้ายมาใช้ชิ้นส่วน `ui/` และเมนูใหม่ |
 | `docs/workload-setup.md` (แก้) | วิธีใช้ขั้นที่ 2 สำหรับ admin และหัวหน้ากลุ่ม |
@@ -136,104 +140,108 @@ def test_schema_has_one_open_round_index_and_no_new_index_on_existing_tables(): 
 
 ---
 
-## Task 2: เปิดรอบ ดูก่อนเปิด และสถานะของรอบ
+## Task 2: หลักสูตรของภาคเรียน — ตาราง route บันทึกการแก้ และการตั้งต้น
+
+แบบข้อ 4.5 · ผู้ใช้: "ทุกๆคนเวลาสงสัยจะได้เปิดหลักสูตรดูได้ แถมสามารถตรวจสอบย้อนกลับมาได้ด้วย"
 
 **Files:**
 - Modify: `mock_api.py`
-- Test: `tests/py/wlround.py` (ต่อ)
+- Test: `tests/py/wlcurriculum.py`
 
 **Interfaces:**
-- Consumes: `wl_round_proposal` (Task 1) · `_wl_import_from_scheduler` / `_WL_IMPORTS` (ขั้นที่ 1) · `_reqs_served_by_elective()` · `_db_write_blocked()`
+- Consumes: `wl_round_proposal` · `wl_kind_from_code` (Task 1) · ตัวช่วยของขั้นที่ 1 (`_wl_import_from_scheduler` แยกส่วนกลางออกเป็น `_wl_import_rows(cur, kind, source, write)` ที่ไม่ตรวจสิทธิ์และไม่เปิดการเชื่อมต่อ — route ดึงครู/วิชาเดิมเรียกมัน พฤติกรรมเดิมทุกอย่าง)
 - Produces:
-  - `_wl_round_source(cur) -> dict` — ประกอบ `src` ของ Task 1 จากตัวแปรกลาง (อ่านอย่างเดียว ส่ง `copy.deepcopy`) และตาราง `wl_teachers` / `wl_subjects`
-  - `GET  /api/workload/rounds` — ทุก session · admin เห็นทุกรอบ · หัวหน้าเห็นเฉพาะรอบที่ `filling` หรือ `closed` · เรียงใหม่ก่อน
-  - `GET  /api/workload/rounds/preview?year=&semester=` — admin · **ไม่เขียนอะไรเลย** · คืน `{"label", "rows", "sets_elective", "sets_activity", "co_merged", "served_skipped", "teachers_to_pull", "subjects_to_pull", "unconverted": [...]}`
-  - `POST /api/workload/rounds` `{year, semester}` — admin · ในธุรกรรมเดียว: ดึงครู+วิชา (โหมดเขียน) → แปลง → สร้างรอบ `preparing` + แถว + ชุด + ตัวเลือก + `wl_dept_status` ทุกกลุ่มใน `DEPARTMENTS` เป็น `filling` → คืนรอบ · ปี/ภาคไม่ถูกต้อง 400 · ซ้ำ 409 · มีรอบที่ยังไม่ปิด 409
-  - `POST /api/workload/rounds/{id}/open` — admin · `preparing` → `filling` · มีแถว/ตัวเลือกที่ `department_id` ว่าง → 409 ไทยพร้อมจำนวน
-  - `POST /api/workload/rounds/{id}/close` `{confirm_label}` — admin · ต้องพิมพ์ `label` ตรง (ตัดช่องว่าง) ไม่ตรง 400 · → `closed` + `closed_at`
-  - `wl_round_view(row) -> dict` — รูป "รอบ" ในสัญญา
-- ด่าน: `_db_write_blocked()` → 503 ไทยทั้ง preview และ POST (ข้อมูลในหน่วยความจำคือข้อมูลตั้งต้น) · ปี 2500–2700 · ภาค 1 หรือ 2 (แบบเดียวกับ `running_term_identity`)
+  - ตาราง (ต่อ `_WL_SCHEMA`): `wl_curricula` (UNIQUE `(year, semester, name)`) · `wl_curriculum_lines` (FK `curriculum_id` ON DELETE CASCADE · `subject_id` → `wl_subjects` · `weekly integer NOT NULL CHECK (weekly >= 0)` · `credits numeric` · `sort integer`) · `wl_curriculum_groups` (`curriculum_id` FK CASCADE · `year` `semester` `group_id` · PK `(year, semester, group_id)` = ห้องหนึ่งอยู่หลักสูตรเดียวต่อภาคเรียน) · `wl_term_sets` (`year` `semester` `kind` `name` `group_ids integer[]` `weekly` `is_double`) · `wl_term_set_options` (FK `set_id` CASCADE · `subject_id` `code` `name` `department_id`) · `wl_curriculum_log` (`year` `semester` `at` `by_label` `action` `detail`)
+  - **ตารางของรอบจาก Task 1 ปรับรูป** (ยังไม่เคยขึ้นเว็บ จึงแก้ `CREATE TABLE` ตรง ๆ ได้): `wl_rows` = `id, round_id, line_id → wl_curriculum_lines, group_id, teacher_id, co_teacher_id, lab_room_id, is_double, note, confirmed, from_plan, flag` + UNIQUE `(round_id, line_id, group_id)` · `wl_sets`/`wl_set_options` ของ Task 1 แทนด้วย `wl_option_teachers` = `id, round_id, option_id → wl_term_set_options, teacher_id, room_id, note, confirmed, from_plan` · `wl_rounds` `wl_dept_status` คงเดิม
+  - `wl_curricula_from_proposal(proposal: dict, groups: dict[int, dict]) -> {"curricula": [{name, level, group_ids, lines: [...]}], "sets": [...]}` — ฟังก์ชันล้วน: ห้องที่ชุดบรรทัด (subject_id, weekly) เหมือนกันทุกตัวรวมเป็นหลักสูตรเดียว · ชื่อ = ระดับชั้น + ช่วงห้อง (เช่น `"ม.1/1-6"`) ชื่อซ้ำเติมเลขต่อท้าย · `level` จากชื่อห้อง · บรรทัดเรียงตามรหัสวิชา · ชุดคาบเสรี/กิจกรรมจาก `proposal["sets"]` (ตัดครูทิ้ง — หลักสูตรไม่มีครู)
+  - `wl_curriculum_view(cur, year, semester) -> {"curricula": [...], "sets": [...], "locked": bool}` · `locked` = มีรอบของภาคเรียนนี้ที่ `closed`
+  - `GET  /api/workload/curricula?year=&semester=` — **ทุก session** (หัวหน้าก็เห็นทั้งโรงเรียน) · `GET /api/workload/curricula/terms` → ภาคเรียนที่มีหลักสูตร เรียงใหม่ก่อน · `GET /api/workload/curricula/log?year=&semester=` — ทุก session
+  - admin เท่านั้น (ทุกตัวปฏิเสธ 409 ไทยเมื่อ `locked`): `POST /api/workload/curricula/seed` `{year, semester, source: "timetable"|"copy", from_year?, from_semester?}` (ภาคเรียนต้องยังไม่มีหลักสูตร 409 · `"timetable"` ดึงครู+วิชา (`_wl_import_rows` โหมดเขียน) แล้วแปลงด้วย `wl_round_proposal` + `wl_curricula_from_proposal` · ปฏิเสธ 503 เมื่อ `_db_write_blocked()`) · `POST/PUT/DELETE /api/workload/curricula[/{id}]` (ชื่อ ระดับ หมายเหตุ ห้อง) · `POST/PUT/DELETE /api/workload/curriculum-lines[/{id}]` · `POST/PUT/DELETE /api/workload/term-sets[/{id}]` · `POST/DELETE /api/workload/term-set-options[/{id}]`
+  - บรรทัดใหม่: รหัสที่ตรงกับวิชาในทะเบียน (ตัดช่องว่าง เทียบตรงตัว) → ผูก `subject_id` และเติม ชื่อ กลุ่มสาระ จากทะเบียน · `kind` ถ้าไม่ส่ง = `wl_kind_from_code`
+  - ห้องที่อยู่หลักสูตรอื่นของภาคเรียนเดียวกันแล้ว → 409 ไทยบอกชื่อหลักสูตรนั้น
+  - `_wl_log(cur, year, semester, session, action, detail)` — ทุกการเขียนของหลักสูตรเรียกในธุรกรรมเดียวกัน · `detail` ไทย เช่น `"เพิ่ม ท21102 ภาษาไทยพื้นฐาน 2 (3 คาบ) ในหลักสูตร ม.1/1-6"`
+  - **รหัสวิชาห้ามซ้ำในทะเบียนวิชา** (สเปกข้อ 4.2): `POST /api/workload/subjects` และ `PUT` ที่เปลี่ยน `code` เป็นรหัสที่วิชาอื่นใช้อยู่ (ตัดช่องว่าง เทียบตรงตัว รวมวิชาที่ไม่เปิดสอนแล้ว) → 409 ไทย · ปุ่มดึงวิชา: รหัสชนกับวิชาที่มีอยู่แต่ `sched_id` ต่าง → ไม่สร้าง นับ `skipped`
+  - การลบบรรทัด/ห้อง/ตัวเลือกเมื่อมีรอบของภาคเรียนนั้นเปิดอยู่ ใช้ `_wl_sync_round` ของ Task 3 (Task 2 เขียนให้เรียก hook ที่ยังไม่ทำอะไร `_wl_after_curriculum_change(cur, year, semester, force)` ซึ่ง Task 3 เติม)
 
-- [ ] **Step 1: เขียนตัวทดสอบที่ต้องแดง** (cursor ปลอมแบบ `tests/py/wlregistry.py`)
-  - `test_preview_writes_nothing` · `test_create_round_writes_round_rows_sets_and_one_status_per_department` · `test_second_open_round_is_409` · `test_duplicate_year_semester_is_409` · `test_bad_year_or_semester_is_400` · `test_open_refuses_while_rows_have_no_department` · `test_close_requires_typed_label` · `test_head_cannot_open_preview_create_open_or_close (403)` · `test_head_sees_only_filling_and_closed_rounds` · `test_write_blocked_is_503_for_preview_and_create` · `test_round_source_does_not_mutate_timetable_lists`
+- [ ] **Step 1: เขียนตัวทดสอบที่ต้องแดง** ใน `tests/py/wlcurriculum.py`
+  - `wl_curricula_from_proposal`: 6 ห้องรายวิชาเหมือนกัน + 1 ห้องต่าง → 2 หลักสูตร ชื่อ `"ม.1/1-6"` และชื่อของห้องเดี่ยว · ห้องย่อย ม.4/6ก ใช้ระดับ ม.4 · ชุดไม่มีครู · ไม่แก้ input · ข้อมูลตั้งต้น: ทุกห้องที่มีแผนอยู่ในหลักสูตรเดียวพอดี และผลรวม (บรรทัด × ห้อง) = 1,220
+  - `test_head_can_read_curricula_and_log_of_all_departments` · `test_head_cannot_write_any_curriculum_route (403)`
+  - `test_seed_from_timetable_twice_is_409` · `test_seed_copy_from_previous_term_copies_lines_groups_sets` · `test_seed_refuses_when_write_blocked (503)`
+  - `test_group_in_two_curricula_same_term_is_409` · `test_line_code_matching_registry_binds_subject_name_and_department`
+  - `test_every_write_logs_one_thai_entry` · `test_locked_term_refuses_every_write (409)`
+  - `test_duplicate_subject_code_is_409_on_create_and_rename` · `test_subject_import_skips_code_clash_with_other_sched_id` · `test_import_routes_unchanged_after_split`
+  - `test_schema_round_rows_reference_curriculum_lines` (ข้อความ `_WL_SCHEMA`: `wl_rows` มี `line_id` และไม่มีคอลัมน์ `code`/`weekly` · ไม่มี unique index ใหม่บน `wl_codes`/`wl_teachers`/`wl_subjects` นอกจากสองตัวเดิม)
 - [ ] **Step 2: รันให้เห็นว่าแดง**
-- [ ] **Step 3: เขียน `_wl_round_source` · `wl_round_view` และ route ทั้งห้า**
-- [ ] **Step 4: รันตัวทดสอบ** → ผ่านครบ
-- [ ] **Step 5: ลองกับของจริง** (ข้อมูลตั้งต้น · ตั้งรหัส admin ด้วย curl) — preview → `rows 1220, sets_elective 13` และ `count(*) wl_rows` = 0 → POST → 1220 แถว 13 ชุด 11 สถานะกลุ่ม → POST ซ้ำ 409 → open → close ด้วยชื่อผิด 400 / ถูก 200 · `/api/state/version` revision ไม่ขยับ · `GET /api/teachers/` `/api/subjects/` `/api/timetable/slots` เหมือนก่อนเริ่มทุกไบต์
-- [ ] **Step 6: Commit** — `"เว็บลงอัตรากำลังขั้นที่ 2: เปิดรอบจากแผนการสอน ดูก่อนเปิด และสถานะของรอบ"`
+- [ ] **Step 3: เขียนตาราง ฟังก์ชันล้วน ตัวช่วย และ route**
+- [ ] **Step 4: รันตัวทดสอบ** → ผ่านครบ (ตัวทดสอบของ Task 1 ที่ตรวจรูปตารางเดิมแก้ตามรูปใหม่ได้ ห้ามลดสิ่งที่มันพิสูจน์ด้านการแปลง)
+- [ ] **Step 5: ลองกับของจริง** (ฐานข้อมูลใหม่) — ตั้งต้นจากโปรแกรมจัดตาราง → จำนวนหลักสูตร บรรทัด ห้อง ชุด · หัวหน้าอ่านได้ เขียนไม่ได้ · เพิ่ม/แก้/ลบบรรทัด → log มีครบ · คัดลอกไปภาคเรียนถัดไป · revision ไม่ขยับ · `GET /api/subjects/` `/api/timetable/slots` เหมือนเดิมทุกไบต์
+- [ ] **Step 6: Commit** — `"เว็บลงอัตรากำลังขั้นที่ 2: หลักสูตรของภาคเรียน ทุกคนเปิดดูได้ แก้ได้เฉพาะผู้ดูแลระบบ พร้อมบันทึกการแก้"`
 
 ---
 
-## Task 3: แถวและชุดคาบเสรี — อ่าน แก้ และสิทธิ์
+## Task 3: เปิดรอบจากหลักสูตร ครูเทอมก่อน และการตามหลักสูตร
 
 **Files:**
 - Modify: `mock_api.py`
-- Test: `tests/py/wlrows.py`
+- Test: `tests/py/wlopen.py`
 
 **Interfaces:**
-- Consumes: ตารางของ Task 1 · `wl_round_view` (Task 2)
+- Consumes: ตารางของ Task 2 · `wl_round_proposal` (Task 1) · `_wl_after_curriculum_change` (hook ของ Task 2)
 - Produces:
-  - `WL_ROW_ADMIN_FIELDS = frozenset({"department_id","group_id","subject_id","code","name","credits","weekly","kind"})` · `WL_ROW_HEAD_FIELDS = frozenset({"teacher_id","co_teacher_id","lab_room_id","is_double","note","confirmed"})` · `WL_OPTION_ADMIN_FIELDS = frozenset({"subject_id","code","name","department_id"})` · `WL_OPTION_HEAD_FIELDS = frozenset({"teacher_id","room_id","note","confirmed"})` · `WL_SET_FIELDS = frozenset({"kind","name","group_ids","weekly","is_double"})`
-  - `wl_can_edit(session: dict, round_status: str, dept_status: str|None, row_dept: int|None, fields: set[str]) -> str|None` — ฟังก์ชันล้วน คืนข้อความไทยเมื่อห้าม · กติกา: รอบ `closed` ห้ามทุกคน · admin: `preparing`/`filling` แก้ได้ทุกช่องทุกกลุ่มทุกสถานะ · head: รอบ `filling` เท่านั้น · `row_dept == session.department_id` · สถานะกลุ่ม `filling` หรือ `returned` · ช่องทั้งหมดอยู่ใน `WL_ROW_HEAD_FIELDS`/`WL_OPTION_HEAD_FIELDS`
-  - `wl_apply_teacher_change(fields: dict) -> dict` — ถ้ามี `teacher_id` และไม่ได้ส่ง `confirmed` มา → เติม `confirmed=True` (สเปกข้อ 4.1 "เปลี่ยนครู = ยืนยัน")
-  - `GET  /api/workload/rounds/{id}/rows?department_id=` → `{"rows": [...], "sets": [...]}` · admin: ทุกกลุ่ม หรือกลุ่มที่ขอ (`department_id=none` = กองยังไม่ระบุกลุ่ม) · head: บังคับเป็นกลุ่มตัวเอง (ค่าที่ส่งมาถูกเมิน) และรอบต้องไม่ใช่ `preparing` (403) · ชุดที่ head เห็น = ชุดที่มีตัวเลือกของกลุ่มตัวเอง และมีแค่ตัวเลือกของกลุ่มตัวเอง (สเปกหลักข้อทดสอบ 9)
-  - `PUT  /api/workload/rows/{id}` · `PUT /api/workload/set-options/{id}` — แก้บางช่อง ผ่าน `wl_clean_fields` กับชุดช่องตามบทบาท แล้ว `wl_can_edit` · ครู/ห้อง/วิชาต้องมีจริง (ครูต้อง `active` ถ้าเป็นการเลือกใหม่ — ค่าเดิมที่ไม่เปลี่ยนไม่ตรวจ) · 404 / 403 / 409 ไทย
-  - `POST /api/workload/rows/bulk` `{ids: [..], set: {teacher_id?|confirmed?}}` — แก้หลายแถวในธุรกรรมเดียว ทุกแถวต้องผ่าน `wl_can_edit` ไม่งั้นไม่แก้สักแถว (คืน 403/409 พร้อมจำนวนที่ติด) · `set` รับได้แค่ `teacher_id` และ `confirmed`
-  - admin เท่านั้น: `POST /api/workload/rounds/{id}/rows` `{group_ids: [..], subject_id?|code+name, weekly, credits?, kind?, department_id?}` สร้างหนึ่งแถวต่อห้อง · `DELETE /api/workload/rows/{id}` · `POST /api/workload/rounds/{id}/sets` · `PUT /api/workload/sets/{id}` · `DELETE /api/workload/sets/{id}` · `POST /api/workload/sets/{id}/options` · `DELETE /api/workload/set-options/{id}` — ทั้งหมดผ่าน `wl_can_edit` ฝั่ง admin (รอบปิดแล้ว 409)
-  - `department_id` ของแถวใหม่ถ้าไม่ส่ง = กลุ่มของวิชาในทะเบียน · รหัสวิชาที่พิมพ์ตรงกับวิชาในทะเบียน (ตัดช่องว่าง เทียบตรงตัว) → ผูก `subject_id` ให้
-  - **รหัสวิชาห้ามซ้ำในทะเบียนวิชาของเว็บนี้** (สเปกข้อ 4.2 — ตรวจในโค้ด ไม่ใช่ unique index): `POST /api/workload/subjects` และ `PUT` ที่เปลี่ยน `code` เป็นรหัสที่วิชาอื่นใช้อยู่ (ตัดช่องว่าง เทียบตรงตัว รวมวิชาที่ไม่เปิดสอนแล้ว) → 409 ไทย · ปุ่มดึงวิชา: วิชาฝั่งตารางที่รหัสชนกับวิชาที่มีอยู่แล้วแต่ `sched_id` ต่างกัน → ไม่สร้าง นับเป็น `skipped` (ไม่แก้กฎจับคู่ด้วย `sched_id` ของขั้นที่ 1)
+  - `wl_prefill(proposal: dict, line_keys: list[{"line_id", "group_id", "sched_subject_id"}], option_keys: list[{"option_id", "group_ids", "sched_subject_id"}]) -> {"rows": {(line_id, group_id): {"teacher_id", "co_teacher_id", "lab_room_id", "flag"}}, "options": {option_id: [{"teacher_id", "room_id"}]}}` — ฟังก์ชันล้วน: ครูเทอมก่อนของ ห้อง+วิชา (เทียบ `sched_id` ของวิชา) และของตัวเลือก (วิชาเดียวกัน + ห้องซ้อนกัน)
+  - `_wl_round_rows_sql` — SELECT ของแถวที่ join บรรทัดหลักสูตรและหลักสูตร ให้รูป "แถว (ของรอบ)" ในสัญญา (ทุก route ที่คืนแถวใช้ตัวนี้)
+  - `wl_round_view(row) -> dict` — รูป "รอบ" ในสัญญา · `counts` = `{rows, options, unconverted}` · เก็บรายการ `unconverted` ไว้ในรอบ (`jsonb`)
+  - `GET  /api/workload/rounds` — ทุก session · admin ทุกรอบ · หัวหน้าเฉพาะ `filling`/`closed` · `GET /api/workload/rounds/{round_id}` (admin · มี `unconverted`)
+  - `GET  /api/workload/rounds/preview?year=&semester=` — admin · **ไม่เขียนอะไรเลย** · ต้องมีหลักสูตรของภาคเรียนนั้น (409 ไทยถ้าไม่มี "ทำหลักสูตรก่อน") · คืน `{label, rows, options, prefilled_rows, prefilled_options, empty_rows, lines_without_department, unconverted}`
+  - `POST /api/workload/rounds` `{year, semester}` — admin · ธุรกรรมเดียว: สร้างรอบ `preparing` → แถว = ทุก (บรรทัด × ห้องของหลักสูตร) → ครูของตัวเลือก = แถวละครูเทอมก่อน (ไม่มี = ไม่มีแถว) → ใส่ครูเทอมก่อนด้วย `wl_prefill` (`confirmed=False` `from_plan=True`) → `wl_dept_status` ทุกกลุ่มใน `DEPARTMENTS` = `filling` · ปี/ภาคผิด 400 · ซ้ำ 409 · มีรอบยังไม่ปิด 409 (ดัชนี `wl_rounds_one_open`) · `_db_write_blocked()` 503
+  - `POST /api/workload/rounds/{round_id}/open` — `preparing` → `filling` · มีบรรทัดหลักสูตรที่ `department_id` ว่าง → 409 ไทยพร้อมจำนวน · `POST .../close` `{confirm_label}` — พิมพ์ชื่อรอบตรง → `closed` (หลักสูตรของภาคเรียนนั้นกลายเป็นอ่านอย่างเดียว)
+  - `_wl_sync_round(cur, year, semester, force: bool) -> dict` — เติม hook ของ Task 2: เมื่อหลักสูตรของภาคเรียนที่มีรอบ `preparing`/`filling` เปลี่ยน → สร้างแถวที่ขาด (บรรทัด/ห้องใหม่ · ไม่มีครู) · ลบแถวที่บรรทัด/ห้องหายไป และครูของตัวเลือกที่ตัวเลือกหายไป · **ถ้าแถว/ครูที่จะลบมีครูใส่ไว้และ `force` เป็นเท็จ → ยก 409 ไทยบอกจำนวน และไม่เขียนอะไรเลย** · route ของหลักสูตรใน Task 2 รับ `force` จาก body/query ส่งต่อมา
+  - ด่าน: ปี 2500–2700 · ภาค 1 หรือ 2
 
-- [ ] **Step 1: เขียนตัวทดสอบที่ต้องแดง** ใน `tests/py/wlrows.py`
-  - `wl_can_edit` ครบตาราง: admin ทุกสถานะรอบ · head กลุ่มตัวเอง/กลุ่มอื่น · head ช่องของ admin · head ตอน `submitted`/`approved` · head ตอนรอบ `preparing`/`closed`
-  - `test_teacher_change_confirms_row` · `test_confirm_only_by_explicit_true` (PUT ที่แก้แค่ `note` ไม่ทำให้ `confirmed` เป็นจริง)
-  - `test_head_reads_only_own_department_even_if_another_is_requested` · `test_head_sees_only_own_options_inside_shared_set` (Review Focus 1)
-  - `test_head_put_on_other_department_row_is_403` · `test_put_after_round_closed_is_409_with_thai_reason` (Review Focus 2)
-  - `test_bulk_is_all_or_nothing` · `test_bulk_rejects_fields_other_than_teacher_and_confirmed`
-  - `test_inactive_teacher_cannot_be_newly_assigned_but_existing_row_still_reads` (Review Focus 3)
-  - `test_admin_add_row_for_three_classes_makes_three_rows` · `test_typed_code_matching_registry_binds_subject` · `test_head_cannot_add_or_delete_rows_or_sets (403)`
-  - `test_duplicate_subject_code_is_409_on_create_and_rename` · `test_subject_import_skips_code_clash_with_other_sched_id`
-  - `test_no_route_deletes_teachers_or_subjects` (ไล่ `app.routes` แบบตัวทดสอบเดิม — DELETE ใต้ `/api/workload` มีได้แค่ `rows/` `sets/` `set-options/`)
+- [ ] **Step 1: เขียนตัวทดสอบที่ต้องแดง** ใน `tests/py/wlopen.py`
+  - `wl_prefill`: ห้อง+วิชาตรง → ครูเดิม · วิชาเดียวกันคนละห้อง → ไม่ใส่ · คู่สอนร่วม → `co_teacher_id` · ตัวเลือกคาบเสรีห้องซ้อนกัน → ครู · ไม่แก้ input
+  - `test_preview_writes_nothing_and_requires_curriculum` · `test_create_round_rows_equal_lines_times_groups` · `test_prefilled_rows_are_unconfirmed_and_from_plan` · `test_second_open_round_is_409` · `test_duplicate_year_semester_is_409` · `test_bad_year_or_semester_is_400` · `test_open_refuses_lines_without_department` · `test_close_requires_typed_label` · `test_closed_round_locks_its_curriculum` · `test_head_sees_only_filling_and_closed_rounds` · `test_head_cannot_preview_create_open_close (403)` · `test_write_blocked_is_503`
+  - sync: `test_new_line_adds_rows_without_teacher` · `test_removing_line_with_teacher_is_409_and_writes_nothing` (Review Focus 4) · `test_removing_with_force_deletes_rows` · `test_removing_group_from_curriculum_removes_its_rows`
+  - ข้อมูลตั้งต้นทั้งเส้น: ตั้งต้นหลักสูตร (Task 2) → เปิดรอบ → แถว 1,220 · ทุกแถวมีครูเทอมก่อน `confirmed=False`
 - [ ] **Step 2: รันให้เห็นว่าแดง**
-- [ ] **Step 3: เขียนค่าคงที่ ฟังก์ชันล้วนสองตัว และ route**
+- [ ] **Step 3: เขียนฟังก์ชันล้วน ตัวช่วย route และเติม hook**
 - [ ] **Step 4: รันตัวทดสอบ** → ผ่านครบ
-- [ ] **Step 5: ลองกับของจริง** — รอบจาก Task 2 · รหัสกลุ่ม 1 และ 2 · หัวหน้ากลุ่ม 1 แก้แถวกลุ่ม 2 → 403 · แก้ `code` → 403 · เปลี่ยนครู → `confirmed: true` · bulk ยืนยัน 10 แถว · ปิดรอบแล้ว PUT → 409 · revision ไม่ขยับ
-- [ ] **Step 6: Commit** — `"เว็บลงอัตรากำลังขั้นที่ 2: แก้แถวและคาบเสรีตามสิทธิ์ หัวหน้ากลุ่มเห็นแค่กลุ่มตัวเอง"`
+- [ ] **Step 5: ลองกับของจริง** — ตั้งต้นหลักสูตร → preview (`count(*) wl_rows` ยัง 0) → เปิดรอบ → 1,220 แถว 11 สถานะกลุ่ม → เพิ่มบรรทัด → แถวใหม่ · ใส่ครูในแถวด้วย psql แล้วลบบรรทัด → 409 → force → หาย · open → close · revision ไม่ขยับ · ข้อมูลของโปรแกรมจัดตารางเหมือนเดิมทุกไบต์
+- [ ] **Step 6: Commit** — `"เว็บลงอัตรากำลังขั้นที่ 2: เปิดรอบจากหลักสูตร ใส่ครูเทอมก่อนให้ยืนยัน และแถวตามหลักสูตรเมื่อหลักสูตรเปลี่ยน"`
 
 ---
 
-## Task 4: งานส่ง-ตรวจ-ตีกลับ และยอดคาบรายครู
+## Task 4: ใส่ครู สิทธิ์ ส่ง-ตรวจ-ตีกลับ และยอดคาบรายครู
 
 **Files:**
 - Modify: `mock_api.py`
 - Create: `tests/fixtures/seed_teacher_loads.json` · `tests/ts/wlloads.ts`
-- Test: `tests/py/wlflow.py`
+- Test: `tests/py/wlrows.py` · `tests/py/wlflow.py`
 
 **Interfaces:**
-- Consumes: ตาราง Task 1 · `wl_can_edit` (Task 3) · `wl_round_proposal` (Task 1, ใช้ในตัวทดสอบความตรงกัน)
+- Consumes: ตาราง Task 2–3 · `_wl_round_rows_sql` (Task 3)
 - Produces:
-  - `wl_submit_blocker(rows: list[dict], options: list[dict]) -> str|None` — ฟังก์ชันล้วน: มีแถว/ตัวเลือกที่ `teacher_id` ว่าง หรือ `confirmed` เท็จ → ข้อความไทยพร้อมจำนวนทั้งสองแบบ · ครบ → `None`
-  - `POST /api/workload/rounds/{id}/departments/{dept}/submit` — head กลุ่มตัวเองเท่านั้น · รอบ `filling` · สถานะ `filling`/`returned` · `wl_submit_blocker` ต้องเป็น `None` (409 ไทย) → `submitted` + `submitted_at` + `submitted_by` = `label` ของรหัส
-  - `POST .../departments/{dept}/approve` — admin · จาก `submitted` เท่านั้น → `approved` + `reviewed_*`
-  - `POST .../departments/{dept}/return` `{note}` — admin · จาก `submitted` หรือ `approved` · `note` ไม่ว่าง (400) → `returned` + `note` + `reviewed_*`
-  - `GET  /api/workload/rounds/{id}/departments` — admin: ทุกกลุ่ม พร้อม `{rows, confirmed, missing_teacher}` ต่อกลุ่ม · head: กลุ่มตัวเองเท่านั้น
-  - `wl_teacher_loads(rows: list[dict], sets: list[dict]) -> dict[int, int]` — ฟังก์ชันล้วน กฎของสเปกข้อ 4.4 ข.: แถว → `weekly` ให้ `teacher_id` และ `co_teacher_id` (ถ้าไม่ซ้ำคนเดียวกัน) · ชุด → `weekly` ของชุดให้ครูของแต่ละตัวเลือก **ครั้งเดียวต่อชุดต่อครู**
-  - `GET  /api/workload/rounds/{id}/loads` → `[ยอดคาบ]` ตามสัญญา เรียงมากไปน้อย · admin: ครูทุกคนที่มีคาบ `own = total` · head: ครูที่ `wl_teachers.department_id` = กลุ่มตัวเอง ∪ ครูในแถว/ตัวเลือกของกลุ่มตัวเอง · `own` = ส่วนจากแถว/ตัวเลือกของกลุ่มตัวเอง · ไม่มีข้อมูลแถวของกลุ่มอื่นในคำตอบ
+  - `WL_ROW_FIELDS = frozenset({"teacher_id","co_teacher_id","lab_room_id","is_double","note","confirmed"})` · `WL_OPTION_TEACHER_FIELDS = frozenset({"teacher_id","room_id","note","confirmed"})` — **ช่องเดียวที่แก้ได้ในรอบ** (วิชา คาบ ห้องเรียน แก้ที่หลักสูตร)
+  - `wl_can_edit(session: dict, round_status: str, dept_status: str|None, dept: int|None) -> str|None` — ฟังก์ชันล้วน คืนข้อความไทยเมื่อห้าม: รอบ `closed` ห้ามทุกคน · admin: `preparing`/`filling` ทุกกลุ่มทุกสถานะ · head: รอบ `filling` · `dept == session.department_id` · สถานะกลุ่ม `filling`/`returned`
+  - `wl_apply_teacher_change(fields: dict) -> dict` — มี `teacher_id` และไม่ได้ส่ง `confirmed` → เติม `confirmed=True`
+  - `GET  /api/workload/rounds/{round_id}/rows?department_id=` → `{"rows": [...], "options": [{ตัวเลือก + set ของมัน + teachers: [ครูของตัวเลือก]}]}` · head: บังคับกลุ่มตัวเอง (ค่าที่ส่งมาถูกเมิน) รอบต้องไม่ใช่ `preparing` (403) · ตัวเลือกที่ head เห็น = ของกลุ่มตัวเองเท่านั้น (สเปกหลักข้อทดสอบ 9) · admin: `department_id=none` = บรรทัดที่ไม่มีกลุ่ม
+  - `PUT  /api/workload/rows/{id}` · `POST /api/workload/rows/bulk` `{ids, set: {teacher_id?|confirmed?}}` (ทั้งหมดหรือไม่เลย) · `POST /api/workload/options/{option_id}/teachers` `{teacher_id, room_id?, note?}` (เพิ่มครูในตัวเลือก · `confirmed=True`) · `PUT /api/workload/option-teachers/{id}` · `DELETE /api/workload/option-teachers/{id}` — ทุกตัวผ่าน `wl_can_edit` · ครูที่เลือกใหม่ต้องมีจริงและ `active` (ค่าเดิมที่ไม่เปลี่ยนไม่ตรวจ) · 404/403/409 ไทย
+  - `wl_submit_blocker(rows, options) -> str|None` — แถวที่ `teacher_id` ว่างหรือ `confirmed` เท็จ · ตัวเลือกที่ไม่มีครูสักคนหรือมีครูที่ยังไม่ยืนยัน → ข้อความไทยพร้อมจำนวน
+  - `POST /api/workload/rounds/{round_id}/departments/{dept}/submit` (head กลุ่มตัวเอง · `filling`/`returned` · blocker ต้อง None) · `.../approve` (admin · จาก `submitted`) · `.../return` `{note}` (admin · จาก `submitted`/`approved` · note ไม่ว่าง) · `GET .../departments` (admin ทุกกลุ่ม + `{rows, confirmed, missing_teacher}` · head กลุ่มตัวเอง)
+  - `wl_teacher_loads(rows, options) -> dict[int, int]` — แถว: `weekly` ให้ `teacher_id` และ `co_teacher_id` (คนละคน) · ตัวเลือก: `weekly` ของชุดให้ครูแต่ละคน **ครั้งเดียวต่อชุดต่อครู**
+  - `GET  /api/workload/rounds/{round_id}/loads` → `[{teacher_id, name, department_id, total, own}]` · admin ทุกคน `own = total` · head: ครูกลุ่มตัวเอง ∪ ครูในแถว/ตัวเลือกของกลุ่มตัวเอง · `own` = ส่วนจากกลุ่มตัวเอง · ไม่มีข้อมูลแถวของกลุ่มอื่น
 
-ไฟล์คำตอบร่วม `tests/fixtures/seed_teacher_loads.json` = `{ "<sched teacher id>": total }` สร้างครั้งเดียวด้วยสคริปต์ node ที่เรียก `teacherLoads(requirements, electiveSubjectIds(subjects, pools))` จาก `frontend/src/utils/teachingLoad.ts` บน `school_data.json` (สคริปต์ไม่ต้อง commit · บรรทัดคำสั่งเขียนไว้ในคอมเมนต์หัวไฟล์ `tests/ts/wlloads.ts`)
+ไฟล์คำตอบร่วม `tests/fixtures/seed_teacher_loads.json` = `{"<sched teacher id>": total}` จาก `teacherLoads(requirements, electiveSubjectIds(subjects, pools))` ของ `frontend/src/utils/teachingLoad.ts` บน `school_data.json` (บรรทัดคำสั่งที่สร้างเขียนไว้ในคอมเมนต์หัว `tests/ts/wlloads.ts`)
 
 - [ ] **Step 1: เขียนตัวทดสอบที่ต้องแดง**
-  - `tests/ts/wlloads.ts`: `teacherLoads` จริงบน `school_data.json` เท่ากับไฟล์คำตอบร่วมทุกคน
-  - `tests/py/wlflow.py`:
-    - `test_loads_match_timetable_program_for_plain_teachers` — `wl_round_proposal` บนข้อมูลตั้งต้น → `wl_teacher_loads` → แปลงกลับเป็น sched id → ครูที่ไม่มีตัวเลือกคาบเสรี/กิจกรรมและไม่สอนร่วม เท่ากับไฟล์คำตอบร่วมทุกคน
-    - `test_elective_option_counts_set_weekly_once_not_per_class` (ชุด 8 ห้อง weekly 2 → 2 · สเปกหลักข้อทดสอบ 8)
-    - `test_co_teacher_gets_the_row_weekly` · `test_same_teacher_twice_in_one_set_counts_once`
-    - `wl_submit_blocker`: ครบ → None · ขาดครู 2 + ยังไม่ยืนยัน 3 → ข้อความมี 2 และ 3
-    - ขั้นงาน: submit ไม่ครบ 409 · submit กลุ่มอื่น 403 · submit ซ้ำตอน `submitted` 409 · approve จาก `filling` 409 · return ต้องมี note · head แก้แถวตอน `submitted` → 409 (ผ่าน `wl_can_edit` ของ Task 3) · return แล้วแก้ได้อีก · head อ่าน departments เห็นแค่กลุ่มตัวเอง · head อ่าน loads ไม่มีครูที่ไม่เกี่ยวกับกลุ่ม
+  - `tests/ts/wlloads.ts`: `teacherLoads` จริงบนข้อมูลตั้งต้นเท่ากับไฟล์คำตอบร่วมทุกคน
+  - `tests/py/wlrows.py`: `wl_can_edit` ครบตาราง · `test_teacher_change_confirms_row` · `test_confirm_only_by_explicit_true` · `test_row_put_rejects_subject_fields (400 บอกชื่อช่อง)` · `test_head_reads_only_own_department_even_if_another_is_requested` · `test_head_sees_only_own_options` · `test_head_put_on_other_department_row_is_403` · `test_put_after_round_closed_is_409_with_thai_reason` · `test_bulk_is_all_or_nothing` · `test_inactive_teacher_cannot_be_newly_assigned_but_existing_row_still_reads` · `test_option_can_have_several_teachers` · `test_no_route_deletes_teachers_or_subjects`
+  - `tests/py/wlflow.py`: `test_loads_match_timetable_program_for_plain_teachers` (ตั้งต้นหลักสูตร + เปิดรอบบนข้อมูลตั้งต้นด้วย cursor ปลอมหรือฟังก์ชันล้วน → ครูที่ไม่มีคาบเสรี/กิจกรรม/สอนร่วม เท่ากับไฟล์คำตอบร่วม) · `test_elective_option_counts_set_weekly_once_not_per_class` · `test_co_teacher_gets_the_row_weekly` · `test_same_teacher_twice_in_one_set_counts_once` · `wl_submit_blocker` · ขั้นงานส่ง/ตรวจ/ตีกลับครบ · head แก้ตอน `submitted` → 409 · loads ของ head ไม่มีครูที่ไม่เกี่ยว
 - [ ] **Step 2: สร้างไฟล์คำตอบร่วม แล้วรันให้เห็นว่าแดง**
-- [ ] **Step 3: เขียนฟังก์ชันล้วนสองตัว และ route**
+- [ ] **Step 3: เขียนค่าคงที่ ฟังก์ชันล้วน และ route**
 - [ ] **Step 4: รันตัวทดสอบ** → ผ่านครบ
-- [ ] **Step 5: ลองกับของจริง** — กลุ่ม 1 ยืนยันครบด้วย bulk → submit 200 → แก้แถว 409 → admin return พร้อม note → แก้ได้ → submit → approve · loads ของ admin และ head (คำตอบของ head ไม่มี `name` ของครูที่ไม่เกี่ยว)
-- [ ] **Step 6: Commit** — `"เว็บลงอัตรากำลังขั้นที่ 2: ส่ง ตรวจผ่าน ตีกลับ และยอดคาบรายครูตามกฎเดียวกับโปรแกรมจัดตาราง"`
+- [ ] **Step 5: ลองกับของจริง** — หัวหน้ากลุ่ม 1 แก้แถวกลุ่ม 2 → 403 · เปลี่ยนครู → ยืนยัน · bulk · เพิ่มครูในตัวเลือก · ส่ง → แก้ไม่ได้ → ตีกลับ → แก้ได้ → ส่ง → ตรวจผ่าน · loads · revision ไม่ขยับ
+- [ ] **Step 6: Commit** — `"เว็บลงอัตรากำลังขั้นที่ 2: หัวหน้ากลุ่มใส่ครูตามสิทธิ์ ส่ง ตรวจผ่าน ตีกลับ และยอดคาบรายครู"`
 
 ---
 
@@ -251,14 +259,47 @@ def test_schema_has_one_open_round_index_and_no_new_index_on_existing_tables(): 
 - **พฤติกรรมของหน้าเดิมต้องไม่เปลี่ยน** — เปลี่ยนแค่หน้าตา (ข้อความ ป้าย `aria-label` `data-testid` ที่ตัวทดสอบเดิมอ้างต้องอยู่ครบ)
 
 - [ ] **Step 1: เพิ่มโทเค็นและชิ้นส่วน `ui/`** — ไม่มีตรรกะ (ไม่มีตัวทดสอบหน่วย)
-- [ ] **Step 2: ย้ายหน้าเดิมทั้ง 6 ไฟล์มาใช้ `ui/` และ `AppShell`** — เมนู admin: รอบอัตรากำลัง · สรุปอัตรากำลัง · ทะเบียนครู · ทะเบียนวิชา · รหัสเข้า (สองแท็บแรกขึ้นหน้าว่าง "กำลังจะมา" จนถึง Task 6/9) · หัวหน้ากลุ่ม: ไม่มีแท็บ
+- [ ] **Step 2: ย้ายหน้าเดิมทั้ง 6 ไฟล์มาใช้ `ui/` และ `AppShell`** — เมนู admin: หลักสูตร · รอบอัตรากำลัง · สรุปอัตรากำลัง · ทะเบียนครู · ทะเบียนวิชา · รหัสเข้า (สามแท็บแรกขึ้นหน้าว่าง "กำลังจะมา" จนถึง Task 6/7/9) · หัวหน้ากลุ่ม: หลักสูตร · อัตรากำลังของกลุ่ม · สรุปอัตรากำลัง
 - [ ] **Step 3: ตรวจ** — `bash tests/run.sh` ผ่านครบ · `cd workload && npm run lint && npm run build` สะอาด
 - [ ] **Step 4: ดูด้วยตา** — Playwright กับเซิร์ฟเวอร์จริง ถ่ายทุกหน้าของขั้นที่ 1 ที่กว้าง 1280 และ 390 (โทรศัพท์): ล็อกอิน · ตั้งรหัสครั้งแรก · ทะเบียนครู (หลังดึง 143) · ทะเบียนวิชา · รหัสเข้า · หน้าหัวหน้ากลุ่ม · ยืนยันว่าทุกปุ่ม/ช่องของขั้นที่ 1 ยังกดได้ (เดินซ้ำขั้นตอนของคู่มือข้อ 2–5) และไม่มีการเลื่อนแนวนอนทั้งหน้าที่ 390
 - [ ] **Step 5: Commit** — `"เว็บลงอัตรากำลัง: ชุดหน้าตาใหม่ที่สบายตา และย้ายทุกหน้ามาใช้"`
 
 ---
 
-## Task 6: หน้ารอบของ admin — เปิดรอบ ภาพรวม ตรวจ และปิดรอบ
+## Task 6: หน้าหลักสูตร — ทุกคนเปิดดู admin แก้ บันทึกการแก้
+
+แบบข้อ 4.5 · ผู้ใช้: "ทุกๆคนเวลาสงสัยจะได้เปิดหลักสูตรดูได้ แถมสามารถตรวจสอบย้อนกลับมาได้ด้วย"
+
+**Files:**
+- Create: `workload/src/curriculum.ts` · `workload/src/curriculumApi.ts` · `workload/src/pages/CurriculumPage.tsx` · `CurriculumEditor.tsx`
+- Modify: `workload/src/App.tsx` (เมนู "หลักสูตร" ทั้ง admin และหัวหน้า)
+- Test: `tests/ts/wlcurriculum.ts`
+
+**Interfaces:**
+- Consumes: route ของ Task 2 · `ui/` (Task 5)
+- Produces (`curriculum.ts` — ตรรกะล้วน):
+  - `KIND_TEXT` (`basic` "พื้นฐาน" · `additional` "เพิ่มเติม" · `activity` "กิจกรรมพัฒนาผู้เรียน") · `levelOf(groupName) -> string|null` (`"ม.4/6ก"` → `"ม.4"` · ชื่อแปลก → null) · `classSort(a, b)` (ม.1/2 ก่อน ม.1/10)
+  - `curriculumSummary(c) -> {lines, weekly, credits, groups: string}` — ผลรวมคาบ/สัปดาห์และหน่วยกิตของหลักสูตร · ช่วงห้อง
+  - `groupCurricula(list) -> {level, curricula}[]` — จัดตามระดับชั้น ม.1 → ม.6 · ไม่มีระดับไว้ท้าย
+  - `buildLineBody(form) -> {ok: true, body} | {ok: false, error}` — รหัสไม่ว่าง · คาบเป็นจำนวนเต็ม ≥ 1 · หน่วยกิตว่างหรือ ≥ 0 ทศนิยมได้
+  - `logLine(entry) -> string` — "16 พ.ย. 2569 14:05 · ผู้ดูแลระบบ · เพิ่ม …" (วันที่แบบไทย พ.ศ.)
+- Produces (`curriculumApi.ts`): ฟังก์ชันละ route ของ Task 2
+
+หน้าจอ
+- **ทุกคน** (เมนู "หลักสูตร"): เลือกภาคเรียน · หลักสูตรจัดตามระดับชั้น เป็นการ์ด (ชื่อ · ห้องที่ใช้ · รวมคาบ/สัปดาห์ · รวมหน่วยกิต) · กดเปิดเห็นตารางบรรทัด (รหัส ชื่อ นก. คาบ/สัปดาห์ ประเภท กลุ่มสาระ) · ชุดคาบเสรี/กิจกรรมของภาคเรียน · แท็บ "บันทึกการแก้" (ใหม่ก่อน) · ค้นหาวิชาจากรหัส/ชื่อ ข้ามทุกหลักสูตร ("วิชานี้อยู่หลักสูตรไหนบ้าง") · ภาคเรียนที่ปิดแล้วมีป้าย "ปิดแล้ว · อ่านอย่างเดียว"
+- **admin** (`CurriculumEditor`): ภาคเรียนว่าง → การ์ด "ตั้งต้นหลักสูตร" สามทาง: จากโปรแกรมจัดตาราง · คัดลอกจากภาคเรียน… · เริ่มว่าง · เพิ่ม/แก้/ลบหลักสูตร (ชื่อ ระดับ หมายเหตุ ห้อง — เลือกห้องเป็นช่องติ๊กจัดตามระดับ ห้องที่อยู่หลักสูตรอื่นแล้วติ๊กไม่ได้พร้อมบอกว่าอยู่ที่ไหน) · เพิ่ม/แก้/ลบบรรทัด (พิมพ์รหัส → เติมชื่อและกลุ่มสาระจากทะเบียน) · ชุดคาบเสรี/กิจกรรม · การลบที่ได้ 409 เพราะมีครูใส่แล้ว → กล่องยืนยัน "มีครูใส่ไว้แล้ว N แถว จะลบด้วย" → ส่ง `force`
+- ข้อผิดพลาดของบรรทัดขึ้นในบรรทัดนั้น · reload ไม่ทำให้ของที่พิมพ์ค้างหาย · ช่องกรอกมีป้ายที่มองเห็น
+
+- [ ] **Step 1: ตัวทดสอบที่ต้องแดง** ใน `tests/ts/wlcurriculum.ts`: `levelOf` · `classSort` · `curriculumSummary` (1.5 + 1 หน่วยกิต) · `groupCurricula` · `buildLineBody` ทุกกรณี · `logLine` (พ.ศ. · เวลา 24 ชม.)
+- [ ] **Step 2: รันให้เห็นว่าแดง**
+- [ ] **Step 3: เขียนตรรกะ ตัวเรียก และสองหน้า**
+- [ ] **Step 4: ตรวจ** — tests ผ่านครบ · lint + build สะอาด
+- [ ] **Step 5: Playwright กับของจริง** (ฐานข้อมูลใหม่) — admin ตั้งต้นจากโปรแกรมจัดตาราง → เห็นหลักสูตรจัดตามระดับ → เพิ่มบรรทัด (พิมพ์รหัสแล้วชื่อขึ้นเอง) → บันทึกการแก้มีรายการ → คัดลอกไปภาคเรียนถัดไป · หัวหน้ากลุ่มเปิดดูได้ ไม่มีปุ่มแก้ · ค้นหาวิชาข้ามหลักสูตร · screenshot ที่ 1280 และ 390
+- [ ] **Step 6: Commit** — `"เว็บลงอัตรากำลังขั้นที่ 2: หน้าหลักสูตรที่ทุกคนเปิดดูได้ ผู้ดูแลระบบแก้ได้ และบันทึกการแก้"`
+
+---
+
+## Task 7: หน้ารอบของ admin — เปิดรอบ ภาพรวม ตรวจ และปิดรอบ
 
 **Files:**
 - Create: `workload/src/round.ts` · `workload/src/roundApi.ts` · `workload/src/pages/RoundsPage.tsx` · `RoundOverview.tsx`
@@ -266,57 +307,26 @@ def test_schema_has_one_open_round_index_and_no_new_index_on_existing_tables(): 
 - Test: `tests/ts/wlround.ts`
 
 **Interfaces:**
-- Consumes: route ของ Task 2 และ Task 4 · `ui/` (Task 5)
+- Consumes: route ของ Task 3 และ Task 4 · `ui/` (Task 5) · `curriculum.ts` (Task 6)
 - Produces (`round.ts` — ตรรกะล้วน):
   - `ROUND_STATUS_TEXT` · `DEPT_STATUS_TEXT` · `deptStatusTone(status) -> "warn"|"info"|"ok"|"bad"|"mute"` (`filling` ที่ยังไม่ยืนยันสักแถว = `mute` "ยังไม่เริ่ม")
   - `roundLabel(year, semester) -> string` · `checkRoundForm(year: string, semester: string) -> string|null`
-  - `previewLines(p) -> string[]` — ข้อความไทยของหน้าดูก่อนเปิด (จำนวนแถว ชุดคาบเสรี ชุดกิจกรรม คู่สอนร่วมที่รวม แถวที่อยู่ในคาบเสรีแล้ว ครู/วิชาที่จะดึงเพิ่ม)
+  - `previewLines(p) -> string[]` — ข้อความไทยของหน้าดูก่อนเปิด (จำนวนแถว ตัวเลือก แถวที่มีครูเทอมก่อน แถวที่ช่องครูว่าง บรรทัดที่ยังไม่มีกลุ่มสาระ)
   - `deptProgress(d) -> {pct, text}`
-- Produces (`roundApi.ts`): ฟังก์ชันละหนึ่ง route ของ Task 2–4 คืนชนิดตามสัญญา (ตรวจรูปตัวเลขแบบ `counts()` ใน `api.ts` — ผิดรูป → `ContractError`)
+- Produces (`roundApi.ts`): ฟังก์ชันละหนึ่ง route ของ Task 3–4 คืนชนิดตามสัญญา (ตรวจรูปตัวเลขแบบ `counts()` ใน `api.ts` — ผิดรูป → `ContractError`)
 
 หน้าจอ (ตามภาพ `mockup-admin.png`)
-- **ยังไม่มีรอบ** → การ์ดเปิดรอบ: ปี · ภาคเรียน → "ดูก่อนเปิด" → รายการ `previewLines` + รายการแปลงไม่ได้ (ถ้ามี) → "เปิดรอบ" / "ยกเลิก" · ไม่มีอะไรถูกเขียนก่อนกดเปิดรอบ
-- **รอบ `preparing`** → แถบเตือน "รอบนี้ยังไม่เปิดให้กลุ่มสาระกรอก" + จำนวนในกองยังไม่ระบุกลุ่มสาระ + ปุ่ม "เปิดให้กลุ่มสาระกรอก" (ปิดไว้พร้อมเหตุผลเมื่อกองไม่ว่าง)
-- **ภาพรวม** → ชิปรอบ · `StatTile` สี่ช่อง · การ์ดกลุ่มสาระละใบ (สถานะ ความคืบหน้า หมายเหตุตีกลับ) · ปุ่ม "ตรวจผ่าน" / "ตีกลับ" (กล่องให้พิมพ์หมายเหตุ บังคับไม่ว่าง) บนการ์ดที่ `submitted` · "เปิดดู" ไปหน้าแถวของกลุ่ม (Task 7)
+- **ยังไม่มีรอบ** → การ์ดเปิดรอบ: ปี · ภาคเรียน (ต้องมีหลักสูตรของภาคเรียนนั้น ไม่มี → ลิงก์ไปหน้าหลักสูตร) → "ดูก่อนเปิด" → รายการ `previewLines` + รายการแปลงไม่ได้ (ถ้ามี) → "เปิดรอบ" / "ยกเลิก" · ไม่มีอะไรถูกเขียนก่อนกดเปิดรอบ
+- **รอบ `preparing`** → แถบเตือน "รอบนี้ยังไม่เปิดให้กลุ่มสาระกรอก" + จำนวนบรรทัดหลักสูตรที่ยังไม่มีกลุ่มสาระ (ลิงก์ไปหน้าหลักสูตร) + ปุ่ม "เปิดให้กลุ่มสาระกรอก" (ปิดไว้พร้อมเหตุผลเมื่อยังมี)
+- **ภาพรวม** → ชิปรอบ · `StatTile` สี่ช่อง · การ์ดกลุ่มสาระละใบ (สถานะ ความคืบหน้า หมายเหตุตีกลับ) · ปุ่ม "ตรวจผ่าน" / "ตีกลับ" (กล่องให้พิมพ์หมายเหตุ บังคับไม่ว่าง) บนการ์ดที่ `submitted` · "เปิดดู" ไปหน้าแถวของกลุ่มในโหมดของ admin (หน้าเดียวกับของหัวหน้า Task 8 แต่ admin เลือกกลุ่มได้ และแก้ได้ทุกสถานะ)
 - **ปิดรอบ** → กล่องให้พิมพ์ชื่อรอบยืนยัน · รอบที่ปิดแล้วอยู่ในรายการรอบเก่า เปิดดูได้อ่านอย่างเดียว
 
-- [ ] **Step 1: เขียนตัวทดสอบที่ต้องแดง** ใน `tests/ts/wlround.ts`: ป้ายและสีทุกสถานะ · `checkRoundForm` (ว่าง · 2499 · 2701 · ภาค 3 · ถูก → null) · `previewLines` ของข้อมูลตั้งต้น ("1,220 แถว" · "คาบเสรี 13 ชุด") · ไม่มีบรรทัดของค่าที่เป็น 0 · `deptProgress` 0/108 → 0% "ยังไม่เริ่ม"
+- [ ] **Step 1: เขียนตัวทดสอบที่ต้องแดง** ใน `tests/ts/wlround.ts`: ป้ายและสีทุกสถานะ · `checkRoundForm` (ว่าง · 2499 · 2701 · ภาค 3 · ถูก → null) · `previewLines` ("1,220 แถว" · "มีครูเทอมก่อน 1,220 แถว") · ไม่มีบรรทัดของค่าที่เป็น 0 · `deptProgress` 0/108 → 0% "ยังไม่เริ่ม"
 - [ ] **Step 2: รันให้เห็นว่าแดง**
 - [ ] **Step 3: เขียน `round.ts` `roundApi.ts` และสองหน้า** แล้วต่อเข้าแท็บ "รอบอัตรากำลัง"
 - [ ] **Step 4: ตรวจ** — tests ผ่านครบ · lint + build สะอาด
-- [ ] **Step 5: Playwright กับของจริง** (ฐานข้อมูลใหม่ · ดึงครู+วิชาก่อนหรือไม่ก็ได้) — ดูก่อนเปิด → `count(*) wl_rows` ยัง 0 → เปิดรอบ → เปิดให้กรอก → ภาพรวม 11 การ์ด → ปิดรอบด้วยชื่อผิด/ถูก · screenshot ที่ 1280 และ 390 · revision ไม่ขยับ
+- [ ] **Step 5: Playwright กับของจริง** (ฐานข้อมูลใหม่ · ตั้งต้นหลักสูตรด้วย curl) — ดูก่อนเปิด → `count(*) wl_rows` ยัง 0 → เปิดรอบ → เปิดให้กรอก → ภาพรวม 11 การ์ด → ปิดรอบด้วยชื่อผิด/ถูก · screenshot ที่ 1280 และ 390 · revision ไม่ขยับ
 - [ ] **Step 6: Commit** — `"เว็บลงอัตรากำลังขั้นที่ 2: หน้ารอบของผู้ดูแลระบบ — เปิดรอบ ภาพรวม ตรวจ ปิดรอบ"`
-
----
-
-## Task 7: หน้าแก้แถวและชุดคาบเสรีของ admin
-
-**Files:**
-- Create: `workload/src/pages/RoundRowsEditor.tsx` · `SetsEditor.tsx`
-- Modify: `workload/src/round.ts` · `workload/src/roundApi.ts` · `workload/src/pages/RoundOverview.tsx`
-- Test: `tests/ts/wlround.ts` (ต่อ)
-
-**Interfaces:**
-- Consumes: route ของ Task 3 · `round.ts` (Task 6)
-- Produces (`round.ts`):
-  - `groupBySubject(rows) -> {key, code, name, weekly, kind, credits, rows}[]` — คีย์คือ `subject_id` (แถวที่ไม่มี `subject_id` ใช้ `code`) เรียงตามระดับชั้นของห้องแรกแล้วรหัสวิชา · แถวในกลุ่มเรียงตามชื่อห้องแบบตัวเลข (ม.1/2 ก่อน ม.1/10)
-  - `levelOf(groupName) -> string|null` — `"ม.4/6ก"` → `"ม.4"` · ชื่อแปลก → `null`
-  - `KIND_TEXT` (พื้นฐาน · เพิ่มเติม · กิจกรรมพัฒนาผู้เรียน)
-  - `buildRowBody(form) -> {ok: true, body} | {ok: false, error}` — ห้องอย่างน้อยหนึ่ง · คาบเป็นจำนวนเต็ม ≥ 1 · รหัส+ชื่อหรือวิชาจากทะเบียน
-
-หน้าจอ
-- เลือกกลุ่มสาระ (รวมกอง "ยังไม่ระบุกลุ่มสาระ" ที่มีตัวเลขค้าง) → แถวจัดกลุ่มตามวิชา (`groupBySubject`) แก้ช่องของ admin ในแถว
-- "เพิ่มวิชา" → เลือกวิชาจากทะเบียนหรือพิมพ์รหัส/ชื่อ · เลือกหลายห้องได้ (ติ๊กทั้งระดับในคลิกเดียว) · คาบ/สัปดาห์ · หน่วยกิต · ประเภท
-- ลบแถว (ยืนยันก่อน) · ป้าย `flag` ของแถว (เช่น สอนร่วมคาบไม่เท่ากัน) เห็นชัด
-- `SetsEditor` → รายการชุด (คาบเสรี/กิจกรรม) แก้ชื่อ ห้อง คาบ · เพิ่ม/ลบตัวเลือก และกลุ่มที่รับผิดชอบของตัวเลือก
-- ข้อผิดพลาดของแถวขึ้นในแถวนั้น (แบบขั้นที่ 1) · reload ไม่ทำให้ของที่พิมพ์ค้างหาย
-
-- [ ] **Step 1: ตัวทดสอบที่ต้องแดง**: `groupBySubject` (ลำดับ · วิชาไม่มี subject_id · ไม่แก้ลิสต์เดิม) · `levelOf` (ม.1/1 · ม.4/6ก · "ห้องที่ไม่มีแล้ว (รหัส 9)" → null) · `buildRowBody` ทุกกรณี
-- [ ] **Step 2: รันให้เห็นว่าแดง**
-- [ ] **Step 3: เขียนตรรกะ และสองหน้า** ต่อจากปุ่ม "แก้แถววิชา" และ "เปิดดู" ใน `RoundOverview`
-- [ ] **Step 4: ตรวจ** — tests ผ่านครบ · lint + build สะอาด
-- [ ] **Step 5: Playwright กับของจริง** — แก้คาบของแถวหนึ่ง · เพิ่มวิชาให้ 3 ห้อง → 3 แถว · ลบแถว · ย้ายแถวจากกอง "ยังไม่ระบุกลุ่มสาระ" (สร้างด้วย psql) ไปกลุ่ม 1 → ปุ่มเปิดให้กรอกกดได้ · แก้ตัวเลือกของชุดคาบเสรี · screenshot
-- [ ] **Step 6: Commit** — `"เว็บลงอัตรากำลังขั้นที่ 2: ผู้ดูแลระบบแก้แถววิชาและชุดคาบเสรีของรอบ"`
 
 ---
 
@@ -328,8 +338,9 @@ def test_schema_has_one_open_round_index_and_no_new_index_on_existing_tables(): 
 - Test: `tests/ts/wlround.ts` (ต่อ)
 
 **Interfaces:**
-- Consumes: route ของ Task 3–4 · `groupBySubject` `levelOf` (Task 7) · `ui/` (Task 5)
+- Consumes: route ของ Task 4 · `levelOf` `KIND_TEXT` (Task 6) · `round.ts` (Task 7) · `ui/` (Task 5)
 - Produces (`round.ts`):
+  - `groupBySubject(rows) -> {key, code, name, weekly, kind, credits, curriculumName, rows}[]` — คีย์ `line_id` · เรียงตามระดับชั้นของห้องแรกแล้วรหัสวิชา · แถวในกลุ่มเรียงด้วย `classSort` · ไม่แก้ลิสต์เดิม
   - `filterRows(rows, {state: "all"|"todo"|"done", level: string|null, query: string}, teacherName: (id) => string) -> rows` — ค้นด้วยรหัสวิชา ชื่อวิชา ชื่อห้อง ชื่อครู (ไม่สนช่องว่างหัวท้าย)
   - `fillProgress(rows, options) -> {total, confirmed, missingTeacher}`
   - `submitState(progress, deptStatus, roundStatus) -> {can: boolean, reason: string|null}` — ข้อความไทยตรงกับเงื่อนไขของ `wl_submit_blocker` ฝั่งเซิร์ฟเวอร์ และสถานะ (`submitted` "ส่งแล้ว รอผู้ดูแลระบบตรวจ" · `approved` "ตรวจผ่านแล้ว" · รอบไม่ใช่ `filling`)
@@ -340,12 +351,13 @@ def test_schema_has_one_open_round_index_and_no_new_index_on_existing_tables(): 
 - ตัวกรอง: ทั้งหมด/ยังไม่ยืนยัน/ยืนยันแล้ว · ค้นหา · ระดับชั้น
 - การ์ดวิชาละใบ (พับได้) · แถว: ติ๊กเลือก · ห้อง · ครูผู้สอน · ครูสอนร่วม · ห้องปฏิบัติการ · คาบคู่ · หมายเหตุ · สถานะ ("จากเทอมก่อน" + ปุ่มยืนยัน / "ยืนยันแล้ว") · แถวยังไม่ยืนยันพื้นเหลืองจาง
 - ปุ่มของการ์ด: "ใส่ครูให้แถวที่เลือก" · "ยืนยันแถวที่เลือก" (ใช้ `rows/bulk`)
-- ส่วนคาบเสรี/กิจกรรม: ตัวเลือกของกลุ่มตัวเอง ช่องครู ห้อง หมายเหตุ ยืนยัน
+- ส่วนคาบเสรี/กิจกรรม: ตัวเลือกของกลุ่มตัวเอง · เพิ่ม/เอาครูออก (ตัวเลือกหนึ่งมีได้หลายคน) · ห้อง หมายเหตุ ยืนยัน
+- ทุกการ์ดวิชามีบรรทัดเล็ก "จากหลักสูตร <ชื่อหลักสูตร>" ลิงก์ไปหน้าหลักสูตร (ตรวจย้อนได้) · ไม่มีช่องแก้วิชา/คาบ/ห้องเรียน
 - ด้านข้าง (จอกว้าง) / ด้านล่าง (จอแคบ): คาบรายครูของกลุ่มจาก `loads` (แถบยาวตามยอด ยอดเกินค่ามากสุดของกลุ่มเป็นสีเตือน) อัปเดตหลังบันทึก
 - จอแคบ: แถวกลายเป็นการ์ดซ้อน · ไม่มีเลื่อนแนวนอนทั้งหน้า (Review Focus 5)
 - การบันทึกที่ได้ 409 (ส่งแล้ว/รอบปิด) → ขึ้นข้อความไทยของเซิร์ฟเวอร์ และโหลดสถานะใหม่ ค่าในตัวแก้ของแถวนั้นยังอยู่ (Review Focus 2)
 
-- [ ] **Step 1: ตัวทดสอบที่ต้องแดง**: `filterRows` (สามสถานะ · ระดับ · ค้นชื่อครู · ช่องว่างหัวท้าย) · `fillProgress` · `submitState` ทุกสถานะ และข้อความตอนขาดครู/ยังไม่ยืนยันมีตัวเลข · `teacherChoices` (ไม่มีครูที่ไม่ active · กลุ่มตัวเองก่อน · ชื่อซ้ำเป็นสองตัวเลือกด้วย id)
+- [ ] **Step 1: ตัวทดสอบที่ต้องแดง**: `groupBySubject` (ลำดับ · ไม่แก้ลิสต์เดิม) · `filterRows` (สามสถานะ · ระดับ · ค้นชื่อครู · ช่องว่างหัวท้าย) · `fillProgress` · `submitState` ทุกสถานะ และข้อความตอนขาดครู/ยังไม่ยืนยันมีตัวเลข · `teacherChoices` (ไม่มีครูที่ไม่ active · กลุ่มตัวเองก่อน · ชื่อซ้ำเป็นสองตัวเลือกด้วย id)
 - [ ] **Step 2: รันให้เห็นว่าแดง**
 - [ ] **Step 3: เขียนตรรกะ และหน้า**
 - [ ] **Step 4: ตรวจ** — tests ผ่านครบ · lint + build สะอาด
@@ -364,7 +376,7 @@ def test_schema_has_one_open_round_index_and_no_new_index_on_existing_tables(): 
 - Test: `tests/ts/wlsheets.ts`
 
 **Interfaces:**
-- Consumes: `GET .../rows` (Task 3) · `GET .../loads` (Task 4) · `KIND_TEXT` `levelOf` (Task 7) · `ui/` (Task 5)
+- Consumes: `GET .../rows` · `GET .../loads` (Task 4) · `KIND_TEXT` `levelOf` `classSort` (Task 6) · `groupBySubject` (Task 8) · `ui/` (Task 5)
 - Produces (`sheets.ts` — ตรรกะล้วน ไม่แก้ลิสต์ที่ส่งเข้า):
   - `sheetTitle(kind: "subject"|"teacher", semester, year, deptName|null) -> [string, string, string]` — `["สรุปอัตรากำลังแบบรายวิชา", "ภาคเรียนที่ 2 ปีการศึกษา 2569", "กลุ่มสาระ…"]` (ทุกกลุ่ม → "ทุกกลุ่มสาระ")
   - `kindLabel(kind) -> string` — `"1 พื้นฐาน"` · `"2 เพิ่มเติม"` · `"กิจกรรมพัฒนาผู้เรียน"`
@@ -380,8 +392,9 @@ def test_schema_has_one_open_round_index_and_no_new_index_on_existing_tables(): 
 - admin: แท็บ "สรุปอัตรากำลัง" (แทนชื่อแท็บ "สรุปคาบรายครู" ของ Task 5) · หัวหน้า: ลิงก์จากหน้ากรอก
 
 คู่มือ `docs/workload-setup.md` — เพิ่มหัวข้อ (ภาษาไทย สำหรับคนที่ไม่ใช่โปรแกรมเมอร์ ตามแบบเดิมของไฟล์):
-1. **เปิดรอบอัตรากำลัง** (admin): ดูก่อนเปิด · เปิดรอบ · จัดแถวกอง "ยังไม่ระบุกลุ่มสาระ" · เปิดให้กลุ่มสาระกรอก · ตรวจผ่าน/ตีกลับ · ปิดรอบ
-2. **สำหรับหัวหน้ากลุ่มสาระ**: ป้าย "จากเทอมก่อน" คืออะไร · ยืนยันทีละแถว/ทั้งชุด · ใส่ครูให้หลายห้อง · คาบเสรี · กดส่ง · ถ้าถูกตีกลับ
+1. **ทำหลักสูตรก่อน** (admin): ตั้งต้นจากโปรแกรมจัดตารางหรือเทอมก่อน · แก้บรรทัดและห้อง · บันทึกการแก้ · ทุกคนเปิดดูได้
+1. **เปิดรอบอัตรากำลัง** (admin): ดูก่อนเปิด · เปิดรอบ · บรรทัดที่ยังไม่มีกลุ่มสาระ · เปิดให้กลุ่มสาระกรอก · ตรวจผ่าน/ตีกลับ · ปิดรอบ
+2. **สำหรับหัวหน้ากลุ่มสาระ**: หน้าที่คือใส่ครูอย่างเดียว · ป้าย "จากเทอมก่อน" คืออะไร · ยืนยันทีละแถว/ทั้งชุด · ใส่ครูให้หลายห้อง · คาบเสรี · กดส่ง · ถ้าถูกตีกลับ · วิชาหรือคาบผิดให้แจ้ง admin แก้ที่หลักสูตร
 3. **หน้าสรุปอัตรากำลัง** สองแบบ แทนชีตเดิม และวิธีพิมพ์
 4. **เรื่องที่ต้องรู้เพิ่ม**: รอบนี้ไม่แตะตารางสอน · การส่งเข้าโปรแกรมจัดตารางเป็นขั้นที่ 3 · ยอดคาบเสรีต่างจากยอดในโปรแกรมได้ เพราะอะไร
 5. ตารางข้อสอบท้ายคู่มือ: เพิ่มข้อ 1, 2, 8, 9, 10 ของสเปกหลักพร้อมผลที่ลองในเครื่องพัฒนา และข้อ 7 ที่ต้องเทียบกับไฟล์ Excel เอง
