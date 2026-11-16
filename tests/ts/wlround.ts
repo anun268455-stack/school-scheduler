@@ -11,10 +11,11 @@ import { readFileSync } from "node:fs";
 import {
   bulkConfirmIds, checkCloseLabel, checkReturnNote, checkRoundForm, closedRounds, currentRound, defaultOpenTerm,
   DEPT_STATUS_TEXT, deptProgress, deptStatusLabel, deptStatusTone, editState, fillLevels, fillProgress, filterOptions,
-  filterRows, groupBySubject, headRound, isDeptStatus, isOptionTeacher, isRound, isRoundDetail, isRoundOption,
+  filterRows, groupBySubject, headRound, holdPending, isDeptStatus, isOptionTeacher, isRound, isRoundDetail, isRoundOption,
   isRoundPreview, isRoundRow, isTeacherLoad, loadBars, openBlocker, optionState, optionTeacherPatch, previewLines,
   previewWarnings, reviewActions, roundActions, roundChip, roundLabel, roundStats, ROUND_STATUS_TEXT, roundStatusTone,
-  rowPatch, rowState, subjectLine, submitState, teacherChoices, teacherNamer, termReadiness,
+  releasePending, rowPatch, rowState, settlePending, shownFields, subjectLine, submitState, teacherChoices, teacherNamer,
+  termReadiness,
   type DeptStatus, type OptionTeacher, type Round, type RoundOption, type RoundPreview, type RoundRow, type TeacherLoad,
 } from "../../workload/src/round.ts";
 
@@ -657,6 +658,51 @@ test("headRound: รอบที่เปิดให้กรอก · ไม�
   // หัวหน้าไม่เห็นรอบที่กำลังเตรียม (เซิร์ฟเวอร์ไม่ส่ง) — ถ้าหลุดมาก็ไม่ใช้
   eq(headRound([R({ id: 4, status: "preparing" })]), null);
   eq(headRound([R({ id: 4, status: "preparing" }), c1])?.id, 1);
+});
+
+test("ค่าที่เลือกค้าง (I1): เลือกครูสอนร่วมเป็นครูผู้สอน → 400 → ยืนยันแถวที่เลือก → จอต้องแสดงครูที่เซิร์ฟเวอร์ยืนยัน ไม่ใช่ครูที่ค้าง", () => {
+  // แถวจากเทอมก่อน: ครู A (4) ยังไม่ยืนยัน · ครูสอนร่วม B (5)
+  const a = W({ teacher_id: 4, co_teacher_id: 5, confirmed: false });
+  // หัวหน้าเลือก B เป็นครูผู้สอน → จอแสดง B ระหว่างบันทึก
+  const held = holdPending(null, a, { teacher_id: 5 });
+  eq(shownFields(a, held), { teacher_id: 5, is_double: false });
+  // เซิร์ฟเวอร์ตอบ 400 (ครูผู้สอนกับครูสอนร่วมต้องเป็นคนละคน) แถวบนเซิร์ฟเวอร์ไม่เปลี่ยน → ค่าที่ค้างยังอยู่ (Review Focus 2)
+  ok(settlePending(held, { ...a }) === held, "แถวไม่เปลี่ยน ค่าที่ค้างต้องอยู่ (ตัวเดิม)");
+  eq(shownFields(a, settlePending(held, { ...a })), { teacher_id: 5, is_double: false });
+  // "ยืนยันแถวที่เลือก": เซิร์ฟเวอร์ยืนยัน A → แถวเปลี่ยน → ค่าที่ค้างหมดอายุ จอแสดง A
+  const confirmedA = { ...a, confirmed: true };
+  eq(settlePending(held, confirmedA), null);
+  eq(shownFields(confirmedA, settlePending(held, confirmedA)), { teacher_id: 4, is_double: false });
+  // ค่าที่ค้างที่หมดอายุแล้วแต่ยังไม่ถูกล้างจาก state (เฟรมเดียวกับที่แถวใหม่มาถึง) ก็ต้องไม่ถูกแสดง
+  eq(shownFields(confirmedA, held), { teacher_id: 4, is_double: false });
+  // "ใส่ครูให้แถวที่เลือก": เซิร์ฟเวอร์ใส่ X (6) → จอแสดง X
+  const assignedX = { ...a, teacher_id: 6, confirmed: true };
+  eq(settlePending(held, assignedX), null);
+  eq(shownFields(assignedX, settlePending(held, assignedX)), { teacher_id: 6, is_double: false });
+});
+
+test("ค่าที่เลือกค้าง: หมดอายุเมื่อครู/สถานะยืนยัน/คาบคู่บนเซิร์ฟเวอร์เปลี่ยน · ช่องอื่นเปลี่ยนไม่กระทบ · บันทึกสำเร็จแล้วปล่อยเฉพาะช่องนั้น", () => {
+  const r = W({ teacher_id: 4, co_teacher_id: null, confirmed: false, is_double: false });
+  const held = holdPending(null, r, { teacher_id: 6 });
+  eq(settlePending(held, { ...r, teacher_id: null }), null);
+  eq(settlePending(held, { ...r, is_double: true }), null);
+  // หมายเหตุ/ครูสอนร่วม/ห้องเปลี่ยน (เช่น หัวหน้าแก้ครูสอนร่วมเพื่อให้เลือกครูได้) — ไม่ได้ขัดกับครูที่ค้าง ลองบันทึกใหม่ได้
+  ok(settlePending(held, { ...r, note: "x", co_teacher_id: 9, lab_room_id: 3 }) === held, "ช่องอื่นต้องไม่ทำให้ค่าที่ค้างหาย");
+  // เพิ่มค่าค้างอีกช่อง: base เดิม (สถานะของแถวตอนเลือกครั้งแรก)
+  const both = holdPending(held, r, { is_double: true });
+  eq(both.values, { teacher_id: 6, is_double: true });
+  eq(both.base, held.base);
+  eq(shownFields(r, both), { teacher_id: 6, is_double: true });
+  eq(releasePending(both, ["is_double"]), { values: { teacher_id: 6 }, base: held.base });
+  eq(releasePending(both, ["teacher_id", "is_double"]), null);
+  eq(releasePending(null, ["teacher_id"]), null);
+  // ค่าที่ค้างที่หมดอายุแล้วไม่ถูกต่อยอด: แถวเปลี่ยนแล้วเลือกใหม่ = เริ่มจากแถวปัจจุบัน
+  const moved = { ...r, teacher_id: 7, confirmed: true };
+  eq(holdPending(held, moved, { is_double: true }), { values: { is_double: true }, base: { teacher_id: 7, confirmed: true, is_double: false } });
+  eq(shownFields(r, null), { teacher_id: 4, is_double: false });
+  eq(settlePending(null, r), null);
+  // ล้างครู (null) เป็นค่าที่ค้างได้ ต้องแสดง null ไม่ใช่ตกไปใช้ครูเดิม
+  eq(shownFields(r, holdPending(null, r, { teacher_id: null })), { teacher_id: null, is_double: false });
 });
 
 if (fails.length) {

@@ -5,8 +5,8 @@ import { departmentName, roomRange, SET_KIND_TEXT, thaiDateTime } from "../curri
 import { listRooms } from "../curriculumApi";
 import {
   bulkConfirmIds, deptStatusLabel, deptStatusTone, editState, fillLevels, fillProgress, filterOptions, filterRows,
-  groupBySubject, loadBars, optionState, optionTeacherPatch, rowPatch, rowState, subjectLine, submitState, teacherChoices,
-  teacherNamer, type DeptStatus, type FillFilter, type OptionTeacher, type Round, type RoundOption, type RoundRow,
+  groupBySubject, holdPending, loadBars, optionState, optionTeacherPatch, releasePending, rowPatch, rowState, settlePending,
+  shownFields, subjectLine, submitState, teacherChoices, teacherNamer, type AutoFields, type DeptStatus, type PendingEdit, type FillFilter, type OptionTeacher, type Round, type RoundOption, type RoundRow,
   type SubjectGroup, type TeacherChoice, type TeacherLoad, type Term,
 } from "../round";
 import {
@@ -771,7 +771,6 @@ function BulkBar(props: {
 // ---- แถว ----
 
 type DetailForm = Pick<RoundRow, "co_teacher_id" | "lab_room_id" | "note">;
-type AutoFields = Partial<Pick<RoundRow, "teacher_id" | "is_double">>;
 
 const RowItem = memo(function RowItem(props: {
   row: RoundRow;
@@ -785,26 +784,31 @@ const RowItem = memo(function RowItem(props: {
 }) {
   const { row, kit, editable } = props;
   // ค่าที่กดแล้วแต่ยังบันทึกไม่สำเร็จ (ครู · คาบคู่) — คงอยู่บนจอพร้อมข้อความ ไม่ถูกแทนด้วยค่าจากเซิร์ฟเวอร์เงียบ ๆ
-  const [pending, setPending] = useState<AutoFields>({});
+  // แต่ใช้ได้เฉพาะขณะที่แถวบนเซิร์ฟเวอร์ยังเป็นสถานะเดิม (settlePending) — ยืนยัน/ใส่ครูทีละหลายแถวแล้วแถวเปลี่ยน
+  // จอต้องแสดงครูที่เซิร์ฟเวอร์ยืนยันจริง ไม่ใช่ครูที่ค้างคู่กับ "ยืนยันแล้ว"
+  const [pending, setPending] = useState<PendingEdit | null>(null);
   const [detail, setDetail] = useState<DetailForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const detailId = useId();
+  // ปรับตามแถวใหม่ระหว่างวาด (ไม่ใช่ effect) — ไม่มีสักเฟรมที่จอแสดงครูที่ค้างคู่กับสถานะของแถวใหม่
+  const live = settlePending(pending, row);
+  if (live !== pending) {
+    setPending(live);
+    // ข้อความผิดพลาดเป็นของค่าที่ค้างซึ่งหมดอายุแล้ว · ฟอร์มรายละเอียดที่เปิดอยู่เก็บข้อความของมันไว้
+    if (!detail) setError(null);
+  }
 
   // auto = ครู/คาบคู่ (บันทึกทันทีที่เปลี่ยน) · detail = ฟอร์มรายละเอียด · confirm = ปุ่มยืนยัน (ไม่แตะค่าที่ค้างอยู่)
   const commit = async (fields: Partial<RoundRow>, from: "auto" | "detail" | "confirm") => {
     if (busy.current) return;
-    if (from === "auto") setPending((p) => ({ ...p, ...fields }));
+    if (from === "auto") setPending((p) => holdPending(p, row, fields as AutoFields));
     const patch = rowPatch(row, fields);
     const finish = () => {
       setError(null);
       if (from === "auto") {
-        setPending((p) => {
-          const next = { ...p };
-          for (const k of Object.keys(fields)) delete next[k as keyof AutoFields];
-          return next;
-        });
+        setPending((p) => releasePending(p, Object.keys(fields) as (keyof AutoFields)[]));
       } else if (from === "detail") {
         setDetail(null);
       }
@@ -823,16 +827,15 @@ const RowItem = memo(function RowItem(props: {
     else finish();
   };
   const discard = () => {
-    setPending({});
+    setPending(null);
     setDetail(null);
     setError(null);
   };
 
-  const teacherId = "teacher_id" in pending ? (pending.teacher_id ?? null) : row.teacher_id;
-  const isDouble = "is_double" in pending ? Boolean(pending.is_double) : row.is_double;
-  const hasPending = Object.keys(pending).length > 0;
+  const { teacher_id: teacherId, is_double: isDouble } = shownFields(row, live);
+  const hasPending = live !== null;
   // อ่านอย่างเดียวแต่มีค่าที่ค้างจากการบันทึกที่ถูกปฏิเสธ → ยังแสดงตัวแก้ (ปิดไว้) ให้เห็นว่าค่าไหนไม่ได้บันทึก
-  const live = editable || hasPending || detail !== null;
+  const showEditors = editable || hasPending || detail !== null;
   const state = rowState(row);
   const lock = !editable || saving;
   const openDetail = () => setDetail({ co_teacher_id: row.co_teacher_id, lab_room_id: row.lab_room_id, note: row.note });
@@ -869,12 +872,12 @@ const RowItem = memo(function RowItem(props: {
         {props.curriculum && <div className="break-words text-xs text-muted">หลักสูตร {row.curriculum_name}</div>}
       </div>
       <div className="col-start-3 row-start-1 flex flex-wrap items-center justify-end gap-2 justify-self-end md:col-start-7 md:flex-col md:items-end md:gap-1">
-        <RowStatus row={row} canConfirm={editable && !("teacher_id" in pending)} saving={saving}
+        <RowStatus row={row} canConfirm={editable && !(live && "teacher_id" in live.values)} saving={saving}
           onConfirm={() => void commit({ confirmed: true }, "confirm")} />
       </div>
 
       <div className="col-span-3 min-w-0 md:col-span-1 md:col-start-3 md:row-start-1">
-        {live ? (
+        {showEditors ? (
           <TeacherSelect value={teacherId} kit={kit} disabled={lock || !kit.teachersReady} empty="— ยังไม่มีครู —"
             label={`ครูผู้สอน ${row.group_name}`} testId="teacher" onChange={(v) => void commit({ teacher_id: v }, "auto")} />
         ) : (
@@ -885,7 +888,7 @@ const RowItem = memo(function RowItem(props: {
       {/* จอกว้าง: คอลัมน์ของตาราง */}
       <div className="hidden min-w-0 break-words md:col-start-4 md:row-start-1 md:block">{coText ?? <span className="text-muted">—</span>}</div>
       <div className="hidden md:col-start-5 md:row-start-1 md:flex md:justify-center">
-        {live ? doubleBox : row.is_double ? <span aria-label="คาบคู่">✓</span> : <span className="text-muted">—</span>}
+        {showEditors ? doubleBox : row.is_double ? <span aria-label="คาบคู่">✓</span> : <span className="text-muted">—</span>}
       </div>
       <div className="hidden min-w-0 items-center justify-between gap-2 md:col-start-6 md:row-start-1 md:flex">
         <div className="min-w-0 break-words">
@@ -901,7 +904,7 @@ const RowItem = memo(function RowItem(props: {
         {coText && <span className="break-words">ครูสอนร่วม {coText}</span>}
         {labText && <span className="break-words">ห้องปฏิบัติการ {labText}</span>}
         {row.note && <span className="break-words">หมายเหตุ: {row.note}</span>}
-        {live ? (
+        {showEditors ? (
           <label className="flex items-center gap-1.5">{doubleBox}คาบคู่</label>
         ) : (
           row.is_double && <span>คาบคู่</span>
@@ -951,7 +954,7 @@ const RowItem = memo(function RowItem(props: {
           {hasPending && (
             <>
               {editable && (
-                <Button size="sm" onClick={() => void commit(pending, "auto")} disabled={saving}>ลองบันทึกอีกครั้ง</Button>
+                <Button size="sm" onClick={() => live && void commit(live.values, "auto")} disabled={saving}>ลองบันทึกอีกครั้ง</Button>
               )}
               <Button size="sm" onClick={discard} disabled={saving}>คืนค่าเดิม</Button>
             </>

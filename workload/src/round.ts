@@ -700,6 +700,48 @@ export function optionTeacherPatch(
   return changed(before, after, OPTION_TEACHER_KEYS);
 }
 
+// ---- ค่าที่เลือกค้างในแถว (ครู · คาบคู่ ที่บันทึกทันทีที่เปลี่ยน แต่บันทึกไม่สำเร็จ) ----
+// จอคงค่าที่คนเลือกไว้ให้เห็นว่าไม่ได้บันทึก (Review Focus 2) แต่ค่านั้นใช้ได้เฉพาะขณะที่แถวบนเซิร์ฟเวอร์ยังเป็นสถานะเดียวกับตอนเลือก
+// แถวเปลี่ยนจากทางอื่น (ยืนยัน/ใส่ครูทีละหลายแถว · อีกแท็บ) → ค่าที่ค้างหมดอายุ ไม่งั้นจอจะแสดงครูคนหนึ่งคู่กับ "ยืนยันแล้ว"
+// ของอีกคนที่เซิร์ฟเวอร์ยืนยันไป · ครูสอนร่วม ห้อง หมายเหตุ ไม่อยู่ในสถานะนี้ (แก้ครูสอนร่วมแล้วลองบันทึกครูที่ค้างใหม่ได้)
+
+export type AutoFields = Partial<Pick<RoundRow, "teacher_id" | "is_double">>;
+type HeldState = Pick<RoundRow, "teacher_id" | "confirmed" | "is_double">;
+/** values = ค่าที่เลือกค้าง · base = สถานะของแถวบนเซิร์ฟเวอร์ตอนที่เลือก */
+export type PendingEdit = { values: AutoFields; base: HeldState };
+
+const heldState = (row: HeldState): HeldState => ({ teacher_id: row.teacher_id, confirmed: row.confirmed, is_double: row.is_double });
+const sameState = (a: HeldState, b: HeldState): boolean =>
+  a.teacher_id === b.teacher_id && a.confirmed === b.confirmed && a.is_double === b.is_double;
+
+/** ค่าที่ค้างหลังรู้แถวล่าสุดจากเซิร์ฟเวอร์: แถวยังเป็นสถานะเดิม → ตัวเดิม · เปลี่ยนไปแล้ว → null (จอแสดงค่าจริงของเซิร์ฟเวอร์) */
+export function settlePending(p: PendingEdit | null, row: HeldState): PendingEdit | null {
+  return p && sameState(p.base, row) ? p : null;
+}
+
+/** เลือกค่าใหม่ในแถว: ต่อยอดค่าที่ค้างที่ยังใช้ได้ (base เดิม) · ไม่มีหรือหมดอายุแล้ว = เริ่มจากสถานะปัจจุบันของแถว */
+export function holdPending(p: PendingEdit | null, row: HeldState, values: AutoFields): PendingEdit {
+  const live = settlePending(p, row);
+  return live ? { values: { ...live.values, ...values }, base: live.base } : { values: { ...values }, base: heldState(row) };
+}
+
+/** บันทึกช่องเหล่านี้สำเร็จ → ปล่อยออกจากค่าที่ค้าง · ไม่เหลือช่องไหน = null */
+export function releasePending(p: PendingEdit | null, keys: readonly (keyof AutoFields)[]): PendingEdit | null {
+  if (!p) return null;
+  const values = { ...p.values };
+  for (const k of keys) delete values[k];
+  return Object.keys(values).length ? { values, base: p.base } : null;
+}
+
+/** ค่าที่ช่องครู/คาบคู่ของแถวแสดง: ค่าที่ค้าง (ถ้ายังใช้ได้) ไม่งั้นค่าจากเซิร์ฟเวอร์ */
+export function shownFields(row: HeldState, p: PendingEdit | null): { teacher_id: number | null; is_double: boolean } {
+  const v = settlePending(p, row)?.values ?? {};
+  return {
+    teacher_id: "teacher_id" in v ? (v.teacher_id ?? null) : row.teacher_id,
+    is_double: "is_double" in v ? Boolean(v.is_double) : row.is_double,
+  };
+}
+
 /** "ยืนยันแถวที่เลือก": เฉพาะแถวที่เลือกซึ่งมีครูและยังไม่ยืนยัน — แถวที่ไม่มีครูยืนยันไปก็ยังส่งไม่ได้ (นับแยกไว้บอกให้ใส่ครูก่อน) */
 export function bulkConfirmIds(
   rows: readonly Pick<RoundRow, "id" | "teacher_id" | "confirmed">[],
