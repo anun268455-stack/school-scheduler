@@ -28,10 +28,11 @@ import { DEFAULT_FREE_LABEL, DEFAULT_FREE_THROUGH, freeCellLabel }
 import { normalizePrintLayout, type CellLayout, type CellPartKey } from "../../utils/cellLayout";
 import { effectiveHomeroomIds } from "../../utils/homeroom";
 import { WorkloadReport } from "./WorkloadReport";
+import { SubjectRosterReport } from "./SubjectRosterReport";
 import { levelKeyOf, periodsForLevel, combinedPeriods, type LevelKey } from "../../utils/levels";
 import { roomHourCount, roomHoursOf, roomsToPrint } from "../../utils/roomUsage";
 
-export type PrintMode = "group" | "teacher" | "room" | "workload";
+export type PrintMode = "group" | "teacher" | "room" | "workload" | "subject";
 export type PrintSort = "name" | "department" | "code";
 
 export interface PrintOptions {
@@ -70,8 +71,7 @@ interface PrintViewProps {
   rooms?:       Room[];
   departments?: Department[];
   subjects?:    Subject[];
-  /** ไม่ได้ใช้แล้วหลังใบอัตรากำลังเลิกรายงานคาบที่ลงไม่ได้ — คงช่องไว้
-   *  เพราะที่เรียกยังส่งมา และไม่มีเหตุให้ต้องไปแก้ทุกที่พร้อมกัน */
+  /** แผนการสอน — ต้นทางของใบ "รายวิชาและผู้สอน" */
   requirements?: LessonRequirement[];
   periods:      Period[];
   schoolConfig: SchoolConfig;
@@ -756,8 +756,8 @@ function RoomCell({ slots, m, roomId }: {
 // ── Main export ──────────────────────────────────────────────────────────────
 export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
   ({ slots, groups, teachers = [], rooms = [], departments = [], subjects = [],
-     periods, schoolConfig, options, termName }, ref) => {
-    // หัวใบพิมพ์ทั้งสี่แบบ (ตารางเรียน ตารางครู ตารางห้อง ใบอัตรากำลัง) ใช้บรรทัดนี้
+     requirements = [], periods, schoolConfig, options, termName }, ref) => {
+    // หัวใบพิมพ์ทุกแบบใช้บรรทัดนี้
     // ชื่อเทอมมาจาก termName ที่ App ส่งมาจากเทอมที่กำลังดูอยู่ (utils/printSheet.sheetHeading)
     const termLabel = sheetHeading(termName, schoolConfig);
     // ผังบรรทัดของใบพิมพ์ — เก็บไว้กับการตั้งค่าโรงเรียน เหมือนผังบนจอ
@@ -936,7 +936,17 @@ export const PrintView = forwardRef<HTMLDivElement, PrintViewProps>(
 
         {/* อัตรากำลัง is a different document, not a timetable laid out
             differently — one page per teacher, listing what they carry. */}
-        {options.mode === "workload" ? (
+        {options.mode === "subject" ? (
+          /* รายวิชาและผู้สอน — กลับด้านกับใบอัตรากำลัง ไล่ทีละวิชาแทนทีละครู
+             อ่านจากแผนการสอน ไม่ใช่คาบที่ลงตารางแล้ว วิชาที่ยังจัดคาบไม่ลงจึง
+             ยังโผล่บนใบ แทนที่จะหายไปเงียบ ๆ */
+          <SubjectRosterReport
+            requirements={requirements} subjects={subjects}
+            teachers={teachers} groups={groups} departments={departments ?? []}
+            schoolName={schoolConfig.schoolName} termLabel={termLabel}
+            signers={workSigners} selectedIds={options.selectedIds}
+          />
+        ) : options.mode === "workload" ? (
           <WorkloadReport
             teachers={teachers} departments={departments} groups={groups}
             subjects={subjects} slots={slots}

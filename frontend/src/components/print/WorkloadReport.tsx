@@ -37,7 +37,8 @@ export interface WorkloadProps {
   groups: StudentGroup[];
   subjects: Subject[];
   slots: TimetableSlot[];
-  schoolName: string;
+  /** ที่เรียกยังส่งมา แต่ไม่ได้ใช้ — termLabel มีคำว่า "โรงเรียน<ชื่อ>" อยู่แล้ว */
+  schoolName?: string;
   termLabel: string;
   /** Empty = every teacher. */
   selectedIds: number[];
@@ -60,7 +61,7 @@ export interface WorkloadProps {
 
 export const WorkloadReport: React.FC<WorkloadProps> = ({
   teachers, departments, groups, subjects, slots: allSlots, signers,
-  schoolName, termLabel, selectedIds, countActivities = true,
+  termLabel, selectedIds, countActivities = true,
 }) => {
   // Dropped once, here, rather than at each of the places that count a slot —
   // a rule applied in three places is a rule that will hold in two of them.
@@ -149,7 +150,12 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
           /* A signature line and the title underneath it must not be split
              across a page break — the first print put "ลงชื่อ" at the foot of
              one sheet and "ผู้อำนวยการโรงเรียน" alone at the top of the next. */
-          .wl-sign { break-inside: avoid; page-break-inside: avoid; }
+          .wl-sign {
+            break-inside: avoid; page-break-inside: avoid;
+            /* และห้ามขึ้นหน้าใหม่ตรงหน้ามันด้วย ไม่งั้นตารางที่ยาวจนเต็มหน้า
+               พอดีจะดันแถวลงชื่อไปอยู่หน้าถัดไปตัวเดียว */
+            break-before: avoid; page-break-before: avoid;
+          }
         }
       `}</style>
 
@@ -168,7 +174,8 @@ export const WorkloadReport: React.FC<WorkloadProps> = ({
                 {sec.name}
               </div>
               <div style={{ fontSize: "9.5pt", marginTop: "0.5mm" }}>
-                {termLabel}{schoolName ? `  ${schoolName}` : ""}
+                {/* termLabel มีคำว่า "โรงเรียน<ชื่อ>" อยู่แล้ว เติมซ้ำจะได้ชื่อสองหน */}
+                {termLabel}
                 {"  ·  ครู "}{sec.blocks.length}{" คน  ·  รวม "}{deptTotal}{" คาบ/สัปดาห์"}
                 {/* Printed, not just chosen: two copies of this sheet with
                     different totals and nothing on the page to tell them
