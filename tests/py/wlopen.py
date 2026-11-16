@@ -781,6 +781,25 @@ def test_open_refuses_options_without_department():
     assert _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)["status"] == "filling"
 
 
+def test_option_edit_keeps_its_teachers_and_unblocks_open():
+    # ทางเดียวที่ระบุกลุ่มสาระให้ตัวเลือกได้โดยไม่ต้องลบแล้วเพิ่มใหม่ (ซึ่งจะทำให้ครูของตัวเลือกหาย) — การแก้ต้องไม่ลบครู
+    db, t = _rdb()
+    rnd = _open(db)
+    o = _call(db, ADMIN, mock_api.wl_term_set_options_create, REQ,
+              {"set_id": t["set"]["id"], "code": "X9", "name": "วิชาพิมพ์เอง"})
+    mine = db.add("wl_option_teachers", round_id=rnd["id"], option_id=o["id"], teacher_id=_wl_teacher(db, 510),
+                  confirmed=True)
+    assert _code(lambda: _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ))[0] == 409
+    _call(db, ADMIN, mock_api.wl_term_set_options_update, o["id"], REQ, {"department_id": 7})
+    kept = [x for x in db.tables["wl_option_teachers"] if x["option_id"] == o["id"]]
+    assert kept == [mine], kept
+    # แก้รหัสของตัวเลือกที่มีครูเทอมก่อน (ผูกวิชาใหม่) ครูก็ยังอยู่ครบ
+    n = db.count("wl_option_teachers", option_id=t["option"]["id"])
+    _call(db, ADMIN, mock_api.wl_term_set_options_update, t["option"]["id"], REQ, {"code": "พ21201"})
+    assert n == 2 and db.count("wl_option_teachers", option_id=t["option"]["id"]) == 2
+    assert _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)["status"] == "filling"
+
+
 # ── ตาราง route ─────────────────────────────────────────────────────────────
 def test_round_routes_are_registered_and_preview_comes_before_round_id():
     routes = [(v, p) for v, p, _ in mock_api.app.routes]

@@ -704,6 +704,7 @@ def _write_cases(t, year=2569, semester=2):
                                        "name": "ลูกเสือ", "weekly": 1}), {}),
         (m.wl_term_sets_update, (sid, REQ), {"body": {"weekly": 3}}),
         (m.wl_term_set_options_create, (REQ, {"set_id": sid, "code": "พ21201"}), {}),
+        (m.wl_term_set_options_update, (oid, REQ), {"body": {"department_id": 4}}),
         (m.wl_term_set_options_delete, (oid, REQ), {}),
         (m.wl_curriculum_lines_delete, (lid, REQ), {}),
         (m.wl_term_sets_delete, (sid, REQ), {}),
@@ -716,7 +717,7 @@ def test_head_cannot_write_any_curriculum_route():
     t = _term(db)
     before = _state(db)
     cases = _write_cases(t)
-    assert len(cases) == 12
+    assert len(cases) == 13
     for fn, args, kw in cases:
         c, d = _code(lambda: _call(db, HEAD, fn, *args, **kw))
         assert c == 403 and _thai(d), (fn.__name__, c, d)
@@ -742,7 +743,7 @@ def test_every_write_logs_one_thai_entry():
         assert _thai(last["detail"]) and last["by_label"] == "ผู้ดูแลระบบ", (fn.__name__, last)
         assert (last["year"], last["semester"]) == (2569, 2), fn.__name__
     details = [r["detail"] for r in sorted(db.tables["wl_curriculum_log"], key=lambda r: r["id"])][6:]
-    assert len(details) == 11
+    assert len(details) == 12
     assert details[0] == "สร้างหลักสูตร ใหม่ (ห้อง ม.1/7)", details[0]
     assert details[1] == "แก้หลักสูตร ม.1/1-6: หมายเหตุ (ว่าง) → แก้", details[1]
     assert details[2] == "เพิ่ม ก21902 แนะแนว 2 (1 คาบ) ในหลักสูตร ม.1/1-6", details[2]
@@ -867,6 +868,73 @@ def test_line_code_matching_registry_binds_subject_name_and_department():
                  "name": "ฟุตบอล", "department_id": 6}
     assert _code(lambda: _call(db, ADMIN, mock_api.wl_term_set_options_create, REQ,
                                {"set_id": s["id"], "code": "พ21201"}))[0] == 409
+
+
+def test_option_update_edits_fields_and_binds_only_when_the_code_changes():
+    db = _db()
+    t = _term(db)
+    oid, set_name = t["option"]["id"], t["set"]["name"]
+    log = lambda: sorted(db.tables["wl_curriculum_log"], key=lambda r: r["id"])     # noqa: E731
+    n = len(log())
+    got = _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, {"department_id": 4})
+    assert got == {"id": oid, "set_id": t["set"]["id"], "subject_id": _subj(db, "ศ21201")["id"], "code": "ศ21201",
+                   "name": "ดนตรีสากล", "department_id": 4}, got
+    assert len(log()) == n + 1
+    assert log()[-1]["detail"] == (f"แก้ตัวเลือก ศ21201 ดนตรีสากล ในชุดคาบเสรี {set_name}: "
+                                   "กลุ่มสาระ กลุ่มสาระศิลปะ → กลุ่มสาระเทคโนโลยี"), log()[-1]["detail"]
+    assert log()[-1]["action"] == "option.update" and _thai(log()[-1]["detail"])
+    # รหัสเดิม (ตัดช่องว่างแล้วเท่ากัน) → ไม่ผูกใหม่ ไม่เติมชื่อ/กลุ่มสาระจากทะเบียนทับ
+    for code in ("ศ21201", " ศ21201 "):
+        got = _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, {"code": code, "name": "ดนตรี (ปรับ)"})
+        assert (got["department_id"], got["name"], got["subject_id"]) == (4, "ดนตรี (ปรับ)", _subj(db, "ศ21201")["id"])
+    # รหัสเปลี่ยนจริงเป็นรหัสในทะเบียน → ผูกวิชาและเติมชื่อ/กลุ่มสาระ
+    got = _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, {"code": "ก21902"})
+    assert (got["subject_id"], got["name"], got["department_id"]) == (_subj(db, "ก21902")["id"], "แนะแนว 2", 10)
+    # รหัสที่ไม่มีในทะเบียน → ต้องพิมพ์ชื่อ · ได้ตัวเลือกที่ไม่ผูกวิชา
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, {"code": "X77"}))
+    assert c == 400 and "X77" in d, (c, d)
+    got = _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, {"code": "X77", "name": "วิชาพิมพ์เอง"})
+    assert (got["subject_id"], got["code"], got["name"]) == (None, "X77", "วิชาพิมพ์เอง")
+    # เลือกวิชาด้วย subject_id → รหัส ชื่อ กลุ่มสาระมาจากทะเบียน (ที่ไม่ได้ส่งมา)
+    th = _subj(db, "ท21102")["id"]
+    got = _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, {"subject_id": th})
+    assert (got["subject_id"], got["code"], got["name"], got["department_id"]) == (th, "ท21102", "ภาษาไทยพื้นฐาน 2", 1)
+    got = _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, {"subject_id": None})
+    assert (got["subject_id"], got["code"]) == (None, "ท21102")
+    before = _state(db)
+    for bad in ({"subject_id": th, "code": "ค21102"},          # รหัสไม่ตรงกับวิชาที่เลือก
+                {"subject_id": 999999}, {"subject_id": "1"}, {"subject_id": True}, {"subject_id": 2 ** 70},
+                {"set_id": 2}, {"force": True}, {}, {"code": ""}, {"name": " "}, {"department_id": 999}, None):
+        c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, bad))
+        assert c == 400 and _thai(d), (bad, c, d)
+        assert _state(db) == before, bad
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, {"set_id": 2}))
+    assert "set_id" in d
+    assert _code(lambda: _call(db, ADMIN, mock_api.wl_term_set_options_update, 9999, REQ, {"name": "x"}))[0] == 404
+    assert _code(lambda: _call(db, ADMIN, mock_api.wl_term_set_options_update, 2 ** 70, REQ, {"name": "x"}))[0] == 404
+    # เรียก hook ในธุรกรรมเดียวกันเหมือนการเขียนหลักสูตรทุกตัว (ไม่ force — การแก้ตัวเลือกไม่ลบอะไร)
+    calls = []
+    with _patched(_wl_after_curriculum_change=lambda cur, y, s, force: calls.append((y, s, force)) or {}):
+        _call(db, ADMIN, mock_api.wl_term_set_options_update, oid, REQ, {"department_id": 7})
+    assert calls == [(2569, 2, False)], calls
+
+
+def test_option_update_refuses_a_subject_already_in_the_same_set():
+    db = _db()
+    t = _term(db)
+    sid = t["set"]["id"]
+    other = _call(db, ADMIN, mock_api.wl_term_set_options_create, REQ, {"set_id": sid, "code": "พ21201"})
+    before = _state(db)
+    for body in ({"code": "ศ21201"}, {"code": " ศ21201"}, {"subject_id": _subj(db, "ศ21201")["id"]}):
+        c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_term_set_options_update, other["id"], REQ, body))
+        assert c == 409 and "ศ21201" in d and _thai(d), (body, c, d)
+        assert _state(db) == before, body
+    # ชุดอื่นใช้วิชาเดียวกันได้ · แก้ช่องอื่นของตัวเลือกที่ไม่ได้เปลี่ยนวิชาไม่ติดด่านนี้
+    s2 = _call(db, ADMIN, mock_api.wl_term_sets_create, REQ, {"year": 2569, "semester": 2, "kind": "elective",
+                                                             "name": "เสรีอีกชุด", "weekly": 1})
+    o2 = _call(db, ADMIN, mock_api.wl_term_set_options_create, REQ, {"set_id": s2["id"], "code": "ก21902"})
+    assert _call(db, ADMIN, mock_api.wl_term_set_options_update, o2["id"], REQ, {"code": "ศ21201"})["code"] == "ศ21201"
+    assert _call(db, ADMIN, mock_api.wl_term_set_options_update, other["id"], REQ, {"name": "ฟุตบอล ม.ต้น"})
 
 
 def test_line_values_are_checked():
@@ -1253,6 +1321,7 @@ def test_curriculum_routes_are_registered():
                  ("post", "/api/workload/term-sets"), ("put", "/api/workload/term-sets/{set_id}"),
                  ("delete", "/api/workload/term-sets/{set_id}"),
                  ("post", "/api/workload/term-set-options"),
+                 ("put", "/api/workload/term-set-options/{option_id}"),
                  ("delete", "/api/workload/term-set-options/{option_id}")):
         assert want in paths, want
 

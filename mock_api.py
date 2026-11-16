@@ -15143,6 +15143,7 @@ WL_TERM_SET_FIELDS: frozenset[str] = frozenset(
     {"year", "semester", "kind", "name", "group_ids", "weekly", "is_double"})
 WL_TERM_SET_EDIT: frozenset[str] = WL_TERM_SET_FIELDS - {"year", "semester"}
 WL_OPTION_FIELDS: frozenset[str] = frozenset({"set_id", "code", "name", "department_id"})
+WL_OPTION_EDIT: frozenset[str] = frozenset({"subject_id", "code", "name", "department_id"})
 WL_SEED_FIELDS: frozenset[str] = frozenset({"year", "semester", "source", "from_year", "from_semester"})
 # ชื่อคอลัมน์ใน SQL ของหลักสูตรมาจากชุดเหล่านี้เท่านั้น ค่าจากผู้ใช้เป็นพารามิเตอร์เสมอ
 _WL_CURRICULUM_COLS = ("id", "year", "semester", "name", "level", "note")
@@ -15530,6 +15531,7 @@ _WL_LINE_DIFF = (("code", "รหัส", _wl_show), ("name", "ชื่อ", _w
                  ("weekly", "คาบ/สัปดาห์", _wl_show),
                  ("kind", "ประเภท", lambda k: WL_KIND_TEXT.get(k, _wl_show(k))),
                  ("department_id", "กลุ่มสาระ", _wl_dept_text), ("sort", "ลำดับ", _wl_show))
+_WL_OPTION_DIFF = (("code", "รหัส", _wl_show), ("name", "ชื่อ", _wl_show), ("department_id", "กลุ่มสาระ", _wl_dept_text))
 _WL_SET_DIFF = (("kind", "ประเภท", lambda k: WL_SET_KIND_TEXT.get(k, _wl_show(k))), ("name", "ชื่อ", _wl_show),
                 ("weekly", "คาบ/สัปดาห์", _wl_show), ("is_double", "คาบคู่", _wl_show))
 
@@ -16090,6 +16092,76 @@ def wl_term_set_options_create(request: Request, body: Any = Body(None)) -> dict
         _wl_log(cur, s["year"], s["semester"], sess, "option.create",
                 f"เพิ่มตัวเลือก {_wl_subject_label(row)} ใน{WL_SET_KIND_TEXT.get(s['kind'], 'ชุด')} {s['name']}"
                 + _wl_sync_note(synced))
+        return row
+
+
+@app.put("/api/workload/term-set-options/{option_id}")
+def wl_term_set_options_update(option_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """แก้ตัวเลือกของชุด (วิชา รหัส ชื่อ กลุ่มสาระ) — ทางเดียวที่ระบุกลุ่มสาระให้ตัวเลือกได้โดยไม่ต้องลบแล้วเพิ่มใหม่
+    ซึ่งจะพาครูของตัวเลือกในรอบหายไปด้วย · การแก้ไม่ลบครูของตัวเลือก (option_id เดิม การเปิดให้กรอกปฏิเสธตัวเลือกที่ไม่มีกลุ่มสาระ)
+
+    ผูกวิชากฎเดียวกับบรรทัด: รหัสที่เปลี่ยนจริงและตรงทะเบียน → ผูกและเติมชื่อ/กลุ่มสาระที่ไม่ได้ส่งมา · รหัสเดิมส่งซ้ำ = ไม่แตะ
+    (กลุ่มสาระที่ admin ระบุไว้ต้องไม่ถูกรีเซ็ต) · subject_id ระบุวิชาตรง ๆ ได้ (null = ไม่ผูก) แต่รหัสที่ส่งมาด้วยต้องตรงกับวิชานั้น
+    วิชาเดียวเป็นตัวเลือกของชุดเดียวได้ครั้งเดียว (409) เหมือนตอนเพิ่ม
+    """
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        f = wl_clean_fields(body, WL_OPTION_EDIT)
+        if not f:
+            raise HTTPException(400, "ไม่มีช่องที่จะแก้ ส่งอย่างน้อยหนึ่งช่อง")
+        vals: dict[str, Any] = {}
+        if "code" in f:
+            vals["code"] = _wl_text("code", f["code"], True)
+        if "name" in f:
+            vals["name"] = _wl_text("name", f["name"], True)
+        if "department_id" in f:
+            vals["department_id"] = _wl_dept_or_none(f["department_id"])
+        picked = None
+        if f.get("subject_id") is not None:
+            sid = _wl_id_field("subject_id", f["subject_id"], "วิชา")
+            if 0 < sid <= _WL_BIGINT_MAX:
+                cur.execute("SELECT id, code, name, department_id FROM wl_subjects WHERE id = %s", (sid,))
+                hit = cur.fetchone()
+                picked = dict(zip(("id", "code", "name", "department_id"), hit)) if hit else None
+            if picked is None:
+                raise HTTPException(400, f"ไม่พบวิชารหัส {sid} ในทะเบียนวิชา")
+        old = _wl_get(cur, "wl_term_set_options", _WL_OPTION_COLS, option_id, "ไม่พบตัวเลือกนี้")
+        s = _wl_get(cur, "wl_term_sets", _WL_TERM_SET_COLS, old["set_id"], "ไม่พบชุดของตัวเลือกนี้")
+        _wl_refuse_locked(cur, s["year"], s["semester"])
+        if "code" in vals and vals["code"] == str(old["code"] or "").strip():
+            del vals["code"]            # รหัสเดิม = ไม่ผูกใหม่ ไม่เติมทับ (กฎเดียวกับ PUT บรรทัด)
+        if "subject_id" in f:
+            vals["subject_id"] = picked["id"] if picked else None
+            if picked and picked["id"] != old["subject_id"]:
+                vals.setdefault("code", str(picked["code"] or "").strip())
+                vals.setdefault("name", picked["name"])
+                vals.setdefault("department_id", picked["department_id"])
+            if picked and "code" in vals and vals["code"] != str(picked["code"] or "").strip():
+                raise HTTPException(400, f"รหัส {vals['code']} ไม่ตรงกับวิชาที่เลือก ({_wl_subject_label(picked)}) "
+                                         "ส่งรหัสให้ตรง หรือส่งแค่ subject_id")
+        elif "code" in vals:
+            hit = _wl_bind_code(vals["code"], _wl_registry_by_code(cur))
+            vals["subject_id"] = hit["id"] if hit else None
+            if hit:
+                vals.setdefault("name", hit["name"])
+                vals.setdefault("department_id", hit["department_id"])
+        if "code" in vals and vals.get("subject_id") is None and "name" not in vals:
+            # ชื่อเดิมเป็นของรหัสเก่า ปล่อยไว้จะได้ตัวเลือกที่รหัสกับชื่อเป็นคนละวิชา (กฎเดียวกับบรรทัด)
+            raise HTTPException(400, f"ต้องระบุชื่อวิชา เพราะรหัส {vals['code']} ไม่มีในทะเบียนวิชา")
+        if "code" in vals or "subject_id" in vals:
+            code = str(vals.get("code", old["code"]) or "").strip()
+            subj = vals.get("subject_id", old["subject_id"])
+            cur.execute("SELECT id, subject_id, code FROM wl_term_set_options WHERE set_id = %s", (old["set_id"],))
+            if any(oid != option_id and ((subj is not None and osid == subj) or str(ocode or "").strip() == code)
+                   for oid, osid, ocode in cur.fetchall()):
+                raise HTTPException(409, f"วิชา {code} เป็นตัวเลือกของชุด {s['name']} อยู่แล้ว "
+                                         "(ครูหลายคนของวิชาเดียวใส่ได้ตอนกรอกรอบ)")
+        row = _wl_update_row(cur, "wl_term_set_options", _WL_OPTION_COLS, option_id, vals) if vals else old
+        synced = _wl_after_curriculum_change(cur, s["year"], s["semester"], False)
+        changes = _wl_changes(old, row, _WL_OPTION_DIFF)
+        _wl_log(cur, s["year"], s["semester"], sess, "option.update",
+                f"แก้ตัวเลือก {_wl_subject_label(old)} ใน{WL_SET_KIND_TEXT.get(s['kind'], 'ชุด')} {s['name']}: "
+                f"{' · '.join(changes) or 'ไม่มีค่าที่เปลี่ยน'}" + _wl_sync_note(synced))
         return row
 
 
