@@ -595,7 +595,11 @@ def test_removing_group_from_curriculum_removes_its_rows():
 def test_removing_option_or_set_with_teachers_is_409_then_force_deletes_them():
     db, t = _rdb()
     rnd = _open(db)
-    assert db.count("wl_option_teachers", round_id=rnd["id"]) == 2
+    ots = [o for o in db.tables["wl_option_teachers"] if o["round_id"] == rnd["id"]]
+    assert len(ots) == 2 and all(o["from_plan"] and not o["confirmed"] for o in ots)
+    # หัวหน้ายืนยันครูเทอมก่อนไว้หนึ่งคน + เพิ่มครูเองอีกหนึ่งคน (ไม่ได้มาจากแผนเดิม) = งานของคน 2 คน
+    ots[0]["confirmed"] = True
+    db.add("wl_option_teachers", round_id=rnd["id"], option_id=t["option"]["id"], teacher_id=_wl_teacher(db, 510))
     before = _state(db)
     for fn, rid in ((mock_api.wl_term_set_options_delete, t["option"]["id"]),
                     (mock_api.wl_term_sets_delete, t["set"]["id"])):           # ลบชุด = ตัวเลือกหายตาม (CASCADE)
@@ -605,17 +609,32 @@ def test_removing_option_or_set_with_teachers_is_409_then_force_deletes_them():
     _call(db, ADMIN, mock_api.wl_term_sets_delete, t["set"]["id"], REQ, body={"force": True})
     assert db.count("wl_option_teachers") == 0 and db.count("wl_term_set_options") == 0
     last = max(db.tables["wl_curriculum_log"], key=lambda r: r["id"])
-    assert "ครูของตัวเลือก 2 คน" in last["detail"], last["detail"]
+    assert "(ลบครูของตัวเลือก 2 คน ในรอบ 2/2569)" in last["detail"], last["detail"]
 
 
-def test_deleting_a_whole_curriculum_with_teachers_needs_force():
+def test_prefilled_unconfirmed_option_teachers_are_removed_without_force():
     db, t = _rdb()
     rnd = _open(db)
+    assert db.count("wl_option_teachers", round_id=rnd["id"]) == 2                  # ครูเทอมก่อน ยังไม่ยืนยัน
+    _call(db, ADMIN, mock_api.wl_term_set_options_delete, t["option"]["id"], REQ)
+    assert db.count("wl_option_teachers") == 0
+    last = max(db.tables["wl_curriculum_log"], key=lambda r: r["id"])
+    assert "ลบครู" not in last["detail"], last["detail"]
+
+
+def test_deleting_a_whole_curriculum_needs_force_only_for_rows_a_person_entered():
+    db, t = _rdb()
+    rnd = _open(db)
+    th = t["lines"][0]["id"]
+    r1 = next(r for r in _rows(db, round_id=rnd["id"], line_id=th) if r["group_id"] == 1)
+    r1["confirmed"] = True                                       # หัวหน้ายืนยันครูเทอมก่อนไว้หนึ่งแถว
     before = _state(db)
     c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_curricula_delete, t["curriculum"]["id"], REQ))
-    assert c == 409 and re.search(r"\b4 แถว", d), (c, d)          # ครูเทอมก่อน 4 แถว ก็เป็นครูที่ใส่ไว้
+    assert c == 409 and re.search(r"\b1 แถว", d), (c, d)          # ครูเทอมก่อนอีก 3 แถวที่ยังไม่ยืนยัน ไม่นับ
     assert _state(db) == before
-    _call(db, ADMIN, mock_api.wl_curricula_delete, t["curriculum"]["id"], REQ, force="true")
+    # ของปลอมย้อนกลับด้วยสำเนาลึก จึงหยิบแถวใหม่ · เหลือแต่ข้อเสนอของเครื่อง → ลบได้โดยไม่ต้อง force
+    next(r for r in _rows(db, round_id=rnd["id"], line_id=th) if r["group_id"] == 1)["confirmed"] = False
+    _call(db, ADMIN, mock_api.wl_curricula_delete, t["curriculum"]["id"], REQ)
     assert db.count("wl_rows") == 0 and db.count("wl_curricula") == 0
     # ตั้งต้นใหม่ทั้งภาคเรียนระหว่างรอบเปิด → แถวของรอบกลับมาตามหลักสูตรใหม่ (ไม่มีครู — ครูเทอมก่อนใส่ตอนเปิดรอบเท่านั้น)
     _call(db, ADMIN, mock_api.wl_term_sets_delete, t["set"]["id"], REQ, force="1")
@@ -646,19 +665,32 @@ def test_sync_returns_what_it_did():
     rnd = _open(db)
     cur = _cur(db)
     assert mock_api._wl_sync_round(cur, 2569, 2, False) == {
-        "round_id": rnd["id"], "label": "2/2569", "rows_added": 0, "rows_removed": 0, "rows_removed_with_teacher": 0,
-        "option_teachers_removed": 0, "option_teachers_removed_with_teacher": 0}
+        "round_id": rnd["id"], "label": "2/2569", "rows_added": 0, "rows_removed": 0, "rows_removed_entered": 0,
+        "option_teachers_removed": 0, "option_teachers_removed_entered": 0}
     db.tables["wl_rows"] = [r for r in db.tables["wl_rows"] if r["group_id"] != 6]
     db.add("wl_rows", round_id=rnd["id"], line_id=t["lines"][0]["id"], group_id=12, teacher_id=None)
+    # ครูเทอมก่อนที่ยังไม่ยืนยัน = ข้อเสนอของเครื่อง ไม่ใช่งานของคน
+    db.add("wl_rows", round_id=rnd["id"], line_id=t["lines"][1]["id"], group_id=12,
+           teacher_id=_wl_teacher(db, 510), from_plan=True)
     got = mock_api._wl_sync_round(cur, 2569, 2, False)
-    assert (got["rows_added"], got["rows_removed"], got["rows_removed_with_teacher"]) == (3, 1, 0), got
-    # ครูสอนร่วมอย่างเดียวก็เป็นครูที่ใส่ไว้
+    assert (got["rows_added"], got["rows_removed"], got["rows_removed_entered"]) == (3, 2, 0), got
+    # ใส่ครูเอง (ไม่ได้มาจากแผนเดิม) — ครูสอนร่วมอย่างเดียวก็นับ · ยืนยันแล้วนับแม้ไม่มีครู
     db.add("wl_rows", round_id=rnd["id"], line_id=t["lines"][0]["id"], group_id=12,
            co_teacher_id=_wl_teacher(db, 510))
+    db.add("wl_rows", round_id=rnd["id"], line_id=t["lines"][1]["id"], group_id=12, from_plan=True, confirmed=True)
+    db.add("wl_rows", round_id=rnd["id"], line_id=t["lines"][2]["id"], group_id=12, from_plan=False)  # ว่างเปล่า
     c, d = _code(lambda: mock_api._wl_sync_round(cur, 2569, 2, False))
-    assert c == 409 and re.search(r"\b1 แถว", d), (c, d)
+    assert c == 409 and re.search(r"\b2 แถว", d), (c, d)
     got = mock_api._wl_sync_round(cur, 2569, 2, True)
-    assert (got["rows_removed"], got["rows_removed_with_teacher"]) == (1, 1), got
+    assert (got["rows_removed"], got["rows_removed_entered"]) == (3, 2), got
+
+
+def test_entered_means_confirmed_or_a_teacher_not_from_the_plan():
+    e = mock_api._wl_entered
+    assert e(True, True, 5) and e(True, False) and e(True, True, None, None)       # ยืนยันแล้ว
+    assert e(False, False, 5) and e(False, False, None, 7)                         # ใส่ครูเอง
+    assert not e(False, True, 5, 7)                                                # ครูเทอมก่อน ยังไม่ยืนยัน
+    assert not e(False, False, None, None)                                         # แถวว่าง
 
 
 # ── ข้อมูลตั้งต้นทั้งเส้น ─────────────────────────────────────────────────────
@@ -693,6 +725,59 @@ def test_seed_data_end_to_end_every_row_has_last_term_teacher_unconfirmed():
     for k, v in snaps.items():
         assert getattr(mock_api, k) == v, k
     # เปิดให้กรอกได้เลย (ทุกบรรทัดมีกลุ่มสาระ)
+    assert _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)["status"] == "filling"
+
+
+def test_seed_data_prefilled_rows_are_removed_without_force_but_entered_ones_need_it():
+    db = FakeDb()
+    _call(db, ADMIN, mock_api.wl_curricula_seed, REQ, {"year": 2569, "semester": 2, "source": "timetable"})
+    rnd = _call(db, ADMIN, mock_api.wl_rounds_create, REQ, {"year": 2569, "semester": 2})
+    groups = collections.Counter(g["curriculum_id"] for g in db.tables["wl_curriculum_groups"])
+    a, b = [ln["id"] for ln in db.tables["wl_curriculum_lines"] if groups[ln["curriculum_id"]] >= 2][:2]
+    na, nb = len(_rows(db, line_id=a)), len(_rows(db, line_id=b))
+    # บรรทัดที่ทุกแถวเป็นครูเทอมก่อนที่ยังไม่ยืนยัน → ลบได้เลย ไม่ต้อง force และบันทึกไม่มีส่วนต่อท้าย
+    assert all(r["from_plan"] and not r["confirmed"] and r["teacher_id"] for r in _rows(db, line_id=a))
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, a, REQ)
+    assert _rows(db, line_id=a) == []
+    assert "ลบครู" not in max(db.tables["wl_curriculum_log"], key=lambda r: r["id"])["detail"]
+    # ยืนยันหนึ่งแถว → 409 นับ 1 · force → ลบ
+    _rows(db, line_id=b)[0]["confirmed"] = True
+    before = _state(db)
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, b, REQ))
+    assert c == 409 and re.search(r"\b1 แถว", d), (c, d)
+    assert _state(db) == before
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, b, REQ, force="1")
+    assert _rows(db, line_id=b) == []
+    assert "(ลบครูที่ใส่ไว้ 1 แถว ในรอบ 2/2569)" in max(db.tables["wl_curriculum_log"], key=lambda r: r["id"])["detail"]
+    # แถวที่ไม่ได้มาจากแผนเดิม (บรรทัดใหม่) แล้วมีคนใส่ครู → 409 นับ 1 · force → ลบ
+    cid = next(c for c, n in groups.items() if n >= 2)
+    ln = _call(db, ADMIN, mock_api.wl_curriculum_lines_create, REQ, {"curriculum_id": cid, "code": "Z1", "name": "ใหม่",
+                                                                    "weekly": 1, "department_id": 1})
+    new = _rows(db, line_id=ln["id"])
+    assert len(new) >= 2 and not any(r["from_plan"] for r in new)
+    new[0]["teacher_id"] = db.tables["wl_teachers"][0]["id"]
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, ln["id"], REQ))
+    assert c == 409 and re.search(r"\b1 แถว", d), (c, d)
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, ln["id"], REQ, body={"force": True})
+    assert _rows(db, line_id=ln["id"]) == [] and len(_rows(db, round_id=rnd["id"])) == 1220 - na - nb
+
+
+def test_open_refuses_options_without_department():
+    db, t = _rdb()
+    rnd = _open(db)
+    o = _call(db, ADMIN, mock_api.wl_term_set_options_create, REQ,
+              {"set_id": t["set"]["id"], "code": "X9", "name": "วิชาพิมพ์เอง"})
+    assert o["department_id"] is None
+    before = _state(db)
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ))
+    assert c == 409 and "1 ตัวเลือก" in d and "กลุ่มสาระ" in d and "บรรทัด" not in d, (c, d)
+    assert _state(db) == before
+    # บรรทัดและตัวเลือกพร้อมกัน → บอกทั้งสองจำนวน
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_update, t["lines"][0]["id"], REQ, body={"department_id": None})
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ))
+    assert c == 409 and "1 บรรทัด" in d and "1 ตัวเลือก" in d, (c, d)
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_update, t["lines"][0]["id"], REQ, body={"department_id": 1})
+    _call(db, ADMIN, mock_api.wl_term_set_options_delete, o["id"], REQ)
     assert _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)["status"] == "filling"
 
 

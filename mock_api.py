@@ -16263,7 +16263,8 @@ def _wl_term_shape(cur, year: int, semester: int) -> dict[str, Any]:
 
     cells = [(line_id, group_id, subject_id)] เรียงตามหลักสูตร → ลำดับบรรทัด (sort, id) → ห้องตามโปรแกรมจัดตาราง
     (ลำดับบรรทัดในห้องเดียวกันมีผลต่อการจับคู่ครูเทอมก่อนของวิชาที่ซ้ำ ดู wl_prefill) · options = [(option_id, ห้องของชุด,
-    subject_id)] · sets = จำนวนชุด · lines_without_department = บรรทัดที่ยังไม่ระบุกลุ่มสาระ (ไม่มีหัวหน้าคนไหนเห็นแถวของมัน)
+    subject_id)] · sets = จำนวนชุด · lines_without_department / options_without_department = บรรทัด/ตัวเลือกที่ยังไม่ระบุ
+    กลุ่มสาระ (ไม่มีหัวหน้าคนไหนเห็น จึงไม่มีใครกรอก)
     """
     names = _wl_group_names()
     cur.execute("SELECT curriculum_id, group_id FROM wl_curriculum_groups WHERE year = %s AND semester = %s",
@@ -16284,12 +16285,16 @@ def _wl_term_shape(cur, year: int, semester: int) -> dict[str, Any]:
                 (year, semester))
     set_groups = {sid: list(gids or []) for sid, gids in cur.fetchall()}
     options: list[tuple] = []
+    no_dept_options = 0
     if set_groups:
-        cur.execute("SELECT id, set_id, subject_id FROM wl_term_set_options WHERE set_id = ANY(%s) ORDER BY id",
-                    (sorted(set_groups),))
-        options = [(oid, set_groups[sid], subj) for oid, sid, subj in cur.fetchall()]
+        cur.execute("SELECT id, set_id, subject_id, department_id FROM wl_term_set_options WHERE set_id = ANY(%s) "
+                    "ORDER BY id", (sorted(set_groups),))
+        for oid, sid, subj, dept in cur.fetchall():
+            options.append((oid, set_groups[sid], subj))
+            no_dept_options += dept is None
     return {"cells": cells, "options": options, "sets": len(set_groups),
-            "lines_without_department": sum(1 for *_rest, dept in lines if dept is None)}
+            "lines_without_department": sum(1 for *_rest, dept in lines if dept is None),
+            "options_without_department": no_dept_options}
 
 
 def _wl_round_plan(cur, year: int, semester: int) -> dict[str, Any]:
@@ -16340,14 +16345,21 @@ def _wl_refuse_round_exists(cur, year: int, semester: int) -> None:
                                  "เปิดรอบใหม่ได้ทีละรอบ ให้ปิดรอบนั้นก่อน")
 
 
+def _wl_entered(confirmed: Any, from_plan: Any, *teachers: Any) -> bool:
+    """แถวของรอบ/ครูของตัวเลือกนี้มีงานที่คนทำไว้ไหม: ยืนยันแล้ว หรือไม่ได้มาจากแผนเดิมและมีครู
+    กติกา force มีไว้ไม่ให้งานของคนหายเงียบ ๆ ไม่ได้มีไว้ปกป้องข้อเสนอของเครื่อง — ครูเทอมก่อนที่ระบบใส่ให้
+    (from_plan) และยังไม่มีใครยืนยัน ลบตามหลักสูตรได้ทันที · การนับใน 409 และในบันทึกใช้นิยามเดียวกันนี้"""
+    return bool(confirmed) or (not from_plan and any(t is not None for t in teachers))
+
+
 def _wl_sync_note(res: dict[str, Any]) -> str:
-    """ส่วนต่อท้ายบันทึกหลักสูตรเมื่อ sync ลบครูที่ใส่ไว้ (admin ยืนยัน force แล้ว) — บันทึกต้องตอบได้ว่าครูในรอบหายไป
-    เพราะการแก้ครั้งไหน ของใคร เมื่อไหร่ · ไม่มีครูหาย = ข้อความว่าง"""
+    """ส่วนต่อท้ายบันทึกหลักสูตรเมื่อ sync ลบงานที่คนใส่ไว้ (admin ยืนยัน force แล้ว) — บันทึกต้องตอบได้ว่าครูในรอบหายไป
+    เพราะการแก้ครั้งไหน ของใคร เมื่อไหร่ · ไม่มีงานของคนหาย = ข้อความว่าง"""
     bits = []
-    if res.get("rows_removed_with_teacher"):
-        bits.append(f"ครูที่ใส่ไว้ {res['rows_removed_with_teacher']:,} แถว")
-    if res.get("option_teachers_removed_with_teacher"):
-        bits.append(f"ครูของตัวเลือก {res['option_teachers_removed_with_teacher']:,} คน")
+    if res.get("rows_removed_entered"):
+        bits.append(f"ครูที่ใส่ไว้ {res['rows_removed_entered']:,} แถว")
+    if res.get("option_teachers_removed_entered"):
+        bits.append(f"ครูของตัวเลือก {res['option_teachers_removed_entered']:,} คน")
     return f" (ลบ{' และ'.join(bits)} ในรอบ {res.get('label')})" if bits else ""
 
 
@@ -16356,16 +16368,17 @@ def _wl_sync_round(cur, year: int, semester: int, force: bool) -> dict[str, Any]
 
     · (บรรทัด, ห้อง) ใหม่ → แถวใหม่ที่ยังไม่มีครู (ครูเทอมก่อนใส่ตอนเปิดรอบเท่านั้น สเปก 4.5)
     · แถวที่ (บรรทัด, ห้อง) ไม่อยู่ในหลักสูตรแล้ว และครูของตัวเลือกที่ตัวเลือกไม่มีแล้ว → ลบ
-      แต่ถ้าในนั้นมีครูใส่ไว้ (ครูผู้สอน/ครูสอนร่วม รวมครูเทอมก่อนที่ยังไม่ยืนยัน) และ force เป็นเท็จ → 409 ไทยบอกจำนวน
-      ก่อนลบอะไร แล้วทั้งธุรกรรม (รวมการลบในหลักสูตรที่ route ทำไปก่อน) ย้อนกลับ — ครูที่ใส่ไว้หายเงียบ ๆ ไม่ได้
+      แต่ถ้าในนั้นมีงานที่คนทำไว้ (_wl_entered: ยืนยันแล้ว หรือไม่ได้มาจากแผนเดิมและมีครู) และ force เป็นเท็จ → 409 ไทย
+      บอกจำนวน ก่อนลบอะไร แล้วทั้งธุรกรรม (รวมการลบในหลักสูตรที่ route ทำไปก่อน) ย้อนกลับ — งานของคนหายเงียบ ๆ ไม่ได้
+      ครูเทอมก่อนที่ระบบใส่ให้และยังไม่มีใครยืนยันเป็นแค่ข้อเสนอของเครื่อง ลบตามหลักสูตรได้โดยไม่ต้อง force
     route ลบของในหลักสูตรก่อนแล้วจึงเรียก (FK ของ line_id/option_id เป็น DEFERRABLE) แถวที่ค้างต้องถูกลบที่นี่
     ไม่อย่างนั้น COMMIT ล้ม · รอบที่ปิดแล้วไม่ตาม (หลักสูตรของมันล็อก route ปฏิเสธก่อนถึงนี่)
-    คืน {round_id, label, rows_added, rows_removed, rows_removed_with_teacher, option_teachers_removed,
-         option_teachers_removed_with_teacher} · ไม่มีรอบที่ยังไม่ปิด = round_id None และศูนย์ทั้งหมด
+    คืน {round_id, label, rows_added, rows_removed, rows_removed_entered, option_teachers_removed,
+         option_teachers_removed_entered} · ไม่มีรอบที่ยังไม่ปิด = round_id None และศูนย์ทั้งหมด
     """
     label = term_label(year, semester)
-    out = {"round_id": None, "label": label, "rows_added": 0, "rows_removed": 0, "rows_removed_with_teacher": 0,
-           "option_teachers_removed": 0, "option_teachers_removed_with_teacher": 0}
+    out = {"round_id": None, "label": label, "rows_added": 0, "rows_removed": 0, "rows_removed_entered": 0,
+           "option_teachers_removed": 0, "option_teachers_removed_entered": 0}
     cur.execute("SELECT id, status FROM wl_rounds WHERE year = %s AND semester = %s", (year, semester))
     hit = cur.fetchone()
     if hit is None or hit[1] == "closed":
@@ -16375,20 +16388,21 @@ def _wl_sync_round(cur, year: int, semester: int, force: bool) -> dict[str, Any]
     want = [(lid, gid) for lid, gid, _sid in shape["cells"]]
     want_set = set(want)
     keep_options = {oid for oid, _gids, _sid in shape["options"]}
-    cur.execute("SELECT id, line_id, group_id, teacher_id, co_teacher_id FROM wl_rows WHERE round_id = %s",
-                (round_id,))
+    cur.execute("SELECT id, line_id, group_id, teacher_id, co_teacher_id, confirmed, from_plan FROM wl_rows "
+                "WHERE round_id = %s", (round_id,))
     rows = cur.fetchall()
     gone = [r for r in rows if (r[1], r[2]) not in want_set]
-    gone_t = sum(1 for r in gone if r[3] is not None or r[4] is not None)
-    cur.execute("SELECT id, option_id, teacher_id FROM wl_option_teachers WHERE round_id = %s", (round_id,))
+    gone_t = sum(1 for r in gone if _wl_entered(r[5], r[6], r[3], r[4]))
+    cur.execute("SELECT id, option_id, teacher_id, confirmed, from_plan FROM wl_option_teachers WHERE round_id = %s",
+                (round_id,))
     ot_gone = [o for o in cur.fetchall() if o[1] not in keep_options]
-    ot_gone_t = sum(1 for o in ot_gone if o[2] is not None)
+    ot_gone_t = sum(1 for o in ot_gone if _wl_entered(o[3], o[4], o[2]))
     if (gone_t or ot_gone_t) and not force:
         what = []
         if gone_t:
-            what.append(f"แถวที่มีครูใส่ไว้แล้ว {gone_t:,} แถว")
+            what.append(f"แถวที่มีคนใส่ครูหรือยืนยันไว้แล้ว {gone_t:,} แถว")
         if ot_gone_t:
-            what.append(f"ครูของตัวเลือก {ot_gone_t:,} คน")
+            what.append(f"ครูของตัวเลือก {ot_gone_t:,} คน ที่มีคนใส่หรือยืนยันไว้แล้ว")
         raise HTTPException(409, f"รอบอัตรากำลังภาคเรียน {label} ยังไม่ปิด และการแก้นี้จะลบ{' และ'.join(what)} "
                                  "ออกจากรอบ — ถ้าต้องการลบจริง ให้ยืนยันซ้ำ (force)")
     if gone:
@@ -16400,8 +16414,8 @@ def _wl_sync_round(cur, year: int, semester: int, force: bool) -> dict[str, Any]
     if missing:
         cur.executemany("INSERT INTO wl_rows (round_id, line_id, group_id) VALUES (%s, %s, %s)",
                         [(round_id, lid, gid) for lid, gid in missing])
-    out.update(round_id=round_id, rows_added=len(missing), rows_removed=len(gone), rows_removed_with_teacher=gone_t,
-               option_teachers_removed=len(ot_gone), option_teachers_removed_with_teacher=ot_gone_t)
+    out.update(round_id=round_id, rows_added=len(missing), rows_removed=len(gone), rows_removed_entered=gone_t,
+               option_teachers_removed=len(ot_gone), option_teachers_removed_entered=ot_gone_t)
     return out
 
 
@@ -16497,18 +16511,23 @@ def wl_round_get(round_id: int, request: Request) -> dict[str, Any]:
 
 @app.post("/api/workload/rounds/{round_id}/open")
 def wl_rounds_open(round_id: int, request: Request) -> dict[str, Any]:
-    """preparing → filling (เปิดให้หัวหน้ากลุ่มสาระกรอก) · บรรทัดหลักสูตรที่ยังไม่มีกลุ่มสาระ = แถวที่ไม่มีหัวหน้าคนไหนเห็น
-    จึงต้องระบุให้ครบก่อน · อ่านแถวรอบ FOR UPDATE ให้การแก้หลักสูตรที่แข่งกัน (ล็อก FOR SHARE) รอกันเป็นลำดับ"""
+    """preparing → filling (เปิดให้หัวหน้ากลุ่มสาระกรอก) · บรรทัดหลักสูตรหรือตัวเลือกของชุดที่ยังไม่มีกลุ่มสาระ = สิ่งที่ไม่มี
+    หัวหน้าคนไหนเห็น จะค้างไม่มีใครกรอกตลอดรอบ จึงต้องระบุให้ครบก่อน · อ่านแถวรอบ FOR UPDATE ให้การแก้หลักสูตรที่แข่งกัน
+    (ล็อก FOR SHARE) รอกันเป็นลำดับ"""
     with _wl_db() as cur:
         wl_require_admin(request, cur)
         r = _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING, for_update=True)
         if r["status"] != "preparing":
             raise HTTPException(409, f"รอบ {r['label']} {WL_ROUND_STATUS_TEXT.get(r['status'], r['status'])} "
                                      "เปิดให้กรอกได้เฉพาะรอบที่กำลังเตรียม")
-        n = _wl_term_shape(cur, r["year"], r["semester"])["lines_without_department"]
-        if n:
-            raise HTTPException(409, f"ยังมีบรรทัดหลักสูตรของภาคเรียน {r['label']} ที่ไม่ได้ระบุกลุ่มสาระ {n:,} บรรทัด "
-                                     "แถวของบรรทัดเหล่านี้ไม่มีหัวหน้ากลุ่มสาระคนไหนเห็น ให้ระบุกลุ่มสาระในหน้าหลักสูตรก่อน")
+        shape = _wl_term_shape(cur, r["year"], r["semester"])
+        n_lines, n_opts = shape["lines_without_department"], shape["options_without_department"]
+        if n_lines or n_opts:
+            what = ([f"บรรทัดหลักสูตร {n_lines:,} บรรทัด"] if n_lines else []) + \
+                   ([f"ตัวเลือกของชุดคาบเสรี/กิจกรรม {n_opts:,} ตัวเลือก"] if n_opts else [])
+            raise HTTPException(409, f"ภาคเรียน {r['label']} ยังมี{' และ'.join(what)} ที่ไม่ได้ระบุกลุ่มสาระ "
+                                     "ซึ่งไม่มีหัวหน้ากลุ่มสาระคนไหนเห็นและจะไม่มีใครกรอก "
+                                     "ให้ระบุกลุ่มสาระในหน้าหลักสูตรก่อน แล้วค่อยเปิดให้กรอก")
         cur.execute(f"UPDATE wl_rounds SET status = %s WHERE id = %s RETURNING {', '.join(_WL_ROUND_COLS)}",
                     ("filling", round_id))
         return _wl_round_detail(cur, dict(zip(_WL_ROUND_COLS, cur.fetchone())))
