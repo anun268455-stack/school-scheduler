@@ -11,6 +11,7 @@ import {
   CheckField, DepartmentGroups, DepartmentSelect, Field, ImportBox, InactiveSwitch, inputClass, NeverSentBadge,
   RegistryFrame, RowError,
 } from "./registryParts";
+import { Button, Card, Chip } from "../ui";
 
 // ค่า type สองค่าของวิชา: "คู่ขนาน" ตามที่ frontend/ เรียก (Dashboard.tsx "รหัสคู่ขนาน") · "common" ที่นั่นไม่มีชื่อไทย จึงใช้ "ปกติ"
 const TYPE_TEXT: Record<SubjectIdentity["type"], string> = { common: "ปกติ", parallel: "คู่ขนาน" };
@@ -167,13 +168,16 @@ function AddSubjectForm(props: {
   };
 
   return (
-    <form onSubmit={submit} aria-label="เพิ่มวิชา" className="mt-3 mb-4 flex flex-wrap items-end gap-2 rounded border border-gray-300 bg-white p-3">
-      <SubjectFields value={v} onChange={setV} departments={props.departments} disabled={props.disabled} />
-      <button type="submit" disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">
-        เพิ่มวิชา
-      </button>
-      <RowError message={props.error} />
-    </form>
+    <Card className="mb-5">
+      <p className="mb-3 text-sm text-muted">เพิ่มวิชาเอง — เฉพาะวิชาที่ยังไม่มีในโปรแกรมจัดตาราง (ดึงวิชาก่อนเสมอ)</p>
+      <form onSubmit={submit} aria-label="เพิ่มวิชา" className="flex flex-wrap items-end gap-3">
+        <SubjectFields value={v} onChange={setV} departments={props.departments} disabled={props.disabled} />
+        <Button type="submit" variant="primary" disabled={props.disabled}>
+          เพิ่มวิชา
+        </Button>
+        <RowError message={props.error} />
+      </form>
+    </Card>
   );
 }
 
@@ -192,34 +196,34 @@ function SubjectRow(props: {
   const [draft, setDraft] = useState<SubjectIdentity>(identityOf(s));
 
   return (
-    <div className={`flex flex-wrap gap-2 ${props.editing ? "items-end" : "items-center"} ${s.active ? "" : "opacity-50"}`} data-testid={`subject-${s.id}`}>
+    <div className={`flex flex-wrap gap-x-3 gap-y-2 ${props.editing ? "items-end py-1" : "items-center"} ${s.active ? "" : "opacity-50"}`} data-testid={`subject-${s.id}`}>
       {props.editing ? (
         <>
           <SubjectFields value={draft} onChange={setDraft} departments={props.departments} disabled={props.disabled} />
-          <button onClick={() => void props.onSave(draft)} disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">บันทึก</button>
-          <button onClick={props.onCancel} disabled={props.disabled} className="rounded border border-gray-300 px-3 py-1 disabled:opacity-50">ยกเลิก</button>
+          <Button variant="primary" onClick={() => void props.onSave(draft)} disabled={props.disabled}>บันทึก</Button>
+          <Button onClick={props.onCancel} disabled={props.disabled}>ยกเลิก</Button>
         </>
       ) : (
         <>
-          <span className="w-24 text-gray-600">{s.code}</span>
+          <span className="w-24 text-sm tabular-nums text-muted">{s.code}</span>
           <span className="font-medium">{s.name}</span>
-          {s.type === "parallel" && <span className="rounded bg-gray-100 px-2 py-0.5 text-xs">{TYPE_TEXT.parallel}</span>}
-          {s.duration === 2 && <span className="rounded bg-gray-100 px-2 py-0.5 text-xs">คาบคู่</span>}
-          {s.is_activity && <span className="rounded bg-gray-100 px-2 py-0.5 text-xs">กิจกรรม</span>}
-          {s.is_elective && <span className="rounded bg-gray-100 px-2 py-0.5 text-xs">วิชาเสรี</span>}
+          {s.type === "parallel" && <Chip tone="mute">{TYPE_TEXT.parallel}</Chip>}
+          {s.duration === 2 && <Chip tone="mute">คาบคู่</Chip>}
+          {s.is_activity && <Chip tone="mute">กิจกรรม</Chip>}
+          {s.is_elective && <Chip tone="mute">วิชาเสรี</Chip>}
           {s.sched_id === null && <NeverSentBadge />}
           <span className="ml-auto flex items-center gap-3">
             <InactiveSwitch inactive={!s.active} disabled={props.disabled} onChange={(v) => void props.onActive(!v)} text="ไม่เปิดสอนแล้ว" />
-            <button
+            <Button
+              size="sm"
               onClick={() => {
                 setDraft(identityOf(s));
                 props.onEdit();
               }}
               disabled={props.disabled}
-              className="rounded border border-gray-300 px-3 py-1 disabled:opacity-50"
             >
               แก้ไข
-            </button>
+            </Button>
           </span>
         </>
       )}

@@ -11,7 +11,8 @@ const BASE_URL = import.meta.env.VITE_API_URL
   : "/api";
 
 // เซิร์ฟเวอร์ Render หลับได้ ครั้งแรกอาจรอเป็นสิบวินาที จึงตั้งเวลารอไว้ยาว
-const http = axios.create({ baseURL: BASE_URL, timeout: 60_000 });
+// ตัวเรียกของขั้นที่ 2 (curriculumApi.ts ฯลฯ) ใช้ตัวเดียวกันนี้ — ได้ token และการพากลับหน้าล็อกอินเมื่อ 401 ไปด้วย
+export const http = axios.create({ baseURL: BASE_URL, timeout: 60_000 });
 
 // ---- session: เก็บใน sessionStorage เท่านั้น (เครื่องห้องพักครูใช้ร่วมกัน ปิดแท็บแล้วต้องหาย) ----
 

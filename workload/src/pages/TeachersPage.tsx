@@ -8,6 +8,7 @@ import {
 import {
   DepartmentGroups, ImportBox, InactiveSwitch, NeverSentBadge, RegistryFrame, RowError, TeacherFields,
 } from "./registryParts";
+import { Button, Card } from "../ui";
 
 const EMPTY_FORM: TeacherForm = { name: "", code: "", department_id: null, order: "" };
 
@@ -131,13 +132,16 @@ function AddTeacherForm(props: {
   };
 
   return (
-    <form onSubmit={submit} aria-label="เพิ่มครู" className="mt-3 mb-4 flex flex-wrap items-end gap-2 rounded border border-gray-300 bg-white p-3">
-      <TeacherFields value={form} onChange={setForm} departments={props.departments} disabled={props.disabled} />
-      <button type="submit" disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">
-        เพิ่มครู
-      </button>
-      <RowError message={props.error} />
-    </form>
+    <Card className="mb-5">
+      <p className="mb-3 text-sm text-muted">เพิ่มครูเอง — เฉพาะครูที่ยังไม่มีในโปรแกรมจัดตาราง (ดึงครูก่อนเสมอ)</p>
+      <form onSubmit={submit} aria-label="เพิ่มครู" className="flex flex-wrap items-end gap-3">
+        <TeacherFields value={form} onChange={setForm} departments={props.departments} disabled={props.disabled} />
+        <Button type="submit" variant="primary" disabled={props.disabled}>
+          เพิ่มครู
+        </Button>
+        <RowError message={props.error} />
+      </form>
+    </Card>
   );
 }
 
@@ -156,31 +160,31 @@ function TeacherRow(props: {
   const [form, setForm] = useState<TeacherForm>(formOf(t));
 
   return (
-    <div className={`flex flex-wrap gap-2 ${props.editing ? "items-end" : "items-center"} ${t.active ? "" : "opacity-50"}`} data-testid={`teacher-${t.id}`}>
+    <div className={`flex flex-wrap gap-x-3 gap-y-2 ${props.editing ? "items-end py-1" : "items-center"} ${t.active ? "" : "opacity-50"}`} data-testid={`teacher-${t.id}`}>
       {props.editing ? (
         <>
           <TeacherFields value={form} onChange={setForm} departments={props.departments} disabled={props.disabled} />
-          <button onClick={() => void props.onSave(form)} disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">บันทึก</button>
-          <button onClick={props.onCancel} disabled={props.disabled} className="rounded border border-gray-300 px-3 py-1 disabled:opacity-50">ยกเลิก</button>
+          <Button variant="primary" onClick={() => void props.onSave(form)} disabled={props.disabled}>บันทึก</Button>
+          <Button onClick={props.onCancel} disabled={props.disabled}>ยกเลิก</Button>
         </>
       ) : (
         <>
-          <span className="w-10 text-right text-gray-500">{t.dept_order ?? "-"}</span>
+          <span className="w-8 text-right text-sm tabular-nums text-muted">{t.dept_order ?? "-"}</span>
           <span className="font-medium">{t.name}</span>
-          {t.code && <span className="text-sm text-gray-600">({t.code})</span>}
+          {t.code && <span className="text-sm text-muted">({t.code})</span>}
           {t.sched_id === null && <NeverSentBadge />}
           <span className="ml-auto flex items-center gap-3">
             <InactiveSwitch inactive={!t.active} disabled={props.disabled} onChange={(v) => void props.onActive(!v)} text="ไม่ปฏิบัติงานแล้ว" />
-            <button
+            <Button
+              size="sm"
               onClick={() => {
                 setForm(formOf(t));
                 props.onEdit();
               }}
               disabled={props.disabled}
-              className="rounded border border-gray-300 px-3 py-1 disabled:opacity-50"
             >
               แก้ไข
-            </button>
+            </Button>
           </span>
         </>
       )}

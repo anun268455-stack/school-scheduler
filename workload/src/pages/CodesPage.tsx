@@ -3,13 +3,11 @@ import { createCode, listCodes, listDepartments, updateCode } from "../api";
 import { buildCodeRows, codeLengthError, type CodeRow } from "../codes";
 import { useRegistryList, useSaving } from "../useRegistryList";
 import { inputClass, RegistryFrame, RowError } from "./registryParts";
+import { Button, Card, Chip, Notice, type Tone } from "../ui";
 
 const STATUS_TEXT = { unset: "ยังไม่ได้ตั้ง", active: "ใช้งานอยู่", disabled: "ปิดอยู่" } as const;
-const STATUS_CLASS = {
-  unset: "bg-gray-100 text-gray-800",
-  active: "bg-green-100 text-green-900",
-  disabled: "bg-red-100 text-red-900",
-} as const;
+// ยังไม่ได้ตั้ง = งานที่ admin ต้องทำต่อ (warn) · ปิดอยู่ = ตั้งใจปิด ไม่ใช่ข้อผิดพลาด จึงไม่ใช้แดง (แบบข้อ 6)
+const STATUS_TONE: Record<keyof typeof STATUS_TEXT, Tone> = { unset: "warn", active: "ok", disabled: "mute" };
 
 const KICK_WARNING = "คนที่ใช้รหัสเดิมอยู่จะถูกให้ออกจากระบบทันที";
 
@@ -77,12 +75,13 @@ export default function CodesPage() {
       }}
       top={revealed && <RevealBox revealed={revealed} onClose={() => setRevealed(null)} />}
     >
-      <p className="mb-3 text-sm text-gray-700">
+      <Notice tone="mute" className="mb-4 text-[15px]">
         ระบบไม่เก็บตัวรหัสไว้ให้ดูย้อนหลัง · ตั้งรหัสแล้วจะเห็นรหัสครั้งเดียว ต้องจดแล้วแจกให้หัวหน้ากลุ่มสาระทันที
-      </p>
-      <ul className="divide-y divide-gray-200 rounded border border-gray-300 bg-white">
+      </Notice>
+      <Card pad={false}>
+        <ul className="divide-y divide-line2">
         {rows.map((r) => (
-          <li key={r.key} className="p-3">
+          <li key={r.key} className="px-4 py-3 sm:px-5">
             <CodeRowView
               row={r}
               disabled={saving}
@@ -93,7 +92,8 @@ export default function CodesPage() {
             />
           </li>
         ))}
-      </ul>
+        </ul>
+      </Card>
     </RegistryFrame>
   );
 }
@@ -109,23 +109,24 @@ function RevealBox(props: { revealed: Revealed; onClose: () => void }) {
     }
   };
   return (
-    <section aria-label="รหัสที่เพิ่งตั้ง" className="my-3 rounded border-2 border-green-600 bg-green-50 p-4">
-      <p className="font-bold">ตั้งรหัสของ {props.revealed.name} แล้ว</p>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+    // คู่มือข้อ 5 เรียกว่า "กล่องสีเขียว" — คงสีเขียวไว้ให้หาเจอตามคู่มือ
+    <section aria-label="รหัสที่เพิ่งตั้ง" className="mb-4 rounded-card border-2 border-ok bg-ok-soft p-4 sm:p-5">
+      <p className="font-semibold text-ok">ตั้งรหัสของ {props.revealed.name} แล้ว</p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <input
           aria-label="รหัสที่เพิ่งตั้ง"
           readOnly
           value={props.revealed.code}
           onFocus={(e) => e.currentTarget.select()}
-          className="rounded border border-gray-400 bg-white px-3 py-2 font-mono"
+          className="input h-11 font-mono text-lg tracking-wide max-sm:w-full"
         />
-        <button onClick={() => void copy()} className="rounded border border-gray-400 px-3 py-2">คัดลอก</button>
-        <button onClick={props.onClose} className="rounded bg-blue-600 px-3 py-2 text-white">ปิดกล่องนี้</button>
+        <Button onClick={() => void copy()}>คัดลอก</Button>
+        <Button variant="primary" onClick={props.onClose}>ปิดกล่องนี้</Button>
       </div>
-      {copyNote && <p role="status" className="mt-1 text-sm">{copyNote}</p>}
-      <p className="mt-2 text-red-800">ปิดหน้านี้แล้วจะดูย้อนไม่ได้ ให้จดหรือคัดลอกไว้ก่อน</p>
+      {copyNote && <p role="status" className="mt-2 text-sm text-ink">{copyNote}</p>}
+      <p className="mt-3 font-medium text-warn">ปิดหน้านี้แล้วจะดูย้อนไม่ได้ ให้จดหรือคัดลอกไว้ก่อน</p>
       {props.revealed.stillDisabled && (
-        <p className="mt-1 text-red-800">รหัสนี้ยังปิดอยู่ ต้องกด "เปิด" ก่อนจึงจะใช้เข้าระบบได้</p>
+        <p className="mt-1 font-medium text-warn">รหัสนี้ยังปิดอยู่ ต้องกด "เปิด" ก่อนจึงจะใช้เข้าระบบได้</p>
       )}
     </section>
   );
@@ -165,47 +166,35 @@ function CodeRowView(props: {
 
   return (
     <div data-testid={`code-${r.key}`}>
-      <div className={`flex flex-wrap items-center gap-2 ${r.status === "disabled" ? "opacity-70" : ""}`}>
-        <span className="font-medium">{r.name}</span>
-        <span className={`rounded px-2 py-0.5 text-xs ${STATUS_CLASS[r.status]}`}>{STATUS_TEXT[r.status]}</span>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className={`font-medium ${r.status === "disabled" ? "text-muted" : ""}`}>{r.name}</span>
+        <Chip tone={STATUS_TONE[r.status]} dot={r.status === "active"}>{STATUS_TEXT[r.status]}</Chip>
         <span className="ml-auto flex items-center gap-2">
           {mode === "idle" && canSet && (
-            <button
-              onClick={() => setMode("set")}
-              disabled={props.disabled}
-              className="rounded border border-gray-300 px-3 py-1 disabled:opacity-50"
-            >
+            <Button size="sm" onClick={() => setMode("set")} disabled={props.disabled}>
               {hasRow ? "ตั้งรหัสใหม่" : "ตั้งรหัส"}
-            </button>
+            </Button>
           )}
           {mode === "idle" && canToggle && r.status === "active" && (
-            <button
-              onClick={() => setMode("confirmDisable")}
-              disabled={props.disabled}
-              className="rounded border border-red-300 px-3 py-1 text-red-800 disabled:opacity-50"
-            >
+            <Button size="sm" onClick={() => setMode("confirmDisable")} disabled={props.disabled}>
               ปิด
-            </button>
+            </Button>
           )}
           {mode === "idle" && canToggle && r.status === "disabled" && (
-            <button
-              onClick={() => void props.onSetActive(true)}
-              disabled={props.disabled}
-              className="rounded border border-gray-300 px-3 py-1 disabled:opacity-50"
-            >
+            <Button size="sm" onClick={() => void props.onSetActive(true)} disabled={props.disabled}>
               เปิด
-            </button>
+            </Button>
           )}
         </span>
       </div>
 
       {r.kind === "admin" && !hasRow && (
-        <p className="mt-1 text-sm text-gray-700">ยังไม่มีรหัสผู้ดูแลระบบ ให้ตั้งจากหน้าล็อกอิน</p>
+        <p className="mt-1 text-sm text-muted">ยังไม่มีรหัสผู้ดูแลระบบ ให้ตั้งจากหน้าล็อกอิน</p>
       )}
 
       {mode === "set" && (
-        <form onSubmit={submit} aria-label={`ตั้งรหัส ${r.name}`} className="mt-2 flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 text-sm">
+        <form onSubmit={submit} aria-label={`ตั้งรหัส ${r.name}`} className="mt-3 flex flex-wrap items-end gap-2 rounded-xl bg-bg p-3">
+          <label className="flex flex-col gap-1 text-sm text-muted max-sm:w-full">
             รหัสใหม่ (อย่างน้อย 6 ตัวอักษร)
             <input
               type="password"
@@ -216,32 +205,32 @@ function CodeRowView(props: {
               className={inputClass}
             />
           </label>
-          <button type="submit" disabled={props.disabled} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50">
+          <Button type="submit" variant="primary" disabled={props.disabled}>
             บันทึกรหัส
-          </button>
-          <button type="button" onClick={close} disabled={props.disabled} className="rounded border border-gray-300 px-3 py-1 disabled:opacity-50">
+          </Button>
+          <Button onClick={close} disabled={props.disabled}>
             ยกเลิก
-          </button>
-          {r.status !== "unset" && <p className="w-full text-sm text-orange-900">{KICK_WARNING}</p>}
+          </Button>
+          {r.status !== "unset" && <p className="w-full text-sm text-warn">{KICK_WARNING}</p>}
         </form>
       )}
 
       {mode === "confirmDisable" && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <p className="text-sm text-orange-900">ปิดรหัสของ {r.name}? {KICK_WARNING}</p>
-          <button
+        <Notice tone="warn" className="mt-3 flex flex-wrap items-center gap-2">
+          <p className="w-full text-sm">ปิดรหัสของ {r.name}? {KICK_WARNING}</p>
+          <Button
+            variant="danger"
             onClick={async () => {
               if (await props.onSetActive(false)) close();
             }}
             disabled={props.disabled}
-            className="rounded bg-red-600 px-3 py-1 text-white disabled:opacity-50"
           >
             ยืนยันปิดรหัส
-          </button>
-          <button onClick={close} disabled={props.disabled} className="rounded border border-gray-300 px-3 py-1 disabled:opacity-50">
+          </Button>
+          <Button onClick={close} disabled={props.disabled}>
             ยกเลิก
-          </button>
-        </div>
+          </Button>
+        </Notice>
       )}
 
       <RowError message={props.error} />

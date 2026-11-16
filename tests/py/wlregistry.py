@@ -4,6 +4,7 @@
 ฟังก์ชันล้วนเรียกตรง ๆ · route ใช้ cursor ปลอมที่จดคำสั่ง SQL (ของจริงลองกับ Postgres แยก)
 """
 import copy
+import re
 import sys
 from types import SimpleNamespace
 
@@ -424,11 +425,14 @@ def test_teacher_import_reads_teachers_not_subjects():
     assert out == {"created": 1, "linked": 0, "skipped": 0}
 
 
-# ── ไม่มี endpoint ลบ ──────────────────────────────────────────────────
-def test_no_delete_route_under_workload():
+# ── ไม่มี endpoint ลบครูหรือลบวิชา ─────────────────────────────────────
+def test_no_delete_route_for_teachers_or_subjects():
+    # ขั้นที่ 2 มี route ลบของหลักสูตร (บรรทัด ห้อง ชุด ตัวเลือก — ของ admin) ข้อห้ามที่เหลือคือครูและวิชา
+    # ซึ่งแถวของรอบและบรรทัดหลักสูตรอ้างอยู่ (Global Constraints ของแผนขั้นที่ 2)
     verbs = [(v, p) for v, p, _ in mock_api.app.routes if p.startswith("/api/workload")]
     assert verbs, "ไม่พบ route ของเว็บใหม่เลย — ตัวทดสอบนี้ไม่ได้ตรวจอะไร"
-    assert not [x for x in verbs if x[0].lower() == "delete"]
+    deletes = [p for v, p in verbs if v.lower() == "delete"]
+    assert not [p for p in deletes if re.search(r"/(teachers|subjects)\b", p)], deletes
     paths = {(v, p) for v, p in verbs}
     for want in (("get", "/api/workload/teachers"), ("post", "/api/workload/teachers"),
                  ("put", "/api/workload/teachers/{teacher_id}"),
