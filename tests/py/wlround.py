@@ -694,7 +694,8 @@ def test_schema_has_one_open_round_index_and_no_new_index_on_existing_tables():
     assert old == {"wl_codes_one_admin", "wl_codes_one_per_dept"}, old
     assert ("wl_rounds_one_open", "wl_rounds") in uniq, uniq
     assert not re.search(r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(wl_codes|wl_teachers|wl_subjects)\b", sql, re.I)
-    for table in ("wl_rounds", "wl_rows", "wl_sets", "wl_set_options", "wl_dept_status"):
+    # งานที่ 2 ปรับรูป: แถวของรอบอ้างบรรทัดหลักสูตร · ครูของตัวเลือกแทน wl_sets/wl_set_options
+    for table in ("wl_rounds", "wl_rows", "wl_option_teachers", "wl_dept_status"):
         assert re.search(rf"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+{table}\s*\(", sql), table
     # รันซ้ำได้ทุก process — ทุกคำสั่งต้องเป็นแบบ IF NOT EXISTS
     for stmt in re.findall(r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+(\S+)", sql, re.I):
@@ -709,21 +710,26 @@ def test_schema_columns_match_the_contract():
         return {line.split()[0] for line in body.strip().splitlines()
                 if line.strip() and not line.strip().upper().startswith(("UNIQUE", "CHECK", "PRIMARY"))}
     assert {"id", "year", "semester", "label", "status", "opened_at", "closed_at"} <= cols("wl_rounds")
-    assert cols("wl_rows") == {"id", "round_id", "department_id", "group_id", "subject_id", "code", "name",
-                               "credits", "weekly", "kind", "teacher_id", "co_teacher_id", "lab_room_id",
-                               "is_double", "note", "confirmed", "from_plan", "flag"}
-    assert cols("wl_sets") == {"id", "round_id", "kind", "name", "group_ids", "weekly", "is_double"}
-    assert cols("wl_set_options") == {"id", "set_id", "subject_id", "code", "name", "department_id",
-                                      "teacher_id", "room_id", "note", "confirmed", "from_plan"}
+    assert cols("wl_rows") == {"id", "round_id", "line_id", "group_id", "teacher_id", "co_teacher_id",
+                               "lab_room_id", "is_double", "note", "confirmed", "from_plan", "flag"}
+    assert cols("wl_option_teachers") == {"id", "round_id", "option_id", "teacher_id", "room_id", "note",
+                                          "confirmed", "from_plan"}
     assert cols("wl_dept_status") == {"round_id", "department_id", "status", "submitted_at", "submitted_by",
                                       "reviewed_at", "reviewed_by", "note"}
-    # แถวของรอบใส่ได้ทุกช่องที่ wl_round_proposal คืน (ยกเว้น id/round_id ที่ฐานข้อมูลแจก)
+    # ทุกช่องที่ wl_round_proposal คืนมีที่ลงพอดีหนึ่งที่ (ยกเว้น id ที่ฐานข้อมูลแจกและช่องที่ชี้กันเอง):
+    # ช่องวิชาไปที่บรรทัดหลักสูตร (ตั้งต้นหลักสูตร งานที่ 2) ช่องครูไปที่แถวของรอบ (ครูเทอมก่อน งานที่ 3)
     prop = mock_api.wl_round_proposal(_src(requirements=[_req(1, 11, 1, 3, 3)],
                                            pools=[{"id": 1, "name": "x", "group_ids": [11], "weekly": 1,
                                                    "is_double": False, "options": [_opt(5, 7)]}]))
-    assert set(prop["rows"][0]) == cols("wl_rows") - {"id", "round_id"}
-    assert set(prop["sets"][0]) - {"options"} == cols("wl_sets") - {"id", "round_id"}
-    assert set(prop["sets"][0]["options"][0]) == cols("wl_set_options") - {"id", "set_id"}
+    line_part = cols("wl_curriculum_lines") - {"id", "curriculum_id", "sort"}
+    row_part = cols("wl_rows") - {"id", "round_id", "line_id"}
+    assert not line_part & row_part
+    assert set(prop["rows"][0]) == line_part | row_part
+    assert set(prop["sets"][0]) - {"options"} == cols("wl_term_sets") - {"id", "year", "semester"}
+    option_part = cols("wl_term_set_options") - {"id", "set_id"}
+    teacher_part = cols("wl_option_teachers") - {"id", "round_id", "option_id"}
+    assert not option_part & teacher_part
+    assert set(prop["sets"][0]["options"][0]) == option_part | teacher_part
 
 
 for name, fn in list(globals().items()):

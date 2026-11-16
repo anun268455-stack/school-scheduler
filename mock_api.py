@@ -13745,18 +13745,37 @@ def _terms_schema(cur) -> None:
 # ไม่ปล่อยให้โค้ดข้างหน้าคุมเอง: กดสองครั้งติดกันจะได้สองแถว แล้วการปิดรหัสปิดได้แถวเดียว
 # อีกแถวยังเข้าได้เงียบ ๆ (แบบเดียวกับ _TERMS_ONE_ACTIVE)
 #
-# ขั้นที่ 2 — รอบอัตรากำลัง (wl_rounds wl_rows wl_sets wl_set_options wl_dept_status):
+# ขั้นที่ 2 — หลักสูตรของภาคเรียน (wl_curricula wl_curriculum_lines wl_curriculum_groups wl_term_sets
+# wl_term_set_options wl_curriculum_log) สเปกขั้นที่ 2 ข้อ 4.5 "หลักสูตรมาก่อน":
+# · ห้องหนึ่งอยู่ได้หลักสูตรเดียวต่อภาคเรียน บังคับด้วย PRIMARY KEY (year, semester, group_id) ที่ฐานข้อมูล
+#   year/semester จึงซ้ำกับของหลักสูตรโดยตั้งใจ (โค้ดเอาค่ามาจากแถวหลักสูตรเสมอ ไม่รับจากผู้ใช้)
+#   ถ้าให้โค้ดคุมเอง admin สองแท็บใส่ห้องเดียวกันคนละหลักสูตรพร้อมกันแล้วแถวของรอบนับห้องนั้นสองครั้ง
+# · ชื่อหลักสูตรห้ามซ้ำในภาคเรียนเดียวกัน (UNIQUE) — บันทึกการแก้และหน้าเว็บอ้างหลักสูตรด้วยชื่อ
+# · ลบหลักสูตรแล้วบรรทัดกับห้องหายตาม และลบชุดแล้วตัวเลือกหายตาม (CASCADE) เพราะไม่มีความหมายนอกเจ้าของ
+# · บรรทัดเก็บรหัส ชื่อ หน่วยกิต ประเภท กลุ่มสาระเอง ไม่อ่านจากทะเบียนวิชาทุกครั้ง: หลักสูตรเป็นหลักฐาน
+#   ย้อนหลังของภาคเรียนนั้น แก้ทะเบียนวันนี้ต้องไม่เปลี่ยนหลักสูตรของเทอมที่ปิดไปแล้ว
+# · บันทึกการแก้ไม่มี FK ถึงหลักสูตร: ลบหลักสูตรแล้วบันทึกว่าใครลบต้องยังอยู่
+#
+# รอบอัตรากำลัง (wl_rounds wl_rows wl_option_teachers wl_dept_status):
 # · "มีรอบที่ยังไม่ปิดได้รอบเดียว" บังคับด้วยดัชนี wl_rounds_one_open ที่ฐานข้อมูล เหตุผลเดียวกับรหัส admin
 #   ดัชนีอยู่บนนิพจน์ (status <> 'closed') ไม่ใช่บน status: preparing กับ filling เป็นคนละค่า
 #   ดัชนีบน status จึงปล่อยให้มีรอบเตรียมหนึ่งรอบกับรอบเปิดกรอกอีกรอบพร้อมกันได้
+# · แถวของรอบเก็บแค่ (บรรทัดหลักสูตร, ห้อง) กับช่องของหัวหน้า ไม่ก๊อปข้อมูลวิชา: แก้หลักสูตรแล้วแถวเปลี่ยนตาม
+#   และทุกแถวชี้กลับได้ว่ามาจากหลักสูตรไหนบรรทัดไหน · ตัวเลือกของชุดมีครูได้หลายแถว (wl_option_teachers)
+# · FK ของ line_id / option_id เป็น DEFERRABLE INITIALLY DEFERRED (ตรวจตอน commit): route ของหลักสูตรลบบรรทัด
+#   ก่อน แล้วค่อยเรียก _wl_after_curriculum_change ซึ่งเทียบหลักสูตรกับแถวของรอบ — ยก 409 ถ้าแถวที่จะหายมีครู
+#   (ทั้งธุรกรรมย้อนกลับ) หรือลบแถวเหล่านั้นตามเมื่อยืนยัน force แล้ว · ไม่ใช้ CASCADE เพราะครูที่หัวหน้าใส่ไว้
+#   จะหายเงียบ ๆ และไม่ใช้ FK ธรรมดาเพราะการลบบรรทัดจะล้มทันทีก่อน hook ได้นับ · ถ้าใครลืมเก็บแถวที่ค้าง
+#   commit จะล้มทั้งก้อน (ไม่มีอะไรหาย) ดีกว่าแถวที่ชี้บรรทัดที่ไม่มีแล้ว
 # · ครูและวิชาอ้าง wl_teachers / wl_subjects ด้วย FK (ทะเบียนเป็นของเว็บนี้ ห้ามจับคู่ด้วยชื่อ)
 #   ส่วนห้องเรียน ห้องปฏิบัติการ และกลุ่มสาระเป็นรหัสของโปรแกรมจัดตารางตรง ๆ ไม่มี FK
 #   เพราะเป็นทะเบียนที่ยืมอ่าน ไม่มีตารางฝั่งนี้ให้ชี้
 # · unconverted เก็บรายการที่แปลงไม่ได้ ณ ตอนเปิดรอบ: แผนการสอนเปลี่ยนได้ทุกวัน คำนวณใหม่ทีหลัง
 #   จะได้รายการของวันนั้น ไม่ใช่ของที่ admin ต้องเพิ่มเองในรอบนี้
-# · ลบตัวเลือกตามชุดได้ (ON DELETE CASCADE) เพราะตัวเลือกไม่มีความหมายนอกชุด แต่แถว ชุด
-#   และสถานะกลุ่มไม่ลบตามรอบ — รอบไม่มีทางลบ ถ้าวันหนึ่งมีคนลบรอบด้วยมือ ให้ล้มดีกว่าหายเงียบ
+# · แถว ครูของตัวเลือก และสถานะกลุ่มไม่ลบตามรอบ — รอบไม่มีทางลบ ถ้าวันหนึ่งมีคนลบรอบด้วยมือ
+#   ให้ล้มดีกว่าหายเงียบ
 # ทั้งหมดเป็นตารางใหม่ ไม่แตะดัชนีของตารางที่มีข้อมูลจริงอยู่แล้ว (สเปกขั้นที่ 2 ข้อ 4.2)
+# ตารางของรอบยังไม่เคยขึ้นเว็บจริง จึงแก้ CREATE TABLE ตรง ๆ ได้โดยไม่ต้องย้ายข้อมูล
 _WL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS wl_codes (
     id            bigserial PRIMARY KEY,
@@ -13799,6 +13818,63 @@ CREATE UNIQUE INDEX IF NOT EXISTS wl_codes_one_admin
     ON wl_codes (role) WHERE role = 'admin';
 CREATE UNIQUE INDEX IF NOT EXISTS wl_codes_one_per_dept
     ON wl_codes (department_id) WHERE role = 'head';
+CREATE TABLE IF NOT EXISTS wl_curricula (
+    id       bigserial PRIMARY KEY,
+    year     integer NOT NULL,
+    semester integer NOT NULL,
+    name     text NOT NULL,
+    level    text,
+    note     text NOT NULL DEFAULT '',
+    UNIQUE (year, semester, name)
+);
+CREATE TABLE IF NOT EXISTS wl_curriculum_lines (
+    id            bigserial PRIMARY KEY,
+    curriculum_id bigint NOT NULL REFERENCES wl_curricula(id) ON DELETE CASCADE,
+    subject_id    bigint REFERENCES wl_subjects(id),
+    code          text NOT NULL DEFAULT '',
+    name          text NOT NULL DEFAULT '',
+    credits       numeric,
+    weekly        integer NOT NULL CHECK (weekly >= 0),
+    kind          text NOT NULL CHECK (kind IN ('basic','additional','activity')),
+    department_id integer,
+    sort          integer NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS wl_curriculum_groups (
+    curriculum_id bigint NOT NULL REFERENCES wl_curricula(id) ON DELETE CASCADE,
+    year          integer NOT NULL,
+    semester      integer NOT NULL,
+    group_id      integer NOT NULL,
+    PRIMARY KEY (year, semester, group_id)
+);
+CREATE TABLE IF NOT EXISTS wl_term_sets (
+    id        bigserial PRIMARY KEY,
+    year      integer NOT NULL,
+    semester  integer NOT NULL,
+    kind      text NOT NULL CHECK (kind IN ('elective','activity')),
+    name      text NOT NULL,
+    group_ids integer[] NOT NULL DEFAULT '{}',
+    weekly    integer NOT NULL CHECK (weekly >= 0),
+    is_double boolean NOT NULL DEFAULT false
+);
+CREATE TABLE IF NOT EXISTS wl_term_set_options (
+    id            bigserial PRIMARY KEY,
+    set_id        bigint NOT NULL REFERENCES wl_term_sets(id) ON DELETE CASCADE,
+    subject_id    bigint REFERENCES wl_subjects(id),
+    code          text NOT NULL DEFAULT '',
+    name          text NOT NULL DEFAULT '',
+    department_id integer
+);
+CREATE TABLE IF NOT EXISTS wl_curriculum_log (
+    id       bigserial PRIMARY KEY,
+    year     integer NOT NULL,
+    semester integer NOT NULL,
+    at       timestamptz NOT NULL DEFAULT now(),
+    by_label text NOT NULL,
+    action   text NOT NULL,
+    detail   text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS wl_curriculum_log_term
+    ON wl_curriculum_log (year, semester, at);
 CREATE TABLE IF NOT EXISTS wl_rounds (
     id          bigserial PRIMARY KEY,
     year        integer NOT NULL,
@@ -13814,14 +13890,8 @@ CREATE TABLE IF NOT EXISTS wl_rounds (
 CREATE TABLE IF NOT EXISTS wl_rows (
     id            bigserial PRIMARY KEY,
     round_id      bigint NOT NULL REFERENCES wl_rounds(id),
-    department_id integer,
+    line_id       bigint NOT NULL REFERENCES wl_curriculum_lines(id) DEFERRABLE INITIALLY DEFERRED,
     group_id      integer NOT NULL,
-    subject_id    bigint REFERENCES wl_subjects(id),
-    code          text NOT NULL DEFAULT '',
-    name          text NOT NULL DEFAULT '',
-    credits       numeric,
-    weekly        integer NOT NULL CHECK (weekly >= 0),
-    kind          text NOT NULL CHECK (kind IN ('basic','additional','activity')),
     teacher_id    bigint REFERENCES wl_teachers(id),
     co_teacher_id bigint REFERENCES wl_teachers(id),
     lab_room_id   integer,
@@ -13829,29 +13899,18 @@ CREATE TABLE IF NOT EXISTS wl_rows (
     note          text NOT NULL DEFAULT '',
     confirmed     boolean NOT NULL DEFAULT false,
     from_plan     boolean NOT NULL DEFAULT false,
-    flag          text
+    flag          text,
+    UNIQUE (round_id, line_id, group_id)
 );
-CREATE TABLE IF NOT EXISTS wl_sets (
-    id        bigserial PRIMARY KEY,
-    round_id  bigint NOT NULL REFERENCES wl_rounds(id),
-    kind      text NOT NULL CHECK (kind IN ('elective','activity')),
-    name      text NOT NULL,
-    group_ids integer[] NOT NULL,
-    weekly    integer NOT NULL CHECK (weekly >= 0),
-    is_double boolean NOT NULL DEFAULT false
-);
-CREATE TABLE IF NOT EXISTS wl_set_options (
-    id            bigserial PRIMARY KEY,
-    set_id        bigint NOT NULL REFERENCES wl_sets(id) ON DELETE CASCADE,
-    subject_id    bigint REFERENCES wl_subjects(id),
-    code          text NOT NULL DEFAULT '',
-    name          text NOT NULL DEFAULT '',
-    department_id integer,
-    teacher_id    bigint REFERENCES wl_teachers(id),
-    room_id       integer,
-    note          text NOT NULL DEFAULT '',
-    confirmed     boolean NOT NULL DEFAULT false,
-    from_plan     boolean NOT NULL DEFAULT false
+CREATE TABLE IF NOT EXISTS wl_option_teachers (
+    id         bigserial PRIMARY KEY,
+    round_id   bigint NOT NULL REFERENCES wl_rounds(id),
+    option_id  bigint NOT NULL REFERENCES wl_term_set_options(id) DEFERRABLE INITIALLY DEFERRED,
+    teacher_id bigint REFERENCES wl_teachers(id),
+    room_id    integer,
+    note       text NOT NULL DEFAULT '',
+    confirmed  boolean NOT NULL DEFAULT false,
+    from_plan  boolean NOT NULL DEFAULT false
 );
 CREATE TABLE IF NOT EXISTS wl_dept_status (
     round_id      bigint NOT NULL REFERENCES wl_rounds(id),
@@ -14540,11 +14599,40 @@ def wl_teachers_update(teacher_id: int, request: Request, body: Any = Body(None)
         return _wl_update_row(cur, "wl_teachers", _WL_TEACHER_COLS, teacher_id, vals)
 
 
+def _wl_registry_by_code(cur) -> dict[str, list[dict[str, Any]]]:
+    """วิชาในทะเบียนตามรหัส (ตัดช่องว่างหัวท้าย เทียบตรงตัว) · รวมวิชาที่ไม่เปิดสอนแล้ว
+
+    คืนเป็นลิสต์ต่อรหัส ไม่ใช่วิชาเดียว: รหัสห้ามซ้ำตั้งแต่ขั้นที่ 2 แต่ทะเบียนจริงอาจมีรหัสซ้ำค้างมาจาก
+    ขั้นที่ 1 (ตอนนั้นยังไม่ห้าม และสร้าง unique index ทับข้อมูลจริงไม่ได้) ผู้เรียกต้องเห็นว่ากำกวม ไม่ใช่ได้ตัวแรกเงียบ ๆ
+    """
+    cur.execute("SELECT id, code, name, department_id, is_activity FROM wl_subjects ORDER BY id")
+    out: dict[str, list[dict[str, Any]]] = {}
+    for r in cur.fetchall():
+        row = dict(zip(("id", "code", "name", "department_id", "is_activity"), r))
+        key = str(row["code"] or "").strip()
+        if key:
+            out.setdefault(key, []).append(row)
+    return out
+
+
+def _wl_refuse_code_taken(cur, code: str, subject_id: int | None) -> None:
+    # รหัสวิชาห้ามซ้ำในทะเบียน (สเปกขั้นที่ 2 ข้อ 4.2) ตรวจในโค้ด ไม่ใช่ unique index: ถ้าข้อมูลจริงมีรหัสซ้ำอยู่แล้ว
+    # การสร้าง index จะล้ม แล้วทุก route ของเว็บนี้ตอบ 503 · รหัสต้องไม่กำกวมเพราะบรรทัดหลักสูตรผูกวิชาด้วยรหัส
+    # ห้ามเฉพาะการสร้างรหัสซ้ำใหม่: วิชาที่ถือรหัสนี้อยู่แล้ว (ซ้ำค้างจากขั้นที่ 1) ส่งรหัสเดิมมาพร้อมการปิดวิชา
+    # ต้องผ่าน ไม่อย่างนั้นทางแก้รหัสซ้ำทางเดียวที่เหลือก็ถูกปิดไปด้วย
+    same = _wl_registry_by_code(cur).get(code.strip(), [])
+    hits = [] if any(s["id"] == subject_id for s in same) else same
+    if hits:
+        raise HTTPException(409, f"รหัสวิชา {code.strip()} มีในทะเบียนวิชาแล้ว ({hits[0]['name']}) "
+                                 "รหัสวิชาห้ามซ้ำกัน ให้ใช้รหัสอื่น หรือแก้วิชาที่มีอยู่แทน")
+
+
 @app.post("/api/workload/subjects")
 def wl_subjects_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
     with _wl_db() as cur:
         wl_require_admin(request, cur)
         vals = wl_check_subject(wl_clean_fields(body, WL_SUBJECT_FIELDS), True)
+        _wl_refuse_code_taken(cur, vals["code"], None)
         return _wl_insert_row(cur, "wl_subjects", _WL_SUBJECT_COLS, vals)
 
 
@@ -14553,6 +14641,8 @@ def wl_subjects_update(subject_id: int, request: Request, body: Any = Body(None)
     with _wl_db() as cur:
         wl_require_admin(request, cur)
         vals = wl_check_subject(wl_clean_fields(body, WL_SUBJECT_FIELDS), False)
+        if "code" in vals:
+            _wl_refuse_code_taken(cur, vals["code"], subject_id)
         return _wl_update_row(cur, "wl_subjects", _WL_SUBJECT_COLS, subject_id, vals)
 
 
@@ -14589,32 +14679,48 @@ _WL_IMPORTS: dict[str, tuple[str, str, tuple[str, ...], Callable[[dict[str, Any]
 }
 
 
-def _wl_import_from_scheduler(request: Request, kind: str, source: list[dict[str, Any]],
-                              write: bool) -> dict[str, int]:
-    """ดึงครูหรือวิชาจากโปรแกรมจัดตาราง (write=False = ดูก่อน ไม่เขียนอะไรเลย)
+def _wl_import_rows(cur, kind: str, source: list[dict[str, Any]], write: bool) -> dict[str, int]:
+    """แกนของการดึงครูหรือวิชาจากโปรแกรมจัดตาราง (write=False = ดูก่อน ไม่เขียนอะไรเลย)
 
+    ไม่ตรวจสิทธิ์และไม่เปิดการเชื่อมต่อเอง: ใช้ร่วมกันระหว่างปุ่มดึงของทะเบียน กับการตั้งต้นหลักสูตรที่ต้องดึง
+    ในธุรกรรมเดียวกับการสร้างหลักสูตร (ตั้งต้นล้มกลางทาง = ครูและวิชาที่ดึงมาย้อนกลับด้วย) ผู้เรียกตรวจสิทธิ์และด่านเอง
     อ่านลิสต์ต้นทางอย่างเดียว ไม่แก้ dict ในลิสต์ · จับคู่ด้วย sched_id ผ่าน wl_import_plan เท่านั้น
     ON CONFLICT DO NOTHING แล้วนับจาก rowcount: admin สองคนกดพร้อมกันต้องไม่ได้ 500
     หรือแถวซ้ำ แถวที่ชนนับเป็น linked
+    วิชาที่รหัสชนกับวิชาที่มีในทะเบียนอยู่แล้วแต่ sched_id ต่างกัน ไม่สร้าง นับเป็น skipped (รหัสวิชาห้ามซ้ำ)
+    เทียบกับทะเบียนตอนเริ่มดึงเท่านั้น: วิชาสองตัวในโปรแกรมจัดตารางที่รหัสซ้ำกันเองยังสร้างทั้งคู่ตามเดิม
+    เพราะแต่ละตัวผูก sched_id ของตัวเอง ทิ้งตัวหลังจะทำให้แผนการสอนของมันแปลงไม่ได้ทั้งหมด
     """
-    table, noun, cols, to_row = _WL_IMPORTS[kind]
+    table, _noun, cols, to_row = _WL_IMPORTS[kind]
+    cur.execute(f"SELECT id, sched_id, name, code FROM {table}")
+    existing = [dict(zip(("id", "sched_id", "name", "code"), r)) for r in cur.fetchall()]
+    plan = wl_import_plan(list(source), existing)
+    create = plan["create"]
+    clashed = 0
+    if kind == "subjects":
+        taken = {str(e.get("code") or "").strip() for e in existing} - {""}
+        keep = [s for s in create if str(s.get("code") or "").strip() not in taken]
+        clashed, create = len(create) - len(keep), keep
+    created = len(create)
+    if write:
+        created = 0
+        sql = (f"INSERT INTO {table} ({', '.join(cols)}) "
+               f"VALUES ({', '.join(['%s'] * len(cols))}) ON CONFLICT (sched_id) DO NOTHING")
+        for row in create:
+            cur.execute(sql, to_row(row))
+            created += 1 if cur.rowcount == 1 else 0
+    return {"created": created,
+            "linked": len(plan["already"]) + len(create) - created,
+            "skipped": len(plan["skipped"]) + clashed}
+
+
+def _wl_import_from_scheduler(request: Request, kind: str, source: list[dict[str, Any]],
+                              write: bool) -> dict[str, int]:
+    """route ดึงครูหรือวิชา: ตรวจ admin และด่านข้อมูลโรงเรียนยังไม่โหลด แล้วให้ _wl_import_rows ทำ"""
     with _wl_db() as cur:
         wl_require_admin(request, cur)
-        _wl_import_guard(noun)
-        cur.execute(f"SELECT id, sched_id, name FROM {table}")
-        existing = [dict(zip(("id", "sched_id", "name"), r)) for r in cur.fetchall()]
-        plan = wl_import_plan(list(source), existing)
-        created = len(plan["create"])
-        if write:
-            created = 0
-            sql = (f"INSERT INTO {table} ({', '.join(cols)}) "
-                   f"VALUES ({', '.join(['%s'] * len(cols))}) ON CONFLICT (sched_id) DO NOTHING")
-            for row in plan["create"]:
-                cur.execute(sql, to_row(row))
-                created += 1 if cur.rowcount == 1 else 0
-        return {"created": created,
-                "linked": len(plan["already"]) + len(plan["create"]) - created,
-                "skipped": len(plan["skipped"])}
+        _wl_import_guard(_WL_IMPORTS[kind][1])
+        return _wl_import_rows(cur, kind, source, write)
 
 
 @app.get("/api/workload/teachers/import-from-scheduler")
@@ -15012,6 +15118,977 @@ def wl_round_proposal(src: dict[str, Any]) -> dict[str, Any]:
                        "sets_elective": sum(1 for x in sets if x["kind"] == "elective"),
                        "sets_activity": sum(1 for x in sets if x["kind"] == "activity"),
                        "co_merged": co_merged, "served_skipped": served_skipped}}
+
+
+# ── ขั้นที่ 2: หลักสูตรของภาคเรียน (สเปกขั้นที่ 2 ข้อ 4.5 "หลักสูตรมาก่อน") ─────────────────
+# admin ทำหลักสูตรของภาคเรียนในเว็บนี้ก่อน แล้วรอบอัตรากำลังสร้างแถวจากมัน (บรรทัด × ห้อง)
+# ทุก session อ่านได้ทั้งโรงเรียน ("ทุกๆคนเวลาสงสัยจะได้เปิดหลักสูตรดูได้") — หลักสูตรไม่มีชื่อครู จึงไม่ขัดกับ
+# ข้อที่หัวหน้าเห็นแค่แถวของกลุ่มตัวเอง · แก้ได้เฉพาะ admin และทุกการแก้ลงบันทึกไทยในธุรกรรมเดียวกับการแก้
+# ("ตรวจสอบย้อนกลับมาได้") บันทึกที่เขียนแยกธุรกรรมอาจสำเร็จฝั่งเดียว แล้วบันทึกโกหก
+# ภาคเรียนที่รอบปิดแล้วอ่านอย่างเดียวตลอดไป เพราะเป็นหลักฐานว่ารอบนั้นอิงหลักสูตรอะไร
+
+WL_LINE_KINDS: tuple[str, ...] = ("basic", "additional", "activity")
+WL_SET_KINDS: tuple[str, ...] = ("elective", "activity")
+WL_KIND_TEXT: dict[str, str] = {"basic": "พื้นฐาน", "additional": "เพิ่มเติม", "activity": "กิจกรรมพัฒนาผู้เรียน"}
+WL_SET_KIND_TEXT: dict[str, str] = {"elective": "ชุดคาบเสรี", "activity": "ชุดกิจกรรม"}
+WL_LOG_LIMIT: int = 500
+WL_WEEKLY_MAX: int = 99
+WL_CREDITS_MAX: int = 99
+WL_CURRICULUM_FIELDS: frozenset[str] = frozenset({"year", "semester", "name", "level", "note", "group_ids"})
+WL_CURRICULUM_EDIT: frozenset[str] = frozenset({"name", "level", "note", "group_ids"})
+WL_LINE_FIELDS: frozenset[str] = frozenset(
+    {"curriculum_id", "code", "name", "credits", "weekly", "kind", "department_id", "sort"})
+WL_LINE_EDIT: frozenset[str] = WL_LINE_FIELDS - {"curriculum_id"}
+WL_TERM_SET_FIELDS: frozenset[str] = frozenset(
+    {"year", "semester", "kind", "name", "group_ids", "weekly", "is_double"})
+WL_TERM_SET_EDIT: frozenset[str] = WL_TERM_SET_FIELDS - {"year", "semester"}
+WL_OPTION_FIELDS: frozenset[str] = frozenset({"set_id", "code", "name", "department_id"})
+WL_SEED_FIELDS: frozenset[str] = frozenset({"year", "semester", "source", "from_year", "from_semester"})
+# ชื่อคอลัมน์ใน SQL ของหลักสูตรมาจากชุดเหล่านี้เท่านั้น ค่าจากผู้ใช้เป็นพารามิเตอร์เสมอ
+_WL_CURRICULUM_COLS = ("id", "year", "semester", "name", "level", "note")
+_WL_LINE_COLS = ("id", "curriculum_id", "subject_id", "code", "name", "credits", "weekly", "kind",
+                 "department_id", "sort")
+_WL_TERM_SET_COLS = ("id", "year", "semester", "kind", "name", "group_ids", "weekly", "is_double")
+_WL_OPTION_COLS = ("id", "set_id", "subject_id", "code", "name", "department_id")
+_WL_LEVEL_RE = _re.compile(r"^\s*ม\.?\s*(\d+)\s*/")
+_WL_GRADE_PREFIX_RE = _re.compile(r"^ม\.?\s*")
+_WL_CLASS_RE = _re.compile(r"^(\d+)\s*/\s*(\d+)$")
+
+
+def wl_level_of(group_name: Any) -> str | None:
+    """ระดับชั้นจากชื่อห้อง ("ม.4/6ก" → "ม.4") · ชื่อที่ไม่ใช่รูป ม.N/… เดาไม่ได้ จึงเป็น None"""
+    m = _WL_LEVEL_RE.match(str(group_name or ""))
+    return f"ม.{int(m.group(1))}" if m else None
+
+
+def _wl_level_number(level: Any) -> int:
+    m = _re.search(r"\d+", str(level or ""))
+    return int(m.group()) if m else 99
+
+
+def wl_room_range(names: list[Any]) -> str:
+    """ย่อรายชื่อห้องเป็นช่วง รูปเดียวกับใบพิมพ์ของโปรแกรมจัดตาราง (frontend/src/utils/classRange.ts)
+
+    ["ม.1/1"…"ม.1/6"] → "ม.1/1-6" · ห้องไม่ติดกัน → "ม.1/1-3,5" · คนละชั้น → "ม.1/1 ม.2/1"
+    เลขห้องเรียงแบบเลข (1/9 ก่อน 1/10) ไม่งั้นช่วงขาดเป็นเศษ · ต่างจากของหน้าเว็บข้อเดียว: คง "ม." ไว้
+    เพราะเป็นชื่อหลักสูตรที่ถูกอ่านนอกตารางของชั้น (บันทึกการแก้ หน้าสรุป)
+    ห้องที่จับรูปแบบไม่ได้ (ห้องย่อย "ม.4/6ก") เขียนตามเดิมต่อท้าย — ห้องห้ามหายจากชื่อเงียบ ๆ
+    """
+    by_level: dict[int, set[int]] = {}
+    prefix: dict[int, str] = {}
+    raw: list[str] = []
+    for label in names:
+        full = str(label or "").strip()
+        bare = _WL_GRADE_PREFIX_RE.sub("", full)
+        if not bare:
+            continue
+        m = _WL_CLASS_RE.match(bare)
+        if not m:
+            if full not in raw:
+                raw.append(full)
+            continue
+        level = int(m.group(1))
+        by_level.setdefault(level, set()).add(int(m.group(2)))
+        prefix.setdefault(level, "ม." if bare != full else "")
+    parts: list[str] = []
+    for level in sorted(by_level):
+        nums = sorted(by_level[level])
+        runs: list[str] = []
+        i = 0
+        while i < len(nums):
+            j = i
+            while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+                j += 1
+            runs.append(f"{nums[i]}" if i == j else f"{nums[i]}-{nums[j]}")
+            i = j + 1
+        parts.append(f"{prefix[level]}{level}/{','.join(runs)}")
+    return " ".join(parts + raw) or "(ยังไม่มีห้อง)"
+
+
+def wl_curricula_from_proposal(proposal: dict[str, Any], groups: dict[Any, dict[str, Any]]) -> dict[str, Any]:
+    """หลักสูตรตั้งต้นจากผลของ wl_round_proposal (ฟังก์ชันล้วน ไม่แก้ input ผลเป็นของใหม่ทั้งหมด)
+
+    คืน {"curricula": [{name, level, group_ids, lines}], "sets": [{kind, name, group_ids, weekly, is_double, options}]}
+    ห้องที่รายวิชาเหมือนกันทุกตัวรวมเป็นหลักสูตรเดียว: ชุดของ (วิชา — หรือรหัสเมื่อยังไม่ผูกวิชา, คาบ/สัปดาห์)
+    เท่ากันพอดีแบบนับซ้ำ ห้องที่มีวิชาเดียวกันสองแถวในแผน (แผนที่ขัดกันเอง) จึงยังเป็นสองบรรทัด ไม่ยุบให้การสอนหาย
+    ชื่อ = ช่วงห้อง ชื่อซ้ำเติม " (2)" · ระดับ = ระดับของทุกห้องเมื่อตรงกัน · บรรทัดเรียงตามรหัสวิชา
+    ห้องที่ไม่มีแถวเลย (ห้องแม่ของห้องย่อย) ไม่อยู่หลักสูตรไหน
+    ชุดคาบเสรี/กิจกรรมเหลือแค่วิชา ตัวเลือกละหนึ่งวิชา: หลักสูตรไม่มีครู · ครูหลายคนของวิชาเดียว (สองกลุ่มเรียน
+    หรือครูคุมกิจกรรมหลายคน) คือหลายแถวของตัวเลือกเดียวในรอบ ถ้าเก็บเป็นหลายตัวเลือก ครูเทอมก่อนจะถูกใส่ซ้ำทุกตัว
+    """
+    order = {gid: i for i, gid in enumerate(groups)}
+
+    def gkey(g: Any) -> tuple:
+        return (order.get(g, len(order)), str(g))
+
+    def gname(g: Any) -> str:
+        return str((groups.get(g) or {}).get("name") or f"ห้องรหัส {g}")
+
+    def subject_key(item: dict[str, Any]) -> tuple:
+        sid = item.get("subject_id")
+        return ("s", sid) if sid is not None else ("c", str(item.get("code") or "").strip())
+
+    by_group: dict[Any, list[dict[str, Any]]] = {}
+    for r in proposal.get("rows") or []:
+        # แถวที่ไม่มีห้องเลยใส่ในหลักสูตรไม่ได้ (wl_curriculum_groups.group_id NOT NULL) และ wl_round_proposal
+        # รายงานไว้ใน unconverted แล้ว — ข้ามดีกว่าทำให้การตั้งต้นทั้งภาคเรียนล้ม
+        if r.get("group_id") is not None:
+            by_group.setdefault(r.get("group_id"), []).append(r)
+    by_plan: dict[tuple, list[Any]] = {}
+    for gid in sorted(by_group, key=gkey):
+        plan = tuple(sorted((subject_key(r), int(r.get("weekly") or 0)) for r in by_group[gid]))
+        by_plan.setdefault(plan, []).append(gid)
+
+    curricula: list[dict[str, Any]] = []
+    for gids in by_plan.values():
+        rows = sorted(by_group[gids[0]], key=lambda r: (str(r.get("code") or ""), int(r.get("weekly") or 0),
+                                                        str(r.get("name") or "")))
+        levels = {wl_level_of(gname(g)) for g in gids}
+        curricula.append({
+            "name": wl_room_range([gname(g) for g in gids]),
+            "level": levels.pop() if len(levels) == 1 else None,
+            "group_ids": list(gids),
+            "lines": [{"subject_id": r.get("subject_id"), "code": str(r.get("code") or ""),
+                       "name": str(r.get("name") or ""), "credits": r.get("credits"),
+                       "weekly": int(r.get("weekly") or 0), "kind": r.get("kind") or "basic",
+                       "department_id": r.get("department_id"), "sort": i + 1}
+                      for i, r in enumerate(rows)]})
+    curricula.sort(key=lambda c: (_wl_level_number(c["level"]), gkey(c["group_ids"][0])))
+    used: set[str] = set()
+    for c in curricula:
+        base, n = c["name"], 2
+        while c["name"] in used:          # UNIQUE (year, semester, name) — ห้องชื่อซ้ำกันในโปรแกรมจัดตารางมีได้
+            c["name"], n = f"{base} ({n})", n + 1
+        used.add(c["name"])
+
+    sets: list[dict[str, Any]] = []
+    for s in proposal.get("sets") or []:
+        seen: set[tuple] = set()
+        options: list[dict[str, Any]] = []
+        for o in s.get("options") or []:
+            k = subject_key(o)
+            if k in seen:
+                continue
+            seen.add(k)
+            options.append({"subject_id": o.get("subject_id"), "code": str(o.get("code") or ""),
+                            "name": str(o.get("name") or ""), "department_id": o.get("department_id")})
+        sets.append({"kind": s.get("kind"), "name": str(s.get("name") or ""),
+                     "group_ids": list(s.get("group_ids") or []), "weekly": int(s.get("weekly") or 0),
+                     "is_double": bool(s.get("is_double")), "options": options})
+    return {"curricula": curricula, "sets": sets}
+
+
+def _wl_timetable_source(cur) -> dict[str, Any]:
+    """src ของ wl_round_proposal จากโปรแกรมจัดตาราง + ทะเบียนของเว็บนี้ (งานที่ 3 ใช้ซ้ำตอนใส่ครูเทอมก่อน)
+
+    ข้อมูลของโปรแกรมจัดตารางเป็นสำเนาลึกทั้งหมด: route ใต้ /api/workload/ ข้ามด่านรุ่นและ snapshot ของเว็บตาราง
+    ถ้าใครแก้ src ต่อแล้วไปโดน dict ตัวจริง ตารางสอนจะเปลี่ยนโดยไม่มีใครเห็นและไม่ถูกบันทึก
+    รหัสครู/วิชาฝั่งตาราง → รหัสของเว็บนี้ผ่าน sched_id เท่านั้น (ห้ามเทียบชื่อ) · กลุ่มสาระมาจากทะเบียนของเว็บนี้
+    """
+    cur.execute("SELECT id, sched_id FROM wl_teachers WHERE sched_id IS NOT NULL")
+    teacher_ids = {sched: wid for wid, sched in cur.fetchall()}
+    cur.execute("SELECT id, sched_id, department_id FROM wl_subjects WHERE sched_id IS NOT NULL")
+    subject_ids: dict[Any, int] = {}
+    subject_depts: dict[int, Any] = {}
+    for wid, sched, dept in cur.fetchall():
+        subject_ids[sched] = wid
+        subject_depts[wid] = dept
+    return {"requirements": _copy.deepcopy(REQUIREMENTS), "pools": _copy.deepcopy(ELECTIVE_POOLS),
+            "slots": _copy.deepcopy(SLOTS),
+            "sched_subjects": {s.get("id"): s for s in _copy.deepcopy(SUBJECTS)},
+            "groups": {g.get("id"): g for g in _copy.deepcopy(_flat_groups())},
+            "teacher_ids": teacher_ids, "subject_ids": subject_ids, "subject_depts": subject_depts,
+            "served": set(_reqs_served_by_elective())}
+
+
+def _wl_after_curriculum_change(cur, year: int, semester: int, force: bool) -> None:
+    """เรียกหลังทุกการเขียนของหลักสูตรภาคเรียนนี้ ในธุรกรรมเดียวกัน — งานที่ 3 เติมเป็น _wl_sync_round
+
+    งานที่ 3: ภาคเรียนนี้มีรอบที่ยังไม่ปิด → สร้างแถวของบรรทัด/ห้องใหม่ ลบแถวและครูของตัวเลือกที่หายไป
+    แถวที่จะหายมีครูใส่ไว้และ force เป็นเท็จ → ยก 409 ไทยบอกจำนวน แล้วทั้งธุรกรรม (รวมการลบในหลักสูตร) ย้อนกลับ
+    route ลบก่อนแล้วค่อยเรียก เพราะ hook ไม่รู้ว่าอะไรเปลี่ยน มันเทียบหลักสูตรตอนนี้กับแถวของรอบเอง
+    (FK ของแถวจึงเป็น DEFERRABLE ดูคอมเมนต์ที่ _WL_SCHEMA) · ตอนนี้ยังไม่มี route สร้างรอบ จึงไม่มีอะไรให้ทำ
+    """
+    return None
+
+
+def _wl_log(cur, year: int, semester: int, session: dict[str, Any], action: str, detail: str) -> None:
+    """บันทึกการแก้หลักสูตรหนึ่งรายการ · ต้องใช้ cur ของธุรกรรมเดียวกับการแก้ · by = ชื่อเรียกของรหัสที่ล็อกอิน"""
+    cur.execute("INSERT INTO wl_curriculum_log (year, semester, by_label, action, detail) "
+                "VALUES (%s, %s, %s, %s, %s)", (year, semester, str(session.get("label") or ""), action, detail))
+
+
+def _wl_term_args(year: Any, semester: Any, what: str = "") -> tuple[int, int]:
+    # ค่าจาก query string มาเป็นข้อความ จึงรับ str ด้วย (_term_number) · ผิดแล้วตอบ 400 ไทย ไม่ใช่ 422 อังกฤษ
+    y, s = _term_number(year), _term_number(semester)
+    if y is None or s is None or not 2500 <= y <= 2700 or s not in (1, 2):
+        raise HTTPException(400, f"ต้องระบุปีการศึกษา{what} (พ.ศ. 2500–2700) และภาคเรียน{what} (1 หรือ 2)")
+    return y, s
+
+
+def _wl_term_locked(cur, year: int, semester: int) -> bool:
+    cur.execute("SELECT id FROM wl_rounds WHERE year = %s AND semester = %s AND status = 'closed'",
+                (year, semester))
+    return cur.fetchone() is not None
+
+
+def _wl_refuse_locked(cur, year: int, semester: int) -> None:
+    if _wl_term_locked(cur, year, semester):
+        raise HTTPException(409, f"รอบอัตรากำลังภาคเรียน {term_label(year, semester)} ปิดแล้ว "
+                                 "หลักสูตรของภาคเรียนนี้จึงแก้ไม่ได้ (เก็บไว้เป็นหลักฐานย้อนหลัง)")
+
+
+def _wl_term_has_curriculum(cur, year: int, semester: int) -> bool:
+    for table in ("wl_curricula", "wl_term_sets"):
+        cur.execute(f"SELECT id FROM {table} WHERE year = %s AND semester = %s LIMIT 1", (year, semester))
+        if cur.fetchone() is not None:
+            return True
+    return False
+
+
+def _wl_force(body: Any, force: str | None) -> bool:
+    """ยืนยันลบซ้ำ: {"force": true} ใน body หรือ ?force=1 — บาง client ส่ง body กับ DELETE ไม่ได้"""
+    b = body if isinstance(body, dict) else {}
+    if "force" in b and not isinstance(b["force"], bool):
+        raise HTTPException(400, "ช่อง force ต้องเป็นจริงหรือเท็จ (true/false)")
+    return bool(b.get("force")) or str(force or "").strip().lower() in ("1", "true")
+
+
+def _wl_get(cur, table: str, cols: tuple[str, ...], row_id: Any, missing: str) -> dict[str, Any]:
+    row = None
+    if type(row_id) is int and 0 < row_id <= _WL_BIGINT_MAX:   # id เกินช่วงของ bigint = ไม่มีแถวนั้นแน่ ไม่ใช่ 500
+        cur.execute(f"SELECT {', '.join(cols)} FROM {table} WHERE id = %s", (row_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise HTTPException(404, missing)
+    return dict(zip(cols, row))
+
+
+def _wl_unique_or_409(fn: Callable[[], Any], message: str) -> Any:
+    # ด่านในโค้ดตรวจก่อนแล้ว นี่คือกรณีสองคำขอชนกันพอดี — ตอบ 409 ไทย ไม่ใช่ 500
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001
+        if _wl_is_unique_violation(e):
+            raise HTTPException(409, message) from None
+        raise
+
+
+def _wl_short(field: str, v: Any) -> str | None:
+    t = _wl_text(field, v, False)
+    return (t.strip() or None) if t is not None else None
+
+
+def _wl_weekly(v: Any) -> int:
+    if type(v) is not int or not 0 <= v <= WL_WEEKLY_MAX:
+        raise HTTPException(400, f"ช่อง weekly (คาบ/สัปดาห์) ต้องเป็นจำนวนเต็ม 0–{WL_WEEKLY_MAX}")
+    return v
+
+
+def _wl_credits(v: Any) -> int | float | None:
+    # หน่วยกิตเป็นทศนิยมได้ (1.5) · NaN/อนันต์ไม่ผ่านการเทียบช่วงอยู่แล้ว
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= WL_CREDITS_MAX:
+        raise HTTPException(400, f"ช่อง credits (หน่วยกิต) ต้องเป็นตัวเลข 0–{WL_CREDITS_MAX} หรือว่าง")
+    return v
+
+
+def _wl_choice(field: str, v: Any, allowed: tuple[str, ...]) -> str:
+    if not isinstance(v, str) or v not in allowed:
+        raise HTTPException(400, f"ช่อง {field} ต้องเป็น {' หรือ '.join(allowed)}")
+    return v
+
+
+def _wl_sort_value(v: Any) -> int:
+    if type(v) is not int or abs(v) > _WL_INT4_MAX:
+        raise HTTPException(400, "ช่อง sort (ลำดับ) ต้องเป็นจำนวนเต็ม")
+    return v
+
+
+def _wl_id_field(field: str, v: Any, noun: str) -> int:
+    if type(v) is not int:
+        raise HTTPException(400, f"ต้องระบุ {field} (รหัส{noun}) เป็นจำนวนเต็ม")
+    return v
+
+
+def _wl_group_ids(v: Any) -> list[int]:
+    if not isinstance(v, list) or any(type(g) is not int or not 0 < g <= _WL_INT4_MAX for g in v):
+        raise HTTPException(400, "ช่อง group_ids ต้องเป็นรายการรหัสห้องเรียน (จำนวนเต็ม)")
+    return list(dict.fromkeys(v))
+
+
+def _wl_group_names() -> dict[Any, str]:
+    return {g.get("id"): str(g.get("name") or "") for g in _flat_groups()}
+
+
+def _wl_group_label(gid: Any, names: dict[Any, str]) -> str:
+    if gid not in names:
+        return f"ห้องที่ไม่มีแล้ว (รหัส {gid})"
+    return names[gid] or f"ห้องรหัส {gid}"
+
+
+def _wl_sorted_groups(gids: list[Any], names: dict[Any, str]) -> list[Any]:
+    order = {g: i for i, g in enumerate(names)}
+    return sorted(gids, key=lambda g: (order.get(g, len(order)), str(g)))
+
+
+def _wl_rooms_text(gids: list[Any], names: dict[Any, str]) -> str:
+    if not gids:
+        return "ยังไม่มีห้อง"
+    return "ห้อง " + wl_room_range([_wl_group_label(g, names) for g in _wl_sorted_groups(gids, names)])
+
+
+def _wl_refuse_unknown_groups(gids: list[int], names: dict[Any, str]) -> None:
+    missing = [g for g in gids if g not in names]
+    if missing:
+        raise HTTPException(400, f"ไม่พบห้องเรียนรหัส {', '.join(map(str, missing))} ในโปรแกรมจัดตาราง")
+
+
+def _wl_refuse_groups_taken(cur, year: int, semester: int, curriculum_id: int | None,
+                            gids: list[int], names: dict[Any, str]) -> None:
+    """ห้องหนึ่งอยู่ได้หลักสูตรเดียวต่อภาคเรียน — บอกชื่อหลักสูตรที่ห้องนั้นอยู่ ให้ admin ไปเอาออกได้ถูกที่"""
+    if not gids:
+        return
+    cur.execute("SELECT curriculum_id, group_id FROM wl_curriculum_groups WHERE year = %s AND semester = %s",
+                (year, semester))
+    taken = {gid: cid for cid, gid in cur.fetchall() if cid != curriculum_id}
+    clash = [g for g in gids if g in taken]
+    if not clash:
+        return
+    cur.execute("SELECT id, name FROM wl_curricula WHERE id = ANY(%s)", (sorted({taken[g] for g in clash}),))
+    cname = dict(cur.fetchall())
+    where = " · ".join(f"ห้อง {_wl_group_label(g, names)} อยู่ในหลักสูตร {cname.get(taken[g], taken[g])}"
+                       for g in clash)
+    raise HTTPException(409, f"{where} ของภาคเรียนนี้แล้ว — ห้องหนึ่งอยู่ได้หลักสูตรเดียวต่อภาคเรียน "
+                             "ให้เอาห้องออกจากหลักสูตรนั้นก่อน")
+
+
+def _wl_add_groups(cur, curriculum_id: int, year: int, semester: int, gids: list[int]) -> None:
+    if gids:
+        _wl_unique_or_409(lambda: cur.executemany(
+            "INSERT INTO wl_curriculum_groups (curriculum_id, year, semester, group_id) VALUES (%s, %s, %s, %s)",
+            [(curriculum_id, year, semester, g) for g in gids]),
+            "ห้องที่เลือกเพิ่งถูกใส่ในหลักสูตรอื่นของภาคเรียนนี้ โหลดหน้าใหม่แล้วลองอีกครั้ง")
+
+
+def _wl_groups_of(cur, curriculum_id: int) -> list[int]:
+    cur.execute("SELECT group_id FROM wl_curriculum_groups WHERE curriculum_id = %s", (curriculum_id,))
+    return [r[0] for r in cur.fetchall()]
+
+
+def _wl_refuse_name_taken(cur, year: int, semester: int, name: str, curriculum_id: int | None) -> None:
+    cur.execute("SELECT id FROM wl_curricula WHERE year = %s AND semester = %s AND name = %s",
+                (year, semester, name))
+    if any(r[0] != curriculum_id for r in cur.fetchall()):
+        raise HTTPException(409, f"ภาคเรียน {term_label(year, semester)} มีหลักสูตรชื่อ {name} อยู่แล้ว ตั้งชื่ออื่น")
+
+
+def _wl_bind_code(code: str, registry: dict[str, list[dict[str, Any]]]) -> dict[str, Any] | None:
+    """วิชาในทะเบียนที่รหัสตรงกัน (ตัดช่องว่าง เทียบตรงตัว) · ไม่มี = None · มีหลายวิชา = 409 ไม่เดาตัวไหน"""
+    hits = registry.get(code.strip(), [])
+    if len(hits) > 1:
+        raise HTTPException(409, f"รหัสวิชา {code.strip()} มีในทะเบียนวิชา {len(hits)} วิชา "
+                                 f"({', '.join(h['name'] for h in hits)}) จึงผูกวิชาไม่ได้ "
+                                 "ให้แก้รหัสในทะเบียนวิชาให้ไม่ซ้ำก่อน")
+    return hits[0] if hits else None
+
+
+def _wl_num(v: Any) -> Any:
+    # numeric ของ Postgres มาเป็น Decimal — แปลงเป็นตัวเลขธรรมดาที่นี่ที่เดียว (1.5 → 1.5 · 1 → 1)
+    if v is None or isinstance(v, (bool, int)):
+        return v
+    f = float(v)
+    return int(f) if f.is_integer() else f
+
+
+def _wl_show(v: Any) -> str:
+    if v is None or v == "":
+        return "(ว่าง)"
+    if isinstance(v, bool):
+        return "ใช่" if v else "ไม่ใช่"
+    if not isinstance(v, str) and hasattr(v, "as_integer_ratio"):
+        return str(_wl_num(v))
+    return str(v)
+
+
+def _wl_dept_text(d: Any) -> str:
+    if d is None:
+        return "(ไม่ระบุ)"
+    return next((str(x.get("name")) for x in DEPARTMENTS if x.get("id") == d), f"กลุ่มสาระรหัส {d}")
+
+
+_WL_CURRICULUM_DIFF = (("name", "ชื่อ", _wl_show), ("level", "ระดับ", _wl_show), ("note", "หมายเหตุ", _wl_show))
+_WL_LINE_DIFF = (("code", "รหัส", _wl_show), ("name", "ชื่อ", _wl_show), ("credits", "หน่วยกิต", _wl_show),
+                 ("weekly", "คาบ/สัปดาห์", _wl_show),
+                 ("kind", "ประเภท", lambda k: WL_KIND_TEXT.get(k, _wl_show(k))),
+                 ("department_id", "กลุ่มสาระ", _wl_dept_text), ("sort", "ลำดับ", _wl_show))
+_WL_SET_DIFF = (("kind", "ประเภท", lambda k: WL_SET_KIND_TEXT.get(k, _wl_show(k))), ("name", "ชื่อ", _wl_show),
+                ("weekly", "คาบ/สัปดาห์", _wl_show), ("is_double", "คาบคู่", _wl_show))
+
+
+def _wl_changes(old: dict[str, Any], new: dict[str, Any], fields: tuple) -> list[str]:
+    return [f"{label} {fmt(old.get(k))} → {fmt(new.get(k))}" for k, label, fmt in fields if new.get(k) != old.get(k)]
+
+
+def _wl_subject_label(row: dict[str, Any]) -> str:
+    return f"{row.get('code') or ''} {row.get('name') or ''}".strip()
+
+
+def _wl_line_out(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    out["credits"] = _wl_num(out["credits"])
+    return out
+
+
+def _wl_curricula_full(cur, rows: list[dict[str, Any]], names: dict[Any, str]) -> list[dict[str, Any]]:
+    """แถวของ wl_curricula → รูป "หลักสูตร" ในสัญญา (ห้องเรียงตามโปรแกรมจัดตาราง · บรรทัดเรียงตาม sort)"""
+    if not rows:
+        return []
+    ids = [r["id"] for r in rows]
+    cur.execute("SELECT curriculum_id, group_id FROM wl_curriculum_groups WHERE curriculum_id = ANY(%s)", (ids,))
+    groups: dict[int, list[int]] = {}
+    for cid, gid in cur.fetchall():
+        groups.setdefault(cid, []).append(gid)
+    cur.execute(f"SELECT {', '.join(_WL_LINE_COLS)} FROM wl_curriculum_lines WHERE curriculum_id = ANY(%s) "
+                "ORDER BY sort, id", (ids,))
+    lines: dict[int, list[dict[str, Any]]] = {}
+    for r in cur.fetchall():
+        ln = _wl_line_out(dict(zip(_WL_LINE_COLS, r)))
+        lines.setdefault(ln["curriculum_id"], []).append(ln)
+    out = []
+    for r in rows:
+        gids = _wl_sorted_groups(groups.get(r["id"], []), names)
+        out.append({**r, "group_ids": gids, "group_names": [_wl_group_label(g, names) for g in gids],
+                    "lines": lines.get(r["id"], [])})
+    return out
+
+
+def _wl_sets_full(cur, rows: list[dict[str, Any]], names: dict[Any, str]) -> list[dict[str, Any]]:
+    """แถวของ wl_term_sets → รูป "ชุด (ของภาคเรียน)" ในสัญญา"""
+    if not rows:
+        return []
+    cur.execute(f"SELECT {', '.join(_WL_OPTION_COLS)} FROM wl_term_set_options WHERE set_id = ANY(%s) ORDER BY id",
+                ([r["id"] for r in rows],))
+    options: dict[int, list[dict[str, Any]]] = {}
+    for r in cur.fetchall():
+        o = dict(zip(_WL_OPTION_COLS, r))
+        options.setdefault(o["set_id"], []).append(o)
+    out = []
+    for r in rows:
+        gids = _wl_sorted_groups(list(r["group_ids"] or []), names)
+        out.append({**r, "group_ids": gids, "group_names": [_wl_group_label(g, names) for g in gids],
+                    "options": options.get(r["id"], [])})
+    return out
+
+
+def wl_curriculum_view(cur, year: int, semester: int) -> dict[str, Any]:
+    """หลักสูตรและชุดของภาคเรียน + locked (มีรอบของภาคเรียนนี้ที่ปิดแล้ว) · ภาคเรียนที่ยังไม่มี = รายการว่าง"""
+    names = _wl_group_names()
+    cur.execute(f"SELECT {', '.join(_WL_CURRICULUM_COLS)} FROM wl_curricula WHERE year = %s AND semester = %s "
+                "ORDER BY id", (year, semester))
+    curricula = [dict(zip(_WL_CURRICULUM_COLS, r)) for r in cur.fetchall()]
+    cur.execute(f"SELECT {', '.join(_WL_TERM_SET_COLS)} FROM wl_term_sets WHERE year = %s AND semester = %s "
+                "ORDER BY id", (year, semester))
+    sets = [dict(zip(_WL_TERM_SET_COLS, r)) for r in cur.fetchall()]
+    return {"curricula": _wl_curricula_full(cur, curricula, names), "sets": _wl_sets_full(cur, sets, names),
+            "locked": _wl_term_locked(cur, year, semester)}
+
+
+def _wl_bind_plan(plan: dict[str, Any], registry: dict[str, list[dict[str, Any]]]) -> None:
+    """บรรทัด/ตัวเลือกตั้งต้นที่ยังไม่ผูกวิชา แต่รหัสตรงกับวิชาเดียวในทะเบียน → ผูก (กฎเดียวกับบรรทัดที่ admin เพิ่ม)
+
+    เกิดเมื่อวิชาฝั่งตารางดึงเข้ามาไม่ได้เพราะรหัสชนกับวิชาที่พิมพ์ไว้ก่อน · รหัสกำกวมปล่อยไว้ไม่ผูก ไม่เดา
+    plan เป็นของที่ wl_curricula_from_proposal เพิ่งสร้าง แก้ในที่ได้
+    """
+    for item in [ln for c in plan["curricula"] for ln in c["lines"]] + [o for s in plan["sets"] for o in s["options"]]:
+        hits = registry.get(str(item.get("code") or "").strip(), []) if item.get("subject_id") is None else []
+        if len(hits) == 1:
+            item["subject_id"] = hits[0]["id"]
+            item["name"] = item.get("name") or hits[0]["name"]
+            if item.get("department_id") is None:
+                item["department_id"] = hits[0]["department_id"]
+
+
+def _wl_plan_from_view(view: dict[str, Any]) -> dict[str, Any]:
+    line_keys = ("subject_id", "code", "name", "credits", "weekly", "kind", "department_id", "sort")
+    option_keys = ("subject_id", "code", "name", "department_id")
+    return {"curricula": [{"name": c["name"], "level": c["level"], "note": c["note"],
+                           "group_ids": list(c["group_ids"]),
+                           "lines": [{k: ln[k] for k in line_keys} for ln in c["lines"]]}
+                          for c in view["curricula"]],
+            "sets": [{"kind": s["kind"], "name": s["name"], "group_ids": list(s["group_ids"]),
+                      "weekly": s["weekly"], "is_double": s["is_double"],
+                      "options": [{k: o[k] for k in option_keys} for o in s["options"]]}
+                     for s in view["sets"]]}
+
+
+def _wl_insert_plan(cur, year: int, semester: int, plan: dict[str, Any]) -> dict[str, int]:
+    """เขียนหลักสูตรทั้งชุดของภาคเรียน · ห้อง บรรทัด และตัวเลือกส่งเป็นก้อน (executemany) —
+    ข้อมูลจริงมีราวพันบรรทัด ส่งทีละคำสั่งไป Neon คือพันรอบไปกลับ"""
+    group_rows: list[tuple] = []
+    line_rows: list[tuple] = []
+    for c in plan["curricula"]:
+        cur.execute("INSERT INTO wl_curricula (year, semester, name, level, note) VALUES (%s, %s, %s, %s, %s) "
+                    "RETURNING id", (year, semester, c["name"], c.get("level"), c.get("note") or ""))
+        cid = cur.fetchone()[0]
+        group_rows += [(cid, year, semester, g) for g in c["group_ids"]]
+        line_rows += [(cid, ln["subject_id"], ln["code"], ln["name"], ln["credits"], ln["weekly"], ln["kind"],
+                       ln["department_id"], ln["sort"]) for ln in c["lines"]]
+    if group_rows:
+        cur.executemany("INSERT INTO wl_curriculum_groups (curriculum_id, year, semester, group_id) "
+                        "VALUES (%s, %s, %s, %s)", group_rows)
+    if line_rows:
+        cur.executemany("INSERT INTO wl_curriculum_lines (curriculum_id, subject_id, code, name, credits, weekly, "
+                        "kind, department_id, sort) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)", line_rows)
+    option_rows: list[tuple] = []
+    for s in plan["sets"]:
+        cur.execute("INSERT INTO wl_term_sets (year, semester, kind, name, group_ids, weekly, is_double) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    (year, semester, s["kind"], s["name"], list(s["group_ids"]), s["weekly"], s["is_double"]))
+        sid = cur.fetchone()[0]
+        option_rows += [(sid, o["subject_id"], o["code"], o["name"], o["department_id"]) for o in s["options"]]
+    if option_rows:
+        cur.executemany("INSERT INTO wl_term_set_options (set_id, subject_id, code, name, department_id) "
+                        "VALUES (%s, %s, %s, %s, %s)", option_rows)
+    return {"curricula": len(plan["curricula"]), "lines": len(line_rows), "groups": len(group_rows),
+            "sets": len(plan["sets"]), "options": len(option_rows)}
+
+
+# ── route ของหลักสูตร: อ่าน (ทุก session) ─────────────────────────────────
+@app.get("/api/workload/curricula")
+def wl_curricula_get(request: Request, year: str | None = None, semester: str | None = None) -> dict[str, Any]:
+    """หลักสูตรของภาคเรียน — ทุก session รวมหัวหน้ากลุ่มสาระ เห็นทั้งโรงเรียน"""
+    with _wl_db() as cur:
+        wl_require_session(request, cur)
+        y, s = _wl_term_args(year, semester)
+        return wl_curriculum_view(cur, y, s)
+
+
+@app.get("/api/workload/curricula/terms")
+def wl_curricula_terms(request: Request) -> list[dict[str, Any]]:
+    """ภาคเรียนที่มีหลักสูตร (หรือมีแค่ชุดคาบเสรี/กิจกรรม) เรียงใหม่ก่อน · locked = รอบของภาคเรียนนั้นปิดแล้ว"""
+    with _wl_db() as cur:
+        wl_require_session(request, cur)
+        terms: set[tuple[int, int]] = set()
+        for table in ("wl_curricula", "wl_term_sets"):
+            cur.execute(f"SELECT DISTINCT year, semester FROM {table}")
+            terms |= {(y, s) for y, s in cur.fetchall()}
+        cur.execute("SELECT year, semester FROM wl_rounds WHERE status = 'closed'")
+        closed = {(y, s) for y, s in cur.fetchall()}
+        return [{"year": y, "semester": s, "label": term_label(y, s), "locked": (y, s) in closed}
+                for y, s in sorted(terms, reverse=True)]
+
+
+@app.get("/api/workload/curricula/log")
+def wl_curricula_log(request: Request, year: str | None = None,
+                     semester: str | None = None) -> list[dict[str, Any]]:
+    """บันทึกการแก้หลักสูตรของภาคเรียน ใหม่ก่อน ไม่เกิน WL_LOG_LIMIT รายการ — ทุก session"""
+    with _wl_db() as cur:
+        wl_require_session(request, cur)
+        y, s = _wl_term_args(year, semester)
+        cur.execute("SELECT id, at, by_label, action, detail FROM wl_curriculum_log "
+                    f"WHERE year = %s AND semester = %s ORDER BY at DESC, id DESC LIMIT {int(WL_LOG_LIMIT)}", (y, s))
+        return [{"id": i, "at": at.isoformat() if hasattr(at, "isoformat") else at, "by": by,
+                 "action": action, "detail": detail}
+                for i, at, by, action, detail in cur.fetchall()]
+
+
+# ── route ของหลักสูตร: เขียน (admin เท่านั้น · ภาคเรียนที่รอบปิดแล้ว 409) ──────────────
+@app.post("/api/workload/curricula/seed")
+def wl_curricula_seed(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """ตั้งต้นหลักสูตรของภาคเรียนที่ยังว่าง: จากโปรแกรมจัดตาราง หรือคัดลอกจากภาคเรียนอื่น — ธุรกรรมเดียว
+
+    "timetable" ดึงครูและวิชาก่อน (ตัวเดียวกับปุ่มดึง) แล้วแปลงแผนการสอน+คาบเสรี+ตารางด้วย wl_round_proposal
+    · ปฏิเสธ 503 ตอนข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ: ตอนนั้นสิ่งที่อยู่ในหน่วยความจำคือข้อมูลตั้งต้นที่มากับโค้ด
+    "copy" อ่านแต่ตารางของเว็บนี้ จึงไม่ติดด่านนั้น · ภาคเรียนที่มีหลักสูตรแล้ว 409 (จะได้หลักสูตรซ้ำสองชุด)
+    """
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        f = wl_clean_fields(body, WL_SEED_FIELDS)
+        year, semester = _wl_term_args(f.get("year"), f.get("semester"))
+        source = f.get("source")
+        if source not in ("timetable", "copy"):
+            raise HTTPException(400, "ช่อง source ต้องเป็น timetable (จากโปรแกรมจัดตาราง) "
+                                     "หรือ copy (คัดลอกจากภาคเรียนอื่น)")
+        from_term = _wl_term_args(f.get("from_year"), f.get("from_semester"), "ต้นทาง") if source == "copy" else None
+        if from_term == (year, semester):
+            raise HTTPException(400, "คัดลอกหลักสูตรจากภาคเรียนเดียวกันไม่ได้ เลือกภาคเรียนต้นทางอื่น")
+        label = term_label(year, semester)
+        _wl_refuse_locked(cur, year, semester)
+        if _wl_term_has_curriculum(cur, year, semester):
+            raise HTTPException(409, f"ภาคเรียน {label} มีหลักสูตรอยู่แล้ว ตั้งต้นซ้ำไม่ได้ (จะได้หลักสูตรซ้ำสองชุด) "
+                                     "ให้แก้หลักสูตรที่มีอยู่ หรือลบออกให้หมดก่อน")
+        imported, unconverted, what = None, [], ""
+        if source == "timetable":
+            if _db_write_blocked():
+                raise HTTPException(503, "เซิร์ฟเวอร์ยังโหลดข้อมูลของโรงเรียนไม่สำเร็จ จึงยังตั้งต้นหลักสูตร"
+                                         "จากโปรแกรมจัดตารางไม่ได้ รอสักครู่แล้วลองใหม่ หรือแจ้งผู้ดูแลระบบ")
+            imported = {"teachers": _wl_import_rows(cur, "teachers", TEACHERS, True),
+                        "subjects": _wl_import_rows(cur, "subjects", SUBJECTS, True)}
+            src = _wl_timetable_source(cur)
+            proposal = wl_round_proposal(src)
+            plan = wl_curricula_from_proposal(proposal, src["groups"])
+            _wl_bind_plan(plan, _wl_registry_by_code(cur))
+            unconverted = proposal["unconverted"]
+            what = "จากโปรแกรมจัดตาราง"
+            new_t, new_s = imported["teachers"]["created"], imported["subjects"]["created"]
+            if new_t or new_s:
+                what += f" (ดึงครูใหม่ {new_t:,} คน วิชาใหม่ {new_s:,} วิชา)"
+        else:
+            view = wl_curriculum_view(cur, *from_term)
+            if not view["curricula"] and not view["sets"]:
+                raise HTTPException(404, f"ภาคเรียน {term_label(*from_term)} ยังไม่มีหลักสูตรให้คัดลอก")
+            plan = _wl_plan_from_view(view)
+            what = f"โดยคัดลอกจากภาคเรียน {term_label(*from_term)}"
+        counts = _wl_insert_plan(cur, year, semester, plan)
+        _wl_after_curriculum_change(cur, year, semester, False)
+        detail = (f"ตั้งต้นหลักสูตรภาคเรียน {label} {what}: {counts['curricula']:,} หลักสูตร "
+                  f"{counts['lines']:,} บรรทัด ห้องเรียน {counts['groups']:,} ห้อง "
+                  f"ชุดคาบเสรี/กิจกรรม {counts['sets']:,} ชุด ({counts['options']:,} ตัวเลือก)")
+        if unconverted:
+            detail += f" · แปลงไม่ได้ {len(unconverted):,} รายการ"
+        _wl_log(cur, year, semester, sess, f"seed.{source}", detail)
+        return {"year": year, "semester": semester, "label": label, "source": source, "counts": counts,
+                "imported": imported, "unconverted": unconverted}
+
+
+@app.post("/api/workload/curricula")
+def wl_curricula_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        f = wl_clean_fields(body, WL_CURRICULUM_FIELDS)
+        year, semester = _wl_term_args(f.get("year"), f.get("semester"))
+        name = _wl_text("name", f.get("name"), True)
+        level = _wl_short("level", f.get("level"))
+        note = _wl_short("note", f.get("note")) or ""
+        gids = _wl_group_ids(f.get("group_ids", []))
+        names = _wl_group_names()
+        _wl_refuse_unknown_groups(gids, names)
+        _wl_refuse_locked(cur, year, semester)
+        _wl_refuse_name_taken(cur, year, semester, name, None)
+        _wl_refuse_groups_taken(cur, year, semester, None, gids, names)
+        if "level" not in f:
+            levels = {wl_level_of(names.get(g)) for g in gids}
+            level = levels.pop() if len(levels) == 1 else None
+        row = _wl_unique_or_409(
+            lambda: _wl_insert_row(cur, "wl_curricula", _WL_CURRICULUM_COLS,
+                                   {"year": year, "semester": semester, "name": name, "level": level, "note": note}),
+            f"ภาคเรียน {term_label(year, semester)} มีหลักสูตรชื่อ {name} อยู่แล้ว ตั้งชื่ออื่น")
+        _wl_add_groups(cur, row["id"], year, semester, gids)
+        _wl_after_curriculum_change(cur, year, semester, False)
+        _wl_log(cur, year, semester, sess, "curriculum.create",
+                f"สร้างหลักสูตร {name} ({_wl_rooms_text(gids, names)})")
+        return _wl_curricula_full(cur, [row], names)[0]
+
+
+@app.put("/api/workload/curricula/{curriculum_id}")
+def wl_curricula_update(curriculum_id: int, request: Request, force: str | None = None,
+                        body: Any = Body(None)) -> dict[str, Any]:
+    """แก้ชื่อ ระดับ หมายเหตุ หรือห้อง · เอาห้องออกระหว่างรอบเปิดอาจต้องยืนยัน force (ดู _wl_after_curriculum_change)"""
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        f = dict(wl_clean_fields(body, WL_CURRICULUM_EDIT | {"force"}))
+        fo = _wl_force(f, force)
+        f.pop("force", None)
+        if not f:
+            raise HTTPException(400, "ไม่มีช่องที่จะแก้ ส่งอย่างน้อยหนึ่งช่อง")
+        vals: dict[str, Any] = {}
+        if "name" in f:
+            vals["name"] = _wl_text("name", f["name"], True)
+        if "level" in f:
+            vals["level"] = _wl_short("level", f["level"])
+        if "note" in f:
+            vals["note"] = _wl_short("note", f["note"]) or ""
+        new_gids = _wl_group_ids(f["group_ids"]) if "group_ids" in f else None
+        old = _wl_get(cur, "wl_curricula", _WL_CURRICULUM_COLS, curriculum_id, "ไม่พบหลักสูตรนี้")
+        year, semester = old["year"], old["semester"]
+        _wl_refuse_locked(cur, year, semester)
+        if "name" in vals and vals["name"] != old["name"]:
+            _wl_refuse_name_taken(cur, year, semester, vals["name"], curriculum_id)
+        names = _wl_group_names()
+        now = _wl_groups_of(cur, curriculum_id)
+        added = [g for g in new_gids if g not in now] if new_gids is not None else []
+        removed = [g for g in now if g not in new_gids] if new_gids is not None else []
+        _wl_refuse_unknown_groups(added, names)
+        _wl_refuse_groups_taken(cur, year, semester, curriculum_id, added, names)
+        if removed:
+            cur.execute("DELETE FROM wl_curriculum_groups WHERE curriculum_id = %s AND group_id = ANY(%s)",
+                        (curriculum_id, removed))
+        _wl_add_groups(cur, curriculum_id, year, semester, added)
+        row = old
+        if vals:
+            row = _wl_unique_or_409(
+                lambda: _wl_update_row(cur, "wl_curricula", _WL_CURRICULUM_COLS, curriculum_id, vals),
+                f"ภาคเรียน {term_label(year, semester)} มีหลักสูตรชื่อ {vals.get('name')} อยู่แล้ว ตั้งชื่ออื่น")
+        _wl_after_curriculum_change(cur, year, semester, fo)
+        changes = _wl_changes(old, row, _WL_CURRICULUM_DIFF)
+        if added:
+            changes.append("เพิ่ม" + _wl_rooms_text(added, names))
+        if removed:
+            changes.append("เอา" + _wl_rooms_text(removed, names) + " ออก")
+        _wl_log(cur, year, semester, sess, "curriculum.update",
+                f"แก้หลักสูตร {old['name']}: {' · '.join(changes) or 'ไม่มีค่าที่เปลี่ยน'}")
+        return _wl_curricula_full(cur, [row], names)[0]
+
+
+@app.delete("/api/workload/curricula/{curriculum_id}")
+def wl_curricula_delete(curriculum_id: int, request: Request, force: str | None = None,
+                        body: Any = Body(None)) -> dict[str, Any]:
+    """ลบหลักสูตรพร้อมบรรทัดและห้องของมัน · ระหว่างรอบเปิดอาจต้องยืนยัน force"""
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        fo = _wl_force(body, force)
+        old = _wl_get(cur, "wl_curricula", _WL_CURRICULUM_COLS, curriculum_id, "ไม่พบหลักสูตรนี้")
+        year, semester = old["year"], old["semester"]
+        _wl_refuse_locked(cur, year, semester)
+        gids = _wl_groups_of(cur, curriculum_id)
+        cur.execute("SELECT id FROM wl_curriculum_lines WHERE curriculum_id = %s", (curriculum_id,))
+        n_lines = len(cur.fetchall())
+        cur.execute("DELETE FROM wl_curricula WHERE id = %s", (curriculum_id,))
+        _wl_after_curriculum_change(cur, year, semester, fo)
+        _wl_log(cur, year, semester, sess, "curriculum.delete",
+                f"ลบหลักสูตร {old['name']} ({n_lines:,} บรรทัด · {_wl_rooms_text(gids, _wl_group_names())})")
+        return {"ok": True}
+
+
+def _wl_curriculum_of_line(cur, line: dict[str, Any]) -> dict[str, Any]:
+    return _wl_get(cur, "wl_curricula", _WL_CURRICULUM_COLS, line["curriculum_id"], "ไม่พบหลักสูตรของบรรทัดนี้")
+
+
+@app.post("/api/workload/curriculum-lines")
+def wl_curriculum_lines_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """เพิ่มบรรทัด · รหัสที่ตรงกับวิชาในทะเบียนผูกวิชา และเติมชื่อ/กลุ่มสาระจากทะเบียนเมื่อไม่ได้ส่งมา
+    · ไม่ส่ง kind = เดาจากรหัสด้วย wl_kind_from_code · ไม่ส่ง sort = ต่อท้าย"""
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        f = wl_clean_fields(body, WL_LINE_FIELDS)
+        cid = _wl_id_field("curriculum_id", f.get("curriculum_id"), "หลักสูตร")
+        code = _wl_text("code", f.get("code"), True)
+        if "weekly" not in f:
+            raise HTTPException(400, "ต้องระบุ weekly (คาบ/สัปดาห์)")
+        weekly = _wl_weekly(f["weekly"])
+        credits = _wl_credits(f.get("credits"))
+        given_name = _wl_short("name", f.get("name"))
+        dept = _wl_dept_or_none(f.get("department_id"))
+        kind = _wl_choice("kind", f["kind"], WL_LINE_KINDS) if f.get("kind") is not None else None
+        sort = _wl_sort_value(f["sort"]) if f.get("sort") is not None else None
+        c = _wl_get(cur, "wl_curricula", _WL_CURRICULUM_COLS, cid, "ไม่พบหลักสูตรนี้")
+        _wl_refuse_locked(cur, c["year"], c["semester"])
+        hit = _wl_bind_code(code, _wl_registry_by_code(cur))
+        name = given_name or (hit["name"] if hit else None)
+        if not name:
+            raise HTTPException(400, f"ต้องระบุชื่อวิชา เพราะรหัส {code} ไม่มีในทะเบียนวิชา")
+        if dept is None and hit:
+            dept = hit["department_id"]
+        if kind is None:
+            kind = wl_kind_from_code(code, bool(hit and hit["is_activity"]))
+        if sort is None:
+            cur.execute("SELECT sort FROM wl_curriculum_lines WHERE curriculum_id = %s", (cid,))
+            sort = max((r[0] for r in cur.fetchall()), default=0) + 1
+        row = _wl_insert_row(cur, "wl_curriculum_lines", _WL_LINE_COLS,
+                             {"curriculum_id": cid, "subject_id": hit["id"] if hit else None, "code": code,
+                              "name": name, "credits": credits, "weekly": weekly, "kind": kind,
+                              "department_id": dept, "sort": sort})
+        _wl_after_curriculum_change(cur, c["year"], c["semester"], False)
+        _wl_log(cur, c["year"], c["semester"], sess, "line.create",
+                f"เพิ่ม {_wl_subject_label(row)} ({weekly} คาบ) ในหลักสูตร {c['name']}")
+        return _wl_line_out(row)
+
+
+@app.put("/api/workload/curriculum-lines/{line_id}")
+def wl_curriculum_lines_update(line_id: int, request: Request, force: str | None = None,
+                               body: Any = Body(None)) -> dict[str, Any]:
+    """แก้บรรทัด · แก้รหัสแล้วผูกวิชาใหม่ตามรหัส (ไม่ตรงทะเบียน = ไม่ผูก) และเติมชื่อ/กลุ่มสาระที่ไม่ได้ส่งมา"""
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        f = dict(wl_clean_fields(body, WL_LINE_EDIT | {"force"}))
+        fo = _wl_force(f, force)
+        f.pop("force", None)
+        if not f:
+            raise HTTPException(400, "ไม่มีช่องที่จะแก้ ส่งอย่างน้อยหนึ่งช่อง")
+        vals: dict[str, Any] = {}
+        if "code" in f:
+            vals["code"] = _wl_text("code", f["code"], True)
+        if "name" in f:
+            vals["name"] = _wl_text("name", f["name"], True)
+        if "credits" in f:
+            vals["credits"] = _wl_credits(f["credits"])
+        if "weekly" in f:
+            vals["weekly"] = _wl_weekly(f["weekly"])
+        if "kind" in f:
+            vals["kind"] = _wl_choice("kind", f["kind"], WL_LINE_KINDS)
+        if "department_id" in f:
+            vals["department_id"] = _wl_dept_or_none(f["department_id"])
+        if "sort" in f:
+            vals["sort"] = _wl_sort_value(f["sort"])
+        old = _wl_get(cur, "wl_curriculum_lines", _WL_LINE_COLS, line_id, "ไม่พบบรรทัดนี้")
+        c = _wl_curriculum_of_line(cur, old)
+        _wl_refuse_locked(cur, c["year"], c["semester"])
+        if "code" in vals:
+            hit = _wl_bind_code(vals["code"], _wl_registry_by_code(cur))
+            vals["subject_id"] = hit["id"] if hit else None
+            if hit:
+                vals.setdefault("name", hit["name"])
+                vals.setdefault("department_id", hit["department_id"])
+            elif "name" not in vals and vals["code"] != old["code"]:
+                # ชื่อเดิมเป็นของรหัสเก่า ปล่อยไว้จะได้บรรทัดที่รหัสกับชื่อเป็นคนละวิชา (กฎเดียวกับตอนเพิ่มบรรทัด)
+                raise HTTPException(400, f"ต้องระบุชื่อวิชา เพราะรหัส {vals['code']} ไม่มีในทะเบียนวิชา")
+        row = _wl_update_row(cur, "wl_curriculum_lines", _WL_LINE_COLS, line_id, vals)
+        _wl_after_curriculum_change(cur, c["year"], c["semester"], fo)
+        changes = _wl_changes(old, row, _WL_LINE_DIFF)
+        _wl_log(cur, c["year"], c["semester"], sess, "line.update",
+                f"แก้ {_wl_subject_label(old)} ในหลักสูตร {c['name']}: {' · '.join(changes) or 'ไม่มีค่าที่เปลี่ยน'}")
+        return _wl_line_out(row)
+
+
+@app.delete("/api/workload/curriculum-lines/{line_id}")
+def wl_curriculum_lines_delete(line_id: int, request: Request, force: str | None = None,
+                               body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        fo = _wl_force(body, force)
+        old = _wl_get(cur, "wl_curriculum_lines", _WL_LINE_COLS, line_id, "ไม่พบบรรทัดนี้")
+        c = _wl_curriculum_of_line(cur, old)
+        _wl_refuse_locked(cur, c["year"], c["semester"])
+        cur.execute("DELETE FROM wl_curriculum_lines WHERE id = %s", (line_id,))
+        _wl_after_curriculum_change(cur, c["year"], c["semester"], fo)
+        _wl_log(cur, c["year"], c["semester"], sess, "line.delete",
+                f"ลบ {_wl_subject_label(old)} ({old['weekly']} คาบ) ออกจากหลักสูตร {c['name']}")
+        return {"ok": True}
+
+
+@app.post("/api/workload/term-sets")
+def wl_term_sets_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """ชุดคาบเสรี/ชุดกิจกรรมของภาคเรียน (ห้องหนึ่งอยู่หลายชุดได้ ต่างจากหลักสูตร)"""
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        f = wl_clean_fields(body, WL_TERM_SET_FIELDS)
+        year, semester = _wl_term_args(f.get("year"), f.get("semester"))
+        kind = _wl_choice("kind", f.get("kind"), WL_SET_KINDS)
+        name = _wl_text("name", f.get("name"), True)
+        gids = _wl_group_ids(f.get("group_ids", []))
+        if "weekly" not in f:
+            raise HTTPException(400, "ต้องระบุ weekly (คาบ/สัปดาห์)")
+        weekly = _wl_weekly(f["weekly"])
+        is_double = _wl_bool("is_double", f["is_double"]) if "is_double" in f else False
+        names = _wl_group_names()
+        _wl_refuse_unknown_groups(gids, names)
+        _wl_refuse_locked(cur, year, semester)
+        row = _wl_insert_row(cur, "wl_term_sets", _WL_TERM_SET_COLS,
+                             {"year": year, "semester": semester, "kind": kind, "name": name, "group_ids": gids,
+                              "weekly": weekly, "is_double": is_double})
+        _wl_after_curriculum_change(cur, year, semester, False)
+        _wl_log(cur, year, semester, sess, "set.create",
+                f"สร้าง{WL_SET_KIND_TEXT[kind]} {name} ({weekly} คาบ/สัปดาห์ · {_wl_rooms_text(gids, names)})")
+        return _wl_sets_full(cur, [row], names)[0]
+
+
+@app.put("/api/workload/term-sets/{set_id}")
+def wl_term_sets_update(set_id: int, request: Request, force: str | None = None,
+                        body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        f = dict(wl_clean_fields(body, WL_TERM_SET_EDIT | {"force"}))
+        fo = _wl_force(f, force)
+        f.pop("force", None)
+        if not f:
+            raise HTTPException(400, "ไม่มีช่องที่จะแก้ ส่งอย่างน้อยหนึ่งช่อง")
+        vals: dict[str, Any] = {}
+        if "kind" in f:
+            vals["kind"] = _wl_choice("kind", f["kind"], WL_SET_KINDS)
+        if "name" in f:
+            vals["name"] = _wl_text("name", f["name"], True)
+        if "group_ids" in f:
+            vals["group_ids"] = _wl_group_ids(f["group_ids"])
+        if "weekly" in f:
+            vals["weekly"] = _wl_weekly(f["weekly"])
+        if "is_double" in f:
+            vals["is_double"] = _wl_bool("is_double", f["is_double"])
+        old = _wl_get(cur, "wl_term_sets", _WL_TERM_SET_COLS, set_id, "ไม่พบชุดนี้")
+        _wl_refuse_locked(cur, old["year"], old["semester"])
+        names = _wl_group_names()
+        before = list(old["group_ids"] or [])
+        added = [g for g in vals.get("group_ids", before) if g not in before]
+        removed = [g for g in before if g not in vals.get("group_ids", before)]
+        _wl_refuse_unknown_groups(added, names)
+        row = _wl_update_row(cur, "wl_term_sets", _WL_TERM_SET_COLS, set_id, vals)
+        _wl_after_curriculum_change(cur, old["year"], old["semester"], fo)
+        changes = _wl_changes(old, row, _WL_SET_DIFF)
+        if added:
+            changes.append("เพิ่ม" + _wl_rooms_text(added, names))
+        if removed:
+            changes.append("เอา" + _wl_rooms_text(removed, names) + " ออก")
+        _wl_log(cur, old["year"], old["semester"], sess, "set.update",
+                f"แก้{WL_SET_KIND_TEXT.get(old['kind'], 'ชุด')} {old['name']}: "
+                f"{' · '.join(changes) or 'ไม่มีค่าที่เปลี่ยน'}")
+        return _wl_sets_full(cur, [row], names)[0]
+
+
+@app.delete("/api/workload/term-sets/{set_id}")
+def wl_term_sets_delete(set_id: int, request: Request, force: str | None = None,
+                        body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        fo = _wl_force(body, force)
+        old = _wl_get(cur, "wl_term_sets", _WL_TERM_SET_COLS, set_id, "ไม่พบชุดนี้")
+        _wl_refuse_locked(cur, old["year"], old["semester"])
+        cur.execute("SELECT id FROM wl_term_set_options WHERE set_id = %s", (set_id,))
+        n_options = len(cur.fetchall())
+        cur.execute("DELETE FROM wl_term_sets WHERE id = %s", (set_id,))
+        _wl_after_curriculum_change(cur, old["year"], old["semester"], fo)
+        _wl_log(cur, old["year"], old["semester"], sess, "set.delete",
+                f"ลบ{WL_SET_KIND_TEXT.get(old['kind'], 'ชุด')} {old['name']} ({n_options:,} ตัวเลือก · "
+                f"{_wl_rooms_text(list(old['group_ids'] or []), _wl_group_names())})")
+        return {"ok": True}
+
+
+@app.post("/api/workload/term-set-options")
+def wl_term_set_options_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
+    """ตัวเลือกวิชาของชุด · ผูกวิชาด้วยรหัสกฎเดียวกับบรรทัด · วิชาเดียวเป็นตัวเลือกของชุดเดียวได้ครั้งเดียว
+    (ครูหลายคนของวิชานั้นคือหลายแถวของตัวเลือกเดียวในรอบ)"""
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        f = wl_clean_fields(body, WL_OPTION_FIELDS)
+        set_id = _wl_id_field("set_id", f.get("set_id"), "ชุด")
+        code = _wl_text("code", f.get("code"), True)
+        given_name = _wl_short("name", f.get("name"))
+        dept = _wl_dept_or_none(f.get("department_id"))
+        s = _wl_get(cur, "wl_term_sets", _WL_TERM_SET_COLS, set_id, "ไม่พบชุดนี้")
+        _wl_refuse_locked(cur, s["year"], s["semester"])
+        hit = _wl_bind_code(code, _wl_registry_by_code(cur))
+        name = given_name or (hit["name"] if hit else None)
+        if not name:
+            raise HTTPException(400, f"ต้องระบุชื่อวิชา เพราะรหัส {code} ไม่มีในทะเบียนวิชา")
+        if dept is None and hit:
+            dept = hit["department_id"]
+        cur.execute("SELECT subject_id, code FROM wl_term_set_options WHERE set_id = %s", (set_id,))
+        if any((hit and sid == hit["id"]) or str(ocode or "").strip() == code for sid, ocode in cur.fetchall()):
+            raise HTTPException(409, f"วิชา {code} เป็นตัวเลือกของชุด {s['name']} อยู่แล้ว "
+                                     "(ครูหลายคนของวิชาเดียวใส่ได้ตอนกรอกรอบ)")
+        row = _wl_insert_row(cur, "wl_term_set_options", _WL_OPTION_COLS,
+                             {"set_id": set_id, "subject_id": hit["id"] if hit else None, "code": code,
+                              "name": name, "department_id": dept})
+        _wl_after_curriculum_change(cur, s["year"], s["semester"], False)
+        _wl_log(cur, s["year"], s["semester"], sess, "option.create",
+                f"เพิ่มตัวเลือก {_wl_subject_label(row)} ใน{WL_SET_KIND_TEXT.get(s['kind'], 'ชุด')} {s['name']}")
+        return row
+
+
+@app.delete("/api/workload/term-set-options/{option_id}")
+def wl_term_set_options_delete(option_id: int, request: Request, force: str | None = None,
+                               body: Any = Body(None)) -> dict[str, Any]:
+    with _wl_db() as cur:
+        sess = wl_require_admin(request, cur)
+        fo = _wl_force(body, force)
+        old = _wl_get(cur, "wl_term_set_options", _WL_OPTION_COLS, option_id, "ไม่พบตัวเลือกนี้")
+        s = _wl_get(cur, "wl_term_sets", _WL_TERM_SET_COLS, old["set_id"], "ไม่พบชุดของตัวเลือกนี้")
+        _wl_refuse_locked(cur, s["year"], s["semester"])
+        cur.execute("DELETE FROM wl_term_set_options WHERE id = %s", (option_id,))
+        _wl_after_curriculum_change(cur, s["year"], s["semester"], fo)
+        _wl_log(cur, s["year"], s["semester"], sess, "option.delete",
+                f"ลบตัวเลือก {_wl_subject_label(old)} ออกจาก{WL_SET_KIND_TEXT.get(s['kind'], 'ชุด')} {s['name']}")
+        return {"ok": True}
 
 
 def _check_term_status(status: str) -> None:
