@@ -136,6 +136,33 @@ def test_teacher_change_confirms_row():
     assert r4["teacher_id"] == new and r4["confirmed"] is False
 
 
+def test_clearing_teacher_unconfirms_row():
+    # คำตัดสินของผู้คุม (D1): ล้างครูไม่ใช่การเลือกครู → กลับเป็น "ยังไม่ยืนยัน" ไม่ใช่ "ยืนยันแล้วแต่ไม่มีครู"
+    ap = mock_api.wl_apply_teacher_change
+    assert ap({"teacher_id": None}) == {"teacher_id": None, "confirmed": False}
+    assert ap({"teacher_id": None, "note": "x"}) == {"teacher_id": None, "note": "x", "confirmed": False}
+    assert ap({"teacher_id": None, "confirmed": True}) == {"teacher_id": None, "confirmed": True}   # ส่งเองใช้ค่าที่ส่ง
+    assert ap({"co_teacher_id": None}) == {"co_teacher_id": None}                                   # ครูสอนร่วมไม่แตะ
+    db, t, rnd = _filling()
+    g1, g2, g3 = (_row(db, t, 0, g)["id"] for g in (1, 2, 3))
+    _bulk(db, HEAD1, {"ids": [g1, g2, g3], "set": {"confirmed": True}})
+    # PUT ล้างครู → ยังไม่ยืนยัน
+    out = _put(db, HEAD1, g1, {"teacher_id": None})
+    assert (out["teacher_id"], out["confirmed"], out["from_plan"]) == (None, False, False), out
+    # ส่ง confirmed มาเองพร้อมล้างครู → ใช้ค่าที่ส่ง
+    assert _put(db, HEAD1, g2, {"teacher_id": None, "confirmed": True})["confirmed"] is True
+    # ล้างครูสอนร่วมไม่แตะการยืนยัน
+    _put(db, HEAD1, g3, {"co_teacher_id": _wl_teacher(db, 507)})
+    assert _put(db, HEAD1, g3, {"co_teacher_id": None})["confirmed"] is True
+    # bulk ล้างครู → ทุกแถวยังไม่ยืนยัน
+    _bulk(db, HEAD1, {"ids": [g1, g2, g3], "set": {"teacher_id": _wl_teacher(db, 506)}})
+    out = _bulk(db, HEAD1, {"ids": [g1, g2, g3], "set": {"teacher_id": None}})
+    assert [(r["teacher_id"], r["confirmed"]) for r in out["rows"]] == [(None, False)] * 3, out["rows"]
+    assert all(_row(db, t, 0, g)["confirmed"] is False for g in (1, 2, 3))
+    out = _bulk(db, HEAD1, {"ids": [g1], "set": {"teacher_id": None, "confirmed": True}})
+    assert out["rows"][0]["confirmed"] is True
+
+
 def test_confirm_only_by_explicit_true():
     db, t, rnd = _filling()
     r1 = _row(db, t, 0, 1)                                # ครูเทอมก่อน ยังไม่ยืนยัน

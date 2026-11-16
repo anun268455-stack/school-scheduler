@@ -16738,11 +16738,13 @@ def _wl_refuse_edit(session: dict[str, Any], round_status: str, dept_status: str
 
 
 def wl_apply_teacher_change(fields: dict[str, Any]) -> dict[str, Any]:
-    """เลือกครูเองคือคนตัดสินแล้ว → ยืนยัน (ฟังก์ชันล้วน คืน dict ใหม่): มี teacher_id และไม่ได้ส่ง confirmed → confirmed=True
-    ส่ง confirmed มาด้วยใช้ค่าที่ส่ง · การแก้ช่องอื่น (หมายเหตุ ห้อง ครูสอนร่วม) ไม่ยืนยันให้ — "ยังไม่ยืนยัน" หายได้เพราะคนกดเท่านั้น"""
+    """เลือกครูเองคือคนตัดสินแล้ว → ยืนยัน (ฟังก์ชันล้วน คืน dict ใหม่) · ส่ง confirmed มาเองใช้ค่าที่ส่งเสมอ
+    ไม่ได้ส่ง confirmed: teacher_id เป็นครูจริง → confirmed=True · teacher_id เป็น null (ล้างครู) → confirmed=False
+    — ล้างครูไม่ใช่การเลือกครู แถวกลับเป็น "ยังไม่ยืนยัน" ไม่ใช่ "ยืนยันแล้วแต่ไม่มีครู" · การแก้ช่องอื่น (หมายเหตุ ห้อง
+    ครูสอนร่วม) ไม่แตะการยืนยัน — "ยังไม่ยืนยัน" หายได้เพราะคนกดเท่านั้น"""
     out = dict(fields)
     if "teacher_id" in out and "confirmed" not in out:
-        out["confirmed"] = True
+        out["confirmed"] = out["teacher_id"] is not None
     return out
 
 
