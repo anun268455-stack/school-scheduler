@@ -8,10 +8,13 @@ import type { SeedResult } from "./curriculum";
 import { loadSeedSummary, saveSeedSummary } from "./curriculumApi";
 import CurriculumPage from "./pages/CurriculumPage";
 import LoginPage from "./pages/LoginPage";
+import RoundsPage from "./pages/RoundsPage";
 import SetupPage from "./pages/SetupPage";
 import SubjectsPage from "./pages/SubjectsPage";
 import TeachersPage from "./pages/TeachersPage";
-import { AppShell, BrandMark, EmptyState, type ShellTab } from "./ui";
+import { roundChip, type Round, type Term } from "./round";
+import { listRounds } from "./roundApi";
+import { AppShell, BrandMark, Button, Chip, EmptyState, type ShellTab } from "./ui";
 
 const ROLE_TEXT = { admin: "ผู้ดูแลระบบ", head: "หัวหน้ากลุ่มสาระ" } as const;
 
@@ -66,6 +69,33 @@ export default function App() {
     setSeedSummary(r);
     saveSeedSummary(r);
   };
+  // รายการรอบสำหรับชิปบนแถบบน — โหลดครั้งแรกหลังยืนยัน session แล้วหน้ารอบส่งรายการใหม่มาทุกครั้งที่โหลด
+  // โหลดไม่ได้ = ไม่แสดงชิป (เป็นแค่ป้ายบอก ไม่ขวางการใช้งาน)
+  const [rounds, setRounds] = useState<Round[] | null>(null);
+  // ลิงก์ข้ามหน้า (ไม่มี react-router): หน้าหลักสูตรเปิดที่ภาคเรียนนี้ · หน้าแถวของกลุ่ม · รอบเก่าที่เปิดดูอยู่ก่อนไปหน้าแถว
+  const [curriculumFocus, setCurriculumFocus] = useState<Term | null>(null);
+  const [deptView, setDeptView] = useState<{ round: Round; departmentId: number } | null>(null);
+  const [roundFocus, setRoundFocus] = useState<number | null>(null);
+  const token = session?.token ?? null;
+
+  useEffect(() => {
+    if (token === null || checking) {
+      setRounds(null);
+      return;
+    }
+    let cancelled = false;
+    listRounds().then(
+      (list) => {
+        if (!cancelled) setRounds(list);
+      },
+      () => {
+        if (!cancelled) setRounds(null);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [token, checking]);
 
   useEffect(() => {
     setSessionExpiredHandler((message) => {
@@ -124,6 +154,9 @@ export default function App() {
     clearSession();
     keepSeedSummary(null); // เครื่องห้องพักครูใช้ร่วมกัน — คนถัดไปไม่ต้องเห็นของคนก่อน
     setPage(null); // ล็อกอินครั้งหน้าเริ่มที่หน้าแรกของบทบาทเสมอ
+    setCurriculumFocus(null);
+    setDeptView(null);
+    setRoundFocus(null);
     setSession(null);
   };
 
@@ -173,19 +206,54 @@ export default function App() {
   const tabLabel = tabs.find((t) => t.key === current)?.label ?? "";
   // admin มีชื่อเป็นบทบาทอยู่แล้ว ไม่ต้องเขียนซ้ำ
   const who = session.label === ROLE_TEXT[session.role] ? session.label : `${session.label} · ${ROLE_TEXT[session.role]}`;
+  const chip = rounds ? roundChip(rounds) : null;
+
+  // กดแท็บเอง = เริ่มหน้านั้นตามปกติ (ทิ้งลิงก์ข้ามหน้าที่ค้างไว้)
+  const goTab = (key: PageKey) => {
+    setPage(key);
+    setCurriculumFocus(null);
+    setDeptView(null);
+    setRoundFocus(null);
+  };
+  const openCurriculum = (term: Term) => {
+    setCurriculumFocus(term);
+    setDeptView(null);
+    setPage("curriculum");
+  };
 
   return (
     <AppShell
       user={who}
+      roundChip={chip && <Chip tone={chip.tone} dot data-testid="round-chip">{chip.text}</Chip>}
       tabs={tabs}
       active={current}
-      onTab={setPage}
+      onTab={goTab}
       onLogout={onLogout}
       navLabel={admin ? "เมนูผู้ดูแลระบบ" : "เมนูหัวหน้ากลุ่มสาระ"}
     >
       {current === "curriculum" ? (
         // ทุกบทบาทเปิดดูได้ · ปุ่มแก้มีเฉพาะ admin (เซิร์ฟเวอร์บังคับซ้ำ: หัวหน้าเขียนได้ 403)
-        <CurriculumPage admin={admin} seedSummary={seedSummary} onSeedSummary={keepSeedSummary} />
+        <CurriculumPage admin={admin} seedSummary={seedSummary} onSeedSummary={keepSeedSummary}
+          focus={curriculumFocus ?? undefined} />
+      ) : current === "rounds" && admin ? (
+        deptView ? (
+          // หน้าแถวของกลุ่ม (หน้าเดียวกับของหัวหน้า ในโหมดของ admin) เป็นงานถัดไป — ระหว่างนี้บอกตรง ๆ และพากลับได้
+          <EmptyState
+            title="หน้าแถวของกลุ่ม — กำลังจะมา"
+            hint={`หน้ารายวิชาของกลุ่มสาระในรอบ ${deptView.round.label} จะตามมาในรุ่นถัดไปของเว็บ · ระหว่างนี้ดูความคืบหน้าของกลุ่มได้ที่ภาพรวมรอบ`}
+            action={<Button onClick={() => setDeptView(null)}>กลับไปภาพรวมรอบ</Button>}
+          />
+        ) : (
+          <RoundsPage
+            focusRoundId={roundFocus}
+            onRounds={setRounds}
+            onOpenCurriculum={openCurriculum}
+            onOpenDepartment={(round, departmentId) => {
+              setDeptView({ round, departmentId });
+              setRoundFocus(round.id);
+            }}
+          />
+        )
       ) : current === "teachers" && admin ? (
         <TeachersPage />
       ) : current === "subjects" && admin ? (
