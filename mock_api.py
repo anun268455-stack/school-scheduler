@@ -15333,7 +15333,7 @@ def _wl_term_locked(cur, year: int, semester: int) -> bool:
     return cur.fetchone() is not None
 
 
-def _wl_refuse_locked(cur, year: int, semester: int) -> None:
+def _wl_refuse_locked(cur, year: int, semester: int) -> str | None:
     # ทุกการเขียนหลักสูตรอ่านแถวรอบของภาคเรียน FOR NO KEY UPDATE โดยไม่กรองสถานะ
     # · กับการปิด/เปิดรอบ (FOR UPDATE): ฝั่งที่ได้ล็อกก่อนทำจน commit อีกฝั่งรอแล้วเห็นสถานะล่าสุด — การแก้หลักสูตร
     #   หลุดเข้ามาหลังปิดรอบไม่ได้ (กรอง status = 'closed' ใน SQL จะไม่ล็อกแถวที่ยังไม่ปิด แล้วการปิดไม่รอเรา)
@@ -15341,10 +15341,23 @@ def _wl_refuse_locked(cur, year: int, semester: int) -> None:
     #   หลักสูตรก่อนอีกฝั่ง commit: เพิ่มห้อง + เพิ่มบรรทัดพร้อมกัน ช่องคู่นั้นไม่มีแถว · เอาห้องออก + เพิ่มบรรทัด เหลือแถวค้าง
     # · ไม่ขัดกับ FK ของ wl_rows ที่ชี้รอบ (FOR KEY SHARE) · ภาคเรียนที่ยังไม่มีรอบไม่มีแถวให้ล็อก และไม่มีอะไรให้ sync
     #   — การเปิดรอบล็อกตารางหลักสูตรเอง (wl_rounds_create)
+    # คืนสถานะของรอบภาคเรียนนี้ (None = ยังไม่มีรอบ) — ล็อกไว้แล้ว จึงใช้ตัดสินต่อในธุรกรรมเดียวกันได้ (_wl_refuse_no_department)
     cur.execute("SELECT status FROM wl_rounds WHERE year = %s AND semester = %s FOR NO KEY UPDATE", (year, semester))
-    if any(r[0] == "closed" for r in cur.fetchall()):
+    statuses = [r[0] for r in cur.fetchall()]
+    if "closed" in statuses:
         raise HTTPException(409, f"รอบอัตรากำลังภาคเรียน {term_label(year, semester)} ปิดแล้ว "
                                  "หลักสูตรของภาคเรียนนี้จึงแก้ไม่ได้ (เก็บไว้เป็นหลักฐานย้อนหลัง)")
+    return statuses[0] if statuses else None
+
+
+def _wl_refuse_no_department(round_status: str | None, year: int, semester: int, dept: Any, what: str) -> None:
+    """ระหว่างเปิดให้กรอก บรรทัด/ตัวเลือกต้องมีกลุ่มสาระเสมอ — กฎเดียวกับตอนเปิดให้กรอก (wl_rounds_open) ต้องอยู่ต่อหลังเปิด
+    ไม่อย่างนั้นแถวของมันไม่มีหัวหน้ากลุ่มคนไหนเห็น (หัวหน้าเห็นแค่กลุ่มตัวเอง) และภาพรวมรอบไม่มีการ์ดของมัน — ค้างไม่มีใครกรอก
+    ตลอดรอบ · รอบที่ยังเตรียมยังตั้งว่างได้ (การเปิดให้กรอกตรวจอยู่แล้ว) · round_status = ค่าที่ _wl_refuse_locked คืน"""
+    if round_status == "filling" and dept is None:
+        raise HTTPException(409, f"รอบอัตรากำลังภาคเรียน {term_label(year, semester)} เปิดให้กลุ่มสาระกรอกอยู่ "
+                                 f"{what}จึงต้องระบุกลุ่มสาระ — ถ้าไม่มีกลุ่มสาระ แถวของมันจะไม่มีหัวหน้ากลุ่มสาระคนไหนเห็น"
+                                 "และไม่มีใครกรอก")
 
 
 def _wl_term_has_curriculum(cur, year: int, semester: int) -> bool:
@@ -15931,13 +15944,14 @@ def wl_curriculum_lines_create(request: Request, body: Any = Body(None)) -> dict
         kind = _wl_choice("kind", f["kind"], WL_LINE_KINDS) if f.get("kind") is not None else None
         sort = _wl_sort_value(f["sort"]) if f.get("sort") is not None else None
         c = _wl_get(cur, "wl_curricula", _WL_CURRICULUM_COLS, cid, "ไม่พบหลักสูตรนี้")
-        _wl_refuse_locked(cur, c["year"], c["semester"])
+        rs = _wl_refuse_locked(cur, c["year"], c["semester"])
         hit = _wl_bind_code(code, _wl_registry_by_code(cur))
         name = given_name or (hit["name"] if hit else None)
         if not name:
             raise HTTPException(400, f"ต้องระบุชื่อวิชา เพราะรหัส {code} ไม่มีในทะเบียนวิชา")
         if dept is None and hit:
             dept = hit["department_id"]
+        _wl_refuse_no_department(rs, c["year"], c["semester"], dept, "บรรทัดหลักสูตรที่เพิ่ม")
         if kind is None:
             kind = wl_kind_from_code(code, bool(hit and hit["is_activity"]))
         if sort is None:
@@ -15981,7 +15995,7 @@ def wl_curriculum_lines_update(line_id: int, request: Request, force: str | None
             vals["sort"] = _wl_sort_value(f["sort"])
         old = _wl_get(cur, "wl_curriculum_lines", _WL_LINE_COLS, line_id, "ไม่พบบรรทัดนี้")
         c = _wl_curriculum_of_line(cur, old)
-        _wl_refuse_locked(cur, c["year"], c["semester"])
+        rs = _wl_refuse_locked(cur, c["year"], c["semester"])
         if "code" in vals and vals["code"] == str(old["code"] or "").strip():
             # ฟอร์มส่งทั้งแถวรวมรหัสเดิม — รหัสไม่เปลี่ยนก็ไม่ผูกวิชาใหม่ และไม่เติมชื่อ/กลุ่มสาระจากทะเบียนทับ
             # ไม่อย่างนั้นกลุ่มสาระที่ admin ย้ายไว้ถูกรีเซ็ต แล้วแถวของรอบย้ายไปอยู่คิวของหัวหน้าอีกกลุ่มโดยไม่มีใครเห็น
@@ -15995,6 +16009,8 @@ def wl_curriculum_lines_update(line_id: int, request: Request, force: str | None
             elif "name" not in vals:
                 # ชื่อเดิมเป็นของรหัสเก่า ปล่อยไว้จะได้บรรทัดที่รหัสกับชื่อเป็นคนละวิชา (กฎเดียวกับตอนเพิ่มบรรทัด)
                 raise HTTPException(400, f"ต้องระบุชื่อวิชา เพราะรหัส {vals['code']} ไม่มีในทะเบียนวิชา")
+        if "department_id" in vals:     # ตั้งว่างเอง หรือผูกรหัสใหม่กับวิชาในทะเบียนที่ไม่มีกลุ่มสาระ
+            _wl_refuse_no_department(rs, c["year"], c["semester"], vals["department_id"], "บรรทัดหลักสูตร")
         row = _wl_update_row(cur, "wl_curriculum_lines", _WL_LINE_COLS, line_id, vals) if vals else old
         synced = _wl_after_curriculum_change(cur, c["year"], c["semester"], fo)
         changes = _wl_changes(old, row, _WL_LINE_DIFF)
@@ -16119,13 +16135,14 @@ def wl_term_set_options_create(request: Request, body: Any = Body(None)) -> dict
         given_name = _wl_short("name", f.get("name"))
         dept = _wl_dept_or_none(f.get("department_id"))
         s = _wl_get(cur, "wl_term_sets", _WL_TERM_SET_COLS, set_id, "ไม่พบชุดนี้")
-        _wl_refuse_locked(cur, s["year"], s["semester"])
+        rs = _wl_refuse_locked(cur, s["year"], s["semester"])
         hit = _wl_bind_code(code, _wl_registry_by_code(cur))
         name = given_name or (hit["name"] if hit else None)
         if not name:
             raise HTTPException(400, f"ต้องระบุชื่อวิชา เพราะรหัส {code} ไม่มีในทะเบียนวิชา")
         if dept is None and hit:
             dept = hit["department_id"]
+        _wl_refuse_no_department(rs, s["year"], s["semester"], dept, "ตัวเลือกของชุดคาบเสรี/กิจกรรมที่เพิ่ม")
         cur.execute("SELECT subject_id, code FROM wl_term_set_options WHERE set_id = %s", (set_id,))
         if any((hit and sid == hit["id"]) or str(ocode or "").strip() == code for sid, ocode in cur.fetchall()):
             raise HTTPException(409, f"วิชา {code} เป็นตัวเลือกของชุด {s['name']} อยู่แล้ว "
@@ -16172,7 +16189,7 @@ def wl_term_set_options_update(option_id: int, request: Request, body: Any = Bod
                 raise HTTPException(400, f"ไม่พบวิชารหัส {sid} ในทะเบียนวิชา")
         old = _wl_get(cur, "wl_term_set_options", _WL_OPTION_COLS, option_id, "ไม่พบตัวเลือกนี้")
         s = _wl_get(cur, "wl_term_sets", _WL_TERM_SET_COLS, old["set_id"], "ไม่พบชุดของตัวเลือกนี้")
-        _wl_refuse_locked(cur, s["year"], s["semester"])
+        rs = _wl_refuse_locked(cur, s["year"], s["semester"])
         if "code" in vals and vals["code"] == str(old["code"] or "").strip():
             del vals["code"]            # รหัสเดิม = ไม่ผูกใหม่ ไม่เติมทับ (กฎเดียวกับ PUT บรรทัด)
         if "subject_id" in f:
@@ -16193,6 +16210,8 @@ def wl_term_set_options_update(option_id: int, request: Request, body: Any = Bod
         if "code" in vals and vals.get("subject_id") is None and "name" not in vals:
             # ชื่อเดิมเป็นของรหัสเก่า ปล่อยไว้จะได้ตัวเลือกที่รหัสกับชื่อเป็นคนละวิชา (กฎเดียวกับบรรทัด)
             raise HTTPException(400, f"ต้องระบุชื่อวิชา เพราะรหัส {vals['code']} ไม่มีในทะเบียนวิชา")
+        if "department_id" in vals:     # ตั้งว่างเอง หรือเลือก/ผูกวิชาในทะเบียนที่ไม่มีกลุ่มสาระ
+            _wl_refuse_no_department(rs, s["year"], s["semester"], vals["department_id"], "ตัวเลือกของชุดคาบเสรี/กิจกรรม")
         if "code" in vals or "subject_id" in vals:
             code = str(vals.get("code", old["code"]) or "").strip()
             subj = vals.get("subject_id", old["subject_id"])
@@ -16824,6 +16843,21 @@ def wl_submit_blocker(rows: list[dict[str, Any]], options: list[dict[str, Any]])
             "ใส่ครูและยืนยันให้ครบก่อน")
 
 
+def wl_approve_blocker(rows: list[dict[str, Any]], options: list[dict[str, Any]]) -> str | None:
+    """เหตุที่กลุ่มที่ส่งแล้วยังตรวจผ่านไม่ได้ (ฟังก์ชันล้วน) · None = ตรวจผ่านได้ — เงื่อนไขเดียวกับ wl_submit_blocker
+    ส่งแล้วไม่ได้แปลว่ายังครบ: แถวของรอบผูกกับบรรทัดหลักสูตร การแก้หลักสูตรระหว่างเปิดให้กรอกเพิ่มแถวไม่มีครูให้กลุ่มที่ส่งแล้วได้
+    (_wl_sync_round) และ admin ล้างครูหรือถอนการยืนยันของกลุ่มที่ส่งแล้วได้ — "ตรวจผ่าน" ต้องแปลว่าครบ (ขั้นที่ 3 ส่งออกจากกลุ่ม
+    ที่ตรวจผ่าน) · หน้าภาพรวมรอบใช้ข้อความเดียวกัน (approveBlocker ใน round.ts)"""
+    if wl_submit_blocker(rows, options) is None:
+        return None
+    c = wl_fill_counts(rows, options)
+    missing = c["missing_teacher"]
+    unconfirmed = c["rows"] - c["confirmed"] - missing
+    bits = ([f"ยังไม่มีครู {missing} รายการ"] if missing else []) + \
+           ([f"ยังไม่ยืนยัน {unconfirmed} รายการ"] if unconfirmed else [])
+    return f"ตรวจผ่านไม่ได้ — ตั้งแต่กลุ่มส่งมา มีรายการที่{' · '.join(bits)} ตีกลับให้กลุ่มกรอกก่อน"
+
+
 def wl_teacher_loads(rows: list[dict[str, Any]], options: list[dict[str, Any]]) -> dict[int, int]:
     """ยอดคาบต่อสัปดาห์ของครูแต่ละคน — กฎนับคาบตัวเดียวของเว็บนี้ อยู่ที่เซิร์ฟเวอร์ (สเปก 4.4 ข. · ฟังก์ชันล้วน)
 
@@ -17363,10 +17397,15 @@ def _wl_review_target(cur, round_id: int, dept: int, allowed: tuple[str, ...], n
 
 @app.post("/api/workload/rounds/{round_id}/departments/{dept}/approve")
 def wl_dept_approve(round_id: int, dept: int, request: Request) -> dict[str, Any]:
-    """admin ตรวจผ่านกลุ่มที่ส่งแล้ว (submitted → approved) · reviewed_by = ชื่อเรียกของรหัสที่ใช้"""
+    """admin ตรวจผ่านกลุ่มที่ส่งแล้ว (submitted → approved) · reviewed_by = ชื่อเรียกของรหัสที่ใช้
+    ตรวจความครบซ้ำ (wl_approve_blocker) หลังล็อกสถานะกลุ่ม — ไม่ครบ = 409 สถานะยังส่งแล้ว ให้ตีกลับ · อ่านรายการหลังล็อก
+    เหมือนการส่ง: แถวรอบ FOR SHARE กันการแก้หลักสูตร (sync) และสถานะกลุ่ม FOR UPDATE กันการแก้แถวของกลุ่มนี้ระหว่างตัดสิน"""
     with _wl_db() as cur:
         sess = wl_require_admin(request, cur)
         rnd = _wl_review_target(cur, round_id, dept, ("submitted",), "ส่งแล้ว", "ตรวจผ่าน")
+        blocker = wl_approve_blocker(*_wl_round_items(cur, rnd, dept))
+        if blocker:
+            raise HTTPException(409, blocker)
         cur.execute("UPDATE wl_dept_status SET status = %s, reviewed_at = now(), reviewed_by = %s "
                     "WHERE round_id = %s AND department_id = %s", ("approved", str(sess.get("label") or ""), rnd["id"], dept))
         return _wl_dept_views(cur, rnd, dept)[0]

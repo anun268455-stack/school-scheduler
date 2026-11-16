@@ -56,6 +56,10 @@ def _get(db, sess, rid, dept=None):
     return _call(db, sess, mock_api.wl_round_rows, rid, REQ, department_id=dept)
 
 
+def _no_dept(db, table, rid):
+    next(r for r in db.tables[table] if r["id"] == rid)["department_id"] = None
+
+
 def _sql_as(db, sess, fn, *a):
     """เรียก route แล้วคืน SQL ที่ส่งตามลำดับ — ตัวทดสอบเรื่องล็อก"""
     cur = FakeCur(db, sess)
@@ -265,7 +269,9 @@ def test_head_reads_only_own_department_even_if_another_is_requested():
     assert len(_get(db, ADMIN, rnd["id"])["rows"]) == 18
     assert {r["code"] for r in _get(db, ADMIN, rnd["id"], "3")["rows"]} == {"ว21102"}
     assert _get(db, ADMIN, rnd["id"], "none")["rows"] == []
-    _call(db, ADMIN, mock_api.wl_curriculum_lines_update, t["lines"][2]["id"], REQ, body={"department_id": None})
+    # บรรทัดที่ไม่มีกลุ่มสาระระหว่างเปิดให้กรอก route ตั้งให้ไม่ได้แล้ว (409 · wlopen.py) — ตั้งในฐานข้อมูลตรง ๆ
+    # ตรวจว่าการอ่านยังรับมือได้ถ้ามีหลงมา (ข้อมูลก่อนมีกฎนี้)
+    _no_dept(db, "wl_curriculum_lines", t["lines"][2]["id"])
     none = _get(db, ADMIN, rnd["id"], "none")["rows"]
     assert len(none) == 6 and {r["department_id"] for r in none} == {None}
     for bad in ("abc", "1.5", "-"):
@@ -292,7 +298,8 @@ def test_head_sees_only_own_options():
     assert len(_get(db, ADMIN, rnd["id"], "7")["options"]) == 1
     assert _get(db, ADMIN, rnd["id"], "2")["options"] == []
     # ตัวเลือกที่ไม่มีกลุ่มสาระ: admin เห็นใน none · หัวหน้าไม่มีใครเห็น
-    x = _call(db, ADMIN, mock_api.wl_term_set_options_create, REQ, {"set_id": t["set"]["id"], "code": "X9", "name": "พิมพ์เอง"})
+    # (ระหว่างเปิดให้กรอกเพิ่มผ่าน route ไม่ได้แล้ว — ใส่ในฐานข้อมูลตรง ๆ แบบข้อมูลที่หลงมา)
+    x = db.add("wl_term_set_options", set_id=t["set"]["id"], subject_id=None, code="X9", name="พิมพ์เอง", department_id=None)
     assert [o["id"] for o in _get(db, ADMIN, rnd["id"], "none")["options"]] == [x["id"]]
     assert _get(db, ADMIN, rnd["id"], "none")["options"][0]["teachers"] == []
     assert [o["id"] for o in _get(db, HEAD7, rnd["id"])["options"]] == [t["option"]["id"]]
@@ -331,7 +338,8 @@ def test_head_put_on_other_department_row_is_403():
         assert c == 403 and _thai(d), (c, d)
     assert _state(db) == before                            # รวมแถวของกลุ่มตัวเองใน bulk ก็ไม่ถูกแตะ
     # บรรทัดที่ไม่มีกลุ่มสาระ: ไม่ใช่ของหัวหน้าคนไหน
-    _call(db, ADMIN, mock_api.wl_curriculum_lines_update, t["lines"][1]["id"], REQ, body={"department_id": None})
+    # (route ตั้งว่างระหว่างเปิดให้กรอกไม่ได้แล้ว — ตั้งในฐานข้อมูลตรง ๆ แบบข้อมูลที่หลงมา)
+    _no_dept(db, "wl_curriculum_lines", t["lines"][1]["id"])
     c, d = _code(lambda: _put(db, HEAD2, mine["id"], {"confirmed": True}))
     assert c == 403 and _thai(d), (c, d)
     assert _put(db, ADMIN, mine["id"], {"confirmed": True})["confirmed"] is True

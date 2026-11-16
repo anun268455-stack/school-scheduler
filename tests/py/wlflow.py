@@ -316,6 +316,45 @@ def test_departments_admin_sees_all_head_sees_own():
     assert len(_call(db2, ADMIN, mock_api.wl_round_departments, r2["id"], REQ)) == 11
 
 
+def test_approve_rechecks_completeness_since_submit():
+    """ส่งครบแล้ว แต่ระหว่างรอตรวจ หลักสูตรเพิ่มบรรทัดของกลุ่ม (sync ใส่แถวไม่มีครูให้กลุ่มที่ส่งแล้ว) หรือ admin ล้างครู
+    → ตรวจผ่าน = 409 ไทยบอกจำนวน สถานะยังส่งแล้ว · ตีกลับยังทำได้ · กรอกครบแล้วส่งใหม่ ตรวจผ่านได้ (final-review I2)"""
+    db, t, rnd = _filling()
+    rid = rnd["id"]
+    _fill_dept1(db, t)
+    assert _submit(db, HEAD1, rid, 1)["status"] == "submitted"
+    ln = _call(db, ADMIN, mock_api.wl_curriculum_lines_create, REQ,
+               {"curriculum_id": t["curriculum"]["id"], "code": "ท21902", "name": "ภาษาไทยเพิ่มเติม", "weekly": 1,
+                "department_id": 1})
+    new_ids = [r["id"] for r in db.tables["wl_rows"] if r["line_id"] == ln["id"]]
+    assert len(new_ids) == 6
+    d1 = next(x for x in _call(db, ADMIN, mock_api.wl_round_departments, rid, REQ) if x["department_id"] == 1)
+    assert (d1["status"], d1["rows"], d1["confirmed"], d1["missing_teacher"]) == ("submitted", 12, 6, 6), d1
+    before = _state(db)
+    c, d = _code(lambda: _approve(db, ADMIN, rid, 1))
+    assert c == 409 and _thai(d), (c, d)
+    assert d.startswith("ตรวจผ่านไม่ได้ — ตั้งแต่กลุ่มส่งมา") and "ยังไม่มีครู 6 รายการ" in d and "ยังไม่ยืนยัน" not in d, d
+    assert "ตีกลับให้กลุ่มกรอกก่อน" in d, d
+    assert _state(db) == before
+    # admin ใส่ครูให้ห้าแถว (เลือกครูเอง = ยืนยัน) แล้วล้างครูอีกแถวของกลุ่ม → ยังไม่ครบ ตัวเลขตามจริง
+    _bulk(db, ADMIN, {"ids": new_ids[:5], "set": {"teacher_id": _wl_teacher(db, 507)}})
+    _put(db, ADMIN, _row(db, t, 0, 1)["id"], {"confirmed": False})
+    c, d = _code(lambda: _approve(db, ADMIN, rid, 1))
+    assert c == 409 and "ยังไม่มีครู 1 รายการ" in d and "ยังไม่ยืนยัน 1 รายการ" in d, (c, d)
+    # ตีกลับยังทำได้ → หัวหน้ากรอกครบ → ส่ง → ตรวจผ่าน
+    assert _return(db, ADMIN, rid, 1, {"note": "มีวิชาเพิ่ม ใส่ครูด้วย"})["status"] == "returned"
+    _put(db, HEAD1, new_ids[5], {"teacher_id": _wl_teacher(db, 506)})
+    _put(db, HEAD1, _row(db, t, 0, 1)["id"], {"confirmed": True})
+    assert _submit(db, HEAD1, rid, 1)["status"] == "submitted"
+    out = _approve(db, ADMIN, rid, 1)
+    assert (out["status"], out["rows"], out["confirmed"]) == ("approved", 12, 12), out
+    # ฟังก์ชันล้วน: ครบ = None · ข้อความนับทั้งแถวและตัวเลือก
+    ab = mock_api.wl_approve_blocker
+    assert ab([_r(1, True)], []) is None and ab([], []) is None
+    msg = ab([_r(None, False), _r(1, False)], [{"teachers": []}])
+    assert msg.startswith("ตรวจผ่านไม่ได้") and "ยังไม่มีครู 2 รายการ" in msg and "ยังไม่ยืนยัน 1 รายการ" in msg, msg
+
+
 def test_submit_locks_department_status_before_reading_rows():
     db, t, rnd = _filling()
     _fill_dept1(db, t)
@@ -339,8 +378,8 @@ def test_submit_locks_department_status_before_reading_rows():
         upd = [i for i, q in enumerate(sql) if q.startswith("UPDATE wl_dept_status")]
         reads = [i for i, q in enumerate(sql) if "FROM wl_rows" in q]
         assert rnd_lock and st_lock and upd and rnd_lock[0] < st_lock[0] < upd[0], (fn.__name__, sql)
-        if fn is mock_api.wl_dept_submit:
-            assert reads and st_lock[0] < reads[0], sql
+        if fn in (mock_api.wl_dept_submit, mock_api.wl_dept_approve):     # อ่านรายการหลังล็อกสถานะกลุ่ม (ครบไหม)
+            assert reads and st_lock[0] < reads[0] < upd[0], (fn.__name__, sql)
 
 
 # ── route: ยอดคาบรายครู ─────────────────────────────────────────────────────

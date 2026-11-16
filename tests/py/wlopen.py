@@ -10,6 +10,7 @@ import contextlib
 import copy
 import re
 import sys
+from pathlib import Path
 
 import mock_api
 from wlcurriculum import (ADMIN, GLOBALS, HEAD, NOREQ, REQ, FakeCur, FakeDb, _call, _code, _db, _patched, _state,
@@ -895,6 +896,81 @@ def test_option_edit_keeps_its_teachers_and_unblocks_open():
     _call(db, ADMIN, mock_api.wl_term_set_options_update, t["option"]["id"], REQ, {"code": "พ21201"})
     assert n == 2 and db.count("wl_option_teachers", option_id=t["option"]["id"]) == 2
     assert _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)["status"] == "filling"
+
+
+def test_filling_round_keeps_every_line_and_option_in_a_department():
+    """กฎ "ทุกบรรทัด/ตัวเลือกมีกลุ่มสาระ" ต้องอยู่หลังเปิดให้กรอกด้วย (final-review M1): บรรทัดหรือตัวเลือกที่ไม่มีกลุ่ม แถวของมัน
+    ไม่มีหัวหน้าคนไหนเห็น ค้างไม่มีใครกรอกตลอดรอบ · ตอนรอบยังเตรียมยังตั้งว่างได้ (การเปิดให้กรอกตรวจอยู่แล้ว)"""
+    db, t = _rdb()
+    rnd = _open(db)
+    ln, opt = t["lines"][0], t["option"]
+    # รอบยังเตรียม: ตั้งว่างได้ แล้วตั้งกลับ
+    assert _call(db, ADMIN, mock_api.wl_curriculum_lines_update, ln["id"], REQ, body={"department_id": None})[
+        "department_id"] is None
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_update, ln["id"], REQ, body={"department_id": 1})
+    assert _call(db, ADMIN, mock_api.wl_term_set_options_update, opt["id"], REQ, {"department_id": None})[
+        "department_id"] is None
+    _call(db, ADMIN, mock_api.wl_term_set_options_update, opt["id"], REQ, {"department_id": 7})
+    _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)
+    before = _state(db)
+    for fn, args, what in (
+            (mock_api.wl_curriculum_lines_update, (ln["id"], REQ), {"body": {"department_id": None}}),
+            (mock_api.wl_curriculum_lines_update, (ln["id"], REQ), {"body": {"department_id": None, "weekly": 4}}),
+            (mock_api.wl_term_set_options_update, (opt["id"], REQ, {"department_id": None}), {}),
+            # เพิ่มใหม่ระหว่างเปิดให้กรอก: รหัสที่ไม่มีในทะเบียนและไม่ได้ระบุกลุ่ม = ไม่มีกลุ่ม
+            (mock_api.wl_curriculum_lines_create, (REQ, {"curriculum_id": t["curriculum"]["id"], "code": "X1",
+                                                         "name": "วิชาพิมพ์เอง", "weekly": 1}), {}),
+            (mock_api.wl_term_set_options_create, (REQ, {"set_id": t["set"]["id"], "code": "X9",
+                                                         "name": "วิชาพิมพ์เอง"}), {})):
+        c, d = _code(lambda: _call(db, ADMIN, fn, *args, **what))
+        assert c == 409 and _thai(d) and "กลุ่มสาระ" in d and "2/2569" in d, (fn.__name__, c, d)
+        assert _state(db) == before, fn.__name__
+    # แก้ช่องอื่น ย้ายไปกลุ่มอื่น หรือเพิ่มพร้อมกลุ่มสาระ ยังทำได้ตามเดิม
+    assert _call(db, ADMIN, mock_api.wl_curriculum_lines_update, ln["id"], REQ, body={"weekly": 4})["weekly"] == 4
+    assert _call(db, ADMIN, mock_api.wl_curriculum_lines_update, ln["id"], REQ, body={"department_id": 2})[
+        "department_id"] == 2
+    assert _call(db, ADMIN, mock_api.wl_term_set_options_update, opt["id"], REQ, {"name": "ดนตรีไทย"})["name"] == "ดนตรีไทย"
+    new = _call(db, ADMIN, mock_api.wl_curriculum_lines_create, REQ,
+                {"curriculum_id": t["curriculum"]["id"], "code": "X1", "name": "วิชาพิมพ์เอง", "weekly": 1,
+                 "department_id": 5})
+    assert new["department_id"] == 5 and len(_rows(db, line_id=new["id"])) == 6
+    # รหัสที่ตรงทะเบียนเติมกลุ่มสาระให้เอง ไม่ต้องส่ง
+    assert _call(db, ADMIN, mock_api.wl_curriculum_lines_create, REQ,
+                 {"curriculum_id": t["curriculum"]["id"], "code": "ก21902", "weekly": 1})["department_id"] == 10
+
+
+def test_force_409_carries_the_mark_the_curriculum_page_reads():
+    """หน้าหลักสูตรเปิดกล่อง "ยืนยันลบซ้ำ" เฉพาะ 409 ที่มีคำ FORCE_MARK (curriculum.ts forceConflict) — ข้อความของเซิร์ฟเวอร์
+    เปลี่ยนคำนี้เมื่อไหร่ ผู้ดูแลระบบจะไม่มีทางลบงานที่คนใส่ไว้ได้เลย (final-review M4) · 409 ที่ส่งซ้ำพร้อม force ก็ไม่ผ่าน
+    (ภาคเรียนปิด ชื่อซ้ำ) ต้องไม่มีคำนี้ ไม่งั้นหน้าถามยืนยันซ้ำให้เสียเวลา"""
+    src = (Path(__file__).resolve().parents[2] / "workload" / "src" / "curriculum.ts").read_text(encoding="utf-8")
+    m = re.search(r'^const FORCE_MARK = "([^"]+)";$', src, re.M)
+    assert m, "หา FORCE_MARK ใน curriculum.ts ไม่เจอ"
+    mark = m.group(1)
+    assert mark == "(force)", mark
+    db, t = _rdb()
+    rnd = _open(db)
+    _with_teachers(db, rnd, t["lines"][0]["id"], {1})
+    _with_teachers(db, rnd, t["lines"][2]["id"], {2})
+    for o in db.tables["wl_option_teachers"]:
+        o["confirmed"] = True
+    for fn, args, kw in ((mock_api.wl_curriculum_lines_delete, (t["lines"][2]["id"], REQ), {}),
+                         (mock_api.wl_curricula_update, (t["curriculum"]["id"], REQ), {"body": {"group_ids": [2, 3]}}),
+                         (mock_api.wl_curricula_delete, (t["curriculum"]["id"], REQ), {}),
+                         (mock_api.wl_term_set_options_delete, (t["option"]["id"], REQ), {}),
+                         (mock_api.wl_term_sets_delete, (t["set"]["id"], REQ), {})):
+        c, d = _code(lambda: _call(db, ADMIN, fn, *args, **kw))
+        assert c == 409 and _thai(d) and mark in d, (fn.__name__, c, d)
+    # ส่งซ้ำพร้อม force แล้วผ่าน (คำนี้แปลว่าทำได้จริง)
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, t["lines"][2]["id"], REQ, force="1")
+    # 409 ที่ force ไม่ช่วย: ชื่อหลักสูตรซ้ำ · ภาคเรียนปิด
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_curricula_create, REQ,
+                               {"year": 2569, "semester": 2, "name": "ม.1/1-6", "group_ids": [7]}))
+    assert c == 409 and mark not in d, (c, d)
+    _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)
+    _call(db, ADMIN, mock_api.wl_rounds_close, rnd["id"], REQ, {"confirm_label": "2/2569"})
+    c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, t["lines"][0]["id"], REQ, force="1"))
+    assert c == 409 and "ปิด" in d and mark not in d, (c, d)
 
 
 # ── ตาราง route ─────────────────────────────────────────────────────────────
