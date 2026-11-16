@@ -13741,6 +13741,19 @@ def _terms_schema(cur) -> None:
 # สองดัชนี partial unique บังคับ "admin รหัสเดียว" และ "กลุ่มสาระละหนึ่งรหัส" ที่ฐานข้อมูล
 # ไม่ปล่อยให้โค้ดข้างหน้าคุมเอง: กดสองครั้งติดกันจะได้สองแถว แล้วการปิดรหัสปิดได้แถวเดียว
 # อีกแถวยังเข้าได้เงียบ ๆ (แบบเดียวกับ _TERMS_ONE_ACTIVE)
+#
+# ขั้นที่ 2 — รอบอัตรากำลัง (wl_rounds wl_rows wl_sets wl_set_options wl_dept_status):
+# · "มีรอบที่ยังไม่ปิดได้รอบเดียว" บังคับด้วยดัชนี wl_rounds_one_open ที่ฐานข้อมูล เหตุผลเดียวกับรหัส admin
+#   ดัชนีอยู่บนนิพจน์ (status <> 'closed') ไม่ใช่บน status: preparing กับ filling เป็นคนละค่า
+#   ดัชนีบน status จึงปล่อยให้มีรอบเตรียมหนึ่งรอบกับรอบเปิดกรอกอีกรอบพร้อมกันได้
+# · ครูและวิชาอ้าง wl_teachers / wl_subjects ด้วย FK (ทะเบียนเป็นของเว็บนี้ ห้ามจับคู่ด้วยชื่อ)
+#   ส่วนห้องเรียน ห้องปฏิบัติการ และกลุ่มสาระเป็นรหัสของโปรแกรมจัดตารางตรง ๆ ไม่มี FK
+#   เพราะเป็นทะเบียนที่ยืมอ่าน ไม่มีตารางฝั่งนี้ให้ชี้
+# · unconverted เก็บรายการที่แปลงไม่ได้ ณ ตอนเปิดรอบ: แผนการสอนเปลี่ยนได้ทุกวัน คำนวณใหม่ทีหลัง
+#   จะได้รายการของวันนั้น ไม่ใช่ของที่ admin ต้องเพิ่มเองในรอบนี้
+# · ลบตัวเลือกตามชุดได้ (ON DELETE CASCADE) เพราะตัวเลือกไม่มีความหมายนอกชุด แต่แถว ชุด
+#   และสถานะกลุ่มไม่ลบตามรอบ — รอบไม่มีทางลบ ถ้าวันหนึ่งมีคนลบรอบด้วยมือ ให้ล้มดีกว่าหายเงียบ
+# ทั้งหมดเป็นตารางใหม่ ไม่แตะดัชนีของตารางที่มีข้อมูลจริงอยู่แล้ว (สเปกขั้นที่ 2 ข้อ 4.2)
 _WL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS wl_codes (
     id            bigserial PRIMARY KEY,
@@ -13782,7 +13795,75 @@ CREATE TABLE IF NOT EXISTS wl_subjects (
 CREATE UNIQUE INDEX IF NOT EXISTS wl_codes_one_admin
     ON wl_codes (role) WHERE role = 'admin';
 CREATE UNIQUE INDEX IF NOT EXISTS wl_codes_one_per_dept
-    ON wl_codes (department_id) WHERE role = 'head'
+    ON wl_codes (department_id) WHERE role = 'head';
+CREATE TABLE IF NOT EXISTS wl_rounds (
+    id          bigserial PRIMARY KEY,
+    year        integer NOT NULL,
+    semester    integer NOT NULL,
+    label       text NOT NULL,
+    status      text NOT NULL DEFAULT 'preparing'
+                CHECK (status IN ('preparing','filling','closed')),
+    unconverted jsonb NOT NULL DEFAULT '[]'::jsonb,
+    opened_at   timestamptz NOT NULL DEFAULT now(),
+    closed_at   timestamptz,
+    UNIQUE (year, semester)
+);
+CREATE TABLE IF NOT EXISTS wl_rows (
+    id            bigserial PRIMARY KEY,
+    round_id      bigint NOT NULL REFERENCES wl_rounds(id),
+    department_id integer,
+    group_id      integer NOT NULL,
+    subject_id    bigint REFERENCES wl_subjects(id),
+    code          text NOT NULL DEFAULT '',
+    name          text NOT NULL DEFAULT '',
+    credits       numeric,
+    weekly        integer NOT NULL CHECK (weekly >= 0),
+    kind          text NOT NULL CHECK (kind IN ('basic','additional','activity')),
+    teacher_id    bigint REFERENCES wl_teachers(id),
+    co_teacher_id bigint REFERENCES wl_teachers(id),
+    lab_room_id   integer,
+    is_double     boolean NOT NULL DEFAULT false,
+    note          text NOT NULL DEFAULT '',
+    confirmed     boolean NOT NULL DEFAULT false,
+    from_plan     boolean NOT NULL DEFAULT false,
+    flag          text
+);
+CREATE TABLE IF NOT EXISTS wl_sets (
+    id        bigserial PRIMARY KEY,
+    round_id  bigint NOT NULL REFERENCES wl_rounds(id),
+    kind      text NOT NULL CHECK (kind IN ('elective','activity')),
+    name      text NOT NULL,
+    group_ids integer[] NOT NULL,
+    weekly    integer NOT NULL CHECK (weekly >= 0),
+    is_double boolean NOT NULL DEFAULT false
+);
+CREATE TABLE IF NOT EXISTS wl_set_options (
+    id            bigserial PRIMARY KEY,
+    set_id        bigint NOT NULL REFERENCES wl_sets(id) ON DELETE CASCADE,
+    subject_id    bigint REFERENCES wl_subjects(id),
+    code          text NOT NULL DEFAULT '',
+    name          text NOT NULL DEFAULT '',
+    department_id integer,
+    teacher_id    bigint REFERENCES wl_teachers(id),
+    room_id       integer,
+    note          text NOT NULL DEFAULT '',
+    confirmed     boolean NOT NULL DEFAULT false,
+    from_plan     boolean NOT NULL DEFAULT false
+);
+CREATE TABLE IF NOT EXISTS wl_dept_status (
+    round_id      bigint NOT NULL REFERENCES wl_rounds(id),
+    department_id integer NOT NULL,
+    status        text NOT NULL DEFAULT 'filling'
+                  CHECK (status IN ('filling','submitted','returned','approved')),
+    submitted_at  timestamptz,
+    submitted_by  text,
+    reviewed_at   timestamptz,
+    reviewed_by   text,
+    note          text NOT NULL DEFAULT '',
+    PRIMARY KEY (round_id, department_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS wl_rounds_one_open
+    ON wl_rounds ((status <> 'closed')) WHERE status <> 'closed'
 """
 
 
@@ -14558,6 +14639,296 @@ def wl_subjects_import(request: Request) -> dict[str, int]:
     ไม่มีปุ่มนี้ วิชาที่พิมพ์เองทุกแถวจะไม่มี sched_id และกลายเป็นวิชาซ้ำในขั้นที่ 3
     """
     return _wl_import_from_scheduler(request, "subjects", SUBJECTS, write=True)
+
+
+# ── ขั้นที่ 2: แผนการสอน คาบเสรี และตาราง → แถวและชุดของรอบใหม่ (ฟังก์ชันล้วน) ──────
+# แยกจาก route เพื่อให้ทดสอบได้ทุกกรณีโดยไม่ต้องมีฐานข้อมูล และดูก่อนเปิดรอบได้โดยไม่เขียนอะไร
+# ผู้เรียกประกอบ src จากตัวแปรกลางเอง (สำเนา) ฟังก์ชันนี้จึงไม่อ่านตัวแปรกลางและไม่แก้ src
+
+WL_CO_UNEQUAL_FLAG = "สอนร่วมในแผนเดิมคาบไม่เท่ากัน"
+
+
+def wl_kind_from_code(code: str, is_activity: bool) -> str:
+    """ประเภทวิชาที่เดาไว้ให้ admin แก้ทีหลังได้
+
+    หลักที่ 4 ของรหัสวิชาตามหลักสูตรแกนกลางบอกพื้นฐาน (1) หรือเพิ่มเติม (2) ส่วนกิจกรรม
+    พัฒนาผู้เรียนดูจากธงของวิชา เพราะรหัส ก…9… ไม่ได้บอก · รหัสที่สั้นหรือรูปไม่ตรงเดาไม่ได้
+    จึงเป็นพื้นฐาน ไม่ใช่ข้อผิดพลาด — การเปิดรอบต้องไม่ล้มเพราะรหัสวิชาเดียว
+    """
+    if is_activity:
+        return "activity"
+    text = str(code or "")
+    return "additional" if len(text) > 3 and text[3] == "2" else "basic"
+
+
+def _wl_co_teach_pairs(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """คู่สอนร่วมในแผนเดิม (แถวแรก, แถวที่สอง) — กฎเดียวกับ coTeachHalves ของ frontend
+
+    สองแถวของห้อง+วิชาเดียวกันที่แถวหนึ่งชี้ครูของอีกแถวเป็นครูสอนร่วม · สองแถวที่ไม่ชี้กัน
+    ไม่ใช่คู่ (ครูสองคนต่างคิดว่าห้องนี้เป็นของตัวเอง คือความขัดแย้งจริงที่ต้องเห็น)
+    ต้องตรงกับโปรแกรมจัดตารางทุกจุด ไม่อย่างนั้นยอดคาบของครูสองเว็บจะไม่ตรงกัน (สเปก 4.4 ข.)
+    ต่างจาก frontend ข้อเดียว: co_teacher_id ที่ว่างไม่นับว่าชี้ใคร — None == None เป็นจริงในไพทอน
+    """
+    def names(a: dict[str, Any], b: dict[str, Any]) -> bool:
+        co = a.get("co_teacher_id")
+        return bool(co) and co == b.get("teacher_id")
+
+    by_cell: dict[tuple, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_cell.setdefault((r.get("group_id"), r.get("subject_id")), []).append(r)
+    pairs, halves = [], set()
+    for cell in by_cell.values():
+        for i, a in enumerate(cell):
+            if id(a) in halves:
+                continue
+            for b in cell[i + 1:]:
+                if id(b) in halves:
+                    continue
+                if names(a, b) or names(b, a):
+                    halves.add(id(b))
+                    pairs.append((a, b))
+                    break
+    return pairs
+
+
+def wl_round_proposal(src: dict[str, Any]) -> dict[str, Any]:
+    """แถวและชุดของรอบใหม่ จากแผนการสอน คาบเสรี และคาบในตาราง (สเปกขั้นที่ 2 ข้อ 4.1 4.2 4.4 ก.)
+
+    src = {requirements, pools, slots, sched_subjects {sched_id: วิชา}, groups {gid: ห้อง},
+           teacher_ids {ครูฝั่งตาราง: wl_teachers.id}, subject_ids {วิชาฝั่งตาราง: wl_subjects.id},
+           subject_depts {wl_subjects.id: กลุ่มสาระ|None}, served {id ของแถวแผนที่สอนในคาบเสรีแล้ว}}
+    คืน {rows, sets, unconverted: [{source, ref, reason}], counts} · แถว/ตัวเลือกยังไม่มี id/round_id
+
+    ทุกอย่างที่ครูมาจากของเดิมเป็น "ยังไม่ยืนยัน" (confirmed=False) — หายได้เพราะคนกดเท่านั้น
+    สิ่งที่แปลงไม่ได้ไม่ทำให้ล้ม: ช่องนั้นว่าง แล้วบอกไว้ใน unconverted ให้ admin เติมเอง
+    """
+    subjects = src.get("sched_subjects") or {}
+    groups = src.get("groups") or {}
+    teacher_ids = src.get("teacher_ids") or {}
+    subject_ids = src.get("subject_ids") or {}
+    subject_depts = src.get("subject_depts") or {}
+    served = set(src.get("served") or ())
+    requirements = list(src.get("requirements") or [])
+    unconverted: list[dict[str, Any]] = []
+    group_order = {gid: i for i, gid in enumerate(groups)}
+
+    def report(source: str, ref: Any, reason: str) -> None:
+        # ตัวเลือกหลายตัวของชุดเดียวกันอาจแปลงไม่ได้ด้วยเหตุเดียวกัน (วิชากิจกรรมหนึ่งวิชา ครูคุมห้าคน)
+        # admin ต้องเห็นเรื่องละบรรทัด ไม่ใช่ห้าบรรทัดเหมือนกัน
+        entry = {"source": source, "ref": ref, "reason": reason}
+        if entry not in unconverted:
+            unconverted.append(entry)
+
+    def gname(gid: Any) -> str:
+        return str((groups.get(gid) or {}).get("name") or f"ห้องรหัส {gid}")
+
+    def grange(gids: list[Any]) -> str:
+        names = [gname(g) for g in gids]
+        return names[0] if len(names) == 1 else f"{names[0]}–{names[-1]} ({len(names)} ห้อง)"
+
+    def check_groups(gids: list[Any], source: str, ref: Any, where: str) -> None:
+        for g in gids:
+            if g not in groups:
+                report(source, ref, f"{where}: ไม่พบห้องเรียนรหัส {g} ในโปรแกรมจัดตารางแล้ว "
+                                    "ยังยกมาให้ admin ตรวจ")
+
+    def teacher(tid: Any, source: str, ref: Any, where: str) -> int | None:
+        # 0/None = โรงเรียนยังไม่ได้เลือกครู ไม่ใช่ครูที่แปลงไม่ได้ จึงไม่ต้องรายงาน
+        if not tid:
+            return None
+        wl = teacher_ids.get(tid)
+        if wl is None:
+            report(source, ref, f"{where}: ครูรหัส {tid} ของโปรแกรมจัดตารางยังไม่มีในทะเบียนครูของเว็บนี้ "
+                                "จึงเว้นช่องครูไว้")
+        return wl
+
+    def subject(sid: Any, source: str, ref: Any, where: str) -> int | None:
+        if sid is None:
+            return None
+        wl = subject_ids.get(sid)
+        if wl is None:
+            report(source, ref, f"{where}: วิชารหัส {sid} ของโปรแกรมจัดตารางยังไม่มีในทะเบียนวิชาของเว็บนี้ "
+                                "จึงเว้นช่องวิชาไว้")
+        return wl
+
+    def dept(wl_sid: int | None) -> Any:
+        return subject_depts.get(wl_sid) if wl_sid is not None else None
+
+    def option(sid: Any, tid: Any, raw: dict[str, Any], room_id: Any,
+               source: str, ref: Any, where: str) -> dict[str, Any]:
+        subj = subjects.get(sid) or {}
+        wl_sid = subject(sid, source, ref, where)
+        return {"subject_id": wl_sid,
+                "code": str(subj.get("code") or raw.get("code") or ""),
+                "name": str(subj.get("name") or raw.get("label") or ""),
+                "department_id": dept(wl_sid),
+                "teacher_id": teacher(tid, source, ref, where),
+                "room_id": room_id, "note": "", "confirmed": False, "from_plan": True}
+
+    # ── แถวแผน → แถวรอบ (หนึ่งห้อง × หนึ่งวิชา) ──
+    def plan_row(r: dict[str, Any], co_tid: Any, co_ref: Any, lab_room: Any,
+                 flag: str | None) -> dict[str, Any]:
+        rid, gid, sid = r.get("id"), r.get("group_id"), r.get("subject_id")
+        subj = subjects.get(sid) or {}
+        code = str(subj.get("code") or "")
+        where = f"แผนการสอน {gname(gid)} {code or f'วิชารหัส {sid}'}"
+        check_groups([gid], "plan", rid, where)
+        wl_sid = subject(sid, "plan", rid, where)
+        return {"department_id": dept(wl_sid), "group_id": gid, "subject_id": wl_sid,
+                "code": code, "name": str(subj.get("name") or ""),
+                # หน่วยกิตเป็น None หรือทศนิยมได้ (1.5) — ปัดเป็น int จะได้ตัวเลขผิดในใบอัตรากำลัง
+                "credits": subj.get("credits"),
+                "weekly": int(r.get("weekly_count") or 0),
+                "kind": wl_kind_from_code(code, bool(subj.get("is_activity"))),
+                "teacher_id": teacher(r.get("teacher_id"), "plan", rid, where),
+                "co_teacher_id": teacher(co_tid, "plan", co_ref, f"{where} (ครูสอนร่วม)"),
+                "lab_room_id": lab_room, "is_double": False, "note": "",
+                "confirmed": False, "from_plan": True, "flag": flag}
+
+    # แถวที่สอนในคาบเสรีอยู่แล้ว: โรงเรียนเขียนวิชาเสรีไว้สองที่ ยกทั้งสองที่จะนับคาบซ้ำ
+    live = [r for r in requirements if r.get("id") not in served]
+    served_skipped = len(requirements) - len(live)
+    first_of: dict[int, dict[str, Any]] = {}
+    second_of: dict[int, dict[str, Any]] = {}
+    for a, b in _wl_co_teach_pairs(live):
+        first_of[id(a)], second_of[id(b)] = b, a
+    rows: list[dict[str, Any]] = []
+    co_merged = 0
+    for r in live:
+        partner = first_of.get(id(r)) or second_of.get(id(r))
+        if partner is None:
+            # สอนร่วมที่เขียนไว้แถวเดียว — ครูสอนร่วมคนนั้นเข้าห้องจริง ต้องมาด้วย
+            rows.append(plan_row(r, r.get("co_teacher_id"), r.get("id"), r.get("room_id"), None))
+            continue
+        if int(partner.get("weekly_count") or 0) != int(r.get("weekly_count") or 0):
+            # คาบไม่เท่ากัน = แผนเดิมขัดกันเอง เดาไม่ได้ว่าใครถูก จึงคงสองแถวให้ admin ดู และไม่ให้
+            # ชี้กันเองต่อ ไม่อย่างนั้นยอดของแต่ละคนจะนับแถวของอีกคนซ้ำ (สเปก 4.4 ข.)
+            rows.append(plan_row(r, None, None, r.get("room_id"), WL_CO_UNEQUAL_FLAG))
+        elif id(r) in first_of:
+            co_merged += 1
+            rows.append(plan_row(r, partner.get("teacher_id"), partner.get("id"),
+                                 r.get("room_id") or partner.get("room_id"), None))
+        # แถวที่สองของคู่ที่คาบเท่ากัน รวมอยู่ในแถวแรกแล้ว
+
+    # ── คาบเสรีจาก ELECTIVE_POOLS ──
+    sets: list[dict[str, Any]] = []
+    pool_keys: list[tuple[set, frozenset]] = []
+    for p in src.get("pools") or []:
+        pid, gids = p.get("id"), list(p.get("group_ids") or [])
+        opts = list(p.get("options") or [])
+        name = str(p.get("name") or "") or f"คาบเสรี {grange(gids)}"
+        where = f"คาบเสรี {name}"
+        check_groups(gids, "pool", pid, where)
+        sets.append({"kind": "elective", "name": name, "group_ids": gids,
+                     "weekly": int(p.get("weekly") or 0), "is_double": bool(p.get("is_double")),
+                     "options": [option(o.get("subject_id"), o.get("teacher_id"), o, o.get("room_id"),
+                                        "pool", pid, where) for o in opts]})
+        pool_keys.append((set(gids), frozenset(o.get("subject_id") for o in opts)))
+
+    # ── การสอนที่อยู่แค่ในตาราง (สเปก 4.4 ก.) ──
+    # แถวแผนของวิชากิจกรรม (แนะแนว) ถูกตัวจัดตารางวางเป็นคาบธรรมดา ช่องพวกนั้นมีแถวแผนอยู่แล้ว
+    # ยกซ้ำจะนับคาบของครูสองครั้ง จึงยกเฉพาะห้อง+วิชาที่ไม่มีในแผน (คำตัดสินของผู้คุม)
+    plan_cells = {(r.get("group_id"), r.get("subject_id")) for r in requirements}
+    electives: dict[frozenset, dict[str, Any]] = {}
+    activities: dict[tuple, dict[str, Any]] = {}
+    told: set[tuple] = set()
+
+    def tally(bucket: dict[str, Any], s: dict[str, Any]) -> None:
+        # ช่องคาบคู่ (is_double_cont) คือคาบที่สองของชุดเดียวกัน จึงนับเป็นอีกหนึ่งคาบ
+        gid = s.get("group_id")
+        day, period = s.get("day"), s.get("period")
+        bucket["times"].setdefault(gid, []).append((-1 if day is None else day,
+                                                    -1 if period is None else period))
+        if s.get("is_double_start") or s.get("is_double_cont"):
+            bucket["double"].add(gid)
+
+    for s in src.get("slots") or []:
+        gid, sid = s.get("group_id"), s.get("subject_id")
+        subj = subjects.get(sid) or {}
+        # คาบว่างที่จองไว้ไม่ใช่คาบเรียน ไม่มีใครต้องสอน
+        if s.get("is_free_period") or subj.get("is_free_period"):
+            continue
+        if s.get("is_elective"):
+            opts = list(s.get("elective_options") or [])
+            if any(gid in pg and frozenset(o.get("subject_id") for o in opts) == ps
+                   for pg, ps in pool_keys):
+                continue                      # ช่องที่การวางชุดคาบเสรีเขียนลงตาราง มีชุดแล้ว
+            if not opts:
+                if ("empty", gid) not in told:
+                    told.add(("empty", gid))
+                    report("slot", s.get("id"), f"คาบเสรีในตาราง {gname(gid)} ยังไม่มีวิชาให้เลือก "
+                                                "จึงไม่ได้ยกมาเป็นชุด")
+                continue
+            # ห้องที่มีชุด (วิชา, ครู) ของตัวเลือกเหมือนกันคือคาบเสรีเดียวกัน
+            key = frozenset((o.get("subject_id"), o.get("teacher_id") or None) for o in opts)
+            bucket = electives.setdefault(key, {"times": {}, "double": set(), "ref": s.get("id"),
+                                                "opts": {}})
+            tally(bucket, s)
+            for o in opts:
+                info = bucket["opts"].setdefault((o.get("subject_id"), o.get("teacher_id") or None),
+                                                 {"raw": o, "room_id": None})
+                if info["room_id"] is None and o.get("room_id"):
+                    info["room_id"] = o["room_id"]
+            continue
+        if not (s.get("is_activity_block") or s.get("activity_teacher_ids")
+                or (subj.get("is_activity") and (gid, sid) not in plan_cells)):
+            continue                          # คาบปกติ — มีแถวแผนอยู่แล้ว
+        supervisors: list[Any] = []
+        for t in (s.get("teacher_id"), s.get("co_teacher_id"), *(s.get("activity_teacher_ids") or [])):
+            if t and t not in supervisors:
+                supervisors.append(t)
+        if not supervisors:
+            # ไม่มีครูคุม = ไม่มีใครให้ลงอัตรากำลัง แต่ต้องบอก admin ไม่ทิ้งเงียบ ๆ
+            if ("nobody", gid, sid) not in told:
+                told.add(("nobody", gid, sid))
+                report("slot", s.get("id"), f"กิจกรรม {str(subj.get('code') or '') or 'ไม่ระบุวิชา'} "
+                                            f"{gname(gid)} ยังไม่มีครูคุม จึงไม่ได้ยกมาเป็นชุด")
+            continue
+        bucket = activities.setdefault((sid, frozenset(supervisors)),
+                                       {"times": {}, "double": set(), "ref": s.get("id"),
+                                        "sid": sid, "teachers": supervisors})
+        tally(bucket, s)
+
+    def by_times(bucket: dict[str, Any]) -> list[tuple[int, list[Any]]]:
+        # หนึ่งชุด = ห้องที่เรียนชั่วโมงเดียวกันจริง ๆ เพราะยอดคาบนับชุดละครั้ง ไม่คูณห้อง (สเปก 4.4 ข.)
+        # ห้องที่จำนวนคาบไม่เท่ากันจึงแยกชุด และห้องที่จำนวนเท่ากันแต่คนละวัน/คาบก็แยกด้วย:
+        # ครูคนเดียวสอนวิชาเดิมให้ ม.1/1 วันจันทร์ และ ม.1/2 วันอังคาร คือสอนสองชั่วโมง
+        # รวมเป็นชุดเดียวจะเหลือ 1 คาบ (ลูกเสือก็มีหลายหน้าต่างต่อสัปดาห์ — ดู _activity_windows)
+        out: dict[tuple, list[Any]] = {}
+        for g in sorted(bucket["times"], key=lambda g: (group_order.get(g, len(group_order)), str(g))):
+            out.setdefault(tuple(sorted(bucket["times"][g])), []).append(g)
+        return [(len(times), gids) for times, gids in out.items()]
+
+    def emit(kind: str, label: str, bucket: dict[str, Any], options: list[dict[str, Any]]) -> None:
+        for weekly, gids in by_times(bucket):
+            sets.append({"kind": kind, "name": f"{label} {grange(gids)}", "group_ids": gids,
+                         "weekly": weekly, "is_double": any(g in bucket["double"] for g in gids),
+                         "options": [dict(o) for o in options]})
+
+    for bucket in electives.values():
+        allg = [g for _, gs in by_times(bucket) for g in gs]
+        where = f"คาบเสรีในตาราง {grange(allg)}"
+        check_groups(allg, "slot", bucket["ref"], where)
+        # แปลงครั้งเดียวต่อกลุ่มช่อง: แยกเป็นหลายชุดตามชั่วโมงแล้ว ข้อความที่แปลงไม่ได้ต้องไม่ซ้ำ
+        options = [option(osid, otid, info["raw"], info["room_id"], "slot", bucket["ref"], where)
+                   for (osid, otid), info in bucket["opts"].items()]
+        emit("elective", "คาบเสรี", bucket, options)
+
+    for bucket in activities.values():
+        allg = [g for _, gs in by_times(bucket) for g in gs]
+        subj = subjects.get(bucket["sid"]) or {}
+        label = str(subj.get("name") or "") or "กิจกรรม"
+        where = f"กิจกรรม {label} {grange(allg)}"
+        check_groups(allg, "slot", bucket["ref"], where)
+        options = [option(bucket["sid"], t, {}, None, "slot", bucket["ref"], where)
+                   for t in bucket["teachers"]]
+        emit("activity", label, bucket, options)
+
+    return {"rows": rows, "sets": sets, "unconverted": unconverted,
+            "counts": {"rows": len(rows),
+                       "sets_elective": sum(1 for x in sets if x["kind"] == "elective"),
+                       "sets_activity": sum(1 for x in sets if x["kind"] == "activity"),
+                       "co_merged": co_merged, "served_skipped": served_skipped}}
 
 
 def _check_term_status(status: str) -> None:
