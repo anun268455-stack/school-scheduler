@@ -2,9 +2,12 @@
 เว็บลงอัตรากำลัง ขั้นที่ 2 งานที่ 2: หลักสูตรของภาคเรียน — ตาราง route บันทึกการแก้ และการตั้งต้น
 
 ฟังก์ชันล้วนเรียกตรง ๆ · route คุยกับ "ฐานข้อมูลปลอม" ในหน่วยความจำที่อ่านโครงตารางจาก _WL_SCHEMA เอง
-(คอลัมน์ ค่าตั้งต้น NOT NULL UNIQUE/PRIMARY KEY และ ON DELETE CASCADE) แล้วตีความ SQL ชุดเล็กที่ route ใช้
+(คอลัมน์ ค่าตั้งต้น NOT NULL UNIQUE/PRIMARY KEY ON DELETE CASCADE และ REFERENCES) แล้วตีความ SQL ชุดเล็กที่ route ใช้
 คอลัมน์ที่สะกดผิดหรือ SQL รูปที่ไม่รู้จักทำให้ตัวทดสอบล้มทันที · การเรียก route ที่ยกข้อผิดพลาดย้อนข้อมูลกลับ
-เหมือนธุรกรรมที่ล้ม · ของจริง (Postgres) ลองแยกกับเซิร์ฟเวอร์จริงก่อนรายงาน
+เหมือนธุรกรรมที่ล้ม · เมื่อ route จบปกติ ทุก REFERENCES ต้องชี้แถวที่มีอยู่ (เหมือน COMMIT ตรวจ FK แบบ DEFERRED)
+ไม่งั้นยก DbError 23503 และย้อนกลับ — route ที่ลบบรรทัดแล้วลืมเก็บแถวของรอบที่ค้างจึงล้มที่นี่ เหมือนล้มที่ Postgres
+ของจริง (Postgres) ลองแยกกับเซิร์ฟเวอร์จริงก่อนรายงาน
+ตัวทดสอบอื่น (wlopen.py) import ของปลอมชุดนี้ไปใช้ จึงรันตัวทดสอบเฉพาะเมื่อรันไฟล์นี้ตรง ๆ
 """
 import collections
 import contextlib
@@ -47,7 +50,7 @@ def _parse_default(text):
 def _parse_schema(sql):
     tables = {}
     for name, body in re.findall(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);", sql, re.S):
-        t = {"cols": {}, "unique": [], "cascade": []}
+        t = {"cols": {}, "unique": [], "cascade": [], "fks": []}
         for raw in body.strip().splitlines():
             line = raw.strip().rstrip(",")
             if not line:
@@ -67,6 +70,8 @@ def _parse_schema(sql):
             if "PRIMARY KEY" in line or re.search(r"\bUNIQUE\b", line):
                 t["unique"].append((word,))
             m = re.search(r"REFERENCES (\w+)\(id\)", line)
+            if m:
+                t["fks"].append((word, m.group(1)))
             if m and "ON DELETE CASCADE" in line:
                 t["cascade"].append((m.group(1), word))
         tables[name] = t
@@ -126,6 +131,16 @@ class FakeDb:
     def count(self, table, **where):
         return sum(1 for r in self.tables[table] if all(r[k] == v for k, v in where.items()))
 
+    def check_fks(self):
+        """ตรวจทุก REFERENCES x(id) เหมือน COMMIT (Postgres ตรวจ FK ธรรมดาทันที และแบบ DEFERRED ตอน COMMIT
+        ของปลอมตรวจรวดเดียวตอนจบ ซึ่งพอสำหรับคำถามเดียวที่สำคัญ: จบธุรกรรมแล้วมีแถวที่ชี้ของที่ไม่มีไหม)"""
+        ids = {t: {r["id"] for r in rows} for t, rows in self.tables.items() if "id" in self.schema[t]["cols"]}
+        for table, t in self.schema.items():
+            for col, parent in t["fks"]:
+                for r in self.tables[table]:
+                    if r[col] is not None and r[col] not in ids[parent]:
+                        raise DbError("23503", f"{table}.{col} = {r[col]} ชี้แถวของ {parent} ที่ไม่มีแล้ว")
+
 
 class FakeCur:
     def __init__(self, db, session_row):
@@ -143,6 +158,12 @@ class FakeCur:
             return
         self.db.tick += 1
         verb = s.split()[0].upper()
+        if verb == "LOCK":
+            # ล็อกตารางไม่มีความหมายในของปลอมที่มีคำขอเดียว — ตรวจแค่ชื่อตารางกับรูปคำสั่ง (ตัวทดสอบดูจาก cur.log)
+            m = re.fullmatch(r"LOCK TABLE ([\w, ]+) IN SHARE MODE", s)
+            assert m and all(t.strip() in self.db.schema for t in m.group(1).split(",")), s
+            self._out, self.rowcount = [], 0
+            return
         assert verb in ("SELECT", "INSERT", "UPDATE", "DELETE"), s
         getattr(self, "_" + verb.lower())(s, params)
 
@@ -190,10 +211,14 @@ class FakeCur:
         return [tuple(copy.deepcopy(r[c]) for c in cols) for r in rows]
 
     def _select(self, s, params):
-        m = re.fullmatch(r"SELECT (DISTINCT )?(.+?) FROM (\w+)(?: WHERE (.+?))?(?: ORDER BY (.+?))?"
-                         r"(?: LIMIT (\d+))?", s)
+        # ล็อกแถว (FOR UPDATE / FOR SHARE) ไม่มีความหมายในของปลอมที่มีคำขอเดียว — ตัวทดสอบดูจาก cur.log ว่าขอไว้
+        s = re.sub(r" FOR (UPDATE|SHARE)$", "", s)
+        if " JOIN " in s:
+            return self._select_join(s, params)
+        m = re.fullmatch(r"SELECT (DISTINCT )?(.+?) FROM (\w+)(?: WHERE (.+?))?(?: GROUP BY (\w+))?"
+                         r"(?: ORDER BY (.+?))?(?: LIMIT (\d+))?", s)
         assert m, f"ฐานข้อมูลปลอมไม่รู้จัก SQL: {s}"
-        distinct, cols, table, where, order, limit = m.groups()
+        distinct, cols, table, where, group, order, limit = m.groups()
         pred = self._pred(table, where, params)
         rows = [r for r in self.db.tables[table] if pred(r)]
         for part in reversed((order or "").split(",") if order else []):
@@ -201,11 +226,65 @@ class FakeCur:
             k, desc = bits[0], len(bits) > 1 and bits[1].upper() == "DESC"
             rows.sort(key=lambda r, k=k: (r[k] is None, r[k] if r[k] is not None else 0), reverse=desc)
         names = [c.strip() for c in cols.split(",")]
-        out = [tuple(1 if c == "1" else copy.deepcopy(r[c]) for c in names) for r in rows]
+        if group:
+            assert group in self.db.schema[table]["cols"], f"ตาราง {table} ไม่มีคอลัมน์ {group}"
+            assert all(c in (group, "count(*)") for c in names), s
+            by: dict = {}
+            for r in rows:
+                by.setdefault(r[group], []).append(r)
+            out = [tuple(len(g) if c == "count(*)" else k for c in names) for k, g in by.items()]
+        else:
+            for c in names:
+                assert c == "1" or c in self.db.schema[table]["cols"], f"ตาราง {table} ไม่มีคอลัมน์ {c}"
+            out = [tuple(1 if c == "1" else copy.deepcopy(r[c]) for c in names) for r in rows]
         if distinct:
             out = list(dict.fromkeys(out))
         if limit:
             out = out[:int(limit)]
+        self._out, self.rowcount = out, len(out)
+
+    def _select_join(self, s, params):
+        """SELECT a.x, b.y FROM t1 a JOIN t2 b ON b.id = a.ref ... WHERE a.c = %s ... ORDER BY a.c, ... (inner join)"""
+        m = re.fullmatch(r"SELECT (.+?) FROM (\w+) (\w+)((?: JOIN \w+ \w+ ON \w+\.\w+ = \w+\.\w+)+)"
+                         r"(?: WHERE (.+?))?(?: ORDER BY (.+?))?", s)
+        assert m, f"ฐานข้อมูลปลอมไม่รู้จัก SQL: {s}"
+        cols, t0, a0, joins, where, order = m.groups()
+        alias = {a0: t0}
+
+        def ref(text):
+            a, c = text.strip().split(".")
+            assert a in alias and c in self.db.schema[alias[a]]["cols"], f"ไม่มีคอลัมน์ {text} ใน SQL: {s}"
+            return a, c
+        envs = [{a0: r} for r in self.db.tables[t0]]
+        for jt, ja, x, y in re.findall(r" JOIN (\w+) (\w+) ON (\w+\.\w+) = (\w+\.\w+)", joins):
+            alias[ja] = jt
+            (xa, xc), (ya, yc) = ref(x), ref(y)
+            (na, nc), (oa, oc) = ((xa, xc), (ya, yc)) if xa == ja else ((ya, yc), (xa, xc))
+            assert na == ja and oa != ja, s
+            index: dict = {}
+            for r in self.db.tables[jt]:
+                index.setdefault(r[nc], []).append(r)
+            envs = [{**e, ja: r} for e in envs if e[oa][oc] is not None for r in index.get(e[oa][oc], [])]
+        conds = []
+        for c in (where.split(" AND ") if where else []):
+            mm = (re.fullmatch(r"(\w+\.\w+) = ANY\(%s\)", c.strip()) or re.fullmatch(r"(\w+\.\w+) = %s", c.strip())
+                  or re.fullmatch(r"(\w+\.\w+) IS (NOT )?NULL", c.strip()))
+            assert mm, f"ฐานข้อมูลปลอมไม่รู้จักเงื่อนไข: {c}"
+            a, k = ref(mm.group(1))
+            if "ANY" in c:
+                v = list(params.pop(0))
+                conds.append(lambda e, a=a, k=k, v=v: e[a][k] in v)
+            elif "%s" in c:
+                v = params.pop(0)
+                conds.append(lambda e, a=a, k=k, v=v: e[a][k] is not None and e[a][k] == v)
+            else:
+                conds.append(lambda e, a=a, k=k, neg=bool(mm.group(2)): (e[a][k] is not None) == neg)
+        envs = [e for e in envs if all(f(e) for f in conds)]
+        for part in reversed(order.split(",") if order else []):
+            a, k = ref(part.split()[0])
+            envs.sort(key=lambda e, a=a, k=k: (e[a][k] is None, e[a][k] if e[a][k] is not None else 0))
+        picks = [ref(c) for c in cols.split(",")]
+        out = [tuple(copy.deepcopy(e[a][k]) for a, k in picks) for e in envs]
         self._out, self.rowcount = out, len(out)
 
     def _insert(self, s, params):
@@ -214,7 +293,11 @@ class FakeCur:
         assert m, f"ฐานข้อมูลปลอมไม่รู้จัก SQL: {s}"
         table, cols, vals, conflict, ret = m.groups()
         cols = [c.strip() for c in cols.split(",")]
-        assert vals.count("%s") == len(cols) == len(params), s
+        holes = [v.strip() for v in vals.split(",")]
+        assert vals.count("%s") == len(cols) == len(params) == len(holes), s
+        assert all(h in ("%s", "%s::jsonb") for h in holes), s
+        # jsonb มาเป็นข้อความ JSON (json.dumps) — Postgres เก็บเป็นค่าแล้วคืนเป็นออบเจ็กต์ไพทอน
+        params = [json.loads(p) if h == "%s::jsonb" else p for h, p in zip(holes, params)]
         row = self.db.make_row(table, dict(zip(cols, params)))
         hit = self.db.clash(table, row)
         if hit:
@@ -231,9 +314,11 @@ class FakeCur:
         table, sets, where, ret = m.groups()
         assign = {}
         for part in sets.split(","):
-            mm = re.fullmatch(r"(\w+) = %s", part.strip())
+            mm = re.fullmatch(r"(\w+) = (%s|now\(\))", part.strip())
             assert mm and mm.group(1) in self.db.schema[table]["cols"], part
-            assign[mm.group(1)] = params.pop(0)
+            assign[mm.group(1)] = (params.pop(0) if mm.group(2) == "%s" else
+                                   dt.datetime(2026, 11, 16, 9, 0, tzinfo=dt.timezone.utc)
+                                   + dt.timedelta(seconds=self.db.tick))
         pred = self._pred(table, where, params)
         hit = [r for r in self.db.tables[table] if pred(r)]
         for r in hit:
@@ -269,7 +354,8 @@ NOREQ = SimpleNamespace(headers={})
 
 
 def _call(db, sess, fn, *a, **kw):
-    """เรียก route กับฐานข้อมูลปลอม · ยกข้อผิดพลาด = ย้อนทุกอย่างกลับเหมือนธุรกรรมที่ล้ม"""
+    """เรียก route กับฐานข้อมูลปลอม · ยกข้อผิดพลาด = ย้อนทุกอย่างกลับเหมือนธุรกรรมที่ล้ม
+    · จบปกติแล้วตรวจ FK ทั้งหมดเหมือน COMMIT (ชี้ของที่ไม่มี = DbError 23503 และย้อนกลับ)"""
     snap = copy.deepcopy((db.tables, db.seq))
     cur = FakeCur(db, sess)
 
@@ -279,7 +365,9 @@ def _call(db, sess, fn, *a, **kw):
     saved = mock_api._wl_db
     mock_api._wl_db = fake
     try:
-        return fn(*a, **kw)
+        out = fn(*a, **kw)
+        db.check_fks()
+        return out
     except Exception:
         db.tables, db.seq = snap
         raise
@@ -813,7 +901,7 @@ def test_removing_routes_pass_force_to_the_hook():
     db = _db()
     t = _term(db)
     calls = []
-    with _patched(_wl_after_curriculum_change=lambda cur, y, s, force: calls.append((y, s, force))):
+    with _patched(_wl_after_curriculum_change=lambda cur, y, s, force: calls.append((y, s, force)) or {}):
         _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, t["lines"][0]["id"], REQ, body={"force": True})
         _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, t["lines"][1]["id"], REQ, force="1")
         _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, t["lines"][2]["id"], REQ)
@@ -839,11 +927,63 @@ def test_hook_refusal_rolls_back_the_removal():
     def refuse(cur, y, s, force):
         if not force:
             raise HTTPException(409, "มีครูใส่ไว้แล้ว 3 แถว")
+        return {}
     with _patched(_wl_after_curriculum_change=refuse):
         c, _ = _code(lambda: _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, t["lines"][0]["id"], REQ))
         assert c == 409 and _state(db) == before
         _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, t["lines"][0]["id"], REQ, force="1")
     assert db.count("wl_curriculum_lines") == 2
+
+
+def test_fake_db_checks_foreign_keys_at_commit():
+    # route ลบบรรทัดก่อนแล้วจึงเรียก hook (FK ของแถวรอบเป็น DEFERRABLE) — hook ที่ลืมเก็บแถวค้างต้องทำให้ล้ม
+    # ตอนจบธุรกรรม (Postgres ล้มตอน COMMIT) ไม่ใช่ผ่านเงียบ ๆ แล้วเหลือแถวที่ชี้บรรทัดที่ไม่มีแล้ว
+    db = _db()
+    t = _term(db)
+    rnd = db.add("wl_rounds", year=2569, semester=2, label="2/2569", status="filling")
+    db.add("wl_rows", round_id=rnd["id"], line_id=t["lines"][0]["id"], group_id=1)
+    db.add("wl_option_teachers", round_id=rnd["id"], option_id=t["option"]["id"])
+    before = _state(db)
+    with _patched(_wl_after_curriculum_change=lambda cur, y, s, force: {}):
+        for fn, rid in ((mock_api.wl_curriculum_lines_delete, t["lines"][0]["id"]),
+                        (mock_api.wl_term_set_options_delete, t["option"]["id"]),
+                        (mock_api.wl_term_sets_delete, t["set"]["id"]),
+                        (mock_api.wl_curricula_delete, t["curriculum"]["id"])):
+            try:
+                _call(db, ADMIN, fn, rid, REQ, force="1")
+                raise AssertionError(f"{fn.__name__}: ไม่ล้มทั้งที่เหลือแถวค้าง")
+            except DbError as e:
+                assert e.sqlstate == "23503", (fn.__name__, e.sqlstate)
+            assert _state(db) == before, fn.__name__
+    # แถวที่ไม่มีใครชี้ ลบได้ตามปกติ
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_delete, t["lines"][1]["id"], REQ)
+
+
+def test_put_line_with_the_same_code_keeps_name_and_department_the_admin_set():
+    # ฟอร์มส่งทั้งแถวรวมรหัสเดิม — ถ้าเติมชื่อ/กลุ่มสาระจากทะเบียนทุกครั้ง กลุ่มสาระที่ admin ย้ายไว้จะถูกรีเซ็ต
+    # แล้วแถวของรอบย้ายไปอยู่คิวของหัวหน้าอีกกลุ่มโดยไม่มีใครเห็น
+    db = _db()
+    t = _term(db)
+    lid = t["lines"][0]["id"]
+    _call(db, ADMIN, mock_api.wl_curriculum_lines_update, lid, REQ,
+          body={"department_id": 4, "name": "ภาษาไทยปรับปรุง"})
+    for code in ("ท21102", " ท21102 "):
+        got = _call(db, ADMIN, mock_api.wl_curriculum_lines_update, lid, REQ, body={"code": code, "weekly": 4})
+        assert (got["department_id"], got["name"], got["subject_id"], got["weekly"]) == (
+            4, "ภาษาไทยปรับปรุง", _subj(db, "ท21102")["id"], 4), got
+    last = max(db.tables["wl_curriculum_log"], key=lambda r: r["id"])
+    assert "กลุ่มสาระ" not in last["detail"] and "ชื่อ" not in last["detail"], last["detail"]
+    # รหัสเปลี่ยนจริง → ผูกวิชาใหม่และเติมชื่อ/กลุ่มสาระจากทะเบียนตามเดิม
+    got = _call(db, ADMIN, mock_api.wl_curriculum_lines_update, lid, REQ, body={"code": "ค21102"})
+    assert (got["subject_id"], got["name"], got["department_id"]) == (_subj(db, "ค21102")["id"],
+                                                                      "คณิตศาสตร์พื้นฐาน 2", 2), got
+    # รหัสเดิมของบรรทัดที่ไม่ผูกวิชา: ทะเบียนเพิ่งมีวิชารหัสนี้แต่กำกวม (สองวิชา) ส่งรหัสเดิมซ้ำต้องไม่ได้ 409
+    free = _call(db, ADMIN, mock_api.wl_curriculum_lines_create, REQ,
+                 {"curriculum_id": t["curriculum"]["id"], "code": "X1", "name": "พิมพ์เอง", "weekly": 1})
+    db.add("wl_subjects", sched_id=None, code="X1", name="ก")
+    db.add("wl_subjects", sched_id=None, code="X1", name="ข")
+    got = _call(db, ADMIN, mock_api.wl_curriculum_lines_update, free["id"], REQ, body={"code": "X1", "weekly": 2})
+    assert (got["subject_id"], got["name"], got["weekly"]) == (None, "พิมพ์เอง", 2), got
 
 
 # ── การตั้งต้น ─────────────────────────────────────────────────────────
@@ -857,8 +997,8 @@ def test_seed_from_timetable_twice_is_409():
     db = FakeDb()
     snaps = {k: copy.deepcopy(getattr(mock_api, k)) for k in GLOBALS}
     out = _call(db, ADMIN, mock_api.wl_curricula_seed, REQ, {"year": 2569, "semester": 2, "source": "timetable"})
-    assert out["counts"] == {"curricula": 74, "lines": out["counts"]["lines"], "groups": 93, "sets": 13,
-                             "options": 44}, out["counts"]
+    # 923 บรรทัด = ข้อมูลตั้งต้น (74 หลักสูตร × บรรทัดของแต่ละชุด) · ตรึงตัวเลขจริง ไม่เทียบค่ากับตัวเอง
+    assert out["counts"] == {"curricula": 74, "lines": 923, "groups": 93, "sets": 13, "options": 44}, out["counts"]
     assert out["imported"]["teachers"]["created"] == 143 and out["imported"]["subjects"]["created"] == 271
     assert out["unconverted"] == [] and out["label"] == "2/2569"
     assert _lines_times_groups(db, 2569, 2) == 1220
@@ -876,6 +1016,20 @@ def test_seed_from_timetable_twice_is_409():
     assert c == 409 and _thai(d) and _state(db) == before
     for k, v in snaps.items():
         assert getattr(mock_api, k) == v, k
+
+
+def test_concurrent_seed_is_409_not_500():
+    # สองคำขอตั้งต้นพร้อมกัน: ทั้งคู่ผ่านด่าน "ยังไม่มีหลักสูตร" ก่อนอีกฝั่ง commit — ฝั่งที่ช้ากว่าชน UNIQUE ของชื่อหลักสูตร
+    # ต้องได้ 409 ข้อความเดียวกับด่านปกติ (ไม่ใช่ 500) และไม่มีอะไรถูกเขียน
+    db = _db()
+    body = {"year": 2569, "semester": 2, "source": "timetable"}
+    _call(db, ADMIN, mock_api.wl_curricula_seed, REQ, body)
+    c1, d1 = _code(lambda: _call(db, ADMIN, mock_api.wl_curricula_seed, REQ, body))
+    before = _state(db)
+    with _patched(_wl_term_has_curriculum=lambda cur, y, s: False):
+        c2, d2 = _code(lambda: _call(db, ADMIN, mock_api.wl_curricula_seed, REQ, body))
+    assert (c1, c2) == (409, 409) and d1 == d2 and "มีหลักสูตรอยู่แล้ว" in d2, (c2, d2)
+    assert _state(db) == before
 
 
 def test_seed_binds_lines_by_code_when_a_timetable_subject_clashed_with_a_typed_one():
@@ -1103,15 +1257,16 @@ def test_curriculum_routes_are_registered():
         assert want in paths, want
 
 
-for name, fn in list(globals().items()):
-    if name.startswith("test_") and callable(fn):
-        try:
-            fn()
-        except Exception as e:  # noqa: BLE001
-            fails.append(f"{name}: {type(e).__name__} {e}")
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                fails.append(f"{name}: {type(e).__name__} {e}")
 
-if fails:
-    for f in fails:
-        print("FAIL:", f)
-    sys.exit(1)
-print("ALL PASS")
+    if fails:
+        for f in fails:
+            print("FAIL:", f)
+        sys.exit(1)
+    print("ALL PASS")
