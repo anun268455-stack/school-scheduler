@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { apiErrorText, listDepartments, listSubjects } from "../api";
 import {
-  curriculumSummary, departmentName, formatNumber, groupCurricula, guessTerm, KIND_TEXT, logParts, nextTerm,
+  curriculumSummary, departmentShow, formatNumber, groupCurricula, guessTerm, KIND_TEXT, logParts, nextTerm,
   parseTerm, roomRange, searchSubjects, SET_KIND_TEXT, termChoices, termLabel,
   type Curriculum, type CurriculumLine, type LogEntry, type RefItem, type SeedResult, type SubjectHit, type Term,
   type TermSet, type TermSetOption,
@@ -77,6 +77,9 @@ function useTerms(tick: number) {
 
 export default function CurriculumPage(props: {
   admin: boolean;
+  /** กล่องสรุปหลังตั้งต้น — App เป็นเจ้าของ (หน้านี้ถูกถอดเมื่อเปลี่ยนเมนู แต่กล่องต้องอยู่จนกดปิด) */
+  seedSummary: SeedResult | null;
+  onSeedSummary: (r: SeedResult | null) => void;
   /** เปิดหน้ามาที่ภาคเรียน (และหลักสูตร) นี้ — ให้หน้าอื่นลิงก์มา "จากหลักสูตร …" ได้ */
   focus?: Term & { curriculumId?: number };
 }) {
@@ -95,7 +98,14 @@ export default function CurriculumPage(props: {
   }, [reloadSubjects]);
 
   const [today] = useState(() => guessTerm(new Date()));
-  const [picked, setPicked] = useState<Term | null>(props.focus ? { year: props.focus.year, semester: props.focus.semester } : null);
+  // กล่องสรุปหลังตั้งต้นที่ยังไม่ได้ปิดผูกกับภาคเรียนของมัน — กลับมาที่หน้านี้ (เปลี่ยนเมนู/โหลดหน้าใหม่) ให้เปิดภาคเรียนนั้นก่อน กล่องจะได้เห็น
+  const [picked, setPicked] = useState<Term | null>(() =>
+    props.focus
+      ? { year: props.focus.year, semester: props.focus.semester }
+      : admin && props.seedSummary
+        ? { year: props.seedSummary.year, semester: props.seedSummary.semester }
+        : null,
+  );
   const known = terms?.list ?? [];
   // ค่าตั้งต้น: ภาคเรียนล่าสุดที่มีหลักสูตร · ยังไม่มีเลย → admin เริ่มที่ภาคเรียนที่น่าจะเป็นตอนนี้ (เปลี่ยนได้) · หัวหน้าไม่มีอะไรให้ดู
   const term: Term | null = picked ?? (known[0] ? { year: known[0].year, semester: known[0].semester } : admin && terms ? today : null);
@@ -107,7 +117,6 @@ export default function CurriculumPage(props: {
   const [openId, setOpenId] = useState<number | null>(props.focus?.curriculumId ?? null);
   const [focusSet, setFocusSet] = useState<number | null>(null);
   const [query, setQuery] = useState("");
-  const [seed, setSeed] = useState<SeedResult | null>(null);
   const [blank, setBlank] = useState(false);
   const [adding, setAdding] = useState<"curriculum" | "set" | null>(null);
 
@@ -171,8 +180,12 @@ export default function CurriculumPage(props: {
   const canEdit = admin && data !== null && !locked;
   const kit: Kit | null =
     canEdit && term && data
-      ? { term, view: data, terms: known, write, busy: saving, subjects: subjects.rows, departments: depts.rows, groups: groups.rows }
+      ? {
+          term, view: data, terms: known, write, busy: saving, subjects: subjects.rows, departments: depts.rows, groups: groups.rows,
+          loaded: { departments: depts.loaded, subjects: subjects.loaded, groups: groups.loaded },
+        }
       : null;
+  const seed = props.seedSummary;
   const empty = data !== null && data.curricula.length === 0 && data.sets.length === 0;
   const opened = data?.curricula.find((c) => c.id === openId) ?? null;
   const groupCount = data ? data.curricula.reduce((n, c) => n + c.group_ids.length, 0) : 0;
@@ -220,7 +233,7 @@ export default function CurriculumPage(props: {
     body = kit ? (
       <SeedCard
         kit={kit}
-        onSeeded={setSeed}
+        onSeeded={props.onSeedSummary}
         onBlank={() => {
           // ฟอร์มหลักสูตรแรกอยู่ในแท็บหลักสูตร — ถ้าค้างอยู่ที่แท็บอื่นจากภาคเรียนก่อน ฟอร์มจะไม่ขึ้น
           setBlank(true);
@@ -261,7 +274,7 @@ export default function CurriculumPage(props: {
           opened ? (
             <CurriculumDetail
               curriculum={opened}
-              departments={depts.rows}
+              departments={depts}
               kit={kit}
               onBack={() => setOpenId(null)}
             />
@@ -307,7 +320,7 @@ export default function CurriculumPage(props: {
                 )}
               </div>
             )}
-            <SetList sets={data.sets} departments={depts.rows} kit={kit} focus={focusSet} />
+            <SetList sets={data.sets} departments={depts} kit={kit} focus={focusSet} />
           </>
         ) : (
           <LogList entries={log.data} error={log.error} onRetry={log.retry} />
@@ -351,14 +364,38 @@ export default function CurriculumPage(props: {
           <LoadError message={terms.error} onRetry={retryTerms} />
         </div>
       )}
-      {seed && term && seed.year === term.year && seed.semester === term.semester && (
-        <SeedSummary result={seed} onClose={() => setSeed(null)} />
+      {/* ทะเบียนที่ใช้แสดงชื่อ/เติมชื่อโหลดไม่ได้ → บอกตรง ๆ พร้อมปุ่มลองใหม่ (หน้าแสดงรหัสดิบแทน ไม่สรุปว่า "ไม่มีแล้ว") */}
+      {depts.error && (
+        <RegistryError what="รายชื่อกลุ่มสาระ" effect="ระหว่างนี้แสดงเป็นรหัสกลุ่มสาระ และยังเปลี่ยนกลุ่มสาระในฟอร์มไม่ได้"
+          message={depts.error} onRetry={depts.reload} />
+      )}
+      {admin && groups.error && (
+        <RegistryError what="รายการห้องเรียน" effect="ยังแก้ห้องของหลักสูตรและชุดคาบเสรี/กิจกรรมไม่ได้จนกว่าจะโหลดได้"
+          message={groups.error} onRetry={groups.reload} />
+      )}
+      {admin && subjects.error && (
+        <RegistryError what="ทะเบียนวิชา" effect="พิมพ์รหัสวิชาแล้วชื่อจะยังไม่ขึ้นเอง (เพิ่มบรรทัดได้ เซิร์ฟเวอร์เติมชื่อตามรหัสให้)"
+          message={subjects.error} onRetry={subjects.reload} />
+      )}
+      {admin && seed && term && seed.year === term.year && seed.semester === term.semester && (
+        <SeedSummary result={seed} onClose={() => props.onSeedSummary(null)} />
       )}
       {body}
       {confirm && (
         <ForceConfirm message={confirm.message} onYes={() => confirm.answer(true)} onNo={() => confirm.answer(false)} />
       )}
     </div>
+  );
+}
+
+function RegistryError(props: { what: string; effect: string; message: string; onRetry: () => void }) {
+  return (
+    <Notice tone="bad" role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <span>
+        โหลด{props.what}ไม่ได้: {props.message} — {props.effect}
+      </span>
+      <Button size="sm" onClick={props.onRetry}>ลองโหลดใหม่</Button>
+    </Notice>
   );
 }
 
@@ -552,12 +589,16 @@ function CurriculumGrid(props: { curricula: Curriculum[]; onOpen: (id: number) =
 const LINE_COLS = "md:grid-cols-[6.5rem_minmax(0,1fr)_3.5rem_5.5rem_10.5rem_12rem]";
 const LINE_COLS_EDIT = "md:grid-cols-[6.5rem_minmax(0,1fr)_3.5rem_5.5rem_10.5rem_12rem_8.5rem]";
 
-function DeptCell(props: { id: number | null; departments: Department[] }) {
-  if (props.id === null) return <Chip tone="warn">{departmentName(null, props.departments)}</Chip>;
-  return <span>{departmentName(props.id, props.departments)}</span>;
+type Depts = { rows: Department[]; loaded: boolean };
+
+function DeptCell(props: { id: number | null; departments: Depts }) {
+  const d = departmentShow(props.id, props.departments.rows, props.departments.loaded);
+  if (d.kind === "none") return <Chip tone="warn">{d.text}</Chip>;
+  // raw = ทะเบียนยังไม่มา: รหัสดิบสีรอง ไม่ใช่ป้ายเตือน
+  return <span className={d.kind === "raw" ? "text-muted" : undefined}>{d.text}</span>;
 }
 
-function LineView(props: { line: CurriculumLine; departments: Department[]; actions?: ReactNode; cols: string }) {
+function LineView(props: { line: CurriculumLine; departments: Depts; actions?: ReactNode; cols: string }) {
   const ln = props.line;
   return (
     <div className={`md:grid ${props.cols} md:items-center md:gap-x-3`} data-testid={`line-${ln.id}`}>
@@ -587,7 +628,7 @@ function LineView(props: { line: CurriculumLine; departments: Department[]; acti
 
 function CurriculumDetail(props: {
   curriculum: Curriculum;
-  departments: Department[];
+  departments: Depts;
   kit: Kit | null;
   onBack: () => void;
 }) {
@@ -662,7 +703,7 @@ function CurriculumDetail(props: {
 
 // ---- ชุดคาบเสรี/กิจกรรม ----
 
-function OptionView(props: { option: TermSetOption; departments: Department[]; actions?: ReactNode }) {
+function OptionView(props: { option: TermSetOption; departments: Depts; actions?: ReactNode }) {
   const o = props.option;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -676,7 +717,7 @@ function OptionView(props: { option: TermSetOption; departments: Department[]; a
   );
 }
 
-function SetList(props: { sets: TermSet[]; departments: Department[]; kit: Kit | null; focus: number | null }) {
+function SetList(props: { sets: TermSet[]; departments: Depts; kit: Kit | null; focus: number | null }) {
   // มาจากผลค้นหา: เลื่อนให้เห็นชุดนั้น (การ์ดชุดมีกรอบสีหลัก)
   useEffect(() => {
     if (props.focus !== null) document.getElementById(`set-${props.focus}`)?.scrollIntoView({ block: "start" });

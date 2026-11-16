@@ -1,7 +1,7 @@
 import type { AxiosError } from "axios";
 import { ContractError, http } from "./api";
 import {
-  forceConflict, KIND_TEXT, SET_KIND_TEXT,
+  forceConflict, KIND_TEXT, parseSeedResult, SET_KIND_TEXT,
   type Curriculum, type CurriculumBody, type CurriculumLine, type CurriculumTerm, type LineBody, type LogEntry,
   type OptionBody, type RefItem, type SeedResult, type SetBody, type TermCurricula, type TermSet, type TermSetOption,
 } from "./curriculum";
@@ -195,4 +195,26 @@ export async function deleteOption(id: number, force = false): Promise<void> {
 export function forceConflictText(err: unknown): string | null {
   const res = (err as AxiosError | undefined)?.response;
   return forceConflict(res?.status ?? 0, (res?.data as { detail?: unknown } | undefined)?.detail);
+}
+
+// ---- กล่องสรุปหลังตั้งต้น: เก็บใน sessionStorage จนกว่า admin กดปิด ----
+// รายการแปลงไม่ได้มาครั้งเดียวในคำตอบของการตั้งต้น เซิร์ฟเวอร์ไม่เก็บ และตั้งต้นซ้ำไม่ได้ (ภาคเรียนไม่ว่างแล้ว)
+// เปลี่ยนเมนูหรือโหลดหน้าใหม่ต้องไม่ทำให้หาย · ที่เก็บใช้ไม่ได้ (ปิดไว้/โหมดส่วนตัว) ก็ยังอยู่ใน state ของ App ระหว่างเปิดแท็บ
+const SEED_KEY = "workload.seedSummary";
+
+export function loadSeedSummary(): SeedResult | null {
+  try {
+    return parseSeedResult(sessionStorage.getItem(SEED_KEY));
+  } catch {
+    return null;
+  }
+}
+
+export function saveSeedSummary(r: SeedResult | null): void {
+  try {
+    if (r === null) sessionStorage.removeItem(SEED_KEY);
+    else sessionStorage.setItem(SEED_KEY, JSON.stringify(r));
+  } catch {
+    // เก็บไม่ได้ — กล่องยังอยู่ระหว่างเปิดแท็บนี้ (state ของ App) แต่โหลดหน้าใหม่แล้วจะหาย
+  }
 }

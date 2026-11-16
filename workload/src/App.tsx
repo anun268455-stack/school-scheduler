@@ -4,6 +4,8 @@ import {
 } from "./api";
 import { canManageRegistry, parseSession, type Session } from "./auth";
 import CodesPage from "./pages/CodesPage";
+import type { SeedResult } from "./curriculum";
+import { loadSeedSummary, saveSeedSummary } from "./curriculumApi";
 import CurriculumPage from "./pages/CurriculumPage";
 import LoginPage from "./pages/LoginPage";
 import SetupPage from "./pages/SetupPage";
@@ -57,6 +59,13 @@ export default function App() {
   const [setup, setSetup] = useState<{ firstTime: boolean } | null>(null);
   // สลับหน้าด้วย state (ไม่ใช้ react-router โดยตั้งใจ) · null = หน้าแรกของบทบาท
   const [page, setPage] = useState<PageKey | null>(null);
+  // กล่องสรุปหลังตั้งต้นหลักสูตร (มีรายการแปลงไม่ได้ที่มาครั้งเดียว) อยู่ที่นี่ ไม่ใช่ในหน้าหลักสูตร —
+  // หน้าถูกถอดเมื่อเปลี่ยนเมนู · เก็บใน sessionStorage ด้วยให้รอดการโหลดหน้าใหม่ · หายเมื่อกดปิดหรือออกจากระบบเท่านั้น
+  const [seedSummary, setSeedSummary] = useState<SeedResult | null>(() => loadSeedSummary());
+  const keepSeedSummary = (r: SeedResult | null) => {
+    setSeedSummary(r);
+    saveSeedSummary(r);
+  };
 
   useEffect(() => {
     setSessionExpiredHandler((message) => {
@@ -113,6 +122,7 @@ export default function App() {
       // ออกจากหน้านี้ได้เสมอ แม้เซิร์ฟเวอร์ไม่ตอบ (session ฝั่งเซิร์ฟเวอร์หมดเองใน 12 ชั่วโมง)
     }
     clearSession();
+    keepSeedSummary(null); // เครื่องห้องพักครูใช้ร่วมกัน — คนถัดไปไม่ต้องเห็นของคนก่อน
     setPage(null); // ล็อกอินครั้งหน้าเริ่มที่หน้าแรกของบทบาทเสมอ
     setSession(null);
   };
@@ -175,7 +185,7 @@ export default function App() {
     >
       {current === "curriculum" ? (
         // ทุกบทบาทเปิดดูได้ · ปุ่มแก้มีเฉพาะ admin (เซิร์ฟเวอร์บังคับซ้ำ: หัวหน้าเขียนได้ 403)
-        <CurriculumPage admin={admin} />
+        <CurriculumPage admin={admin} seedSummary={seedSummary} onSeedSummary={keepSeedSummary} />
       ) : current === "teachers" && admin ? (
         <TeachersPage />
       ) : current === "subjects" && admin ? (

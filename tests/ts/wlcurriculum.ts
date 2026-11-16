@@ -7,8 +7,8 @@
  * · ห้องที่อยู่หลักสูตรอื่นแล้วต้องรู้ว่าอยู่หลักสูตรไหน · 409 ที่ต้องยืนยันซ้ำแยกออกจาก 409 อื่นได้
  */
 import {
-  applyCode, buildCurriculumBody, buildLineBody, buildOptionBody, buildSetBody, classSort, curriculumChanges,
-  curriculumSummary, departmentName, forceConflict, groupCurricula, guessTerm, KIND_TEXT, levelOf, lineChanges,
+  applyCode, buildCurriculumBody, buildLineBody, buildOptionBody, buildSetBody, classSort, codeMatch, curriculumChanges,
+  curriculumSummary, departmentName, departmentShow, missingRooms, parseSeedResult, forceConflict, groupCurricula, guessTerm, KIND_TEXT, levelOf, lineChanges,
   logLine, logParts, nextTerm, optionChanges, parseTerm, roomRange, roomsByLevel, searchSubjects, seedSummary,
   setChanges, SET_KIND_TEXT, subjectsWithCode, takenRooms, termChoices, termLabel, thaiDateTime,
   type Curriculum, type CurriculumLine, type LineForm, type SeedResult, type TermSet,
@@ -395,6 +395,56 @@ test("departmentName: ไม่ระบุ · กลุ่มที่ไม่
   eq(departmentName(1, depts), "ภาษาไทย");
   eq(departmentName(null, depts), "ยังไม่ระบุกลุ่มสาระ");
   eq(departmentName(9, depts), "กลุ่มสาระที่ไม่มีแล้ว (รหัส 9)");
+});
+
+// ── ทะเบียนที่ยังโหลดไม่ได้ ≠ ไม่มีจริง (รีวิวงานที่ 6 ข้อ Important 1) ─────────────────
+test("departmentShow: ทะเบียนกลุ่มสาระยังไม่มา → รหัสดิบ ไม่ใช่ 'ไม่มีแล้ว' · ไม่ระบุยังเป็นไม่ระบุ", () => {
+  const depts = [{ id: 1, name: "ภาษาไทย" }];
+  eq(departmentShow(1, depts, true), { kind: "name", text: "ภาษาไทย" });
+  eq(departmentShow(9, depts, true), { kind: "gone", text: "กลุ่มสาระที่ไม่มีแล้ว (รหัส 9)" });
+  eq(departmentShow(null, depts, true), { kind: "none", text: "ยังไม่ระบุกลุ่มสาระ" });
+  eq(departmentShow(1, [], false), { kind: "raw", text: "กลุ่มสาระรหัส 1" });
+  eq(departmentShow(9, [], false), { kind: "raw", text: "กลุ่มสาระรหัส 9" });
+  eq(departmentShow(null, [], false), { kind: "none", text: "ยังไม่ระบุกลุ่มสาระ" });
+  const text = departmentShow(1, [], false).text;
+  ok(!text.includes("ไม่มีแล้ว"), text);
+  eq(departmentName(1, [], false), "กลุ่มสาระรหัส 1");
+});
+
+test("missingRooms: ห้องที่ไม่มีแล้วตัดสินได้เฉพาะเมื่อรายการห้องโหลดแล้ว", () => {
+  const groups = [{ id: 1, name: "ม.1/1" }, { id: 2, name: "ม.1/2" }];
+  eq(missingRooms([1, 7, 2, 9], groups, true), [7, 9]);
+  eq(missingRooms([1, 7], [], false), []);
+  eq(missingRooms([1, 2], groups, true), []);
+});
+
+test("codeMatch: ทะเบียนวิชายังไม่มา → unloaded ไม่ใช่ 'ไม่มีในทะเบียน'", () => {
+  eq(codeMatch("  ", REG, true), { kind: "blank" });
+  eq(codeMatch("ท21102", REG, true), { kind: "one", name: "ภาษาไทยพื้นฐาน 2" });
+  eq(codeMatch("DUP", REG, true), { kind: "many", count: 2 });
+  eq(codeMatch("X9", REG, true), { kind: "none" });
+  eq(codeMatch("ท21102", [], false), { kind: "unloaded" });
+  eq(codeMatch("", [], false), { kind: "blank" });
+});
+
+// ── กล่องสรุปหลังตั้งต้นเก็บใน sessionStorage (รายการแปลงไม่ได้มาครั้งเดียว) ─────────────
+const SEED: SeedResult = {
+  year: 2569, semester: 2, label: "2/2569", source: "timetable",
+  counts: { curricula: 74, lines: 923, groups: 93, sets: 13, options: 44 },
+  imported: { teachers: { created: 143, linked: 0, skipped: 0 }, subjects: { created: 271, linked: 0, skipped: 0 } },
+  unconverted: [{ source: "requirement", ref: 1, reason: "ครูรหัส 599 ยังไม่มีในทะเบียน" }],
+};
+
+test("parseSeedResult: อ่านกลับได้ครบ · ค่าที่เก็บผิดรูป/ถูกแก้มือ → null (ไม่ทำให้หน้าล้ม)", () => {
+  eq(parseSeedResult(JSON.stringify(SEED)), SEED);
+  eq(parseSeedResult(JSON.stringify({ ...SEED, source: "copy", imported: null, unconverted: [] })),
+    { ...SEED, source: "copy", imported: null, unconverted: [] });
+  for (const raw of [null, "", "x", "[]", "null", JSON.stringify({ ...SEED, year: "2569" }),
+    JSON.stringify({ ...SEED, source: "other" }), JSON.stringify({ ...SEED, counts: { ...SEED.counts, lines: -1 } }),
+    JSON.stringify({ ...SEED, unconverted: [{ reason: 5 }] }), JSON.stringify({ ...SEED, unconverted: "x" }),
+    JSON.stringify({ ...SEED, imported: { teachers: {} } }), JSON.stringify({ ...SEED, label: 1 })]) {
+    eq(parseSeedResult(raw), null);
+  }
 });
 
 if (fails.length) {

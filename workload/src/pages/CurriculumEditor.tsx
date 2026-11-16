@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
-  applyCode, buildCurriculumBody, buildLineBody, buildOptionBody, buildSetBody, curriculumChanges, KIND_TEXT,
-  lineChanges, optionChanges, roomsByLevel, seedSummary, SET_KIND_TEXT, setChanges, subjectsWithCode, takenRooms,
-  termLabel,
+  applyCode, buildCurriculumBody, buildLineBody, buildOptionBody, buildSetBody, codeMatch, curriculumChanges,
+  departmentShow, KIND_TEXT, lineChanges, missingRooms, optionChanges, roomsByLevel, seedSummary, SET_KIND_TEXT,
+  setChanges, takenRooms, termLabel,
   type Curriculum, type CurriculumForm as CurriculumFormValue, type CurriculumLine, type CurriculumTerm,
   type LineForm, type LineKind, type OptionForm, type RefItem, type SeedResult, type SetForm as SetFormValue,
   type SetKind, type Term, type TermCurricula, type TermSet, type TermSetOption,
@@ -32,6 +32,8 @@ export type Kit = {
   subjects: WlSubject[];
   departments: Department[];
   groups: RefItem[];
+  /** ทะเบียนแต่ละอย่างเคยโหลดสำเร็จหรือยัง — ยังไม่โหลด ≠ ไม่มี (ห้ามสรุปว่า "ไม่มีแล้ว"/"ไม่มีในทะเบียน") */
+  loaded: { departments: boolean; subjects: boolean; groups: boolean };
 };
 
 const LEVELS = ["ม.1", "ม.2", "ม.3", "ม.4", "ม.5", "ม.6"];
@@ -184,7 +186,10 @@ export function SeedSummary(props: { result: SeedResult; onClose: () => void }) 
       {r.unconverted.length > 0 ? (
         <Notice tone="warn" className="mt-3" data-testid="seed-unconverted">
           <p className="font-semibold">แปลงไม่ได้ {r.unconverted.length.toLocaleString("th-TH")} รายการ — ไม่ได้อยู่ในหลักสูตร</p>
-          <p className="text-sm">รายการนี้ขึ้นครั้งเดียว ให้จดไว้แล้วเพิ่มเองในหลักสูตรหรือชุดที่เกี่ยวข้อง (ปิดกล่องนี้แล้วดูย้อนไม่ได้)</p>
+          <p className="text-sm">
+            เซิร์ฟเวอร์ไม่เก็บรายการนี้ ให้เพิ่มเองในหลักสูตรหรือชุดที่เกี่ยวข้อง — กล่องอยู่จนกดปิด (เปลี่ยนเมนูหรือโหลดหน้าใหม่ไม่หาย)
+            แต่กดปิดแล้วดูย้อนไม่ได้
+          </p>
           <ul className="mt-2 list-disc space-y-0.5 pl-5 text-[15px]">
             {r.unconverted.map((u, i) => (
               <li key={i}>{u.reason}</li>
@@ -202,6 +207,8 @@ export function SeedSummary(props: { result: SeedResult; onClose: () => void }) 
 
 function RoomPicker(props: {
   groups: RefItem[];
+  /** รายการห้องโหลดสำเร็จแล้ว — ยังไม่โหลด ห้ามจัดห้องที่เลือกไว้เป็น "ไม่มีแล้ว" (ชวนให้เอาห้องจริงออก) */
+  loaded: boolean;
   value: number[];
   onChange: (ids: number[]) => void;
   /** ห้อง → ชื่อหลักสูตรอื่นที่ใช้ห้องนั้นอยู่ (ติ๊กไม่ได้) · ชุดคาบเสรีไม่ส่ง (ห้องหนึ่งอยู่หลายชุดได้) */
@@ -210,8 +217,7 @@ function RoomPicker(props: {
   missingNames: Map<number, string>;
   disabled: boolean;
 }) {
-  const known = new Set(props.groups.map((g) => g.id));
-  const missing = props.value.filter((g) => !known.has(g));
+  const missing = missingRooms(props.value, props.groups, props.loaded);
   const toggle = (gid: number, on: boolean) =>
     props.onChange(on ? [...props.value, gid] : props.value.filter((g) => g !== gid));
 
@@ -236,6 +242,14 @@ function RoomPicker(props: {
     );
   };
 
+  if (!props.loaded) {
+    return (
+      <p className="rounded-xl border border-dashed border-line px-4 py-3 text-muted" data-testid="rooms-unloaded">
+        ยังโหลดรายการห้องเรียนไม่ได้ — ห้องที่เลือกไว้ {props.value.length} ห้องยังอยู่ครบ · บันทึกได้เมื่อโหลดรายการห้องได้แล้ว
+        (กด “ลองโหลดใหม่” ด้านบน)
+      </p>
+    );
+  }
   return (
     <div className="space-y-3">
       {roomsByLevel(props.groups).map((lv) => (
@@ -280,7 +294,7 @@ export function CurriculumForm(props: {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (kit.busy) return;
+    if (kit.busy || !kit.loaded.groups) return;
     setError(null);
     const built = buildCurriculumBody(form);
     if (!built.ok) return setError(built.error);
@@ -325,11 +339,13 @@ export function CurriculumForm(props: {
         <legend className="mb-2 text-sm text-muted">
           ห้องเรียนที่ใช้หลักสูตรนี้ (เลือกแล้ว {form.group_ids.length} ห้อง) — ห้องหนึ่งอยู่ได้หลักสูตรเดียวต่อภาคเรียน
         </legend>
-        <RoomPicker groups={kit.groups} value={form.group_ids} onChange={(group_ids) => setForm({ ...form, group_ids })}
-          taken={taken} missingNames={missingNames} disabled={kit.busy} />
+        <RoomPicker groups={kit.groups} loaded={kit.loaded.groups} value={form.group_ids}
+          onChange={(group_ids) => setForm({ ...form, group_ids })} taken={taken} missingNames={missingNames} disabled={kit.busy} />
       </fieldset>
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" variant="primary" disabled={kit.busy}>{initial ? "บันทึกหลักสูตร" : "เพิ่มหลักสูตร"}</Button>
+        <Button type="submit" variant="primary" disabled={kit.busy || !kit.loaded.groups}>
+          {initial ? "บันทึกหลักสูตร" : "เพิ่มหลักสูตร"}
+        </Button>
         <Button onClick={props.onCancel} disabled={kit.busy}>ยกเลิก</Button>
       </div>
       <RowError message={error} />
@@ -379,21 +395,38 @@ export function CurriculumActions(props: { kit: Kit; curriculum: Curriculum; onD
 
 // ---- บรรทัดวิชา ----
 
-function CodeHint(props: { code: string; subjects: WlSubject[] }) {
-  if (props.code.trim() === "") return null;
-  const hits = subjectsWithCode(props.code, props.subjects);
-  if (hits.length === 1) return <p className="w-full text-sm text-ok">ตรงกับทะเบียนวิชา: {hits[0].name}</p>;
-  if (hits.length > 1) {
-    return <p className="w-full text-sm text-warn">รหัสนี้มีในทะเบียนวิชา {hits.length} วิชา — แก้รหัสในทะเบียนวิชาให้ไม่ซ้ำก่อน</p>;
+function CodeHint(props: { code: string; kit: Kit }) {
+  const m = codeMatch(props.code, props.kit.subjects, props.kit.loaded.subjects);
+  switch (m.kind) {
+    case "blank":
+      return null;
+    case "unloaded":
+      return <p className="w-full text-sm text-muted">ยังโหลดทะเบียนวิชาไม่ได้ จึงยังบอกไม่ได้ว่ารหัสนี้มีในทะเบียนไหม — ชื่อวิชาจะไม่ขึ้นเอง</p>;
+    case "one":
+      return <p className="w-full text-sm text-ok">ตรงกับทะเบียนวิชา: {m.name}</p>;
+    case "many":
+      return <p className="w-full text-sm text-warn">รหัสนี้มีในทะเบียนวิชา {m.count} วิชา — แก้รหัสในทะเบียนวิชาให้ไม่ซ้ำก่อน</p>;
+    case "none":
+      return <p className="w-full text-sm text-muted">ไม่มีในทะเบียนวิชา — กรอกชื่อวิชาเอง</p>;
   }
-  return <p className="w-full text-sm text-muted">ไม่มีในทะเบียนวิชา — กรอกชื่อวิชาเอง</p>;
+}
+
+/** ช่องกลุ่มสาระของฟอร์ม · ทะเบียนกลุ่มสาระยังไม่มา → ปิดช่องไว้และแสดงรหัสดิบ (ค่าเดิมไม่ถูกส่ง เพราะส่งเฉพาะช่องที่เปลี่ยน) */
+function DeptField(props: { id: string; value: number | null; onChange: (d: number | null) => void; kit: Kit; disabled: boolean }) {
+  if (!props.kit.loaded.departments) {
+    return (
+      <select id={props.id} disabled className={inputClass} value="">
+        <option value="">{departmentShow(props.value, [], false).text} (ยังโหลดรายชื่อกลุ่มสาระไม่ได้)</option>
+      </select>
+    );
+  }
+  return <DepartmentSelect id={props.id} value={props.value} onChange={props.onChange} departments={props.kit.departments} disabled={props.disabled} />;
 }
 
 function LineFields(props: {
   value: LineForm;
   onChange: (v: LineForm) => void;
-  subjects: WlSubject[];
-  departments: Department[];
+  kit: Kit;
   disabled: boolean;
   /** ฟอร์มเพิ่มมีตัวเลือก "ตามรหัสวิชา" (ให้เซิร์ฟเวอร์เดาประเภท) */
   autoKind: boolean;
@@ -404,7 +437,7 @@ function LineFields(props: {
   return (
     <>
       <Field label="รหัสวิชา" htmlFor={`${id}-code`}>
-        <input id={`${id}-code`} value={v.code} onChange={(e) => props.onChange(applyCode(v, e.target.value, props.subjects))}
+        <input id={`${id}-code`} value={v.code} onChange={(e) => props.onChange(applyCode(v, e.target.value, props.kit.subjects))}
           placeholder="เช่น ท21102" disabled={props.disabled} className={`${inputClass} w-32`} />
       </Field>
       <Field label="ชื่อวิชา" htmlFor={`${id}-name`}>
@@ -429,10 +462,10 @@ function LineFields(props: {
         </select>
       </Field>
       <Field label="กลุ่มสาระ" htmlFor={`${id}-dept`}>
-        <DepartmentSelect id={`${id}-dept`} value={v.department_id} onChange={(d) => set({ department_id: d })}
-          departments={props.departments} disabled={props.disabled} />
+        <DeptField id={`${id}-dept`} value={v.department_id} onChange={(d) => set({ department_id: d })}
+          kit={props.kit} disabled={props.disabled} />
       </Field>
-      <CodeHint code={v.code} subjects={props.subjects} />
+      <CodeHint code={v.code} kit={props.kit} />
     </>
   );
 }
@@ -460,7 +493,7 @@ export function AddLineForm(props: { kit: Kit; curriculumId: number }) {
 
   return (
     <form ref={formRef} onSubmit={submit} aria-label="เพิ่มบรรทัดวิชา" className="flex flex-wrap items-end gap-3">
-      <LineFields value={form} onChange={setForm} subjects={kit.subjects} departments={kit.departments} disabled={kit.busy} autoKind />
+      <LineFields value={form} onChange={setForm} kit={kit} disabled={kit.busy} autoKind />
       <Button type="submit" variant="primary" disabled={kit.busy}>เพิ่มบรรทัด</Button>
       <RowError message={error} />
     </form>
@@ -502,7 +535,7 @@ export function LineEditorRow(props: { kit: Kit; line: CurriculumLine; view: (ac
   if (mode === "edit") {
     return (
       <form onSubmit={save} aria-label={`แก้บรรทัด ${line.code}`} className="flex flex-wrap items-end gap-3 py-1">
-        <LineFields value={form} onChange={setForm} subjects={kit.subjects} departments={kit.departments} disabled={kit.busy} autoKind={false} />
+        <LineFields value={form} onChange={setForm} kit={kit} disabled={kit.busy} autoKind={false} />
         <div className="flex gap-2">
           <Button type="submit" variant="primary" disabled={kit.busy}>บันทึก</Button>
           <Button onClick={() => { setError(null); setMode("view"); }} disabled={kit.busy}>ยกเลิก</Button>
@@ -551,7 +584,7 @@ export function SetForm(props: { kit: Kit; initial?: TermSet; onDone: () => void
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (kit.busy) return;
+    if (kit.busy || !kit.loaded.groups) return;
     setError(null);
     const built = buildSetBody(form);
     if (!built.ok) return setError(built.error);
@@ -591,11 +624,13 @@ export function SetForm(props: { kit: Kit; initial?: TermSet; onDone: () => void
         <legend className="mb-2 text-sm text-muted">
           ห้องเรียนที่เรียนชุดนี้ (เลือกแล้ว {form.group_ids.length} ห้อง) — ห้องหนึ่งอยู่ได้หลายชุด
         </legend>
-        <RoomPicker groups={kit.groups} value={form.group_ids} onChange={(group_ids) => setForm({ ...form, group_ids })}
-          missingNames={missingNames} disabled={kit.busy} />
+        <RoomPicker groups={kit.groups} loaded={kit.loaded.groups} value={form.group_ids}
+          onChange={(group_ids) => setForm({ ...form, group_ids })} missingNames={missingNames} disabled={kit.busy} />
       </fieldset>
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" variant="primary" disabled={kit.busy}>{initial ? "บันทึกชุด" : "เพิ่มชุด"}</Button>
+        <Button type="submit" variant="primary" disabled={kit.busy || !kit.loaded.groups}>
+          {initial ? "บันทึกชุด" : "เพิ่มชุด"}
+        </Button>
         <Button onClick={props.onCancel} disabled={kit.busy}>ยกเลิก</Button>
       </div>
       <RowError message={error} />
@@ -646,8 +681,7 @@ export function SetActions(props: { kit: Kit; set: TermSet }) {
 function OptionFields(props: {
   value: OptionForm;
   onChange: (v: OptionForm) => void;
-  subjects: WlSubject[];
-  departments: Department[];
+  kit: Kit;
   disabled: boolean;
 }) {
   const id = useId();
@@ -655,7 +689,7 @@ function OptionFields(props: {
   return (
     <>
       <Field label="รหัสวิชา" htmlFor={`${id}-code`}>
-        <input id={`${id}-code`} value={v.code} onChange={(e) => props.onChange(applyCode(v, e.target.value, props.subjects))}
+        <input id={`${id}-code`} value={v.code} onChange={(e) => props.onChange(applyCode(v, e.target.value, props.kit.subjects))}
           placeholder="เช่น ง30201" disabled={props.disabled} className={`${inputClass} w-32`} />
       </Field>
       <Field label="ชื่อวิชา" htmlFor={`${id}-name`}>
@@ -663,10 +697,10 @@ function OptionFields(props: {
           placeholder="เติมจากทะเบียนเมื่อพิมพ์รหัส" disabled={props.disabled} className={`${inputClass} w-64`} />
       </Field>
       <Field label="กลุ่มสาระ" htmlFor={`${id}-dept`}>
-        <DepartmentSelect id={`${id}-dept`} value={v.department_id} onChange={(d) => props.onChange({ ...v, department_id: d })}
-          departments={props.departments} disabled={props.disabled} />
+        <DeptField id={`${id}-dept`} value={v.department_id} onChange={(d) => props.onChange({ ...v, department_id: d })}
+          kit={props.kit} disabled={props.disabled} />
       </Field>
-      <CodeHint code={v.code} subjects={props.subjects} />
+      <CodeHint code={v.code} kit={props.kit} />
     </>
   );
 }
@@ -693,7 +727,7 @@ export function AddOptionForm(props: { kit: Kit; setId: number }) {
   }
   return (
     <form onSubmit={submit} aria-label="เพิ่มตัวเลือกวิชา" className="flex flex-wrap items-end gap-3">
-      <OptionFields value={form} onChange={setForm} subjects={kit.subjects} departments={kit.departments} disabled={kit.busy} />
+      <OptionFields value={form} onChange={setForm} kit={kit} disabled={kit.busy} />
       <div className="flex gap-2">
         <Button type="submit" variant="primary" disabled={kit.busy}>เพิ่มตัวเลือก</Button>
         <Button onClick={() => { setError(null); setOpen(false); }} disabled={kit.busy}>ปิด</Button>
@@ -733,7 +767,7 @@ export function OptionEditorRow(props: { kit: Kit; option: TermSetOption; view: 
   if (mode === "edit") {
     return (
       <form onSubmit={save} aria-label={`แก้ตัวเลือก ${option.code}`} className="flex flex-wrap items-end gap-3 py-1">
-        <OptionFields value={form} onChange={setForm} subjects={kit.subjects} departments={kit.departments} disabled={kit.busy} />
+        <OptionFields value={form} onChange={setForm} kit={kit} disabled={kit.busy} />
         <div className="flex gap-2">
           <Button type="submit" variant="primary" disabled={kit.busy}>บันทึก</Button>
           <Button onClick={() => { setError(null); setMode("view"); }} disabled={kit.busy}>ยกเลิก</Button>

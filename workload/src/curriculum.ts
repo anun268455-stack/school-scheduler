@@ -90,9 +90,31 @@ export const SET_KIND_TEXT: Record<SetKind, string> = { elective: "ชุดค�
 
 const NO_DEPARTMENT = "ยังไม่ระบุกลุ่มสาระ";
 
-export function departmentName(id: number | null, departments: readonly Department[]): string {
-  if (id === null) return NO_DEPARTMENT;
-  return departments.find((d) => d.id === id)?.name ?? `กลุ่มสาระที่ไม่มีแล้ว (รหัส ${id})`;
+// ทะเบียนที่ยังโหลดไม่ได้ (เน็ตสะดุด เซิร์ฟเวอร์ตื่นช้า) ต้องไม่ถูกอ่านเป็น "ไม่มีจริง" — ไม่งั้นจอบอกอย่างมั่นใจว่า
+// "กลุ่มสาระที่ไม่มีแล้ว" / "ห้องที่ไม่มีแล้ว — เอาออกได้" / "ไม่มีในทะเบียนวิชา" ทั้งที่ของยังอยู่ แล้ว admin แก้ตามจอผิด ๆ
+// loaded = ทะเบียนนั้นเคยโหลดสำเร็จ (useRegistryList.loaded)
+
+/** none = บรรทัดไม่ได้ระบุ (รู้แน่จากหลักสูตรเอง) · raw = ยังโหลดชื่อไม่ได้ แสดงรหัสดิบ · gone = ทะเบียนมาแล้วแต่ไม่มีรหัสนี้ */
+export function departmentShow(
+  id: number | null,
+  departments: readonly Department[],
+  loaded: boolean,
+): { kind: "name" | "none" | "gone" | "raw"; text: string } {
+  if (id === null) return { kind: "none", text: NO_DEPARTMENT };
+  if (!loaded) return { kind: "raw", text: `กลุ่มสาระรหัส ${id}` };
+  const d = departments.find((x) => x.id === id);
+  return d ? { kind: "name", text: d.name } : { kind: "gone", text: `กลุ่มสาระที่ไม่มีแล้ว (รหัส ${id})` };
+}
+
+export function departmentName(id: number | null, departments: readonly Department[], loaded = true): string {
+  return departmentShow(id, departments, loaded).text;
+}
+
+/** ห้องที่เลือกไว้แต่ไม่มีในรายการห้องแล้ว — ตัดสินได้เฉพาะเมื่อรายการห้องโหลดแล้ว (ยังไม่มา = ไม่มีห้องไหน "หาย") */
+export function missingRooms(value: readonly number[], groups: readonly RefItem[], loaded: boolean): number[] {
+  if (!loaded) return [];
+  const known = new Set(groups.map((g) => g.id));
+  return value.filter((g) => !known.has(g));
 }
 
 export function formatNumber(n: number): string {
@@ -400,6 +422,22 @@ export function subjectsWithCode<S extends RegistrySubject>(code: string, subjec
   return subjects.filter((s) => String(s.code ?? "").trim() === key);
 }
 
+export type CodeMatch =
+  | { kind: "blank" }
+  | { kind: "unloaded" }
+  | { kind: "none" }
+  | { kind: "one"; name: string }
+  | { kind: "many"; count: number };
+
+/** รหัสที่พิมพ์ตรงกับทะเบียนวิชาไหม — ทะเบียนยังโหลดไม่ได้ = unloaded (บอกไม่ได้) ไม่ใช่ "ไม่มีในทะเบียน" */
+export function codeMatch(code: string, subjects: readonly RegistrySubject[], loaded: boolean): CodeMatch {
+  if (code.trim() === "") return { kind: "blank" };
+  if (!loaded) return { kind: "unloaded" };
+  const hits = subjectsWithCode(code, subjects);
+  if (hits.length === 1) return { kind: "one", name: hits[0].name };
+  return hits.length === 0 ? { kind: "none" } : { kind: "many", count: hits.length };
+}
+
 /** เปลี่ยนรหัสในฟอร์ม: รหัสที่มีในทะเบียนวิชาเดียว → เติมชื่อและกลุ่มสาระ · รหัสใหม่ที่ไม่มีในทะเบียน → ล้างชื่อที่เคยเติมให้
  *  (ชื่อเดิมเป็นของรหัสเก่า ปล่อยไว้จะได้รหัสกับชื่อคนละวิชา) · ชื่อที่ผู้ใช้พิมพ์เองไม่ถูกทับ · รหัสกำกวมไม่เดา */
 export function applyCode<F extends { code: string; name: string; department_id: number | null }>(
@@ -553,6 +591,37 @@ export function forceConflict(status: number, detail: unknown): string | null {
   if (status !== 409 || typeof detail !== "string" || !/[฀-๿]/.test(detail)) return null;
   if (!detail.includes(FORCE_MARK)) return null;
   return detail.replace(FORCE_MARK, "").trim();
+}
+
+const isCount = (n: unknown): boolean => typeof n === "number" && Number.isInteger(n) && n >= 0;
+const isImport = (x: unknown): boolean => {
+  const o = x as Record<string, unknown> | null;
+  return typeof o === "object" && o !== null && isCount(o.created) && isCount(o.linked) && isCount(o.skipped);
+};
+
+/** กล่องสรุปหลังตั้งต้นที่เก็บไว้ใน sessionStorage (รายการแปลงไม่ได้มาครั้งเดียว ต้องรอด reload)
+ *  ของที่เก็บอาจถูกแก้มือหรือมาจากรุ่นเก่า — รูปผิดตรงไหนก็ถือว่าไม่มี ไม่ให้หน้าล้ม */
+export function parseSeedResult(raw: string | null): SeedResult | null {
+  if (!raw) return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, any>;
+  const c = o.counts;
+  if (!Number.isInteger(o.year) || !Number.isInteger(o.semester) || typeof o.label !== "string") return null;
+  if (o.source !== "timetable" && o.source !== "copy") return null;
+  if (typeof c !== "object" || c === null || ![c.curricula, c.lines, c.groups, c.sets, c.options].every(isCount)) return null;
+  if (o.imported !== null && !(typeof o.imported === "object" && isImport(o.imported.teachers) && isImport(o.imported.subjects))) {
+    return null;
+  }
+  if (!Array.isArray(o.unconverted) || !o.unconverted.every((u: any) => typeof u === "object" && u !== null && typeof u.reason === "string")) {
+    return null;
+  }
+  return o as SeedResult;
 }
 
 /** บรรทัดของกล่องสรุปหลังตั้งต้นหลักสูตร */
