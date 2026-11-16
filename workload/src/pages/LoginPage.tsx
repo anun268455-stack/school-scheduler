@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { apiErrorText, health, login } from "../api";
 import { loginError, type Session } from "../auth";
+import { BrandMark, Button, Card, Chip, Notice } from "../ui";
 
 type Status =
   | { kind: "loading" }
@@ -55,81 +56,76 @@ export default function LoginPage({ onLoggedIn, notice, info, onOpenSetup }: Pro
   };
 
   return (
-    <main className="mx-auto max-w-md p-6">
-      <h1 className="text-2xl font-bold">เว็บลงอัตรากำลัง</h1>
-      <p className="mt-4" role="status">
-        {status.kind === "loading" && "กำลังต่อเซิร์ฟเวอร์..."}
-        {status.kind === "ok" && <span className="text-green-700">ต่อเซิร์ฟเวอร์ได้</span>}
-        {status.kind === "error" && (
-          <span className="text-red-700">{status.message}</span>
-        )}
-      </p>
-      {status.kind === "ok" && status.needsSetup && (
-        <div className="mt-2 rounded bg-yellow-50 p-3 text-yellow-900">
-          <p>ยังไม่ได้ตั้งรหัสผู้ดูแลระบบ ต้องตั้งรหัสแรกก่อนจึงจะเข้าใช้งานได้</p>
-          <button
-            onClick={() => onOpenSetup(true)}
-            className="mt-2 rounded bg-blue-600 px-4 py-2 font-bold text-white"
-          >
-            ตั้งรหัสผู้ดูแลระบบครั้งแรก
-          </button>
+    <main className="mx-auto max-w-md px-4 py-10 sm:py-16">
+      <BrandMark heading />
+      <p className="mt-2 text-muted">ใส่รหัสที่ได้รับจากผู้ดูแลระบบเพื่อเข้าใช้งาน</p>
+
+      <Card className="mt-6 space-y-4">
+        <div role="status" className="text-[15px]">
+          {status.kind === "loading" && <span className="text-muted">กำลังต่อเซิร์ฟเวอร์...</span>}
+          {status.kind === "ok" && <Chip tone="ok" dot>ต่อเซิร์ฟเวอร์ได้</Chip>}
+          {status.kind === "error" && <Notice tone="bad">{status.message}</Notice>}
         </div>
-      )}
-      {info && (
-        <p className="mt-2 rounded bg-green-50 p-3 text-green-900" role="status">
-          {info}
-        </p>
-      )}
-      {notice && (
-        <p className="mt-2 rounded bg-yellow-50 p-3 text-yellow-900" role="alert">
-          {notice}
-        </p>
-      )}
+        {status.kind === "ok" && status.needsSetup && (
+          <Notice tone="warn">
+            <p>ยังไม่ได้ตั้งรหัสผู้ดูแลระบบ ต้องตั้งรหัสแรกก่อนจึงจะเข้าใช้งานได้</p>
+            <Button variant="primary" onClick={() => onOpenSetup(true)} className="mt-3">
+              ตั้งรหัสผู้ดูแลระบบครั้งแรก
+            </Button>
+          </Notice>
+        )}
+        {info && (
+          <Notice tone="ok" role="status">
+            {info}
+          </Notice>
+        )}
+        {notice && (
+          <Notice tone="warn" role="alert">
+            {notice}
+          </Notice>
+        )}
 
-      <form onSubmit={submit} className="mt-6 space-y-3">
-        <label className="block">
-          <span className="block text-sm font-medium">รหัสเข้าใช้งาน</span>
-          <input
-            type="password"
-            autoComplete="off"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            disabled={busy}
-            className="mt-1 w-full rounded border border-gray-300 px-3 py-2"
-          />
-        </label>
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
-        >
-          เข้าสู่ระบบ
-        </button>
-        {busy && (
-          <p role="status" className="text-gray-600">
-            กำลังตรวจรหัส... (ครั้งแรกของวันอาจช้า เพราะเซิร์ฟเวอร์กำลังตื่น)
+        <form onSubmit={submit} className="space-y-3">
+          <label className="block">
+            <span className="block text-sm font-medium">รหัสเข้าใช้งาน</span>
+            <input
+              type="password"
+              autoComplete="off"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              disabled={busy}
+              className="input mt-1 w-full"
+            />
+          </label>
+          <Button type="submit" variant="primary" disabled={busy} className="w-full">
+            เข้าสู่ระบบ
+          </Button>
+          {busy && (
+            <p role="status" className="text-sm text-muted">
+              กำลังตรวจรหัส... (ครั้งแรกของวันอาจช้า เพราะเซิร์ฟเวอร์กำลังตื่น)
+            </p>
+          )}
+          {error && (
+            <Notice tone="bad" role="alert">
+              {error}
+            </Notice>
+          )}
+        </form>
+
+        {status.kind === "ok" && !status.needsSetup && (
+          <p className="border-t border-line2 pt-3 text-sm">
+            <button type="button" onClick={() => onOpenSetup(false)} className="font-medium text-brand underline-offset-2 hover:underline">
+              ลืมรหัสผู้ดูแลระบบ
+            </button>
+            <span className="text-muted"> (ต้องใช้รหัสตั้งค่าจาก Render)</span>
           </p>
         )}
-        {error && (
-          <p role="alert" className="text-red-700">
-            {error}
-          </p>
-        )}
-      </form>
+      </Card>
 
-      {status.kind === "ok" && !status.needsSetup && (
-        <p className="mt-4 text-sm">
-          <button onClick={() => onOpenSetup(false)} className="text-blue-700 underline">
-            ลืมรหัสผู้ดูแลระบบ
-          </button>
-          <span className="text-gray-600"> (ต้องใช้รหัสตั้งค่าจาก Render)</span>
-        </p>
-      )}
-
-      <p className="mt-10 rounded border border-orange-300 bg-orange-50 p-3 text-sm text-orange-900">
+      <Notice tone="warn" className="mt-6 text-sm">
         รหัสนี้ป้องกันได้แค่เว็บนี้ · โปรแกรมจัดตารางสอนยังไม่มีระบบล็อกอิน
         ใครที่รู้ลิงก์ยังเข้าไปแก้ตารางได้
-      </p>
+      </Notice>
     </main>
   );
 }

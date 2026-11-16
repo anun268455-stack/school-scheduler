@@ -2,8 +2,74 @@
 @tailwind components;
 @tailwind utilities;
 
+/* โทเค็นสีของแบบข้อ 6 — ค่าเดียวกับภาพตัวอย่าง (mockup-head.png · mockup-admin.png)
+   ครูนั่งไล่ร้อยกว่าแถวต่อกลุ่ม จึงใช้พื้นกระดาษอุ่นแทนขาวจ้า และเก็บสีสดไว้ให้สถานะเท่านั้น
+   tailwind.config.js อ้างตัวแปรเหล่านี้ทั้งหมด — แก้สีที่นี่ที่เดียว */
+:root {
+  --bg: #f6f3ec;
+  --surface: #fff;
+  --line: #e8e2d6;
+  --line2: #f1ece3;
+  --ink: #2b2a26;
+  --muted: #736d62;
+  --brand: #1f6f6b;
+  --brand-strong: #185854; /* ปุ่มหลักตอนชี้/กด — ต้องเข้มกว่า brand ไม่ใช่สีใหม่ */
+  --brand-soft: #e3efec;
+
+  /* ชิปสถานะ: พื้นอ่อน (-soft) + ตัวอักษร · แดงใช้กับข้อผิดพลาดและตีกลับเท่านั้น */
+  --warn-soft: #fff3d4;
+  --warn: #8a5a00;
+  --ok-soft: #e4f3e8;
+  --ok: #1e6b34;
+  --info-soft: #e8eefb;
+  --info: #2d4f9c;
+  --bad-soft: #fbe8e4;
+  --bad: #a3352b;
+
+  /* แถวที่ยังไม่ยืนยัน "พื้นเหลืองจางมาก" (แบบข้อ 6) — จางกว่าชิป warn ไม่งั้นทั้งตารางเหลืองจนอ่านยาก */
+  --warn-faint: #fffbf0;
+  /* แถบความคืบหน้า: สีตัวอักษรของ ok/warn เข้มเกินไปเมื่อเป็นแถบยาว จึงมีสีแถบของมันเอง (ตามภาพ) */
+  --ok-bar: #3d8b57;
+  --warn-bar: #d0911d;
+}
+
 @layer base {
-  html { font-family: "Sarabun","Noto Sans Thai","Leelawadee UI","Tahoma",sans-serif; }
-  body { @apply bg-gray-50 text-gray-900; }
+  html {
+    font-family: "Sarabun", "Noto Sans Thai", "Leelawadee UI", "Tahoma", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
   * { box-sizing: border-box; }
+  /* ช่องติ๊กทั้งเว็บเป็นสีหลัก ใหญ่พอให้กดบนโทรศัพท์ */
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--brand);
+    width: 1.05rem;
+    height: 1.05rem;
+  }
+  :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+}
+
+@layer components {
+  /* ช่องกรอกและตัวเลือกของทุกหน้า (ทะเบียน · รหัสเข้า · หน้าของขั้นที่ 2) ใช้คลาสเดียวกัน */
+  .input {
+    @apply min-h-[38px] max-w-full rounded-lg border border-line bg-surface px-3 py-1.5 leading-6 text-ink;
+    @apply placeholder:text-muted disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  /* ช่องบรรทัดเดียวสูงเท่ากันทุกชนิด (select ของ Chrome สูงกว่า input ถ้าไม่บังคับ) — ป้ายเหนือช่องในแถวเดียวกันจึงตรงกัน */
+  input.input,
+  select.input { height: 38px; }
+  .input:focus { border-color: var(--brand); outline: none; box-shadow: 0 0 0 3px var(--brand-soft); }
+}
+
+@layer utilities {
+  /* แท็บบนโทรศัพท์เลื่อนแนวนอนในแถบของมันเอง — ซ่อนแถบเลื่อนที่กินที่ */
+  .no-scrollbar { scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
 }

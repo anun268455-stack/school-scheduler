@@ -8,8 +8,43 @@ import LoginPage from "./pages/LoginPage";
 import SetupPage from "./pages/SetupPage";
 import SubjectsPage from "./pages/SubjectsPage";
 import TeachersPage from "./pages/TeachersPage";
+import { AppShell, BrandMark, EmptyState, type ShellTab } from "./ui";
 
 const ROLE_TEXT = { admin: "ผู้ดูแลระบบ", head: "หัวหน้ากลุ่มสาระ" } as const;
+
+type PageKey = "curriculum" | "rounds" | "summary" | "teachers" | "subjects" | "codes" | "fill";
+
+// เมนูของแต่ละบทบาท — ที่เดียวที่ตัดสินว่าใครเห็นแท็บอะไร (ตาม canManageRegistry)
+// เซิร์ฟเวอร์บังคับสิทธิ์ของทุก route อยู่แล้ว เมนูแค่ไม่พาไปหน้าที่ใช้ไม่ได้
+const ADMIN_TABS: ShellTab<PageKey>[] = [
+  { key: "curriculum", label: "หลักสูตร" },
+  { key: "rounds", label: "รอบอัตรากำลัง" },
+  { key: "summary", label: "สรุปอัตรากำลัง" },
+  { key: "teachers", label: "ทะเบียนครู" },
+  { key: "subjects", label: "ทะเบียนวิชา" },
+  { key: "codes", label: "รหัสเข้า" },
+];
+const HEAD_TABS: ShellTab<PageKey>[] = [
+  { key: "curriculum", label: "หลักสูตร" },
+  { key: "fill", label: "อัตรากำลังของกลุ่ม" },
+  { key: "summary", label: "สรุปอัตรากำลัง" },
+];
+// หน้าแรกหลังล็อกอิน: admin เริ่มที่ทะเบียนครูเหมือนขั้นที่ 1 (สามแท็บแรกยังเป็นหน้าว่าง) · หัวหน้าเริ่มที่งานของกลุ่ม
+const ADMIN_HOME: PageKey = "teachers";
+const HEAD_HOME: PageKey = "fill";
+
+function ComingSoon(props: { title: string; admin: boolean }) {
+  return (
+    <EmptyState
+      title={`${props.title} — กำลังจะมา`}
+      hint={
+        props.admin
+          ? "หน้านี้ยังไม่เปิดใช้ จะตามมาในรุ่นถัดไปของเว็บ · ระหว่างนี้ใช้เมนูทะเบียนครู ทะเบียนวิชา และรหัสเข้าได้ตามปกติ"
+          : "หน้านี้ยังไม่เปิดใช้ จะตามมาในรุ่นถัดไปของเว็บ · ระหว่างนี้ยังไม่ต้องทำอะไร"
+      }
+    />
+  );
+}
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(() => loadSession());
@@ -19,8 +54,8 @@ export default function App() {
   const [info, setInfo] = useState<string | null>(null);
   // null = หน้าล็อกอินปกติ · มีค่า = ฟอร์มตั้งรหัสผู้ดูแลระบบ (firstTime: false = ลืมรหัส)
   const [setup, setSetup] = useState<{ firstTime: boolean } | null>(null);
-  // สลับหน้าด้วย state (ไม่ใช้ react-router โดยตั้งใจ)
-  const [page, setPage] = useState<"teachers" | "subjects" | "codes">("teachers");
+  // สลับหน้าด้วย state (ไม่ใช้ react-router โดยตั้งใจ) · null = หน้าแรกของบทบาท
+  const [page, setPage] = useState<PageKey | null>(null);
 
   useEffect(() => {
     setSessionExpiredHandler((message) => {
@@ -77,15 +112,15 @@ export default function App() {
       // ออกจากหน้านี้ได้เสมอ แม้เซิร์ฟเวอร์ไม่ตอบ (session ฝั่งเซิร์ฟเวอร์หมดเองใน 12 ชั่วโมง)
     }
     clearSession();
-    setPage("teachers"); // ล็อกอินครั้งหน้าเริ่มที่หน้าแรกเสมอ
+    setPage(null); // ล็อกอินครั้งหน้าเริ่มที่หน้าแรกของบทบาทเสมอ
     setSession(null);
   };
 
   if (checking) {
     return (
-      <main className="mx-auto max-w-md p-6">
-        <h1 className="text-2xl font-bold">เว็บลงอัตรากำลัง</h1>
-        <p className="mt-4" role="status">กำลังตรวจสอบการเข้าสู่ระบบ...</p>
+      <main className="mx-auto max-w-md px-4 py-10 sm:py-16">
+        <BrandMark heading />
+        <p className="mt-6 text-muted" role="status">กำลังตรวจสอบการเข้าสู่ระบบ...</p>
       </main>
     );
   }
@@ -120,40 +155,37 @@ export default function App() {
     );
   }
 
+  const admin = canManageRegistry(session);
+  const tabs = admin ? ADMIN_TABS : HEAD_TABS;
+  // หน้าที่เลือกไว้ต้องอยู่ในเมนูของบทบาทนี้ ไม่งั้นกลับหน้าแรกของบทบาท (กันหัวหน้าค้างที่หน้าของ admin)
+  const current: PageKey = page !== null && tabs.some((t) => t.key === page) ? page : admin ? ADMIN_HOME : HEAD_HOME;
+  const tabLabel = tabs.find((t) => t.key === current)?.label ?? "";
+  // admin มีชื่อเป็นบทบาทอยู่แล้ว ไม่ต้องเขียนซ้ำ
+  const who = session.label === ROLE_TEXT[session.role] ? session.label : `${session.label} · ${ROLE_TEXT[session.role]}`;
+
   return (
-    <div>
-      <header className="flex items-center justify-between bg-white px-6 py-3 shadow">
-        <div>
-          <span className="font-bold">เว็บลงอัตรากำลัง</span>
-          <span className="ml-4 text-gray-700" data-testid="who">
-            {session.label} ({ROLE_TEXT[session.role]})
-          </span>
-        </div>
-        <button onClick={onLogout} className="rounded border border-gray-300 px-3 py-1">
-          ออกจากระบบ
-        </button>
-      </header>
-      {canManageRegistry(session) && (
-        <nav className="flex gap-2 bg-gray-50 px-6 py-2" aria-label="เมนูผู้ดูแลระบบ">
-          {([["teachers", "ทะเบียนครู"], ["subjects", "ทะเบียนวิชา"], ["codes", "รหัสเข้า"]] as const).map(([key, text]) => (
-            <button
-              key={key}
-              onClick={() => setPage(key)}
-              aria-current={page === key ? "page" : undefined}
-              className={`rounded px-3 py-1 ${page === key ? "bg-blue-600 text-white" : "border border-gray-300"}`}
-            >
-              {text}
-            </button>
-          ))}
-        </nav>
+    <AppShell
+      user={who}
+      tabs={tabs}
+      active={current}
+      onTab={setPage}
+      onLogout={onLogout}
+      navLabel={admin ? "เมนูผู้ดูแลระบบ" : "เมนูหัวหน้ากลุ่มสาระ"}
+    >
+      {current === "teachers" && admin ? (
+        <TeachersPage />
+      ) : current === "subjects" && admin ? (
+        <SubjectsPage />
+      ) : current === "codes" && admin ? (
+        <CodesPage />
+      ) : current === "fill" ? (
+        <EmptyState
+          title="ยังไม่มีรอบอัตรากำลังที่เปิดอยู่"
+          hint="เมื่อผู้ดูแลระบบเปิดรอบให้กลุ่มสาระกรอก หน้านี้จะแสดงรายวิชาของกลุ่มให้ใส่ครูผู้สอน"
+        />
+      ) : (
+        <ComingSoon title={tabLabel} admin={admin} />
       )}
-      <main className="mx-auto max-w-5xl p-6">
-        {canManageRegistry(session) ? (
-          page === "teachers" ? <TeachersPage /> : page === "subjects" ? <SubjectsPage /> : <CodesPage />
-        ) : (
-          <p>ยังไม่มีรอบอัตรากำลังที่เปิดอยู่</p>
-        )}
-      </main>
-    </div>
+    </AppShell>
   );
 }

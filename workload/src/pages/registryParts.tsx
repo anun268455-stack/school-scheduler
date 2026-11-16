@@ -2,17 +2,19 @@ import { useId, type ReactNode } from "react";
 import { importSummary, type DepartmentGroup, type ImportNoun, type TeacherForm } from "../registry";
 import type { Department } from "../types";
 import type { SchedulerImport } from "../useRegistryList";
+import { Button, Card, Chip, Notice } from "../ui";
 
 // ชิ้นส่วนที่ทะเบียนครูและทะเบียนวิชาใช้ร่วมกัน
 
-export const inputClass = "rounded border border-gray-300 px-2 py-1 disabled:opacity-50";
+// คลาส "input" อยู่ใน index.css · จอแคบให้ช่องเต็มแถว (ช่องที่กำหนดกว้างไว้ เช่น w-28 ก็ขยายตาม)
+export const inputClass = "input max-sm:w-full";
 
 // ป้ายที่มองเห็นได้เหนือช่องกรอก ผูกด้วย htmlFor/id · ตัวแก้ในแถวกรอกค่าไว้แล้ว placeholder จึงไม่โชว์
 // ถ้าไม่มีป้าย ช่อง "รหัสประจำตัว" กับ "ลำดับในกลุ่ม" ที่เป็นตัวเลขทั้งคู่และกว้างเท่ากันจะแยกไม่ออก
 export function Field(props: { label: string; htmlFor: string; children: ReactNode }) {
   return (
-    <div className="flex flex-col">
-      <label htmlFor={props.htmlFor} className="text-xs text-gray-600">{props.label}</label>
+    <div className="flex flex-col gap-1 max-sm:w-full">
+      <label htmlFor={props.htmlFor} className="text-sm text-muted">{props.label}</label>
       {props.children}
     </div>
   );
@@ -27,7 +29,7 @@ export function CheckField(props: {
   disabled: boolean;
 }) {
   return (
-    <label htmlFor={props.id} className="flex items-center gap-1 pb-1 text-sm whitespace-nowrap">
+    <label htmlFor={props.id} className="flex min-h-[38px] items-center gap-2 whitespace-nowrap text-[15px]">
       <input id={props.id} type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} disabled={props.disabled} />
       {props.label}
     </label>
@@ -63,9 +65,7 @@ export function DepartmentSelect(props: {
 
 export function NeverSentBadge() {
   return (
-    <span className="rounded bg-yellow-100 px-2 py-0.5 text-xs text-yellow-900">
-      ยังไม่เคยส่งเข้าโปรแกรม
-    </span>
+    <Chip tone="warn">ยังไม่เคยส่งเข้าโปรแกรม</Chip>
   );
 }
 
@@ -77,7 +77,7 @@ export function InactiveSwitch(props: {
   text: string;
 }) {
   return (
-    <label className="flex items-center gap-1 text-sm whitespace-nowrap">
+    <label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted">
       <input
         type="checkbox"
         checked={props.inactive}
@@ -104,18 +104,21 @@ export function RegistryFrame(props: {
 }) {
   return (
     <div>
-      <h2 className="text-xl font-bold">{props.title}</h2>
-      {props.loaded && <p data-testid={props.countTestId} className="mt-1">{props.countText}</p>}
-      {props.top}
-      <div className="my-2 min-h-6">
-        {!props.loaded && !props.loadError && <p role="status" className="text-gray-600">กำลังโหลด...</p>}
-        {props.saving && <p role="status" className="text-gray-600">กำลังบันทึก...</p>}
-        {props.loadError && <p role="alert" className="text-red-700">{props.loadError}</p>}
+      <div className="mb-5">
+        <h2 className="text-title text-ink">{props.title}</h2>
+        {/* "กำลังบันทึก..." อยู่บรรทัดเดียวกับจำนวน — ขึ้น/หายแล้วรายการข้างล่างไม่กระตุก และไม่ต้องจองที่ว่างไว้ทั้งแถบ */}
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-3">
+          {props.loaded && <p data-testid={props.countTestId} className="text-muted">{props.countText}</p>}
+          {props.saving && <p role="status" className="text-sm font-medium text-brand">กำลังบันทึก...</p>}
+        </div>
       </div>
+      {props.top}
+      {!props.loaded && !props.loadError && <p role="status" className="mb-4 text-muted">กำลังโหลด...</p>}
       {props.loadError && (
-        <button onClick={props.onRetry} className="mb-3 rounded border border-gray-300 px-3 py-1">
-          ลองโหลดใหม่
-        </button>
+        <div className="mb-4 space-y-3">
+          <Notice tone="bad" role="alert">{props.loadError}</Notice>
+          <Button onClick={props.onRetry}>ลองโหลดใหม่</Button>
+        </div>
       )}
       {props.loaded && props.children}
     </div>
@@ -123,7 +126,7 @@ export function RegistryFrame(props: {
 }
 
 export function RowError(props: { message: string | null }) {
-  return props.message ? <p role="alert" className="w-full text-red-700">{props.message}</p> : null;
+  return props.message ? <p role="alert" className="w-full text-[15px] text-bad">{props.message}</p> : null;
 }
 
 // ช่องกรอกครู ใช้ทั้งฟอร์มเพิ่มและการแก้ในแถว · useId ให้ id ไม่ซ้ำกันระหว่างแถว
@@ -159,39 +162,36 @@ export function ImportBox(props: { imp: SchedulerImport; noun: ImportNoun; disab
   const { state, start, confirm, cancel } = props.imp;
   const n = props.noun;
   return (
-    <div className="mt-3 rounded border border-gray-300 bg-white p-3">
-      <button
-        onClick={() => void start()}
-        disabled={props.disabled || state.kind === "confirm"}
-        className="rounded border border-blue-600 px-3 py-1 text-blue-700 disabled:opacity-50"
-      >
-        ดึง{n.thing}จากโปรแกรมจัดตาราง
-      </button>
-      {state.kind === "checking" && <p role="status" className="mt-2">กำลังตรวจจำนวน...</p>}
-      {state.kind === "running" && <p role="status" className="mt-2">กำลังดึง{n.thing}...</p>}
+    <Card className="mb-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Button onClick={() => void start()} disabled={props.disabled || state.kind === "confirm"}>
+          ดึง{n.thing}จากโปรแกรมจัดตาราง
+        </Button>
+        <p className="text-sm text-muted">บอกจำนวนก่อน ยังไม่เขียนอะไรจนกว่าจะกดยืนยัน · กดซ้ำได้ ไม่สร้างซ้ำ</p>
+      </div>
+      {state.kind === "checking" && <p role="status" className="mt-3 text-muted">กำลังตรวจจำนวน...</p>}
+      {state.kind === "running" && <p role="status" className="mt-3 text-muted">กำลังดึง{n.thing}...</p>}
       {state.kind === "confirm" && (
-        <div className="mt-2" data-testid="import-confirm">
-          <p>{importSummary(state.counts, "preview", n)}</p>
-          <p className="text-sm text-gray-600">ยังไม่ได้เขียนอะไรลงทะเบียน จนกว่าจะกดยืนยัน</p>
-          <div className="mt-2 flex gap-2">
+        <div className="mt-3 rounded-xl border border-line bg-bg px-4 py-3" data-testid="import-confirm">
+          <p className="font-medium">{importSummary(state.counts, "preview", n)}</p>
+          <p className="text-sm text-muted">ยังไม่ได้เขียนอะไรลงทะเบียน จนกว่าจะกดยืนยัน</p>
+          <div className="mt-3 flex flex-wrap gap-2">
             {state.counts.created > 0 && (
-              <button onClick={() => void confirm()} className="rounded bg-blue-600 px-3 py-1 text-white">
+              <Button variant="primary" onClick={() => void confirm()}>
                 ยืนยันดึง{n.thing} {state.counts.created} {n.unit}
-              </button>
+              </Button>
             )}
-            <button onClick={cancel} className="rounded border border-gray-300 px-3 py-1">
-              {state.counts.created > 0 ? "ยกเลิก" : "ปิด"}
-            </button>
+            <Button onClick={cancel}>{state.counts.created > 0 ? "ยกเลิก" : "ปิด"}</Button>
           </div>
         </div>
       )}
       {state.kind === "done" && (
-        <p role="status" className="mt-2 text-green-800" data-testid="import-done">
+        <Notice tone="ok" role="status" className="mt-3" data-testid="import-done">
           {importSummary(state.counts, "done", n)}
-        </p>
+        </Notice>
       )}
-      {state.kind === "error" && <p role="alert" className="mt-2 text-red-700">{state.message}</p>}
-    </div>
+      {state.kind === "error" && <Notice tone="bad" role="alert" className="mt-3">{state.message}</Notice>}
+    </Card>
   );
 }
 
@@ -200,19 +200,19 @@ export function DepartmentGroups<T extends { id: number }>(props: {
   renderRow: (row: T) => ReactNode;
 }) {
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {props.groups.map((g) => (
-        <section key={g.key} aria-label={g.name}>
-          <h3 className="border-b border-gray-300 pb-1 font-bold">
-            {g.name} <span className="font-normal text-gray-600">({g.rows.length})</span>
+        <Card as="section" pad={false} key={g.key} aria-label={g.name}>
+          <h3 className="border-b border-line px-4 py-3 font-semibold sm:px-5">
+            {g.name} <span className="font-normal text-muted">({g.rows.length})</span>
           </h3>
-          <ul className="divide-y divide-gray-200">
+          <ul className="divide-y divide-line2">
             {g.rows.map((r) => (
               // key เป็น id ของแถวเสมอ — ชื่อซ้ำกันได้
-              <li key={r.id} className="py-1">{props.renderRow(r)}</li>
+              <li key={r.id} className="px-4 py-2.5 sm:px-5">{props.renderRow(r)}</li>
             ))}
           </ul>
-        </section>
+        </Card>
       ))}
     </div>
   );
