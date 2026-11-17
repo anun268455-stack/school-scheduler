@@ -267,31 +267,65 @@ def test_wl_db_http_exception_inside_block_passes_through():
     ok("commit" not in log and printed == "", "409 ไม่ commit และไม่พิมพ์อะไร")
 
 
-def test_schema_flag_follows_the_schema_commit_not_the_block():
-    # ขั้นที่ 3 Task 4 addendum ข้อ 5: DDL commit แยกก่อนบล็อก — สัญญาเดิม "บล็อกแรกล้ม = DDL ย้อนกลับ ห้ามตั้งธง" เปลี่ยนเป็น
-    # "บล็อกแรกล้มหลัง DDL commit แล้ว = ตารางอยู่จริง ตั้งธงได้" · ยังห้ามตั้งธงเมื่อ DDL เองล้มหรือ commit ของ DDL ล้ม
-    log: list[str] = []
-    with patched(_STORE_KIND="postgres", _db_connect=lambda: _Conn(log), _WL_SCHEMA_READY=False):
+class _AutoConn(_Conn):
+    """การเชื่อมต่อปลอมที่จดการสลับ autocommit และสถานะ autocommit ตอนรันแต่ละคำสั่ง"""
+    def __init__(self, log):
+        super().__init__(log)
+        self._auto = False
+
+    @property
+    def autocommit(self):
+        return self._auto
+
+    @autocommit.setter
+    def autocommit(self, v):
+        self.log.append(f"autocommit={v}")
+        self._auto = v
+
+    def cursor(self):
+        conn = self
+
+        class Cur(_Cur):
+            def execute(self, sql, *a):
+                self.log.append(("auto" if conn._auto else "txn", sql))
+        return Cur(self.log)
+
+
+def test_schema_flag_follows_the_schema_not_the_block():
+    # Task 4 addendum ข้อ 5 + Task 5 addendum ข้อ 3: DDL ไม่อยู่ในธุรกรรมของ route — "บล็อกแรกล้มหลัง DDL ครบแล้ว = ตารางอยู่จริง
+    # ตั้งธงได้" · ยังห้ามตั้งธงเมื่อ DDL คำสั่งใดล้ม หรือปิด autocommit กลับไม่ได้ (ไม่เข้าบล็อก 503)
+    log: list = []
+    with patched(_STORE_KIND="postgres", _db_connect=lambda: _AutoConn(log), _WL_SCHEMA_READY=False):
         try:
             with mock_api._wl_db():
                 raise HTTPException(401, "x")
         except HTTPException:
             pass
-        ok(log == ["execute", "commit"], f"commit ของ DDL เท่านั้น บล็อกที่ล้มไม่ commit: {log}")
-        ok(mock_api._WL_SCHEMA_READY is True, "DDL commit แล้ว = ตั้งธง แม้บล็อกแรกล้ม")
+        ok("commit" not in log, f"บล็อกที่ล้มไม่ commit (DDL ไม่ต้อง commit — autocommit): {log}")
+        ok(mock_api._WL_SCHEMA_READY is True, "DDL ครบแล้ว = ตั้งธง แม้บล็อกแรกล้ม")
 
-    class BadDdl(_Cur):
-        def execute(self, sql, *a):
-            raise RuntimeError(_secret("ddl"))
-
-    class BadDdlConn(_Conn):
+    class BadDdl(_AutoConn):
         def cursor(self):
-            return BadDdl(self.log)
+            conn = self
 
-    class BadDdlCommit(_Conn):
-        def commit(self):
-            raise RuntimeError(_secret("ddl-commit"))
-    for conn, what in ((BadDdlConn([]), "DDL ล้ม"), (BadDdlCommit([]), "commit ของ DDL ล้ม")):
+            class Cur(_Cur):
+                def execute(self, sql, *a):
+                    if "ALTER TABLE" in sql:                  # ล้มกลางชุด หลังคำสั่ง CREATE ไปแล้วหลายคำสั่ง
+                        raise RuntimeError(_secret("ddl"))
+                    self.log.append(("auto" if conn._auto else "txn", sql))
+            return Cur(self.log)
+
+    class BadSwitchBack(_AutoConn):
+        @property
+        def autocommit(self):
+            return self._auto
+
+        @autocommit.setter
+        def autocommit(self, v):
+            if v is False:
+                raise RuntimeError(_secret("autocommit"))
+            self._auto = v
+    for conn, what in ((BadDdl([]), "DDL คำสั่งหนึ่งล้ม"), (BadSwitchBack([]), "ปิด autocommit กลับไม่ได้")):
         with patched(_STORE_KIND="postgres", _db_connect=lambda c=conn: c, _WL_SCHEMA_READY=False):
             ran = []
             try:
@@ -304,28 +338,40 @@ def test_schema_flag_follows_the_schema_commit_not_the_block():
             ok(ran == [] and mock_api._WL_SCHEMA_READY is False, f"{what}: ไม่เข้าบล็อก ไม่ตั้งธง")
 
 
-def test_wl_db_commits_the_schema_before_the_route_transaction_starts():
-    # รีวิว Task 3 m1: ALTER TABLE wl_rounds (ACCESS EXCLUSIVE) ในธุรกรรมเดียวกับ route ทำให้ล็อกทะเบียนไม่ใช่คำสั่งแรก แล้ว deadlock
-    # กับธุรกรรมที่ถือล็อกทะเบียนแล้วอ่าน wl_rounds — DDL ต้อง commit ก่อนคำสั่งแรกของ route เสมอ
-    log: list[str] = []
-
-    class Cur(_Cur):
-        def execute(self, sql, *a):
-            self.log.append("ddl" if sql == mock_api._WL_SCHEMA else sql)
-
-    class Conn(_Conn):
-        def cursor(self):
-            return Cur(self.log)
-    with patched(_STORE_KIND="postgres", _db_connect=lambda: Conn(log), _WL_SCHEMA_READY=False):
+def test_wl_db_runs_each_ddl_statement_on_its_own_before_the_route_transaction():
+    # รีวิว Task 3 m1 + Task 4 m1: DDL ทั้งชุดในธุรกรรมเดียว (แม้ commit แยกจาก route) ยัง deadlock กับการสร้างเทอมได้ —
+    # CREATE UNIQUE INDEX IF NOT EXISTS wl_rounds_one_open ถือ ShareLock ของ wl_rounds ถึงจบธุรกรรมแล้วค่อยรอ ALTER
+    # → ทุกคำสั่งต้องเป็นธุรกรรมของมันเอง (autocommit) ทีละคำสั่ง แล้วปิด autocommit ก่อนคำสั่งแรกของ route
+    log: list = []
+    with patched(_STORE_KIND="postgres", _db_connect=lambda: _AutoConn(log), _WL_SCHEMA_READY=False):
         with mock_api._wl_db() as cur:
-            ok(log == ["ddl", "commit"], f"DDL commit แล้วก่อนเข้าบล็อก: {log}")
-            ok(mock_api._WL_SCHEMA_READY is True, "ตั้งธงหลัง commit ของ DDL")
+            n = len(mock_api._WL_SCHEMA_STATEMENTS)
+            ok(log[0] == "autocommit=True" and log[n + 1] == "autocommit=False" and len(log) == n + 2,
+               f"เปิด autocommit → DDL ทีละคำสั่ง → ปิด ก่อนเข้าบล็อก: {log[:2]} … {log[-2:]}")
+            ddl = log[1:n + 1]
+            ok(ddl == [("auto", s) for s in mock_api._WL_SCHEMA_STATEMENTS], "ทุกคำสั่งรันใน autocommit ตามลำดับชุด")
+            ok(mock_api._WL_SCHEMA_READY is True, "ตั้งธงหลัง DDL ครบ")
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (mock_api.WL_REGISTRY_LOCK_KEY,))
-        ok(log == ["ddl", "commit", "SELECT pg_advisory_xact_lock(%s)", "commit"], f"ลำดับ: {log}")
+        ok(log[n + 2:] == [("txn", "SELECT pg_advisory_xact_lock(%s)"), "commit"],
+           f"คำสั่งของ route อยู่ในธุรกรรม (ไม่ใช่ autocommit) แล้ว commit: {log[n + 2:]}")
         log.clear()
         with mock_api._wl_db() as cur:
             cur.execute("SELECT 1")
-        ok(log == ["SELECT 1", "commit"], f"ธงตั้งแล้วไม่มี DDL: {log}")
+        ok(log == [("txn", "SELECT 1"), "commit"], f"ธงตั้งแล้วไม่มี DDL ไม่แตะ autocommit: {log}")
+
+
+def test_schema_statements_are_the_whole_schema_one_statement_each():
+    stmts = mock_api._WL_SCHEMA_STATEMENTS
+    ok(list(stmts) == [x.strip() for x in mock_api._WL_SCHEMA.split(";") if x.strip()], "ครบทุกคำสั่งตามลำดับ")
+    ok(all(";" not in x and x.split()[0] in ("CREATE", "ALTER") for x in stmts), "หนึ่งคำสั่งต่อรายการ")
+    ok(sum(x.startswith("ALTER TABLE wl_rounds") for x in stmts) == 4, "ALTER สี่คำสั่ง แยกกัน")
+    ran = []
+
+    class Cur:
+        def execute(self, sql, *a):
+            ran.append(sql)
+    mock_api._wl_schema(Cur())
+    ok(ran == list(stmts), "_wl_schema รันทีละคำสั่ง")
 
 
 def test_schema_has_four_tables_and_one_per_group_indexes():

@@ -28,7 +28,7 @@ fails: list[str] = []
 ADMIN_CODE = "admin-code-1234"
 HEAD_CODE = "head-code-5678"
 ENV = "SCHED_TEST_FAIL_AT"
-STEPS = ("apply", "pack", "rotate", "app_state", "writeback", "mark", "commit")
+STEPS = ("built", "apply", "pack", "rotate", "app_state", "writeback", "mark", "commit")
 # ตัวแปรของโปรแกรมที่การสร้างเทอมจากรอบแตะ (หรือต้องไม่แตะ) — deep-equal ก่อน/หลังเมื่อล้ม
 PROGRAM = ("TEACHERS", "SUBJECTS", "REQUIREMENTS", "ELECTIVE_POOLS", "CURRICULA", "GROUPS", "_counters", "SLOTS",
            "PARKED", "CURRENT_TERM", "SCHOOL_CONFIG", "LAST_RUN", "DEPARTMENTS", "ROOMS", "REVISION")
@@ -504,14 +504,114 @@ def test_failure_after_a_concurrent_save_saves_the_restored_state():
         db, ns = _rich()
         rec.use(db)
         real_pack = mock_api._pack
+        packs = []
 
         def pack(snap):
-            mock_api.REVISION["n"] += 1                  # มีคำขอเขียนอื่นจบและบวกรุ่นระหว่างนั้น
+            packs.append(1)
+            if len(packs) == 2:                          # บรรจุไฟล์เทอมใหม่ = หลังใส่สถานะใหม่แล้ว (ก่อนใส่ = 409 ของ m3)
+                mock_api.REVISION["n"] += 1              # มีคำขอเขียนอื่นจบและบวกรุ่นระหว่างนั้น
             return real_pack(snap)
-        os.environ[ENV] = "writeback"
+        os.environ[ENV] = "writeback"                    # ล้มก่อนถึงการเทียบรุ่นก่อน COMMIT
+        before = mock_api.REVISION["n"]
         with _patched(_pack=pack):
             _expect(lambda: _post(ns.rnd), 500)
         assert ("save", 0) in rec.calls, rec.calls
+        # คืนแล้วบวกรุ่นอีกหนึ่ง: หน้าเว็บที่โหลดสถานะใหม่ (ยังไม่ COMMIT) ไปแล้วต้องเห็นว่าต้องโหลดใหม่
+        assert mock_api.REVISION["n"] == before + 2, (before, mock_api.REVISION)
+
+
+def test_program_edited_before_apply_is_409_and_keeps_the_other_edit():
+    # Task 5 addendum ข้อ 5 (รีวิว Task 4 m3): สำเนาของโปรแกรมอ่านตอน _term_outgoing แต่ใส่จริงทีหลัง — คำขอเขียนอื่นที่จบในช่องนั้น
+    # (เพิ่มครูในโปรแกรม: TEACHERS.append แล้วบวกรุ่น) ต้องไม่ถูกทับเงียบ → 409 ไทย ไม่มีอะไรถูกสร้าง และงานของอีกคำขอยังอยู่
+    with _world(subjects=_elective_on_program()) as rec:
+        db, ns = _rich()
+        rec.use(db)
+        before, ids, db_before = _program_state(), _ids(), _db_snapshot(db)
+        real_pack, other = mock_api._pack, {"id": 777, "name": "ครูที่เพิ่มระหว่างสร้าง", "department_id": 1}
+
+        def pack(snap):                                  # ครั้งแรก = บรรจุเทอมเก่า (หลังจุดย้อน ก่อนใส่สถานะใหม่)
+            if not mock_api.TEACHERS or mock_api.TEACHERS[-1] is not other:
+                mock_api.TEACHERS.append(other)
+                mock_api.REVISION["n"] += 1
+            return real_pack(snap)
+        with _patched(_pack=pack):
+            d = _expect(lambda: _post(ns.rnd), 409, "ลองกดใหม่")
+        assert d == mock_api.TERM_PROGRAM_EDITED, d
+        assert mock_api.TEACHERS[-1] is other and mock_api.TEACHERS[:-1] == before["TEACHERS"]
+        after = _program_state()
+        for k in PROGRAM:
+            if k not in ("TEACHERS", "REVISION"):
+                assert after[k] == before[k], k
+        assert _ids() == ids and _db_snapshot(db) == db_before
+        log = _main_log(rec)
+        assert _writes(log) == [] and "COMMIT" not in [s for s, _p in log], log
+        # คำขอที่จบระหว่างนั้นอาจเซฟสแนปช็อตที่คาบถูกล้างไปแล้ว → เซฟของที่คืนทับ + บวกรุ่นให้หน้าเว็บโหลดใหม่
+        assert ("save", 0) in rec.calls and mock_api.REVISION["n"] == before["REVISION"]["n"] + 2
+        assert rec.logged == []
+
+
+def test_program_edited_before_commit_is_409_and_restores_everything():
+    # คำขอเขียนอื่นจบหลังใส่สถานะใหม่ (เช่นแก้ครูผ่าน PUT /api/teachers/{id}) → เทียบรุ่นก่อน COMMIT → ย้อนทั้งฐานและหน่วยความจำ
+    with _world(subjects=_elective_on_program()) as rec:
+        db, ns = _rich()
+        rec.use(db)
+        before, ids, db_before = _program_state(), _ids(), _db_snapshot(db)
+        real = mock_api._term_writeback
+
+        def writeback(cur, wb):
+            out = real(cur, wb)
+            mock_api.update_teacher(mock_api.TEACHERS[0]["id"], {"max_slots_per_day": 3})
+            mock_api.REVISION["n"] += 1                  # = มิดเดิลแวร์ของ PUT ที่จบระหว่างนั้น
+            return out
+        with _patched(_term_writeback=writeback):
+            d = _expect(lambda: _post(ns.rnd), 409)
+        assert d == mock_api.TERM_PROGRAM_EDITED, d
+        after = _program_state()
+        for k in PROGRAM:
+            if k != "REVISION":
+                assert after[k] == before[k], k
+        assert _ids() == ids and _db_snapshot(db) == db_before
+        log = _main_log(rec)
+        assert _writes(log) and "COMMIT" not in [s for s, _p in log] and rec.conns[0].commits == 0
+        assert ("save", 0) in rec.calls and rec.logged == []
+        # ลองกดใหม่ (ไม่มีใครแก้แล้ว) ได้ผลครั้งเดียว
+        out = _post(ns.rnd)
+        assert out["active"]["id"] and sum(1 for t in mock_api.TEACHERS if t["name"] == "ครูใหม่") == 1
+
+
+def test_revision_is_read_with_the_program_copy_and_checked_twice():
+    # จดรุ่นคู่กับสำเนา (ก่อน _term_outgoing) · เทียบก่อนใส่ และก่อน COMMIT (หลังทำเครื่องหมายรอบ) — ไม่ใช่ตอนอื่น
+    src = inspect.getsource(mock_api._create_term_from_round)
+    i_rev, i_out = src.index('REVISION["n"]'), src.index("_term_outgoing()")
+    assert i_rev < i_out, "จดรุ่นก่อนอ่านสำเนาของโปรแกรม"
+    checks = [i for i in range(len(src)) if src.startswith("_term_refuse_program_edited(", i)]
+    assert len(checks) == 2, checks
+    assert checks[0] < src.index("_term_apply(built") < src.index('_term_test_fail("mark")') < checks[1] \
+        < src.index("conn.commit()"), checks
+
+
+def test_admin_check_shares_the_login_in_flight_cap():
+    # Task 5 addendum ข้อ 4 (รีวิว Task 4 m2): คำขอที่รอแฮชถือ thread ของ pool ที่เว็บตารางใช้ร่วม — เพดานเดียวกับล็อกอิน
+    with _world() as rec:
+        db, ns = _rich()
+        rec.use(db)
+        gate = mock_api._threading.BoundedSemaphore(2)
+        with _patched(_WL_LOGIN_INFLIGHT=gate):
+            assert gate.acquire(blocking=False) and gate.acquire(blocking=False)     # มีคนรอแฮชเต็มเพดานแล้ว
+            before = _program_state()
+            d = _expect(lambda: _post(ns.rnd), 429)
+            assert d == mock_api.WL_LOGIN_BUSY, d
+            assert rec.wl_logs == [] and rec.conns == [] and mock_api._WL_FAILS["login"] == []   # ไม่แฮช ไม่นับว่าผิด
+            assert _program_state() == before
+            gate.release()
+            gate.release()
+            # คืนช่องทุกทาง: รหัสผิด (403) และสำเร็จ
+            _expect(lambda: _post(ns.rnd, code="wrong-code-000"), 403)
+            out = _post(ns.rnd)
+            assert out["active"]["id"]
+            assert gate.acquire(blocking=False) and gate.acquire(blocking=False), "ช่องถูกคืนครบ"
+    # ล็อกอินใช้ข้อความเดียวกัน (ค่าคงที่ตัวเดียว)
+    assert "WL_LOGIN_BUSY" in inspect.getsource(mock_api.wl_login)
 
 
 # ── ปฏิเสธ ─────────────────────────────────────────────────────────────────
@@ -678,6 +778,13 @@ def test_test_hook_is_one_env_var_read_at_call_time():
             pass
         else:
             raise AssertionError("ตั้งแล้วต้องล้ม")
+        # wait:<ขั้น> = หน่วงที่ขั้นนั้นแทนการล้ม (ลองกับของจริงว่าคำขอที่แทรกในช่องนั้นถูกจับ — addendum ข้อ 5) · ขั้นอื่นไม่หน่วง
+        slept = []
+        with _patched(_time=SimpleNamespace(sleep=slept.append, monotonic=mock_api._time.monotonic)):
+            os.environ[ENV] = "wait:built"
+            for step in STEPS:
+                mock_api._term_test_fail(step)
+        assert slept == [mock_api.TERM_TEST_WAIT_SECONDS], slept
     finally:
         os.environ.pop(ENV, None)
 

@@ -105,7 +105,8 @@ def test_schema_adds_columns_without_index():
         def execute(self, s, *a):
             ran.append(s)
     mock_api._wl_schema(Cur())
-    assert ran == [sql]
+    # Task 5 addendum ข้อ 3: ทีละคำสั่ง (แต่ละคำสั่งเป็นธุรกรรมของมันเองใน _wl_db) ครบทุกคำสั่งของชุด
+    assert ran == [x.strip() for x in sql.split(";") if x.strip()] and len(ran) > 4, ran
 
 
 # ── ล็อกทะเบียน ────────────────────────────────────────────────────────────
