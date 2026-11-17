@@ -15,8 +15,13 @@ import {
   bannerView, FROZEN_CHIP_NOTE, isReadOnly, printTermName, termFieldsLocked,
 } from "../../frontend/src/utils/terms.ts";
 import {
+  activitySetLines, defaultTermRound, newTermFromRoundError, roundCreatedNote, roundOptionLabel, roundPreviewRows,
+  roundSelectable, roundsLoadNote, type RoundPreview, type RoundReport, type TermRound,
+} from "../../frontend/src/utils/terms.ts";
+import {
   blockedReason, gateRequest, setWriteBlock, WriteBlocked,
 } from "../../frontend/src/api/writeGate.ts";
+import { readFileSync } from "node:fs";
 
 let n = 0;
 const ok = (cond: boolean, what: string): void => {
@@ -331,6 +336,141 @@ eq(termFieldsLocked(false, [ACTIVE]), false, "ไม่มีฐานข้อ�
   const e = bannerView(null, ACTIVE, "เปิดเทอมนี้ไม่สำเร็จ");
   eq(e, { text: null, note: null, error: "เปิดเทอมนี้ไม่สำเร็จ" }, "ข้อผิดพลาดมีที่แสดงแม้ไม่ได้ดูเทอมเก่า");
   eq(bannerView(CLOSED, ACTIVE, "กลับไม่สำเร็จ")?.error, "กลับไม่สำเร็จ", "แถบเทอมเก่าพร้อมข้อผิดพลาด");
+}
+
+// ── ขั้นที่ 3: สร้างเทอมใหม่จากรอบอัตรากำลัง ─────────────────────────────────
+// รูปข้อมูลตามคำตอบจริงของ GET /terms/rounds · GET /terms/preview?round_id= (task-3-report "รูป report")
+{
+  const RD = (p: Partial<TermRound> = {}): TermRound => ({
+    id: 1, label: "2/2569", year: 2569, semester: 2, status: "closed",
+    exported_at: null, exported_label: null, usable: true, reasons: [], ...p,
+  });
+  const SENT = RD({ id: 9, label: "1/2569", year: 2569, semester: 1, exported_at: "2026-11-17T03:00:00+00:00",
+    exported_label: "1/2569", usable: false, reasons: ["รอบ 1/2569 ส่งเข้าโปรแกรมจัดตารางแล้ว (เทอม 1/2569) — ส่งซ้ำไม่ได้"] });
+
+  // ป้ายในตัวเลือกรอบ: สามสถานะ
+  eq(roundOptionLabel(RD()), "ภาคเรียน 2/2569 · ใช้ได้", "รอบที่ใช้ได้");
+  eq(roundOptionLabel(RD({ usable: false, reasons: ["ยังไม่ยืนยัน 3 รายการ"] })), "ภาคเรียน 2/2569 · ยังใช้ไม่ได้",
+     "รอบที่ยังใช้ไม่ได้");
+  eq(roundOptionLabel(SENT), "ภาคเรียน 1/2569 · ส่งแล้ว (เทอม 1/2569)", "รอบที่ส่งแล้วบอกเทอม");
+  ok(!roundOptionLabel({ ...SENT, exported_label: null }).includes("null"), "ไม่มีชื่อเทอมก็ไม่พิมพ์ null");
+
+  // ค่าเริ่มต้นของตัวเลือกรอบ (Ruling T3 C2): รอบล่าสุดที่ใช้ได้ → รอบล่าสุดที่ยังไม่ส่ง · ที่ส่งแล้วเลือกไม่ได้
+  const NEW_BAD = RD({ id: 3, label: "1/2570", year: 2570, semester: 1, usable: false, reasons: ["x"] });
+  const OLD_OK = RD({ id: 2 });
+  eq(defaultTermRound([NEW_BAD, OLD_OK, SENT])?.id, 2, "รอบล่าสุดที่ใช้ได้ แม้ไม่ใช่รอบใหม่สุด");
+  eq(defaultTermRound([SENT, OLD_OK, NEW_BAD])?.id, 2, "ไม่ขึ้นกับลำดับที่รับมา");
+  eq(defaultTermRound([NEW_BAD, { ...OLD_OK, usable: false }])?.id, 3, "ไม่มีรอบที่ใช้ได้ = รอบใหม่สุด");
+  eq(defaultTermRound([{ ...NEW_BAD, exported_at: "2026-11-17T03:00:00+00:00", exported_label: "1/2570" },
+                       { ...OLD_OK, usable: false }])?.id, 2, "รอบใหม่สุดที่ส่งแล้วเลือกไม่ได้ → รอบถัดไป");
+  eq(defaultTermRound([SENT]), null, "ส่งแล้วทุกรอบ = ไม่มีค่าเริ่มต้น");
+  eq(defaultTermRound([]), null, "ไม่มีรอบ");
+  eq(roundSelectable(SENT), false, "รอบที่ส่งแล้วแสดงแต่เลือกไม่ได้");
+  eq(roundSelectable(NEW_BAD), true, "รอบที่ใช้ไม่ได้ยังเลือกดูเหตุได้");
+
+  // ข้อความผิดของฟอร์ม: ไม่ได้เลือกรอบ · รอบใช้ไม่ได้ · ไม่ได้กรอกรหัส (ข้อความเดียวกับ TERM_ADMIN_CODE_MISSING ของเซิร์ฟเวอร์)
+  const src = readFileSync(new URL("../../mock_api.py", import.meta.url), "utf8");
+  const missing = /^TERM_ADMIN_CODE_MISSING = "([^"]+)"/m.exec(src);
+  ok(missing !== null, "หา TERM_ADMIN_CODE_MISSING ใน mock_api.py ไม่เจอ");
+  eq(newTermFromRoundError(null, "รหัส"), "เลือกรอบอัตรากำลังก่อน", "ไม่ได้เลือกรอบ");
+  ok((newTermFromRoundError(SENT, "รหัส") ?? "").includes("ส่งเข้าโปรแกรมแล้ว"), "รอบที่ส่งแล้ว");
+  ok((newTermFromRoundError(NEW_BAD, "รหัส") ?? "").includes("ยังใช้ไม่ได้"), "รอบที่ใช้ไม่ได้");
+  eq(newTermFromRoundError(NEW_BAD, ""), newTermFromRoundError(NEW_BAD, "รหัส"), "รอบใช้ไม่ได้ บอกเรื่องรอบก่อนเรื่องรหัส");
+  eq(newTermFromRoundError(OLD_OK, ""), missing![1], "ไม่ได้กรอกรหัส");
+  eq(newTermFromRoundError(OLD_OK, "   "), missing![1], "ช่องว่างล้วนเท่ากับไม่ได้กรอก (เซิร์ฟเวอร์ตัดช่องว่าง)");
+  eq(newTermFromRoundError(OLD_OK, " รหัส "), null, "พร้อมกด");
+
+  // สรุปก่อนสร้าง (แบบข้อ 4.5): ค่า 0 ไม่ขึ้น ยกเว้นแถวแผน · ชุดกิจกรรม = warn · ครูที่เว็บไม่รู้จัก = info
+  const report = (p: Partial<RoundReport> = {}): RoundReport => ({
+    requirements: 1220, periods: 2209, teachers_in_plan: 138, curricula: 74, pools: 13, pool_options: 44,
+    teachers_created: [], subjects_created: [], teachers_patched: [], subjects_patched: [], code_links: [],
+    inactive_open: [], inactive_teachers_used: [], inactive_subjects_used: [], unknown_teachers: [], activity_sets: [],
+    ...p,
+  });
+  const preview = (rep: RoundReport, slots = 0): RoundPreview => ({
+    requirements: 1220, teachers: 143, periods_total: 2209, curricula: 0, slots_to_clear: slots,
+    round: { id: 1, label: "2/2569", year: 2569, semester: 2, usable: true, reasons: [], report: rep },
+  });
+  const rows = roundPreviewRows(preview(report()));
+  eq(rows.map((r) => r.label), ["แผนการสอน", "คาบรวมตามแผน", "ครูในแผน", "หลักสูตร", "ชุดคาบเสรี"],
+     "ข้อมูลตั้งต้น: รายการว่างทุกตัวจึงไม่ขึ้น");
+  eq(rows[0].value, "1,220 แถว", "ตัวเลขคั่นหลักพัน");
+  eq(rows[4].value, "13 ชุด (44 ตัวเลือก) · ยังไม่ลงคาบ", "ชุดคาบเสรีบอกจำนวนตัวเลือก");
+  ok(rows.every((r) => r.tone === "plain"), "ไม่มีอะไรต้องเตือน");
+  const empty = roundPreviewRows(preview(report({ requirements: 0, periods: 0, teachers_in_plan: 0, curricula: 0,
+                                                 pools: 0, pool_options: 0 })));
+  eq(empty.map((r) => [r.label, r.value]), [["แผนการสอน", "0 แถว"]], "ค่า 0 ไม่ขึ้น ยกเว้นแถวแผน");
+
+  const full = roundPreviewRows(preview(report({
+    teachers_created: [{ wl_id: 144, id: 144, name: "ครูใหม่จากเว็บ", code: null, department_id: 1 }],
+    subjects_created: [{ wl_id: null, id: 272, code: "ZZ901", name: "วิชาใหม่พิมพ์เอง" }],
+    teachers_patched: [{ wl_id: 1, id: 501, name: "ครูห้าศูนย์หนึ่ง",
+      changes: [{ field: "name", label: "ชื่อ", old: "ครู 501", new: "ครูห้าศูนย์หนึ่ง" },
+                { field: "department_id", label: "กลุ่มสาระ", old: 1, new: 2 }] }],
+    subjects_patched: [{ wl_id: 1, id: 900, code: "ท21102", name: "ภาษาไทยพื้นฐาน 2",
+      changes: [{ field: "is_elective", label: "เป็นวิชาเสรี", old: null, new: true },
+                { field: "duration", label: "คาบคู่", old: 1, new: 2 }] }],
+    activity_sets: [{ name: "ชุมนุม ม.1", group_ids: [1, 2], group_names: ["ม.1/1", "ม.1/2"], weekly: 1,
+                      teacher_ids: [4, 5], teacher_names: ["ครู ก", "ครู ข"] },
+                    { name: "", group_ids: [3], group_names: ["ม.2/1"], weekly: 2, teacher_ids: [], teacher_names: [] }],
+    unknown_teachers: [{ id: 77, name: "ครูเฉพาะโปรแกรม", code: "T77", department_id: null, active: true }],
+    inactive_teachers_used: [{ id: 12, name: "ครูปิดใช้งาน" }],
+  }), 1150), (id) => ({ 1: "ภาษาไทย", 2: "คณิตศาสตร์" } as Record<number, string>)[id]);
+  const row = (label: string) => full.find((r) => r.label === label);
+  eq(row("ครูใหม่ที่จะสร้าง")?.value, "1 คน", "ครูใหม่");
+  eq(row("ครูใหม่ที่จะสร้าง")?.items, ["ครูใหม่จากเว็บ"], "รายชื่อครูใหม่");
+  eq(row("วิชาใหม่ที่จะสร้าง")?.items, ["ZZ901 วิชาใหม่พิมพ์เอง"], "รายการวิชาใหม่มีรหัส");
+  eq(row("ครูที่จะถูกแก้ข้อมูล")?.items,
+     ["ครูห้าศูนย์หนึ่ง · ชื่อ: ครู 501 → ครูห้าศูนย์หนึ่ง · กลุ่มสาระ: ภาษาไทย → คณิตศาสตร์"],
+     "Ruling T1 C4: ชื่อ · ช่อง: ค่าเดิม → ค่าใหม่ (กลุ่มสาระเป็นชื่อ)");
+  eq(row("วิชาที่จะถูกแก้ข้อมูล")?.items, ["ท21102 ภาษาไทยพื้นฐาน 2 · เป็นวิชาเสรี: ว่าง → ใช่ · คาบคู่: ไม่ใช่ → ใช่"],
+     "ค่าว่าง/จริงเท็จ/คาบคู่อ่านเป็นคำ");
+  eq(row("ชุดกิจกรรมที่ต้องลงคาบเอง")?.tone, "warn", "ชุดกิจกรรมเป็นคำเตือน");
+  eq(row("ชุดกิจกรรมที่ต้องลงคาบเอง")?.value, "2 ชุด", "จำนวนชุดกิจกรรม");
+  eq(row("ชุดกิจกรรมที่ต้องลงคาบเอง")?.items,
+     ["ชุมนุม ม.1 · ม.1/1, ม.1/2 · 1 คาบ/สัปดาห์ · ครู ก, ครู ข", "ชุดกิจกรรม · ม.2/1 · 2 คาบ/สัปดาห์ · ยังไม่มีครู"],
+     "รายการชุดกิจกรรม: ชื่อ ห้อง คาบ ครู");
+  eq(row("ครูในโปรแกรมที่เว็บไม่รู้จัก")?.tone, "info", "ครูที่เว็บไม่รู้จัก = แจ้งให้รู้");
+  ok((row("ครูในโปรแกรมที่เว็บไม่รู้จัก")?.value ?? "").includes("ไม่ทำอะไร"), "บอกว่าไม่ทำอะไรกับครูเหล่านี้");
+  eq(row("ครูที่ปิดใช้งานในโปรแกรม แต่อยู่ในเทอมใหม่")?.tone, "warn", "ครูที่ปิดใช้งานแต่ถูกใช้ = เตือน");
+  eq(row("คาบที่ลงตารางไว้ตอนนี้")?.value, "1,150 คาบ · จะถูกล้าง", "คาบที่จะถูกล้าง");
+  ok(full.every((r) => !/undefined|null|NaN/.test(r.value + (r.items ?? []).join(""))), "ไม่มี undefined/null/NaN");
+  // รายงานที่ขาดรายการ (รูปเก่า/เสีย) ไม่ทำให้หน้าต่างล้ม
+  const partial = { ...preview(report()), round: { ...preview(report()).round,
+    report: { requirements: 5 } as unknown as RoundReport } };
+  eq(roundPreviewRows(partial).map((r) => r.value), ["5 แถว"], "รายงานไม่ครบ → แสดงเท่าที่มี");
+
+  // ผลหลังสร้าง: บอกชุดกิจกรรมที่ต้องลงคาบเอง และที่ดูได้อีก
+  eq(roundCreatedNote(report()), null, "ไม่มีชุดกิจกรรม = ไม่มีข้อความ");
+  const note = roundCreatedNote(report({ activity_sets: [{ name: "ชุมนุม", group_ids: [1], group_names: ["ม.1/1"],
+    weekly: 1, teacher_ids: [], teacher_names: [] }] })) ?? "";
+  ok(note.includes("ชุดกิจกรรมที่ต้องลงคาบเอง 1 ชุด") && note.includes("หน้ารอบของเว็บลงอัตรากำลัง"),
+     "บอกจำนวนและที่เปิดดูได้อีก");
+  eq(activitySetLines(undefined), [], "ไม่มีรายงาน = ไม่มีรายการ");
+
+  // ปฏิเสธก่อนทำอะไร (400/403/404/409/429) = กดใหม่ได้ · 5xx/ไม่มีคำตอบ = ห้ามกดซ้ำ
+  for (const s of [400, 403, 404, 409, 429]) eq(canRetryCreate({ response: { status: s } }, true), true, `จากรอบ ${s}`);
+  for (const s of [500, 503]) eq(canRetryCreate({ response: { status: s } }, true), false, `จากรอบ ${s}`);
+  eq(canRetryCreate(new Error("timeout"), true), false, "จากรอบ ไม่มีคำตอบ");
+  eq(canRetryCreate({ response: { status: 403 } }), false, "ทางเดิมไม่เปลี่ยน");
+  eq(termErrorText({ response: { status: 403, data: { detail: "รหัสผู้ดูแลระบบของเว็บลงอัตรากำลังไม่ถูกต้อง" } } }, "สำรอง"),
+     "รหัสผู้ดูแลระบบของเว็บลงอัตรากำลังไม่ถูกต้อง", "403 ไทยถึงผู้ใช้");
+  eq(termErrorText({ response: { status: 429, data: { detail: "ลองผิดหลายครั้ง รอสักครู่" } } }, "สำรอง"),
+     "ลองผิดหลายครั้ง รอสักครู่", "429 ไทยถึงผู้ใช้");
+
+  // โหลดรอบไม่ได้: หน้าต่างแบบเดิม + บรรทัดเล็ก (addendum 4) · เซิร์ฟเวอร์ไม่มี route นี้ (404) = เงียบ
+  eq(roundsLoadNote({ response: { status: 404, data: { detail: "Not Found" } } }), null, "เซิร์ฟเวอร์รุ่นก่อน = ไม่มีบรรทัด");
+  const note503 = roundsLoadNote({ response: { status: 503, data: { detail: "ต่อฐานข้อมูลไม่ได้ในตอนนี้" } } }) ?? "";
+  ok(note503.includes("ต่อฐานข้อมูลไม่ได้ในตอนนี้") && note503.includes("แผนเดิม"), "503 บอกเหตุ และว่าแบบเดิมยังใช้ได้");
+  ok((roundsLoadNote(new Error("Network Error")) ?? "").includes("แผนเดิม"), "เครือข่ายหลุด");
+  ok(!(roundsLoadNote(new Error("Network Error")) ?? "").includes("Network"), "ไม่ส่งข้อความอังกฤษ");
+
+  // ปลดล็อกเทอม: ข้อความปรับทะเบียนของเว็บลงอัตรากำลัง (คีย์ workload) ต่อท้ายผล
+  const base = { closed: { label: "2/2569", slots: 0 }, active: { label: "1/2569" } };
+  const w = createOutcome({ ...base, workload: ["ปรับทะเบียนครู/วิชาของเว็บลงอัตรากำลังให้ตรงกับเทอม 1/2569: ครู 1 คน · วิชา 1 วิชา"] },
+                          "ปลดล็อก");
+  ok(w.text.startsWith("ปลดล็อกเทอม 1/2569 แล้ว") && w.text.includes("ครู 1 คน · วิชา 1 วิชา"), "ต่อท้ายข้อความ workload");
+  eq(createOutcome({ ...base, workload: [] }, "ปลดล็อก").text, createOutcome(base, "ปลดล็อก").text, "ว่าง = เหมือนเดิม");
 }
 
 console.log(`ALL PASS (${n})`);

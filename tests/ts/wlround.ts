@@ -16,6 +16,7 @@ import {
   previewWarnings, reviewActions, roundActions, roundChip, roundLabel, roundStats, ROUND_STATUS_TEXT, roundStatusTone,
   releasePending, rowPatch, rowState, settlePending, shownFields, subjectLine, submitState, teacherChoices, teacherNamer,
   termReadiness, changeRow, teacherDraft, retryFields, reviewGap, refreshDue, REFRESH_GAP_MS, bulkConfirmTargets, unsavedDraftsText,
+  roundExportChip, exportActivityLines, EXPORT_PARKED_TEXT,
   type DeptStatus, type OptionTeacher, type Round, type RoundOption, type RoundPreview, type RoundRow, type TeacherLoad,
 } from "../../workload/src/round.ts";
 
@@ -834,6 +835,66 @@ test("refreshDue: โหลดสถานะใหม่เมื่อกล�
   eq(refreshDue(1000, 1000 + REFRESH_GAP_MS), true);
   // นาฬิกาถอยหลัง (เปลี่ยนเวลาเครื่อง) ไม่ค้างไม่โหลดตลอดไป
   eq(refreshDue(10_000_000, 5), true);
+});
+
+// ── ขั้นที่ 3: รอบที่ส่งเข้าโปรแกรมจัดตารางแล้ว ───────────────────────────────
+// รูปจริงของ wl_round_view หลังส่ง (task-5-report แก้รอบ 2): exported_text คำนวณตอนอ่านตามว่าเทอมของรอบเปิดอยู่ไหม
+const SENT_AT = "2026-11-17T03:00:00+00:00";
+const REPORT = {
+  requirements: 1220, activity_sets: [
+    { name: "ชุมนุม ม.1", group_ids: [1, 2], group_names: ["ม.1/1", "ม.1/2"], weekly: 1, teacher_ids: [4], teacher_names: ["ครู ก"] },
+    { name: "", group_ids: [3], group_names: ["ม.2/1"], weekly: 2, teacher_ids: [], teacher_names: [] },
+  ],
+};
+
+test("roundExportChip: ป้ายรอบที่ส่งแล้วใช้ exported_text ของเซิร์ฟเวอร์ · เทอมถูกปิดไว้ = เตือน · ยังไม่ส่ง = ไม่มีป้าย", () => {
+  eq(roundExportChip(R()), null);
+  eq(roundExportChip(R({ status: "closed", exported_at: null, exported_label: null, exported_text: null, export_report: null })), null);
+  eq(roundExportChip(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569",
+    exported_text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569", export_report: REPORT })),
+    { tone: "ok", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569" });
+  eq(roundExportChip(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569",
+    exported_text: `ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569${EXPORT_PARKED_TEXT}`, export_report: REPORT })),
+    { tone: "warn", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569 (ถูกปิดไว้ ปลดล็อกเทอมนั้นเพื่อใช้ต่อ)" });
+  // ไม่มี exported_text (ไม่ควรเกิด) ยังบอกว่าส่งแล้ว ไม่ปล่อยให้ดูเหมือนรอบปิดธรรมดา
+  eq(roundExportChip(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569" })),
+    { tone: "ok", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569" });
+});
+
+test("ข้อความรอบที่ส่งแล้วเป็นชิ้นเดียวกับ wl_round_export_text ของเซิร์ฟเวอร์", () => {
+  const src = readFileSync(new URL("../../mock_api.py", import.meta.url), "utf8");
+  const at = src.indexOf("def wl_round_export_text(");
+  ok(at >= 0, "หา wl_round_export_text ใน mock_api.py ไม่เจอ");
+  const body = src.slice(at, src.indexOf("\ndef ", at + 1));
+  ok(body.includes('f"ส่งเข้าโปรแกรมแล้ว — เทอม '), "ข้อความหลัก");
+  ok(body.includes(`text += "${EXPORT_PARKED_TEXT}"`), `ข้อความเทอมถูกปิดไว้: ${EXPORT_PARKED_TEXT}`);
+});
+
+test("exportActivityLines: ชุดกิจกรรมที่ต้องลงคาบเองจาก export_report · รูปเสีย/ไม่มี → ว่าง", () => {
+  eq(exportActivityLines(REPORT), [
+    "ชุมนุม ม.1 · ม.1/1, ม.1/2 · 1 คาบ/สัปดาห์ · ครู ก",
+    "ชุดกิจกรรม · ม.2/1 · 2 คาบ/สัปดาห์ · ยังไม่มีครู",
+  ]);
+  for (const bad of [null, undefined, {}, { activity_sets: "x" }, { activity_sets: [null, 5] }, []]) eq(exportActivityLines(bad), []);
+});
+
+test("isRound: ช่องของขั้นที่ 3 — ถูกรูป/ไม่มี (เซิร์ฟเวอร์รุ่นก่อน) ผ่าน · ผิดรูปไม่ผ่าน", () => {
+  ok(isRound(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569",
+    exported_text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569", export_report: REPORT })), "รอบที่ส่งแล้ว");
+  ok(isRound(R({ exported_at: null, exported_label: null, exported_text: null, export_report: null })), "ยังไม่ส่ง");
+  ok(isRound(R()), "ไม่มีช่องเลย");
+  const bad: unknown[] = [
+    R({ exported_at: 5 as unknown as string }), R({ exported_label: 2569 as unknown as string }),
+    R({ exported_text: true as unknown as string }), R({ export_report: "x" as unknown as Record<string, unknown> }),
+    R({ export_report: [] as unknown as Record<string, unknown> }),
+  ];
+  bad.forEach((b, i) => ok(!isRound(b), `ตัวที่ ${i} ควรไม่ผ่าน`));
+});
+
+test("รอบที่ส่งแล้ว (สถานะปิด) ไม่มีปุ่มแก้: ปุ่มของรอบ ตรวจ/ตีกลับ และการแก้แถวของ admin ปิดหมด", () => {
+  eq(roundActions("closed"), { open: false, cancel: false, close: false, review: false });
+  for (const s of ["filling", "submitted", "returned", "approved"] as const) eq(reviewActions("closed", s), { approve: false, return: false });
+  eq(editState("admin", "closed", "approved").can, false);
 });
 
 if (fails.length) {

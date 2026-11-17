@@ -11,7 +11,7 @@ import { cancelRound, closeRound, createRound, listRounds, openRound, previewRou
 import { Button, Card, Notice } from "../ui";
 import { useRegistryList } from "../useRegistryList";
 import { Field, inputClass } from "./registryParts";
-import RoundOverview from "./RoundOverview";
+import RoundOverview, { ExportChip } from "./RoundOverview";
 
 // หน้ารอบอัตรากำลังของผู้ดูแลระบบ (แบบข้อ 4.3): ยังไม่มีรอบ → ดูก่อนเปิด → เปิดรอบ (เตรียม) → เปิดให้กลุ่มสาระกรอก
 // → ภาพรวม ตรวจผ่าน/ตีกลับ → ปิดรอบ · รอบที่ปิดแล้วอยู่ในรายการรอบเก่า เปิดดูได้อ่านอย่างเดียว
@@ -215,6 +215,7 @@ export default function RoundsPage(props: {
                     <span className="text-muted">
                       {r.closed_at && <> · ปิดรอบเมื่อ {thaiDateTime(r.closed_at) ?? r.closed_at}</>} · {fmt(r.counts.rows)} แถว
                     </span>
+                    {r.exported_at && <div className="mt-1"><ExportChip round={r} /></div>}
                   </div>
                   {viewing?.id === r.id ? (
                     <span className="text-sm text-muted">กำลังเปิดดูอยู่</span>

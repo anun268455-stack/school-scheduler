@@ -3,7 +3,7 @@ import type {
   Building, Department, LessonRequirement, Period, Room,
   ElectivePool, PoolTeacherCandidate, RequirementProblemReport, SchoolConfig, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
-import type { TermMeta } from "../utils/terms";
+import type { RoundPreview, RoundReport, TermMeta, TermRound } from "../utils/terms";
 import { blockedReason, gateRequest, setWriteBlock } from "./writeGate";
 
 // In production (GitHub Pages), use the Render backend URL via env var
@@ -1475,8 +1475,23 @@ export interface TermPreview {
   slots_to_clear: number;
 }
 
-export const fetchTermPreview = () =>
-  api.get<TermPreview>("/terms/preview").then((r) => r.data);
+/**
+ * ไม่ส่ง roundId = ตัวเลขเดิม 5 ตัว (คำขอเดิมทุกตัวอักษร) · ส่ง = + "round" {usable, reasons, report}
+ * (ขั้นที่ 3 — เซิร์ฟเวอร์คำนวณแบบเดียวกับตอนกดสร้างจริง ไม่เขียนอะไร)
+ */
+export function fetchTermPreview(): Promise<TermPreview>;
+export function fetchTermPreview(roundId: number): Promise<RoundPreview>;
+export function fetchTermPreview(roundId?: number): Promise<TermPreview | RoundPreview> {
+  if (roundId === undefined) return api.get<TermPreview>("/terms/preview").then((r) => r.data);
+  return api.get<RoundPreview>("/terms/preview", { params: { round_id: roundId } }).then((r) => r.data);
+}
+
+/**
+ * รอบอัตรากำลังทั้งหมด (ใหม่ก่อน) ให้หน้าต่างสร้างเทอมใหม่เลือก — ไม่ได้ต่อฐานข้อมูล = [] ·
+ * ต่อฐานไม่ได้ = 503 (หน้าต่างถอยเป็นแบบเดิม)
+ */
+export const fetchTermRounds = () =>
+  api.get<TermRound[]>("/terms/rounds").then((r) => r.data);
 
 /**
  * `save_error: null` does NOT prove the term was saved: the write is only
@@ -1488,10 +1503,18 @@ export interface CreateTermResult {
   active: TermMeta;
   save_error: string | null;
   save_pending: boolean;
+  /** สร้างจากรอบเท่านั้น: รายงานที่เก็บในแถวรอบด้วย (ชุดกิจกรรมที่ต้องลงคาบเอง ฯลฯ) */
+  report?: RoundReport;
 }
 
-export const createTerm = (year: number, semester: number) =>
-  api.post<CreateTermResult>("/terms", { year, semester }).then((r) => r.data);
+/** สร้างจากรอบอัตรากำลัง (ขั้นที่ 3): ปี/ภาคเรียนต้องเป็นของรอบ · adminCode = รหัสผู้ดูแลระบบของเว็บลงอัตรากำลัง */
+export interface CreateTermFromRound { roundId: number; adminCode: string }
+
+/** ไม่ส่ง opts = คำขอเดิมทุกตัวอักษร ({year, semester}) */
+export const createTerm = (year: number, semester: number, opts?: CreateTermFromRound) =>
+  api.post<CreateTermResult>("/terms", opts
+    ? { year, semester, round_id: opts.roundId, admin_code: opts.adminCode }
+    : { year, semester }).then((r) => r.data);
 
 /** The stored copy of a CLOSED term. The active term answers 409 — never ask. */
 export interface TermSnapshot {
@@ -1516,6 +1539,8 @@ export interface UnlockTermResult {
   closed: TermMeta | null;
   save_error?: string | null;
   save_pending?: boolean;
+  /** เมื่อมีรอบที่ส่งแล้ว: ข้อความไทยของการปรับทะเบียนของเว็บลงอัตรากำลังตามเทอมที่เปิด (createOutcome ต่อท้ายให้) */
+  workload?: string[];
 }
 
 export const unlockTerm = (id: number, confirm: string) =>

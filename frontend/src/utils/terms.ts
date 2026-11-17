@@ -223,14 +223,18 @@ export function createLatch(): Latch {
  *
  * 400/409 มาจากการตรวจก่อนสร้าง ไม่มีอะไรเปลี่ยน ส่วนหมดเวลา เครือข่ายหลุด หรือ 5xx
  * บอกไม่ได้ว่าเทอมถูกสร้างไปแล้วหรือยัง การกดซ้ำอาจปิดเทอมที่เพิ่งสร้าง จึงไม่ปล่อยให้กดอีก
+ *
+ * `fromRound` (สร้างจากรอบอัตรากำลัง): 403 รหัสผิด · 429 ผิดเกินเกณฑ์ · 404 ไม่มีรอบ ก็เป็นการปฏิเสธ
+ * ก่อนแตะอะไรเหมือนกัน (เซิร์ฟเวอร์ตรวจรหัสก่อนเปิดธุรกรรม) — ต้องให้แก้รหัสแล้วกดใหม่ได้
  */
-export function canRetryCreate(e: unknown): boolean {
+export function canRetryCreate(e: unknown, fromRound = false): boolean {
   const status = (e as { response?: { status?: number } })?.response?.status;
-  return status === 400 || status === 409;
+  if (status === 400 || status === 409) return true;
+  return fromRound && (status === 403 || status === 404 || status === 429);
 }
 
 /**
- * ข้อความไทยที่ผู้ใช้ควรเห็น: ที่เซิร์ฟเวอร์ส่งมา (400/404/409/503) หรือที่ร้านโยนเอง
+ * ข้อความไทยที่ผู้ใช้ควรเห็น: ที่เซิร์ฟเวอร์ส่งมา (400/403/404/409/429/503) หรือที่ร้านโยนเอง
  * (Error ภาษาไทยที่ไม่ได้มาจากเครือข่าย เช่นข้อความของด่านกันแก้ไข) มิฉะนั้นข้อความสำรอง
  * ข้อความอังกฤษของ axios ("Request failed with status code 500") ไม่เคยถูกส่งต่อ
  */
@@ -238,7 +242,8 @@ export function termErrorText(e: unknown, fallback: string): string {
   const r = (e as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
   if (!r && e instanceof Error && /[\u0E00-\u0E7F]/.test(e.message)) return e.message;
   const d = r?.data?.detail;
-  const ok = r?.status === 400 || r?.status === 404 || r?.status === 409 || r?.status === 503;
+  // 403/429 มีแค่ทางสร้างเทอมจากรอบ (รหัสผู้ดูแลระบบผิด · ผิดเกินเกณฑ์) — ทางเดิมไม่มีสองตัวนี้
+  const ok = [400, 403, 404, 409, 429, 503].includes(r?.status ?? 0);
   return ok && typeof d === "string" && d.trim() ? d : fallback;
 }
 
@@ -248,6 +253,8 @@ export interface CreateResultLike {
   active: { label: string };
   save_error?: string | null;
   save_pending?: boolean;
+  /** ผลของปลดล็อกเทอม: ข้อความไทยของการปรับทะเบียนครู/วิชาของเว็บลงอัตรากำลังตามเทอมที่เปิด (ว่าง = ไม่มีอะไรต้องปรับ) */
+  workload?: string[] | null;
 }
 
 /**
@@ -256,6 +263,7 @@ export interface CreateResultLike {
  * `save_error: null` ไม่ได้พิสูจน์ว่าเขียนลงฐานข้อมูลแล้ว เซิร์ฟเวอร์แค่ใส่คิวไว้
  * (`save_pending: true` = ยังอยู่ระหว่างส่ง) คำตอบจริงอยู่ที่ป้ายสถานะการบันทึกบนแถบ
  * ด้านบน ซึ่งอ่านจาก /state/version
+ * `workload` ต่อท้ายข้อความ — คนที่ปลดล็อกต้องรู้ว่าทะเบียนของเว็บลงอัตรากำลังถูกปรับ และมีรายการไหนถูกข้าม
  */
 export function createOutcome(
   r: CreateResultLike, verb: "สร้าง" | "ปลดล็อก" = "สร้าง",
@@ -263,7 +271,8 @@ export function createOutcome(
   const closed = r.closed
     ? ` เทอม ${r.closed.label} ถูกปิดแล้ว (${r.closed.slots ?? 0} คาบ)`
     : "";
-  const head = `${verb}เทอม ${r.active.label} แล้ว${closed}`;
+  const notes = (r.workload ?? []).filter((t) => typeof t === "string" && t.trim() !== "");
+  const head = `${verb}เทอม ${r.active.label} แล้ว${closed}${notes.length ? ` · ${notes.join(" · ")}` : ""}`;
   if (r.save_error) {
     return {
       tone: "error",
@@ -335,6 +344,212 @@ export function newTermWarning(active: TermMeta | null): string {
       + " · คาบที่ลงไว้ทั้งหมดจะเริ่มจากว่างในเทอมใหม่";
   }
   return `กดแล้วเทอม ${active.label}จะถูกปิดและแก้ไม่ได้อีก · คาบที่ลงไว้ทั้งหมดจะเริ่มจากว่างในเทอมใหม่`;
+}
+
+// ── สร้างเทอมใหม่จากรอบอัตรากำลัง (ขั้นที่ 3 · แบบข้อ 4.5) ──────────────────────
+// ไม่มีรอบเลย หรืออ่านรายการรอบไม่ได้ → หน้าต่างเป็นแบบเดิมทุกอย่าง ฟังก์ชันชุดนี้ใช้เฉพาะตอนมีรอบให้เลือก
+// เซิร์ฟเวอร์เป็นคนตัดสินว่ารอบใช้ได้ไหม (usable/reasons คำนวณแบบเดียวกับตอนกดสร้างจริง) — ที่นี่แค่แสดง
+
+/** หนึ่งแถวของ GET /terms/rounds (ใหม่ก่อน · ไม่มีข้อมูลรายแถว) */
+export interface TermRound {
+  id: number;
+  label: string;
+  year: number;
+  semester: number;
+  /** preparing | filling | closed */
+  status: string;
+  /** ส่งเข้าโปรแกรมแล้วเมื่อ (ISO) · ยังไม่ส่ง = null */
+  exported_at: string | null;
+  /** ชื่อเทอมที่รอบนี้ส่งเข้าไป ("2/2569") */
+  exported_label: string | null;
+  usable: boolean;
+  /** เหตุที่ยังสร้างไม่ได้ เป็นภาษาไทย (ว่าง = ใช้ได้) */
+  reasons: string[];
+}
+
+/** หนึ่งช่องที่จะถูกแก้ของครู/วิชาเดิมในโปรแกรม (Ruling T1 C4) — label = ชื่อไทยของช่องจากเซิร์ฟเวอร์ */
+export interface RoundChange { field: string; label: string; old: unknown; new: unknown }
+
+type Named = { id: number; name: string | null; code?: string | null; wl_id?: number | null };
+
+/**
+ * report ของหน้าดูก่อนสร้าง = export_report ที่เก็บในแถวรอบ (รูปเต็มอยู่ที่ _term_report ของเซิร์ฟเวอร์)
+ * ตัวเลขนับแถว/คาบ · รายการ: จำนวน = ความยาว · ฟังก์ชันข้างล่างอ่านแบบไม่เชื่อรูป (ขาดช่อง = ว่าง ไม่ล้ม)
+ */
+export interface RoundReport {
+  requirements: number;
+  periods: number;
+  teachers_in_plan: number;
+  curricula: number;
+  pools: number;
+  pool_options: number;
+  teachers_created: (Named & { department_id?: number | null })[];
+  subjects_created: Named[];
+  teachers_patched: (Named & { changes: RoundChange[] })[];
+  subjects_patched: (Named & { changes: RoundChange[] })[];
+  /** วิชาที่พิมพ์รหัสในเว็บแล้วผูกกับวิชาเดิมของโปรแกรมด้วยรหัส */
+  code_links: Named[];
+  /** ครูที่เว็บติ๊ก "ไม่ปฏิบัติงานแล้ว" แต่ยังเปิดอยู่ในโปรแกรม (ไม่ปิดให้) */
+  inactive_open: Named[];
+  /** ครู/วิชาที่ปิดใช้งานอยู่ในโปรแกรม แต่เทอมใหม่ใช้ (ไม่เปิดให้ — ให้เห็น) */
+  inactive_teachers_used: Named[];
+  inactive_subjects_used: Named[];
+  /** ครูที่โปรแกรมมีแต่เว็บไม่รู้จัก (ไม่ทำอะไร) */
+  unknown_teachers: (Named & { department_id?: number | null; active?: boolean })[];
+  /** ชุดกิจกรรม — ต้องลงคาบเอง (ตารางของเทอมใหม่เริ่มว่าง) */
+  activity_sets: { name: string; group_ids?: number[]; group_names: string[]; weekly: number;
+    teacher_ids?: number[]; teacher_names: (string | null)[] }[];
+}
+
+/** GET /terms/preview?round_id= — ตัวเลขเดิม 5 ตัว + ของรอบ */
+export interface RoundPreview extends PreviewLike {
+  round: { id: number; label: string; year: number; semester: number; usable: boolean; reasons: string[];
+    report: RoundReport };
+}
+
+const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const items = <T>(v: unknown): T[] => (Array.isArray(v) ? v.filter((x) => typeof x === "object" && x !== null) : []);
+const text = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+const thaiNum = (n: number): string => n.toLocaleString("th-TH");
+
+/** ป้ายในตัวเลือกรอบ: "ภาคเรียน 2/2569 · ใช้ได้" · "… · ยังใช้ไม่ได้" · "… · ส่งแล้ว (เทอม 2/2569)" */
+export function roundOptionLabel(r: TermRound): string {
+  const head = `ภาคเรียน ${r.label}`;
+  if (r.exported_at) return `${head} · ส่งแล้ว (เทอม ${r.exported_label || r.label})`;
+  return `${head} · ${r.usable ? "ใช้ได้" : "ยังใช้ไม่ได้"}`;
+}
+
+/** รอบที่ส่งแล้วแสดงในรายการแต่เลือกไม่ได้ (Ruling T3 C2) — รอบที่ใช้ไม่ได้ยังเลือกดูเหตุได้ (แบบข้อ 4.5) */
+export function roundSelectable(r: Pick<TermRound, "exported_at">): boolean {
+  return !r.exported_at;
+}
+
+/** ค่าเริ่มต้นของตัวเลือกรอบ: รอบล่าสุดที่ใช้ได้ · ไม่มี → รอบล่าสุดที่ยังไม่ส่ง · ส่งแล้วทุกรอบ → null */
+export function defaultTermRound(rounds: TermRound[]): TermRound | null {
+  const open = [...rounds].sort((a, b) => b.year - a.year || b.semester - a.semester).filter(roundSelectable);
+  return open.find((r) => r.usable) ?? open[0] ?? null;
+}
+
+/** ข้อความเดียวกับ TERM_ADMIN_CODE_MISSING ของเซิร์ฟเวอร์ (ตัวทดสอบเทียบกับ mock_api.py) */
+export const TERM_ADMIN_CODE_MISSING =
+  "กรอกรหัสผู้ดูแลระบบของเว็บลงอัตรากำลังเพื่อยืนยันการสร้างเทอมใหม่จากรอบอัตรากำลัง";
+
+/**
+ * ปุ่มสร้างจากรอบกดได้ไหม — คืนข้อความไทยของสิ่งที่ยังขาด หรือ null
+ * ลำดับ: ไม่ได้เลือกรอบ → รอบส่งแล้ว/ใช้ไม่ได้ → ไม่ได้กรอกรหัส (ช่องว่างล้วนนับว่าไม่ได้กรอก เหมือนเซิร์ฟเวอร์)
+ */
+export function newTermFromRoundError(round: TermRound | null, code: string): string | null {
+  if (round === null) return "เลือกรอบอัตรากำลังก่อน";
+  if (round.exported_at) {
+    return `รอบ ${round.label} ส่งเข้าโปรแกรมแล้ว (เทอม ${round.exported_label || round.label}) — ส่งซ้ำไม่ได้`;
+  }
+  if (!round.usable) return `รอบ ${round.label} ยังใช้ไม่ได้ — แก้ตามเหตุที่บอกไว้ก่อน แล้วค่อยกลับมาสร้าง`;
+  if (code.trim() === "") return TERM_ADMIN_CODE_MISSING;
+  return null;
+}
+
+/** ชุดกิจกรรมที่ต้องลงคาบเอง ทีละบรรทัด: "ชื่อชุด · ห้อง · N คาบ/สัปดาห์ · ครู" (รายงานไม่มี/ผิดรูป = ว่าง) */
+export function activitySetLines(report: unknown): string[] {
+  const sets = items<Record<string, unknown>>((report as { activity_sets?: unknown } | null | undefined)?.activity_sets);
+  return sets.map((a) => {
+    const groups = (Array.isArray(a.group_names) ? a.group_names : []).map(text).filter(Boolean);
+    const teachers = (Array.isArray(a.teacher_names) ? a.teacher_names : []).map(text).filter(Boolean);
+    return [text(a.name) || "ชุดกิจกรรม", groups.join(", ") || "ไม่ระบุห้อง", `${thaiNum(num(a.weekly))} คาบ/สัปดาห์`,
+      teachers.length ? teachers.join(", ") : "ยังไม่มีครู"].join(" · ");
+  });
+}
+
+export type RoundRowTone = "plain" | "warn" | "info";
+/** หนึ่งบรรทัดของสรุปก่อนสร้างจากรอบ · items = รายการที่เปิดดูได้ ("ดูรายการ") */
+export interface RoundPreviewRow { label: string; value: string; tone: RoundRowTone; items?: string[] }
+
+const teacherText = (t: Named): string => {
+  const name = text(t.name) || `ครูรหัส ${t.id}`;
+  return text(t.code) ? `${name} (${text(t.code)})` : name;
+};
+const subjectText = (s: Named): string => `${text(s.code)} ${text(s.name)}`.trim() || `วิชารหัส ${s.id}`;
+
+function changeValue(field: string, v: unknown, deptName?: (id: number) => string | undefined): string {
+  if (v === null || v === undefined || v === "") return "ว่าง";
+  if (typeof v === "boolean") return v ? "ใช่" : "ไม่ใช่";
+  if (field === "duration" && (v === 1 || v === 2)) return v === 2 ? "ใช่" : "ไม่ใช่";   // ช่อง "คาบคู่"
+  if (field === "department_id" && typeof v === "number") return deptName?.(v) ?? `กลุ่มสาระรหัส ${v}`;
+  return String(v);
+}
+
+/** "ชื่อ · ช่อง: ค่าเดิม → ค่าใหม่ · …" (Ruling T1 C4 — โดยเฉพาะคาบคู่/วิชาเสรีที่กระทบยอดคาบและการจัดคาบ) */
+function patchText(who: string, changes: unknown, deptName?: (id: number) => string | undefined): string {
+  const parts = items<RoundChange>(changes).map((c) =>
+    `${text(c.label) || c.field}: ${changeValue(c.field, c.old, deptName)} → ${changeValue(c.field, c.new, deptName)}`);
+  return [who, ...parts].join(" · ");
+}
+
+/**
+ * บรรทัดของสรุปก่อนสร้างจากรอบ (ภาพร่างแบบข้อ 4.5) — ค่า 0 ไม่ขึ้น ยกเว้นแถวแผน (แผนว่างต้องเห็นว่าว่าง)
+ * ชุดกิจกรรมที่ต้องลงคาบเอง และครู/วิชาที่ปิดใช้งานในโปรแกรมแต่เทอมใหม่ใช้ = warn · ที่ไม่ทำอะไร = info
+ * `deptName` แปลงรหัสกลุ่มสาระในรายการที่จะถูกแก้เป็นชื่อ (ไม่ส่ง = "กลุ่มสาระรหัส N")
+ */
+export function roundPreviewRows(
+  p: RoundPreview, deptName?: (id: number) => string | undefined,
+): RoundPreviewRow[] {
+  const r = (p.round?.report ?? {}) as Partial<RoundReport>;
+  const out: RoundPreviewRow[] = [
+    { label: "แผนการสอน", value: `${thaiNum(num(r.requirements))} แถว`, tone: "plain" },
+  ];
+  const add = (label: string, n: number, unit: string, tone: RoundRowTone = "plain", list?: string[]) => {
+    if (n > 0) out.push({ label, value: `${thaiNum(n)} ${unit}`, tone, ...(list ? { items: list } : {}) });
+  };
+  const named = (v: unknown) => items<Named>(v);
+  add("คาบรวมตามแผน", num(r.periods), "คาบ/สัปดาห์");
+  add("ครูในแผน", num(r.teachers_in_plan), "คน");
+  add("หลักสูตร", num(r.curricula), "ชุด");
+  const tCreated = named(r.teachers_created);
+  add("ครูใหม่ที่จะสร้าง", tCreated.length, "คน", "plain", tCreated.map(teacherText));
+  const sCreated = named(r.subjects_created);
+  add("วิชาใหม่ที่จะสร้าง", sCreated.length, "วิชา", "plain", sCreated.map(subjectText));
+  const tPatched = items<Named & { changes: unknown }>(r.teachers_patched);
+  add("ครูที่จะถูกแก้ข้อมูล", tPatched.length, "คน", "plain",
+    tPatched.map((t) => patchText(text(t.name) || `ครูรหัส ${t.id}`, t.changes, deptName)));
+  const sPatched = items<Named & { changes: unknown }>(r.subjects_patched);
+  add("วิชาที่จะถูกแก้ข้อมูล", sPatched.length, "วิชา", "plain",
+    sPatched.map((s) => patchText(subjectText(s), s.changes, deptName)));
+  const links = named(r.code_links);
+  add("วิชาที่ผูกกับวิชาเดิมในโปรแกรมด้วยรหัสวิชา", links.length, "วิชา", "info", links.map(subjectText));
+  if (num(r.pools) > 0) {
+    out.push({ label: "ชุดคาบเสรี", tone: "plain",
+      value: `${thaiNum(num(r.pools))} ชุด (${thaiNum(num(r.pool_options))} ตัวเลือก) · ยังไม่ลงคาบ` });
+  }
+  const acts = activitySetLines(r);
+  add("ชุดกิจกรรมที่ต้องลงคาบเอง", acts.length, "ชุด", "warn", acts);
+  const tOff = named(r.inactive_teachers_used);
+  add("ครูที่ปิดใช้งานในโปรแกรม แต่อยู่ในเทอมใหม่", tOff.length, "คน", "warn", tOff.map(teacherText));
+  const sOff = named(r.inactive_subjects_used);
+  add("วิชาที่ปิดใช้งานในโปรแกรม แต่อยู่ในเทอมใหม่", sOff.length, "วิชา", "warn", sOff.map(subjectText));
+  const left = named(r.inactive_open);
+  add("ครูที่เว็บติ๊กว่าไม่ปฏิบัติงานแล้ว แต่ยังเปิดอยู่ในโปรแกรม", left.length, "คน (ไม่ปิดให้)", "info",
+    left.map(teacherText));
+  const unknown = named(r.unknown_teachers);
+  add("ครูในโปรแกรมที่เว็บไม่รู้จัก", unknown.length, "คน (ไม่ทำอะไร)", "info", unknown.map(teacherText));
+  add("คาบที่ลงตารางไว้ตอนนี้", num(p.slots_to_clear), "คาบ · จะถูกล้าง");
+  return out;
+}
+
+/** ผลหลังสร้างจากรอบ: บอกชุดกิจกรรมที่ต้องลงคาบเอง และที่ที่เปิดดูได้อีก · ไม่มีชุดกิจกรรม = null */
+export function roundCreatedNote(report: unknown): string | null {
+  const n = activitySetLines(report).length;
+  if (n === 0) return null;
+  return `ชุดกิจกรรมที่ต้องลงคาบเอง ${thaiNum(n)} ชุด — ตารางของเทอมใหม่เริ่มว่าง ให้ลงคาบกิจกรรมเองในหน้าจัดตาราง `
+    + "(รายการนี้เปิดดูได้อีกที่หน้ารอบของเว็บลงอัตรากำลัง)";
+}
+
+/**
+ * อ่านรายการรอบไม่ได้ → บรรทัดเล็กที่ไม่ขวางอะไร (addendum ข้อ 4: หน้าต่างถอยเป็นแบบเดิม ปุ่มแบบเดิมกดได้)
+ * 404 = เซิร์ฟเวอร์รุ่นก่อนขั้นที่ 3 ไม่มี route นี้ — ไม่มีอะไรต้องบอก (null)
+ */
+export function roundsLoadNote(e: unknown): string | null {
+  if ((e as { response?: { status?: number } })?.response?.status === 404) return null;
+  const why = termErrorText(e, "");
+  return `อ่านรายการรอบอัตรากำลังไม่ได้${why ? ` (${why})` : ""} — สร้างเทอมจากแผนเดิมได้ตามปกติ`;
 }
 
 /** ชื่อไฟล์ดาวน์โหลดของเทอม — "/" ใช้ในชื่อไฟล์ไม่ได้ */

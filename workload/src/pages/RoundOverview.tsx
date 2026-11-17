@@ -3,8 +3,8 @@ import type { AxiosError } from "axios";
 import { apiErrorText } from "../api";
 import { departmentName, thaiDateTime } from "../curriculum";
 import {
-  checkReturnNote, deptProgress, deptStatusLabel, deptStatusTone, reviewActions, reviewGap, ROUND_STATUS_TEXT, roundStats,
-  roundStatusTone, type DeptStatus, type Round, type Unconverted,
+  checkReturnNote, deptProgress, deptStatusLabel, deptStatusTone, exportActivityLines, reviewActions, reviewGap,
+  ROUND_STATUS_TEXT, roundExportChip, roundStats, roundStatusTone, type DeptStatus, type Round, type Unconverted,
 } from "../round";
 import { approveDept, getRound, listDeptStatuses, returnDept } from "../roundApi";
 import type { Department } from "../types";
@@ -15,8 +15,19 @@ import { Button, Card, Chip, Notice, Progress, StatTile } from "../ui";
 // รอบที่ปิดแล้วเปิดดูได้ด้วยคอมโพเนนต์เดียวกัน ปุ่มตรวจ/ตีกลับไม่ขึ้นเอง (reviewActions)
 
 const fmt = (n: number): string => n.toLocaleString("th-TH");
-const when = (iso: string | null): string | null => (iso ? (thaiDateTime(iso) ?? iso) : null);
+const when = (iso: string | null | undefined): string | null => (iso ? (thaiDateTime(iso) ?? iso) : null);
 const statusOf = (err: unknown): number => (err as AxiosError | undefined)?.response?.status ?? 0;
+
+/** ป้าย "ส่งเข้าโปรแกรมแล้ว — เทอม …" (ขั้นที่ 3) · ข้อความยาวตอนเทอมถูกปิดไว้ — ให้ตัดบรรทัดได้ ไม่ตัดท้ายเป็น … บนจอโทรศัพท์ */
+export function ExportChip(props: { round: Round }) {
+  const chip = roundExportChip(props.round);
+  if (!chip) return null;
+  return (
+    <Chip tone={chip.tone} className="whitespace-normal" title={chip.text} data-testid="round-exported">
+      <span className="whitespace-normal">{chip.text}</span>
+    </Chip>
+  );
+}
 
 export default function RoundOverview(props: {
   round: Round;
@@ -95,6 +106,7 @@ export default function RoundOverview(props: {
             <Chip tone={roundStatusTone(round.status)} dot={round.status !== "closed"} data-testid="round-status">
               {ROUND_STATUS_TEXT[round.status]}
             </Chip>
+            <ExportChip round={round} />
           </div>
           <p className="mt-1 text-muted" data-testid="round-summary">
             {opened && <>เปิดรอบเมื่อ {opened} · </>}
@@ -105,11 +117,22 @@ export default function RoundOverview(props: {
           {round.status === "closed" && (
             <p className="mt-1 text-sm text-muted">รอบนี้ปิดแล้ว อ่านอย่างเดียว — เก็บไว้เป็นหลักฐานย้อนหลัง</p>
           )}
+          {/* ส่งแล้ว = ปิดถาวร ทุกการแก้ของรอบและหลักสูตรของภาคเรียนนี้ถูกปฏิเสธ (ปุ่มแก้หายเองเพราะสถานะปิด) */}
+          {round.exported_at && (
+            <p className="mt-1 text-sm text-muted" data-testid="round-exported-note">
+              ส่งเข้าโปรแกรมจัดตารางเมื่อ {when(round.exported_at)} · แก้รอบนี้และหลักสูตรของภาคเรียนนี้ไม่ได้อีก
+              {/* เทอมของรอบเปิดอยู่ = บอกทางกลับเมื่อส่งผิด · ถูกปิดไว้ = ป้ายบอกให้ปลดล็อกเทอมนั้นอยู่แล้ว */}
+              {roundExportChip(round)?.tone === "ok" &&
+                " (ถ้าส่งผิด ให้ปลดล็อกเทอมเดิมกลับในหน้ารายการเทอมของโปรแกรมจัดตาราง)"}
+            </p>
+          )}
         </div>
         {props.actions && <div className="flex flex-wrap gap-2">{props.actions}</div>}
       </div>
 
       {props.children}
+
+      <ExportActivities round={round} />
 
       {round.counts.unconverted > 0 && <UnconvertedList roundId={round.id} count={round.counts.unconverted} />}
 
@@ -293,6 +316,24 @@ function ReturnForm(props: {
         <Button onClick={props.onCancel} disabled={props.busy}>ยกเลิก</Button>
       </div>
     </form>
+  );
+}
+
+/** ชุดกิจกรรมที่ต้องลงคาบเองในโปรแกรมจัดตาราง (export_report ของรอบที่ส่งแล้ว — แบบข้อ 4.5: เปิดดูทีหลังได้ที่หน้ารอบ)
+ *  · ตารางของเทอมใหม่เริ่มว่าง โปรแกรมเก็บกิจกรรมไว้ในคาบ จึงต้องลงเอง */
+function ExportActivities(props: { round: Round }) {
+  if (!props.round.exported_at) return null;
+  const lines = exportActivityLines(props.round.export_report);
+  if (lines.length === 0) return null;
+  return (
+    <details className="mb-5 rounded-card border border-line bg-surface px-4 py-3 sm:px-5" data-testid="export-activities">
+      <summary className="cursor-pointer font-medium text-warn">
+        ชุดกิจกรรมที่ต้องลงคาบเองในโปรแกรมจัดตาราง {fmt(lines.length)} ชุด — ตารางของเทอมใหม่เริ่มว่าง
+      </summary>
+      <ul className="mt-2 list-disc space-y-1 pl-5">
+        {lines.map((line, i) => <li key={i} className="break-words">{line}</li>)}
+      </ul>
+    </details>
   );
 }
 

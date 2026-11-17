@@ -27,6 +27,16 @@ export type Round = {
   opened_at: string;
   closed_at: string | null;
   counts: { rows: number; sets: number; options: number; unconverted: number };
+  // ---- ขั้นที่ 3: ส่งเข้าโปรแกรมจัดตารางแล้ว (ปุ่มสร้างเทอมใหม่ของโปรแกรม) · ยังไม่ส่ง = null ทุกช่อง ----
+  // ช่องเป็น optional: เซิร์ฟเวอร์รุ่นก่อนขั้นที่ 3 ไม่ส่งมา (เว็บกับเซิร์ฟเวอร์ขึ้นคนละที่ คนละเวลา) = ถือว่ายังไม่ส่ง
+  /** ส่งเข้าโปรแกรมเมื่อ (ISO) */
+  exported_at?: string | null;
+  /** ชื่อเทอมที่ส่งเข้าไป ("2/2569") */
+  exported_label?: string | null;
+  /** ข้อความของรอบที่ส่งแล้ว คำนวณตอนอ่าน: "ส่งเข้าโปรแกรมแล้ว — เทอม X" · เทอมนั้นไม่ได้เปิดอยู่ = ต่อท้าย EXPORT_PARKED_TEXT */
+  exported_text?: string | null;
+  /** รายงานผลการส่ง (ชุดกิจกรรมที่ต้องลงคาบเอง ฯลฯ) — อ่านด้วย exportActivityLines เท่านั้น (รูปมาจากเซิร์ฟเวอร์ ไม่เชื่อรูป) */
+  export_report?: Record<string, unknown> | null;
 };
 /** GET /rounds/{id} · POST /rounds · open · close (admin) — มีตัวรายการที่แปลงไม่ได้ */
 export type RoundDetail = Round & { unconverted: Unconverted[] };
@@ -186,6 +196,37 @@ export function currentRound<R extends Pick<Round, "status">>(rounds: readonly R
 /** รอบที่ปิดแล้ว (รายการรอบเก่า) ตามลำดับที่เซิร์ฟเวอร์ส่ง (ใหม่ก่อน) */
 export function closedRounds<R extends Pick<Round, "status">>(rounds: readonly R[]): R[] {
   return rounds.filter((r) => r.status === "closed");
+}
+
+// ---- รอบที่ส่งเข้าโปรแกรมจัดตารางแล้ว (ขั้นที่ 3) ----
+// รอบที่ส่งแล้วถูกปิดถาวร (เซิร์ฟเวอร์ตั้งสถานะปิดตอนส่ง และทุก route เขียนของรอบตอบ 409) ปุ่มแก้ทุกปุ่มจึงหายไปเองตามสถานะปิด
+// (roundActions · reviewActions · editState) — ที่ต้องเพิ่มคือบอกว่าส่งแล้ว เป็นเทอมไหน และเทอมนั้นยังเปิดอยู่ไหม
+
+/** ส่วนท้ายของ exported_text เมื่อเทอมของรอบไม่ได้เปิดอยู่ — ชิ้นเดียวกับ wl_round_export_text (ตัวทดสอบเทียบกับ mock_api.py) */
+export const EXPORT_PARKED_TEXT = " (ถูกปิดไว้ ปลดล็อกเทอมนั้นเพื่อใช้ต่อ)";
+
+/** ป้าย "ส่งเข้าโปรแกรมแล้ว — เทอม …" ของรอบ — ข้อความจากเซิร์ฟเวอร์ (exported_text) · เทอมถูกปิดไว้ = warn · ยังไม่ส่ง → null */
+export function roundExportChip(
+  r: Pick<Round, "exported_at" | "exported_label" | "exported_text">,
+): { tone: Tone; text: string } | null {
+  if (!r.exported_at) return null;
+  const text = r.exported_text || `ส่งเข้าโปรแกรมแล้ว — เทอม ${r.exported_label || "-"}`;
+  return { tone: text.endsWith(EXPORT_PARKED_TEXT) ? "warn" : "ok", text };
+}
+
+/** ชุดกิจกรรมที่ต้องลงคาบเองจาก export_report: "ชื่อชุด · ห้อง · N คาบ/สัปดาห์ · ครู" (รูปเดียวกับหน้าต่างของโปรแกรมจัดตาราง)
+ *  · ไม่มีรายงาน/รูปเสีย → [] */
+export function exportActivityLines(report: unknown): string[] {
+  const sets = isObj(report) && Array.isArray(report.activity_sets) ? report.activity_sets.filter(isObj) : [];
+  const words = (v: unknown): string[] =>
+    (Array.isArray(v) ? v : []).map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean);
+  return sets.map((a) => {
+    const groups = words(a.group_names);
+    const teachers = words(a.teacher_names);
+    const weekly = typeof a.weekly === "number" && Number.isFinite(a.weekly) ? a.weekly : 0;
+    return [(typeof a.name === "string" && a.name.trim()) || "ชุดกิจกรรม", groups.join(", ") || "ไม่ระบุห้อง",
+      `${fmt(weekly)} คาบ/สัปดาห์`, teachers.length ? teachers.join(", ") : "ยังไม่มีครู"].join(" · ");
+  });
 }
 
 /** ชิปรอบบนแถบบน: รอบที่ยังไม่ปิด · ไม่มี → null (ไม่แสดงชิป) */
@@ -404,9 +445,15 @@ const SET_KINDS: readonly string[] = ["elective", "activity"];
 const isUnconvertedList = (v: unknown): v is Unconverted[] =>
   Array.isArray(v) && v.every((u) => isObj(u) && isText(u.reason));
 
+// ช่องของขั้นที่ 3: ไม่มีช่อง (เซิร์ฟเวอร์รุ่นก่อน) = ยังไม่ส่ง · มีแต่ผิดรูป = ไม่ผ่าน
+const isAbsentOr = (ok: (v: unknown) => boolean) => (v: unknown): boolean => v === undefined || ok(v);
+const isReportOrNull = (v: unknown): boolean => v === null || isObj(v);
+
 export function isRound(d: unknown): d is Round {
   if (!isObj(d) || !isInt(d.id) || !isInt(d.year) || !isInt(d.semester) || !isText(d.label)) return false;
   if (!ROUND_STATUSES.includes(d.status as string) || !isText(d.opened_at) || !isTextOrNull(d.closed_at)) return false;
+  if (![d.exported_at, d.exported_label, d.exported_text].every(isAbsentOr(isTextOrNull))) return false;
+  if (!isAbsentOr(isReportOrNull)(d.export_report)) return false;
   const c = d.counts;
   return isObj(c) && isCount(c.rows) && isCount(c.sets) && isCount(c.options) && isCount(c.unconverted);
 }
