@@ -96,7 +96,9 @@ def _db_restore(db, snap):
 
 
 class TermConn:
-    """การเชื่อมต่อปลอม: with ที่ยกข้อผิดพลาด = ROLLBACK (คืนทุกตารางเป็นตอน COMMIT ล่าสุด) · จบปกติ = COMMIT แบบ psycopg"""
+    """การเชื่อมต่อปลอม: with ที่ยกข้อผิดพลาด = ROLLBACK (คืนทุกตารางเป็นตอน COMMIT ล่าสุด) · จบปกติ = COMMIT แบบ psycopg
+    on_rollback (ตัวทดสอบตั้ง) ถูกเรียกทุกครั้งที่ ROLLBACK — จังหวะที่ของจริงปล่อยล็อกทะเบียน (ล็อกระดับธุรกรรม)"""
+    on_rollback = None
 
     def __init__(self, db):
         self.db, self.cur, self.commits = db, TermCur(db, None), 0
@@ -107,8 +109,14 @@ class TermConn:
 
     def __exit__(self, et, ev, tb):
         if et is not None:
-            _db_restore(self.db, self._snap)
+            self.rollback()
         return False
+
+    def rollback(self):
+        if TermConn.on_rollback is not None:
+            TermConn.on_rollback(self)
+        _db_restore(self.db, self._snap)
+        self.cur.log.append(("ROLLBACK", ()))
 
     def cursor(self):
         return self.cur
@@ -500,6 +508,8 @@ def test_failure_at_each_step_restores_everything():
 
 def test_failure_after_a_concurrent_save_saves_the_restored_state():
     # ระหว่างใส่สถานะใหม่จนถึง COMMIT คำขอเขียนอื่นที่จบก่อนอาจเซฟสถานะใหม่ที่ยังไม่ COMMIT ลงคิว — ล้มแล้วต้องเซฟของเดิมทับ
+    # รีวิวทั้งสาขา M9: เขียนของที่คืนแล้วลง app_state ตรง ๆ ก่อนตอบ (การเชื่อมต่อเดียวกัน หลัง ROLLBACK) ไม่รอคิวเซฟ ~1 วินาที —
+    # เครื่องดับหลังได้คำตอบต้องไม่โหลดเทอมที่ไม่เคยเกิด · คิวเซฟยังอยู่ด้วย (ถ้ามีการเขียนสถานะใหม่ค้างอยู่กลางทาง ตัวที่ตามมาทับให้)
     with _world(subjects=_elective_on_program()) as rec:
         db, ns = _rich()
         rec.use(db)
@@ -510,14 +520,75 @@ def test_failure_after_a_concurrent_save_saves_the_restored_state():
             packs.append(1)
             if len(packs) == 2:                          # บรรจุไฟล์เทอมใหม่ = หลังใส่สถานะใหม่แล้ว (ก่อนใส่ = 409 ของ m3)
                 mock_api.REVISION["n"] += 1              # มีคำขอเขียนอื่นจบและบวกรุ่นระหว่างนั้น
+                db.app_state = real_pack(snap)           # …และคิวเซฟของมันเขียนสถานะที่ยังไม่ COMMIT ลงไปแล้ว
+                rec.conns[0]._snap = _db_snapshot(db)    # (คนละการเชื่อมต่อ — ROLLBACK ของเราไม่ย้อนให้)
             return real_pack(snap)
         os.environ[ENV] = "writeback"                    # ล้มก่อนถึงการเทียบรุ่นก่อน COMMIT
-        before = mock_api.REVISION["n"]
-        with _patched(_pack=pack):
+        before, mem = mock_api.REVISION["n"], _program_state()
+        at_rb = []
+        with _patched(_pack=pack), _patched_attr(TermConn, "on_rollback", lambda _c: at_rb.append(len(packs))):
             _expect(lambda: _post(ns.rnd), 500)
         assert ("save", 0) in rec.calls, rec.calls
+        # บรรจุของที่คืนแล้วก่อน ROLLBACK (ยังถือล็อกทะเบียน) — หลัง ROLLBACK คำขออื่นที่รอล็อกอาจเริ่มใส่สถานะของมันแล้ว
+        assert at_rb and at_rb[0] == len(packs), (at_rb, len(packs))
         # คืนแล้วบวกรุ่นอีกหนึ่ง: หน้าเว็บที่โหลดสถานะใหม่ (ยังไม่ COMMIT) ไปแล้วต้องเห็นว่าต้องโหลดใหม่
         assert mock_api.REVISION["n"] == before + 2, (before, mock_api.REVISION)
+        log = [s for s, _p in _main_log(rec)]
+        i_rb = log.index("ROLLBACK")
+        assert log[i_rb + 1:] == [UPSERT, "COMMIT"] + (["ROLLBACK"] if log[-1] == "ROLLBACK" else []), log[i_rb:]
+        snap = mock_api._unpack(db.app_state)            # app_state = ของที่คืนแล้ว (เทอมเดิม ครูเดิม แผนเดิม คาบเดิม)
+        assert snap["current_term"] == mem["CURRENT_TERM"] and snap["teachers"] == mem["TEACHERS"], snap["current_term"]
+        assert snap["requirements"] == mem["REQUIREMENTS"] and snap["slots"] == mem["SLOTS"]
+        assert [t["status"] for t in db.terms] == ["active"] and rec.logged == []    # ไม่มีเทอมใหม่ (ย้อนแล้ว)
+    # ไม่มีคำขออื่นจบระหว่างนั้น → ไม่เขียน app_state (ฐานเท่าเดิมทุกไบต์ — test_failure_at_each_step_restores_everything)
+
+
+def test_failure_restores_memory_before_the_rollback_releases_the_lock():
+    # รีวิวทั้งสาขา M4: ROLLBACK ปล่อยล็อกทะเบียน — ปุ่มดึงครูที่รอล็อกอยู่อ่าน TEACHERS ทันที จึงต้องคืนตัวแปรก่อน ROLLBACK ทุกทาง
+    # (ล้มทุกขั้น 500 · 409 เพราะมีคนแก้ข้อมูลระหว่างนี้ · 409 รอบถูกส่งไปแล้วระหว่างนี้)
+    seen = []
+
+    def at_rollback(_conn):
+        seen.append(_program_state())
+    for case in STEPS + ("edited", "marked"):
+        with _world(subjects=_elective_on_program()) as rec:
+            db, ns = _rich()
+            rec.use(db)
+            before = _program_state()
+            real_pack, real_source = mock_api._pack, mock_api._wl_export_source
+            packs = []
+
+            def pack(snap):                              # "edited": คำขออื่นจบหลังใส่สถานะใหม่ → 409 ก่อน COMMIT
+                packs.append(1)
+                if case == "edited" and len(packs) == 2:
+                    mock_api.REVISION["n"] += 1
+                return real_pack(snap)
+
+            def source(cur, rid):                        # "marked": อีกเครื่องส่งรอบนี้ไปก่อน → UPDATE ได้ 0 แถว → 409
+                src = real_source(cur, rid)
+                if case == "marked":
+                    next(x for x in db.tables["wl_rounds"] if x["id"] == rid)["exported_at"] = \
+                        dt.datetime(2026, 11, 1, tzinfo=dt.timezone.utc)
+                return src
+            if case in STEPS:
+                os.environ[ENV] = case
+            del seen[:]
+            with _patched(_pack=pack, _wl_export_source=source), _patched_attr(TermConn, "on_rollback", at_rollback):
+                _expect(lambda: _post(ns.rnd), 500 if case in STEPS else 409)
+            assert seen, case
+            for got in seen:
+                diff = [k for k in PROGRAM if k != "REVISION" and got[k] != before[k]]
+                assert not diff, (case, diff)
+
+
+@contextlib.contextmanager
+def _patched_attr(obj, name, value):
+    old = getattr(obj, name)
+    setattr(obj, name, value)
+    try:
+        yield
+    finally:
+        setattr(obj, name, old)
 
 
 def test_program_edited_before_apply_is_409_and_keeps_the_other_edit():
@@ -542,11 +613,16 @@ def test_program_edited_before_apply_is_409_and_keeps_the_other_edit():
         for k in PROGRAM:
             if k not in ("TEACHERS", "REVISION"):
                 assert after[k] == before[k], k
-        assert _ids() == ids and _db_snapshot(db) == db_before
+        assert _ids() == ids and _db_snapshot(db)[:4] == db_before[:4]
         log = _main_log(rec)
-        assert _writes(log) == [] and "COMMIT" not in [s for s, _p in log], log
-        # คำขอที่จบระหว่างนั้นอาจเซฟสแนปช็อตที่คาบถูกล้างไปแล้ว → เซฟของที่คืนทับ + บวกรุ่นให้หน้าเว็บโหลดใหม่
+        assert [x for x in _writes(log) if x[0] != UPSERT] == [], log
+        # คำขอที่จบระหว่างนั้นอาจเซฟสแนปช็อตที่คาบถูกล้างไปแล้ว → เซฟของที่คืนทับ + บวกรุ่นให้หน้าเว็บโหลดใหม่ ·
+        # รีวิวทั้งสาขา M9: ของที่คืนแล้ว (รวมงานของอีกคำขอ) ลง app_state ตรง ๆ หลัง ROLLBACK ก่อนตอบ
         assert ("save", 0) in rec.calls and mock_api.REVISION["n"] == before["REVISION"]["n"] + 2
+        stmts = [x for x, _p in log]
+        assert stmts[stmts.index("ROLLBACK") + 1:stmts.index("ROLLBACK") + 3] == [UPSERT, "COMMIT"], stmts
+        state = mock_api._unpack(db.app_state)
+        assert state["teachers"][-1] == other and state["slots"] == before["SLOTS"], state["teachers"][-1]
         assert rec.logged == []
 
 
@@ -570,9 +646,14 @@ def test_program_edited_before_commit_is_409_and_restores_everything():
         for k in PROGRAM:
             if k != "REVISION":
                 assert after[k] == before[k], k
-        assert _ids() == ids and _db_snapshot(db) == db_before
+        assert _ids() == ids and _db_snapshot(db)[:4] == db_before[:4]
         log = _main_log(rec)
-        assert _writes(log) and "COMMIT" not in [s for s, _p in log] and rec.conns[0].commits == 0
+        stmts = [x for x, _p in log]
+        i_rb = stmts.index("ROLLBACK")
+        assert _writes(log[:i_rb]) and "COMMIT" not in stmts[:i_rb], stmts      # งานของการสร้างไม่เคย COMMIT
+        assert stmts[i_rb + 1:i_rb + 3] == [UPSERT, "COMMIT"], stmts[i_rb:]     # M9: ของที่คืนแล้วลง app_state ตรง ๆ
+        state = mock_api._unpack(db.app_state)
+        assert state["teachers"] == before["TEACHERS"] and state["current_term"] == before["CURRENT_TERM"]
         assert ("save", 0) in rec.calls and rec.logged == []
         # ลองกดใหม่ (ไม่มีใครแก้แล้ว) ได้ผลครั้งเดียว
         out = _post(ns.rnd)
@@ -600,7 +681,8 @@ def test_admin_check_shares_the_login_in_flight_cap():
             assert gate.acquire(blocking=False) and gate.acquire(blocking=False)     # มีคนรอแฮชเต็มเพดานแล้ว
             before = _program_state()
             d = _expect(lambda: _post(ns.rnd), 429)
-            assert d == mock_api.WL_LOGIN_BUSY, d
+            # รีวิวทั้งสาขา M11: ข้อความขึ้นในหน้าต่างสร้างเทอม ไม่ใช่หน้าล็อกอิน — ไม่พูดว่า "เข้าสู่ระบบ"
+            assert d == mock_api.TERM_ADMIN_CODE_BUSY and "เข้าสู่ระบบ" not in d and "ยังไม่ได้สร้างเทอมใหม่" in d, d
             assert rec.wl_logs == [] and rec.conns == [] and mock_api._WL_FAILS["login"] == []   # ไม่แฮช ไม่นับว่าผิด
             assert _program_state() == before
             gate.release()
@@ -610,7 +692,7 @@ def test_admin_check_shares_the_login_in_flight_cap():
             out = _post(ns.rnd)
             assert out["active"]["id"]
             assert gate.acquire(blocking=False) and gate.acquire(blocking=False), "ช่องถูกคืนครบ"
-    # ล็อกอินใช้ข้อความเดียวกัน (ค่าคงที่ตัวเดียว)
+    # ล็อกอินยังใช้ข้อความของตัวเอง
     assert "WL_LOGIN_BUSY" in inspect.getsource(mock_api.wl_login)
 
 
@@ -646,6 +728,63 @@ def test_reasons_give_409_and_nothing_changes():
         assert all(_writes(c.cur.log) == [] and c.commits == 0 for c in rec.conns)
 
 
+def test_running_unsaved_term_is_a_reason_in_the_list_preview_and_post():
+    # รีวิวทั้งสาขา M2: เว็บจริงยังไม่มีแถวใน app_terms — ปุ่มสร้างเทอมเก็บตารางที่ลงไว้เป็นเทอมปี/ภาคตามการตั้งค่า (_archive_target_or_refuse)
+    # รอบของภาคเรียนนั้นเองจึงสร้างไม่ได้ (409) — รายการรอบและหน้าดูก่อนสร้างต้องบอกเหตุเดียวกัน ข้อความเดียวกัน ไม่ขึ้น "ใช้ได้"
+    blank = {"id": None, "year": None, "semester": None, "label": None, "status": None}
+
+    def three(rec, ns):
+        (row,) = [r for r in mock_api.terms_rounds() if r["id"] == ns.rnd["id"]]
+        prev = mock_api.terms_preview(round_id=str(ns.rnd["id"]))["round"]
+        return row, prev
+    # (ก) การกดครั้งแรกบนเว็บจริง: ไม่มีเทอมที่บันทึกไว้ · มีคาบ · ตั้งค่า 2/2569 = ภาคเรียนของรอบ
+    with _world(terms=(), current=blank, subjects=_elective_on_program()) as rec:
+        db, ns = _rich()
+        rec.use(db)
+        mock_api.SCHOOL_CONFIG.update({"term": "2", "year": "2569"})
+        want = mock_api._term_running_reasons([], 2569, 2)
+        assert len(want) == 1 and _thai(want[0]) and "มีเทอม 2/2569" in want[0] and "กำลังใช้อยู่" in want[0], want
+        row, prev = three(rec, ns)
+        assert row["usable"] is False and row["reasons"][0] == want[0], row
+        assert prev["usable"] is False and prev["reasons"][0] == want[0], prev
+        before, db_before = _program_state(), _db_snapshot(db)
+        d = _expect(lambda: _post(ns.rnd), 409)
+        assert d == want[0], d                                          # ข้อความเดียวกันทั้งสามที่
+        assert _program_state() == before and _db_snapshot(db) == db_before and rec.conns == []
+        # ไม่มีคาบ = ไม่มีตารางให้เก็บ → ไม่ใช่เหตุ (ปุ่มไม่เก็บเทอม ตามเดิม)
+        with _patched(SLOTS=[], PARKED=[]):
+            assert mock_api._term_running_reasons([], 2569, 2) == []
+            row, prev = three(rec, ns)
+            assert row["usable"] is True and prev["reasons"] == [], (row, prev)
+    # (ข) ตั้งค่า 1/2569 → รอบ 2/2569 คือภาคเรียนถัดไป: ใช้ได้ทั้งสามที่ และสร้างได้จริง (ตารางเดิมถูกเก็บเป็นเทอม 1/2569)
+    with _world(terms=(), current=blank, subjects=_elective_on_program()) as rec:
+        db, ns = _rich()
+        rec.use(db)
+        row, prev = three(rec, ns)
+        assert row["usable"] is True and prev["usable"] is True and prev["reasons"] == [], (row, prev)
+        out = _post(ns.rnd)
+        assert [(t["year"], t["semester"], t["status"]) for t in db.terms] == [(2569, 1, "closed"), (2569, 2, "active")]
+        assert out["active"]["id"] == db.terms[1]["id"]
+    # (ค) บอกไม่ได้ว่าตารางเป็นของเทอมไหน (การตั้งค่าว่าง) / ปี-ภาคนั้นมีแถวเก็บไว้แล้ว → ปุ่มปฏิเสธทุกรอบ:
+    #     รายการ/หน้าดูก่อนสร้างบอกเหตุเดียวกับ 409 ของ POST
+    for terms, cfg in (((), {"term": "", "year": ""}),
+                       (({"id": 3, "year": 2569, "semester": 1, "label": "1/2569", "status": "closed"},),
+                        {"term": "1", "year": "2569"})):
+        with _world(terms=terms, current=blank, subjects=_elective_on_program()) as rec:
+            db, ns = _rich()
+            rec.use(db)
+            mock_api.SCHOOL_CONFIG.update(cfg)
+            row, prev = three(rec, ns)
+            d = _expect(lambda: _post(ns.rnd), 409)
+            assert row["reasons"] == [d] and prev["reasons"] == [d] and "ตารางเดิมจะไม่มีที่เก็บ" in d, (row, prev, d)
+    # (ง) มีแถว active = ปุ่มปิดแถวนั้น ไม่ได้เก็บตารางเป็นเทอมใหม่ → ไม่มีเหตุนี้ (เหตุ "มีเทอมนี้แล้ว" ของ app_terms ตามเดิม)
+    with _world(subjects=_elective_on_program()) as rec:
+        db, ns = _rich()
+        rec.use(db)
+        mock_api.SCHOOL_CONFIG.update({"term": "2", "year": "2569"})
+        assert mock_api._term_running_reasons(_terms_view(db), 2569, 2) == []
+
+
 def test_active_term_changed_meanwhile_is_409():
     # อ่านแถว active ก่อนเปิดธุรกรรม (เหมือนปุ่มเดิม) แล้วอีกคำขอสร้างเทอมไปก่อน → ตรวจซ้ำในธุรกรรม ไม่ทับแถวของอีกฝั่ง
     with _world() as rec:
@@ -679,7 +818,8 @@ def test_wrong_code_403_and_counted():
             r["active"] = True
         # ผิดเกินเกณฑ์ → ถูกจำกัดเหมือนล็อกอิน (ก่อนแฮช แม้รหัสถูก)
         mock_api._WL_FAILS["login"][:] = [mock_api._time.monotonic()] * mock_api.WL_LOGIN_FAIL_LIMIT
-        _expect(lambda: _post(ns.rnd), 429)
+        d = _expect(lambda: _post(ns.rnd), 429)
+        assert "เข้าสู่ระบบ" not in d, d                  # รีวิวทั้งสาขา M11: ข้อความของหน้าต่างสร้างเทอม
         assert rec.conns == [] and _program_state() == before
         mock_api._WL_FAILS["login"].clear()
         # รหัสถูก (ตัดช่องว่างหัวท้ายเหมือนล็อกอิน) → ผ่าน

@@ -33,7 +33,8 @@ export type Round = {
   exported_at?: string | null;
   /** ชื่อเทอมที่ส่งเข้าไป ("2/2569") */
   exported_label?: string | null;
-  /** ข้อความของรอบที่ส่งแล้ว คำนวณตอนอ่าน: "ส่งเข้าโปรแกรมแล้ว — เทอม X" · เทอมนั้นไม่ได้เปิดอยู่ = ต่อท้าย EXPORT_PARKED_TEXT */
+  /** ข้อความของรอบที่ส่งแล้ว คำนวณตอนอ่าน: "ส่งเข้าโปรแกรมแล้ว — เทอม X" · ปิดภาคเรียนแล้ว = ต่อท้าย EXPORT_DONE_TEXT ·
+   *  ถูกปิดไว้ (เทอมที่เปิดเก่ากว่า) = ต่อท้าย EXPORT_PARKED_TEXT */
   exported_text?: string | null;
   /** รายงานผลการส่ง (ชุดกิจกรรมที่ต้องลงคาบเอง ฯลฯ) — อ่านด้วย exportActivityLines เท่านั้น (รูปมาจากเซิร์ฟเวอร์ ไม่เชื่อรูป) */
   export_report?: Record<string, unknown> | null;
@@ -202,16 +203,24 @@ export function closedRounds<R extends Pick<Round, "status">>(rounds: readonly R
 // รอบที่ส่งแล้วถูกปิดถาวร (เซิร์ฟเวอร์ตั้งสถานะปิดตอนส่ง และทุก route เขียนของรอบตอบ 409) ปุ่มแก้ทุกปุ่มจึงหายไปเองตามสถานะปิด
 // (roundActions · reviewActions · editState) — ที่ต้องเพิ่มคือบอกว่าส่งแล้ว เป็นเทอมไหน และเทอมนั้นยังเปิดอยู่ไหม
 
-/** ส่วนท้ายของ exported_text เมื่อเทอมของรอบไม่ได้เปิดอยู่ — ชิ้นเดียวกับ wl_round_export_text (ตัวทดสอบเทียบกับ mock_api.py) */
+/** ส่วนท้ายของ exported_text เมื่อเทอมของรอบถูกปิดไว้และเทอมที่เปิดเก่ากว่า (ปลดล็อกย้อน) — ชิ้นเดียวกับ WL_EXPORT_SUFFIX["parked"]
+ *  ของเซิร์ฟเวอร์ (ตัวทดสอบเทียบกับ mock_api.py) */
 export const EXPORT_PARKED_TEXT = " (ถูกปิดไว้ ปลดล็อกเทอมนั้นเพื่อใช้ต่อ)";
+/** ส่วนท้ายเมื่อเทอมของรอบถูกปิดตามปกติเพราะขึ้นเทอมที่ใหม่กว่า (รีวิวทั้งสาขา M1) — WL_EXPORT_SUFFIX["done"] */
+export const EXPORT_DONE_TEXT = " (ปิดภาคเรียนแล้ว)";
 
-/** ป้าย "ส่งเข้าโปรแกรมแล้ว — เทอม …" ของรอบ — ข้อความจากเซิร์ฟเวอร์ (exported_text) · เทอมถูกปิดไว้ = warn · ยังไม่ส่ง → null */
+/**
+ * ป้าย "ส่งเข้าโปรแกรมแล้ว — เทอม …" ของรอบ — ข้อความจากเซิร์ฟเวอร์ (exported_text) · ยังไม่ส่ง → null
+ * state: open = เทอมของรอบเปิดอยู่ (บอกทางกลับเมื่อส่งผิดได้) · done = ปิดภาคเรียนแล้ว (โทนปกติ ไม่ชวนปลดล็อก) ·
+ * parked = ถูกปิดไว้ ปลดล็อกเทอมนั้นเพื่อใช้ต่อ (warn)
+ */
 export function roundExportChip(
   r: Pick<Round, "exported_at" | "exported_label" | "exported_text">,
-): { tone: Tone; text: string } | null {
+): { tone: Tone; text: string; state: "open" | "done" | "parked" } | null {
   if (!r.exported_at) return null;
   const text = r.exported_text || `ส่งเข้าโปรแกรมแล้ว — เทอม ${r.exported_label || "-"}`;
-  return { tone: text.endsWith(EXPORT_PARKED_TEXT) ? "warn" : "ok", text };
+  if (text.endsWith(EXPORT_PARKED_TEXT)) return { tone: "warn", text, state: "parked" };
+  return { tone: "ok", text, state: text.endsWith(EXPORT_DONE_TEXT) ? "done" : "open" };
 }
 
 /** ชุดกิจกรรมที่ต้องลงคาบเองจาก export_report: "ชื่อชุด · ห้อง · N คาบ/สัปดาห์ · ครู" (รูปเดียวกับหน้าต่างของโปรแกรมจัดตาราง)

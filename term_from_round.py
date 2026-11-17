@@ -434,6 +434,8 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
                     "new_cells": [{group_id, subject_id}] (ห้อง+วิชาที่ไม่มีในแผนเดิม ละห้อง+วิชา),
                     "elective_rows" (จำนวนแถวแผนของวิชาเสรี),
                     "activity_rows" (จำนวนแถวแผนที่กิจกรรมทั้งระดับครอบ),
+                    "pattern_rows": [{kind (elective|activity), group_id, subject_id, teacher_id, weekly_count}]
+                    (แถวแผนของวิชาเสรี/กิจกรรมที่เขียนตามรูปของแผนเดิม ตามลำดับที่เขียน),
                     "curriculum_rows_added": [{curriculum_id, subject_id, weekly_count}] (ละหลักสูตร+วิชา),
                     "merged_options": [{set, option_id, subject_id, teacher_id}] (ตัวเลือกคาบเสรีซ้ำที่ถูกรวม),
                     "skipped": [{source (row option option_teacher line elective_row activity_row), ref, reason}]}}
@@ -607,6 +609,7 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
     # ยอดคาบรายครูของโปรแกรมนับจากแถวแผนเท่านั้น — ไม่เขียนกลับ ยอดของครูวิชาเสรี/ครูที่คุมกิจกรรมหาย (แนะแนว: ครู 141 20 → 8)
     # ชุดกิจกรรมยังต้องลงคาบเอง (report.activity_sets) — เมื่อลงแล้ว ตารางนับช่องกิจกรรมว่าลงแถวแผนนั้นแล้ว เหมือนเทอมเดิม
     elective_rows = activity_rows = 0
+    pattern_rows: list[dict[str, Any]] = []     # รายการของแถวเหล่านี้ให้สรุปก่อนสร้างแสดง (แบบข้อ 4.2 — รีวิวทั้งสาขา M3)
     for (gid, sid), cell in cell_teachers.items():
         if (gid, sid) in round_cells or gid not in group_by_id:
             continue    # รอบมีแถวของห้อง+วิชานี้อยู่แล้ว (เขียนอีกแถวคือสอนซ้ำ) · ห้องที่ไม่มีแล้วไม่มีแถวเดิมให้ตาม
@@ -623,6 +626,8 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
                 "id": _next_id(counters, "requirement"), "group_id": gid, "subject_id": sid, "teacher_id": tid,
                 "weekly_count": old.get("weekly_count"), "parallel_group_key": None,
                 "co_teacher_id": co if co in teachers and co != tid else None, "room_id": old.get("room_id")})
+            pattern_rows.append({"kind": kind, "group_id": gid, "subject_id": sid, "teacher_id": tid,
+                                 "weekly_count": old.get("weekly_count")})
             if kind == "elective":
                 elective_rows += 1
             else:
@@ -704,7 +709,7 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
               "teachers_in_plan": len(teachers_in_plan), "pools": len(pools),
               "pool_options": sum(len(p["options"]) for p in pools), "activity_sets": activity_sets,
               "carried": carried, "not_carried": not_carried, "new_cells": new_cells, "elective_rows": elective_rows,
-              "activity_rows": activity_rows,
+              "activity_rows": activity_rows, "pattern_rows": pattern_rows,
               "curriculum_rows_added": list(added.values()), "merged_options": merged, "skipped": skipped}
     return {"requirements": requirements, "pools": pools, "curricula": curricula, "group_curricula": group_curricula,
             "elective_subjects": sorted({o["subject_id"] for p in pools for o in p["options"]}),

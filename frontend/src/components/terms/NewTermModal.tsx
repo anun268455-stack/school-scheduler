@@ -12,7 +12,8 @@
  * ขั้นที่ 3 (แบบข้อ 4.5): มีรอบอัตรากำลัง → เลือกได้ว่าแผนของเทอมใหม่มาจาก "แผนเดิม" (ค่าเริ่มต้น ทางเดิมทุกอย่าง)
  * หรือ "รอบอัตรากำลัง" (ปี/ภาคเรียนตามรอบ แก้ไม่ได้ · สรุปและเหตุจากเซิร์ฟเวอร์ · กรอกรหัสผู้ดูแลระบบของเว็บลงอัตรากำลัง)
  * ไม่มีรอบเลย หรืออ่านรายการรอบไม่ได้ → หน้าต่างเหมือนเดิมทุกอย่าง (อ่านไม่ได้มีบรรทัดเล็กบอกท้ายหน้าต่าง)
- * กลอนกันกดซ้ำและข้อความผลเป็นตัวเดียวกันทั้งสองทาง · ทางรอบ 403/404/429 ก็เป็นการปฏิเสธก่อนทำอะไร จึงกดใหม่ได้
+ * กลอนกันกดซ้ำและข้อความผลเป็นตัวเดียวกันทั้งสองทาง · ทางรอบ 403/404/429 และ 503 ที่มีข้อความไทยของเซิร์ฟเวอร์ก็เป็นการปฏิเสธ
+ * ก่อนทำอะไร จึงกดใหม่ได้ · ค่าเริ่มต้นของตัวเลือกรอบ = รอบที่ใช้ได้ของภาคเรียนถัดจากภาคเรียนปัจจุบัน (ไม่มี = ไม่เลือก)
  */
 import React, { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
@@ -20,9 +21,9 @@ import { useTimetableStore } from "../../store/timetableStore";
 import * as api from "../../api/client";
 import { ModalShell } from "../common/ModalShell";
 import {
-  activeTerm, activitySetLines, canRetryCreate, createLatch, createOutcome, defaultTermRound, newTermFormError,
-  newTermFromRoundError, newTermWarning, nextTerm, previewRows, roundCreatedNote, roundOptionLabel, roundPreviewRows,
-  roundSelectable, roundsLoadNote, termErrorText, TERMS_UNAVAILABLE,
+  activeTerm, activitySetLines, canRetryCreate, createLatch, createLockedText, createOutcome, defaultTermRound,
+  newTermFormError, newTermFromRoundError, newTermWarning, nextTerm, previewRows, roundCreatedNote, roundOptionLabel,
+  roundPreviewRows, roundSelectable, roundsLoadNote, runningTerm, termErrorText, TERMS_UNAVAILABLE,
   type RoundPreview, type RoundPreviewRow, type RoundReport, type TermRound,
 } from "../../utils/terms";
 
@@ -65,8 +66,13 @@ export const NewTermModal: React.FC<Props> = ({ onClose, onCreated }) => {
   const makeNewTerm = useTimetableStore((s) => s.makeNewTerm);
   const loadTerms = useTimetableStore((s) => s.loadTerms);
   const departments = useTimetableStore((s) => s.departments);
+  const schoolConfig = useTimetableStore((s) => s.schoolConfig);
 
   const active = activeTerm(terms) ?? null;
+  // ภาคเรียนปัจจุบัน — ค่าเริ่มต้นของตัวเลือกรอบต้องเป็นภาคเรียนถัดจากนี้ (เว็บจริงยังไม่มีเทอมที่บันทึกไว้ → ปี/ภาคในหน้าตั้งค่า)
+  // อ่านผ่าน ref ตอนรายการรอบมาถึง: ไม่โหลดรายการรอบใหม่ทุกครั้งที่รายการเทอม/การตั้งค่าเปลี่ยน
+  const currentRef = useRef(runningTerm(active, schoolConfig));
+  currentRef.current = runningTerm(active, schoolConfig);
   // เติมค่าจาก nextTerm() ครั้งเดียวตอนเปิด — ไม่ตามรายการที่โหลดใหม่ระหว่างที่ผู้ใช้กำลังพิมพ์
   const [initial] = useState(() => nextTerm(active));
   const [year, setYear] = useState(initial.year > 0 ? String(initial.year) : "");
@@ -123,9 +129,10 @@ export const NewTermModal: React.FC<Props> = ({ onClose, onCreated }) => {
         const got = Array.isArray(list) ? list : [];
         setRounds(got);
         setRoundsNote(null);
-        // โหลดใหม่ (หลัง 409) คงรอบที่เลือกไว้ถ้ายังเลือกได้ · ครั้งแรก = รอบล่าสุดที่ใช้ได้ (Ruling T3 C2)
+        // โหลดใหม่ (หลัง 409) คงรอบที่เลือกไว้ถ้ายังเลือกได้ · ครั้งแรก = รอบที่ใช้ได้ของภาคเรียนถัดจากภาคเรียนปัจจุบัน
+        // ไม่มี = ไม่เลือก (รีวิวทั้งสาขา M2 — ไม่ถอยไปรอบของภาคเรียนปัจจุบันหรือที่ผ่านมา)
         setRoundId((cur) => (cur !== null && got.some((r) => r.id === cur && roundSelectable(r))
-          ? cur : defaultTermRound(got)?.id ?? null));
+          ? cur : defaultTermRound(got, currentRef.current)?.id ?? null));
       })
       .catch((e) => { if (alive) setRoundsNote(roundsLoadNote(e)); });
     return () => { alive = false; };
@@ -179,7 +186,7 @@ export const NewTermModal: React.FC<Props> = ({ onClose, onCreated }) => {
       onCreated?.(note ? `${o.text} · ${note}` : o.text, o.tone);
     } catch (e) {
       if (canRetryCreate(e, fromRound)) {
-        // เซิร์ฟเวอร์ปฏิเสธก่อนทำอะไร (ปีผิด เทอมซ้ำ · รหัสผิด รอบเปลี่ยน) แก้แล้วกดใหม่ได้
+        // เซิร์ฟเวอร์ปฏิเสธก่อนทำอะไร (ปีผิด เทอมซ้ำ · รหัสผิด รอบเปลี่ยน · ทางรอบ 503 ต่อฐานไม่ได้) แก้แล้วกดใหม่ได้
         setErr(termErrorText(e, "สร้างเทอมไม่สำเร็จ"));
         latch.current.reset();
         const status = (e as { response?: { status?: number } })?.response?.status;
@@ -191,8 +198,8 @@ export const NewTermModal: React.FC<Props> = ({ onClose, onCreated }) => {
         }
       } else {
         setLocked(true);
-        setErr(termErrorText(e, "ไม่ได้รับคำตอบที่แน่ชัดจากเซิร์ฟเวอร์")
-          + " — ยังไม่รู้ว่าเทอมถูกสร้างหรือยัง ปิดหน้าต่างนี้แล้วดูรายการเทอมก่อน อย่ากดสร้างซ้ำ");
+        // ทางรอบ 500 = ข้อความไทยของเซิร์ฟเวอร์ ("ข้อมูลเดิมยังอยู่ครบ") · ที่เหลือ = ข้อความเดิม (รีวิวทั้งสาขา M11)
+        setErr(createLockedText(e, fromRound));
         void loadTerms();
       }
     } finally { setBusy(false); }
@@ -294,7 +301,7 @@ export const NewTermModal: React.FC<Props> = ({ onClose, onCreated }) => {
                 onChange={(e) => setCode(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") void confirm(); }}
                 disabled={frozen || !selected?.usable}
-                autoComplete="off"
+                autoComplete="new-password"
                 className="mt-0.5 w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500 outline-none disabled:bg-gray-50"
               />
             </label>
@@ -357,9 +364,12 @@ export const NewTermModal: React.FC<Props> = ({ onClose, onCreated }) => {
           </>
         )}
 
-        <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-          <strong>{newTermWarning(active)}</strong>
-        </p>
+        {/* สร้างแล้ว: คำเตือนไม่จริงอีกต่อไป (รายการเทอมโหลดใหม่ — จะกลายเป็นชื่อเทอมใหม่) จึงซ่อน (รีวิวทั้งสาขา M11) */}
+        {!done && (
+          <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            <strong>{newTermWarning(active)}</strong>
+          </p>
+        )}
 
         {err && <p ref={errRef} className="text-xs text-red-600">{err}</p>}
         {result && (

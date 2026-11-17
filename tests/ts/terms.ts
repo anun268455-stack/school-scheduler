@@ -15,8 +15,8 @@ import {
   bannerView, FROZEN_CHIP_NOTE, isReadOnly, printTermName, termFieldsLocked,
 } from "../../frontend/src/utils/terms.ts";
 import {
-  activitySetLines, defaultTermRound, newTermFromRoundError, roundCreatedNote, roundOptionLabel, roundPreviewRows,
-  roundSelectable, roundsLoadNote, type RoundPreview, type RoundReport, type TermRound,
+  activitySetLines, createLockedText, defaultTermRound, newTermFromRoundError, roundCreatedNote, roundOptionLabel,
+  roundPreviewRows, roundSelectable, roundsLoadNote, runningTerm, type RoundPreview, type RoundReport, type TermRound,
 } from "../../frontend/src/utils/terms.ts";
 import {
   blockedReason, gateRequest, setWriteBlock, WriteBlocked,
@@ -259,6 +259,7 @@ eq(newTermFormError("2569", "1", [ACTIVE]), "มีเทอม 1/2569 อยู
 {
   const w = newTermWarning(ACTIVE);
   ok(w.includes("1/2569") && w.includes("ถูกปิดและแก้ไม่ได้อีก") && w.includes("เริ่มจากว่าง"), "คำเตือนครบสามส่วน");
+  ok(w.includes("เทอม 1/2569 จะถูกปิด"), `มีช่องว่างระหว่างชื่อเทอมกับคำถัดไป (รีวิวทั้งสาขา M11) — ได้ ${w}`);
   ok(!newTermWarning(null).includes("null"), "ไม่มีเทอมที่ใช้ ไม่พิมพ์ null");
 }
 {
@@ -355,16 +356,34 @@ eq(termFieldsLocked(false, [ACTIVE]), false, "ไม่มีฐานข้อ�
   eq(roundOptionLabel(SENT), "ภาคเรียน 1/2569 · ส่งแล้ว (เทอม 1/2569)", "รอบที่ส่งแล้วบอกเทอม");
   ok(!roundOptionLabel({ ...SENT, exported_label: null }).includes("null"), "ไม่มีชื่อเทอมก็ไม่พิมพ์ null");
 
-  // ค่าเริ่มต้นของตัวเลือกรอบ (Ruling T3 C2): รอบล่าสุดที่ใช้ได้ → รอบล่าสุดที่ยังไม่ส่ง · ที่ส่งแล้วเลือกไม่ได้
+  // ค่าเริ่มต้นของตัวเลือกรอบ (รีวิวทั้งสาขา M2): รอบที่ใช้ได้ของภาคเรียน "หลัง" ภาคเรียนปัจจุบัน (ที่ใกล้ที่สุด) · ไม่มี → ไม่เลือก
+  // (หน้าต่างใช้แผนเดิม) — ไม่ถอยไปรอบของภาคเรียนปัจจุบัน (ปุ่มจะเก็บตารางเป็นเทอมนั้น → 409) หรือภาคเรียนที่ผ่านมา (จะปิดเทอมปัจจุบัน
+  // แล้วเปิดเทอมเก่า) · ที่ส่งแล้วเลือกไม่ได้
   const NEW_BAD = RD({ id: 3, label: "1/2570", year: 2570, semester: 1, usable: false, reasons: ["x"] });
   const OLD_OK = RD({ id: 2 });
-  eq(defaultTermRound([NEW_BAD, OLD_OK, SENT])?.id, 2, "รอบล่าสุดที่ใช้ได้ แม้ไม่ใช่รอบใหม่สุด");
-  eq(defaultTermRound([SENT, OLD_OK, NEW_BAD])?.id, 2, "ไม่ขึ้นกับลำดับที่รับมา");
-  eq(defaultTermRound([NEW_BAD, { ...OLD_OK, usable: false }])?.id, 3, "ไม่มีรอบที่ใช้ได้ = รอบใหม่สุด");
-  eq(defaultTermRound([{ ...NEW_BAD, exported_at: "2026-11-17T03:00:00+00:00", exported_label: "1/2570" },
-                       { ...OLD_OK, usable: false }])?.id, 2, "รอบใหม่สุดที่ส่งแล้วเลือกไม่ได้ → รอบถัดไป");
-  eq(defaultTermRound([SENT]), null, "ส่งแล้วทุกรอบ = ไม่มีค่าเริ่มต้น");
-  eq(defaultTermRound([]), null, "ไม่มีรอบ");
+  const NEXT_OK = RD({ id: 4, label: "1/2570", year: 2570, semester: 1 });
+  const LATER_OK = RD({ id: 5, label: "2/2570", year: 2570, semester: 2 });
+  const NOW_21 = { year: 2569, semester: 2 };
+  eq(defaultTermRound([OLD_OK, NEXT_OK], NOW_21)?.id, 4, "รอบของภาคเรียนถัดไป ไม่ใช่รอบของภาคเรียนปัจจุบัน");
+  eq(defaultTermRound([NEXT_OK, OLD_OK, SENT], NOW_21)?.id, 4, "ไม่ขึ้นกับลำดับที่รับมา");
+  eq(defaultTermRound([LATER_OK, NEXT_OK], NOW_21)?.id, 4, "หลายรอบข้างหน้า = ภาคเรียนที่ใกล้ที่สุด");
+  eq(defaultTermRound([OLD_OK], NOW_21), null, "มีแค่รอบของภาคเรียนปัจจุบัน = ไม่เลือก");
+  eq(defaultTermRound([RD({ id: 6, label: "1/2569", year: 2569, semester: 1 })], NOW_21), null, "รอบของภาคเรียนที่ผ่านมา = ไม่เลือก");
+  eq(defaultTermRound([OLD_OK, NEW_BAD], NOW_21), null, "รอบข้างหน้ายังใช้ไม่ได้ = ไม่เลือก");
+  eq(defaultTermRound([{ ...NEXT_OK, exported_at: "2026-11-17T03:00:00+00:00", exported_label: "1/2570" }], NOW_21), null,
+     "รอบข้างหน้าที่ส่งแล้ว = ไม่เลือก");
+  eq(defaultTermRound([OLD_OK], { year: 2569, semester: 1 })?.id, 2, "เทอมที่ใช้อยู่ 1/2569 → รอบ 2/2569 คือภาคเรียนถัดไป");
+  eq(defaultTermRound([OLD_OK, NEXT_OK], null), null, "บอกไม่ได้ว่าภาคเรียนปัจจุบันคืออะไร = ไม่เลือก");
+  eq(defaultTermRound([SENT], NOW_21), null, "ส่งแล้วทุกรอบ = ไม่มีค่าเริ่มต้น");
+  eq(defaultTermRound([], NOW_21), null, "ไม่มีรอบ");
+  // ภาคเรียนปัจจุบัน: เทอมที่เปิดในรายการเทอม · ยังไม่มีเทอมที่บันทึกไว้ (เว็บจริงตอนกดครั้งแรก) → ปี/ภาคในหน้าตั้งค่า
+  // (ตามที่ปุ่มจะใช้เก็บตารางที่ลงไว้ — running_term_identity ของเซิร์ฟเวอร์)
+  eq(runningTerm(ACTIVE, { year: "2570", term: "2" }), { year: 2569, semester: 1 }, "มีเทอมที่เปิด = ใช้เทอมนั้น");
+  eq(runningTerm(null, { year: "2569", term: "2" }), { year: 2569, semester: 2 }, "ยังไม่มีเทอม = ปี/ภาคในหน้าตั้งค่า");
+  eq(runningTerm(null, { year: " 2569 ", term: "1" }), { year: 2569, semester: 1 }, "ตัดช่องว่าง");
+  for (const bad of [{ year: "", term: "2" }, { year: "2569", term: "3" }, { year: "69", term: "1" }, { year: "2569.5", term: "1" }, null]) {
+    eq(runningTerm(null, bad), null, `ตั้งค่าไม่ครบ/ผิด = ไม่รู้ ${JSON.stringify(bad)}`);
+  }
   eq(roundSelectable(SENT), false, "รอบที่ส่งแล้วแสดงแต่เลือกไม่ได้");
   eq(roundSelectable(NEW_BAD), true, "รอบที่ใช้ไม่ได้ยังเลือกดูเหตุได้");
 
@@ -435,6 +454,41 @@ eq(termFieldsLocked(false, [ACTIVE]), false, "ไม่มีฐานข้อ�
   eq(row("ครูที่ปิดใช้งานในโปรแกรม แต่อยู่ในเทอมใหม่")?.tone, "warn", "ครูที่ปิดใช้งานแต่ถูกใช้ = เตือน");
   eq(row("คาบที่ลงตารางไว้ตอนนี้")?.value, "1,150 คาบ · จะถูกล้าง", "คาบที่จะถูกล้าง");
   ok(full.every((r) => !/undefined|null|NaN/.test(r.value + (r.items ?? []).join(""))), "ไม่มี undefined/null/NaN");
+
+  // รีวิวทั้งสาขา M3 (แบบข้อ 4.2): ช่องที่ยกจากแผนเดิมไม่ได้ · แถวแผนของวิชาเสรี/กิจกรรมที่สร้างตามรูปเดิม · วิชาที่ถูกเพิ่มเข้าหลักสูตร
+  // = บรรทัด info พร้อม "ดูรายการ" (รูปตาม _term_report)
+  const m3 = roundPreviewRows(preview(report({
+    not_carried: [{ group_id: 1, subject_id: 901, fields: ["pinned_day", "pinned_double"], group_name: "ม.1/1",
+                    code: "ค21102", name: "คณิตศาสตร์พื้นฐาน 2", field_labels: ["วันที่ปัก", "คาบคู่ที่ปัก"] }],
+    new_cells: [{ group_id: 3, subject_id: 900, group_name: "ม.1/3", code: "ท21102", name: "ภาษาไทยพื้นฐาน 2" },
+                { group_id: 4, subject_id: 900, group_name: "ม.1/4", code: "ท21102", name: "ภาษาไทยพื้นฐาน 2" }],
+    elective_rows: 1, activity_rows: 1,
+    pattern_rows: [{ kind: "elective", group_id: 1, group_name: "ม.1/1", subject_id: 904, code: "ศ21201", name: "ดนตรีสากล",
+                     teacher_id: 508, teacher_name: "ครู 508", weekly_count: 2 },
+                   { kind: "activity", group_id: 2, group_name: "ม.1/2", subject_id: 903, code: "ก21902", name: "แนะแนว 2",
+                     teacher_id: null, teacher_name: null, weekly_count: 1 }],
+    curriculum_rows_added: [{ curriculum_id: 1, curriculum_name: "ม.1/1-6", subject_id: 904, code: "ศ21201", name: "ดนตรีสากล",
+                              weekly_count: 2 }],
+  })));
+  const m3row = (label: string) => m3.find((r) => r.label === label);
+  const NC = "ห้อง+วิชาที่ยกเซ็ตห้องย่อย/คาบที่ปักจากแผนเดิมไม่ได้ (แถวเดิมไม่ตรงกัน — ปล่อยว่าง)";
+  const NEW = "ห้อง+วิชาที่ไม่มีในแผนเดิม (เซ็ตห้องย่อย/คาบที่ปักเริ่มว่าง)";
+  const PAT = "แถวแผนของวิชาเสรี/กิจกรรมที่สร้างตามรูปของแผนเดิม";
+  const CUR = "วิชาที่ถูกเพิ่มเข้าหลักสูตร (ให้แถวแผนข้างบนผ่านการตรวจหลักสูตร)";
+  eq([NC, NEW, PAT, CUR].map((l) => m3row(l)?.tone), ["info", "info", "info", "info"], "ทั้งสี่เป็นบรรทัด info");
+  eq(m3row(NC)?.value, "1 รายการ", "นับช่องที่ยกไม่ได้ละห้อง+วิชา");
+  eq(m3row(NC)?.items, ["ม.1/1 · ค21102 คณิตศาสตร์พื้นฐาน 2: วันที่ปัก, คาบคู่ที่ปัก"], "รายการ: ห้อง วิชา ช่อง");
+  eq(m3row(NEW)?.value, "2 รายการ", "ห้อง+วิชาที่ไม่มีในแผนเดิม");
+  eq(m3row(NEW)?.items, ["ม.1/3 · ท21102 ภาษาไทยพื้นฐาน 2", "ม.1/4 · ท21102 ภาษาไทยพื้นฐาน 2"], "รายการห้อง+วิชาใหม่");
+  eq(m3row(PAT)?.value, "2 แถว", "นับ elective_rows + activity_rows");
+  eq(m3row(PAT)?.items, ["ม.1/1 · ศ21201 ดนตรีสากล · ครู 508 · 2 คาบ/สัปดาห์ (คาบเสรี)",
+                         "ม.1/2 · ก21902 แนะแนว 2 · ยังไม่มีครู · 1 คาบ/สัปดาห์ (กิจกรรม)"], "รายการแถวแผนตามรูปเดิม");
+  eq(m3row(CUR)?.items, ["ม.1/1-6: ศ21201 ดนตรีสากล · 2 คาบ/สัปดาห์"], "รายการวิชาที่ถูกเพิ่มเข้าหลักสูตร");
+  ok(m3.every((r) => !/undefined|null|NaN/.test(r.value + (r.items ?? []).join(""))), "M3: ไม่มี undefined/null/NaN");
+  ok(m3.findIndex((r) => r.label === PAT) > m3.findIndex((r) => r.label === "ชุดคาบเสรี"), "อยู่ถัดจากชุดคาบเสรี");
+  // จำนวนจากตัวเลขของเซิร์ฟเวอร์ แม้รายการไม่มากับรายงาน (รายงานรุ่นก่อน)
+  eq(roundPreviewRows(preview(report({ elective_rows: 3, activity_rows: 0 }))).find((r) => r.label === PAT)?.value, "3 แถว",
+     "นับจากตัวเลข");
   // รายงานที่ขาดรายการ (รูปเก่า/เสีย) ไม่ทำให้หน้าต่างล้ม
   const partial = { ...preview(report()), round: { ...preview(report()).round,
     report: { requirements: 5 } as unknown as RoundReport } };
@@ -452,6 +506,23 @@ eq(termFieldsLocked(false, [ACTIVE]), false, "ไม่มีฐานข้อ�
   for (const s of [400, 403, 404, 409, 429]) eq(canRetryCreate({ response: { status: s } }, true), true, `จากรอบ ${s}`);
   for (const s of [500, 503]) eq(canRetryCreate({ response: { status: s } }, true), false, `จากรอบ ${s}`);
   eq(canRetryCreate(new Error("timeout"), true), false, "จากรอบ ไม่มีคำตอบ");
+  // รีวิวทั้งสาขา M11: 503 ของทางรอบเกิดก่อนเขียนเสมอ (ต่อฐาน/อ่านรายการเทอมไม่ได้ — ข้อความไทยของเซิร์ฟเวอร์บอกให้ลองใหม่) → กดใหม่ได้
+  // · 503 ที่ไม่มีข้อความไทย (ตัวกลางตอบแทน ไม่รู้ว่าถึงเซิร์ฟเวอร์ไหม) และทางเดิม ยังล็อกตามเดิม
+  const s503 = { response: { status: 503, data: { detail: "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง" } } };
+  eq(canRetryCreate(s503, true), true, "จากรอบ 503 ไทย = กดใหม่ได้");
+  eq(canRetryCreate(s503), false, "ทางเดิม 503 ไม่เปลี่ยน");
+  eq(canRetryCreate({ response: { status: 503, data: { detail: "Service Unavailable" } } }, true), false, "503 ของตัวกลาง");
+  eq(termErrorText(s503, "สำรอง"), "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง", "503 แสดงข้อความของเซิร์ฟเวอร์");
+  // 500 ของทางรอบ: แสดงข้อความไทยของเซิร์ฟเวอร์ ("ข้อมูลเดิมยังอยู่ครบ") — ไม่ใช่ "ยังไม่รู้ว่าเทอมถูกสร้างหรือยัง" · ยังล็อกปุ่ม
+  // (COMMIT ที่ล้มแบบกำกวมก็ตอบ 500 — ให้ดูรายการเทอมก่อนเปิดหน้าต่างใหม่) · ทางเดิมและคำตอบที่ไม่มีข้อความไทยเหมือนเดิมทุกตัวอักษร
+  const s500 = { response: { status: 500, data: { detail: "สร้างเทอมใหม่ไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง" } } };
+  const t500 = createLockedText(s500, true);
+  ok(t500.startsWith("สร้างเทอมใหม่ไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ") && !t500.includes("ยังไม่รู้") && t500.includes("รายการเทอม"),
+     `500 ทางรอบ — ได้ ${t500}`);
+  const legacy = "ไม่ได้รับคำตอบที่แน่ชัดจากเซิร์ฟเวอร์ — ยังไม่รู้ว่าเทอมถูกสร้างหรือยัง ปิดหน้าต่างนี้แล้วดูรายการเทอมก่อน อย่ากดสร้างซ้ำ";
+  eq(createLockedText(s500), legacy, "ทางเดิม 500 = ข้อความเดิม");
+  eq(createLockedText(new Error("timeout"), true), legacy, "ไม่มีคำตอบ = ข้อความเดิม");
+  eq(createLockedText({ response: { status: 502, data: "<html>" } }, true), legacy, "502 ของตัวกลาง = ข้อความเดิม");
   eq(canRetryCreate({ response: { status: 403 } }), false, "ทางเดิมไม่เปลี่ยน");
   eq(termErrorText({ response: { status: 403, data: { detail: "รหัสผู้ดูแลระบบของเว็บลงอัตรากำลังไม่ถูกต้อง" } } }, "สำรอง"),
      "รหัสผู้ดูแลระบบของเว็บลงอัตรากำลังไม่ถูกต้อง", "403 ไทยถึงผู้ใช้");

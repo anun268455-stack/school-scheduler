@@ -16,7 +16,7 @@ import {
   previewWarnings, reviewActions, roundActions, roundChip, roundLabel, roundStats, ROUND_STATUS_TEXT, roundStatusTone,
   releasePending, rowPatch, rowState, settlePending, shownFields, subjectLine, submitState, teacherChoices, teacherNamer,
   termReadiness, changeRow, teacherDraft, retryFields, reviewGap, refreshDue, REFRESH_GAP_MS, bulkConfirmTargets, unsavedDraftsText,
-  roundExportChip, exportActivityLines, EXPORT_PARKED_TEXT,
+  roundExportChip, exportActivityLines, EXPORT_DONE_TEXT, EXPORT_PARKED_TEXT,
   type DeptStatus, type OptionTeacher, type Round, type RoundOption, type RoundPreview, type RoundRow, type TeacherLoad,
 } from "../../workload/src/round.ts";
 
@@ -847,18 +847,22 @@ const REPORT = {
   ],
 };
 
-test("roundExportChip: ป้ายรอบที่ส่งแล้วใช้ exported_text ของเซิร์ฟเวอร์ · เทอมถูกปิดไว้ = เตือน · ยังไม่ส่ง = ไม่มีป้าย", () => {
+test("roundExportChip: ป้ายรอบที่ส่งแล้วใช้ exported_text ของเซิร์ฟเวอร์ · เทอมถูกปิดไว้ = เตือน · ปิดภาคเรียนแล้ว = ปกติ · ยังไม่ส่ง = ไม่มีป้าย", () => {
   eq(roundExportChip(R()), null);
   eq(roundExportChip(R({ status: "closed", exported_at: null, exported_label: null, exported_text: null, export_report: null })), null);
   eq(roundExportChip(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569",
     exported_text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569", export_report: REPORT })),
-    { tone: "ok", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569" });
+    { tone: "ok", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569", state: "open" });
   eq(roundExportChip(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569",
     exported_text: `ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569${EXPORT_PARKED_TEXT}`, export_report: REPORT })),
-    { tone: "warn", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569 (ถูกปิดไว้ ปลดล็อกเทอมนั้นเพื่อใช้ต่อ)" });
+    { tone: "warn", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569 (ถูกปิดไว้ ปลดล็อกเทอมนั้นเพื่อใช้ต่อ)", state: "parked" });
+  // รีวิวทั้งสาขา M1: เทอมของรอบถูกปิดตามปกติเพราะขึ้นเทอมที่ใหม่กว่า — โทนปกติ ไม่ชวนปลดล็อก (หน้ารอบไม่ขึ้น "ถ้าส่งผิด…")
+  eq(roundExportChip(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569",
+    exported_text: `ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569${EXPORT_DONE_TEXT}`, export_report: REPORT })),
+    { tone: "ok", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569 (ปิดภาคเรียนแล้ว)", state: "done" });
   // ไม่มี exported_text (ไม่ควรเกิด) ยังบอกว่าส่งแล้ว ไม่ปล่อยให้ดูเหมือนรอบปิดธรรมดา
   eq(roundExportChip(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569" })),
-    { tone: "ok", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569" });
+    { tone: "ok", text: "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569", state: "open" });
 });
 
 test("ข้อความรอบที่ส่งแล้วเป็นชิ้นเดียวกับ wl_round_export_text ของเซิร์ฟเวอร์", () => {
@@ -867,7 +871,13 @@ test("ข้อความรอบที่ส่งแล้วเป็น�
   ok(at >= 0, "หา wl_round_export_text ใน mock_api.py ไม่เจอ");
   const body = src.slice(at, src.indexOf("\ndef ", at + 1));
   ok(body.includes('f"ส่งเข้าโปรแกรมแล้ว — เทอม '), "ข้อความหลัก");
-  ok(body.includes(`text += "${EXPORT_PARKED_TEXT}"`), `ข้อความเทอมถูกปิดไว้: ${EXPORT_PARKED_TEXT}`);
+  ok(body.includes("WL_EXPORT_SUFFIX[state]"), "ส่วนท้ายตามสถานะ");
+  const at2 = src.indexOf("WL_EXPORT_SUFFIX: dict[str, str] = {");
+  ok(at2 >= 0, "หา WL_EXPORT_SUFFIX ใน mock_api.py ไม่เจอ");
+  const table = src.slice(at2, src.indexOf("}", at2) + 1);
+  ok(table.includes(`"done": "${EXPORT_DONE_TEXT}"`), `ข้อความปิดภาคเรียนแล้ว: ${EXPORT_DONE_TEXT}`);
+  ok(table.includes(`"parked": "${EXPORT_PARKED_TEXT}"`), `ข้อความเทอมถูกปิดไว้: ${EXPORT_PARKED_TEXT}`);
+  ok(table.includes('"open": ""'), "เปิดอยู่ = ไม่มีส่วนท้าย");
 });
 
 test("exportActivityLines: ชุดกิจกรรมที่ต้องลงคาบเองจาก export_report · รูปเสีย/ไม่มี → ว่าง", () => {

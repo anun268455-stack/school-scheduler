@@ -226,11 +226,37 @@ export function createLatch(): Latch {
  *
  * `fromRound` (สร้างจากรอบอัตรากำลัง): 403 รหัสผิด · 429 ผิดเกินเกณฑ์ · 404 ไม่มีรอบ ก็เป็นการปฏิเสธ
  * ก่อนแตะอะไรเหมือนกัน (เซิร์ฟเวอร์ตรวจรหัสก่อนเปิดธุรกรรม) — ต้องให้แก้รหัสแล้วกดใหม่ได้
+ * · 503 ของทางรอบเกิดก่อนเขียนเสมอ (ต่อฐาน/อ่านรายการเทอมไม่ได้ — ข้อความไทยของเซิร์ฟเวอร์บอกให้ลองใหม่) จึงกดใหม่ได้
+ *   เฉพาะเมื่อมีข้อความไทยของเซิร์ฟเวอร์: 503 ที่ตัวกลางตอบแทน (ไม่มีข้อความไทย) บอกไม่ได้ว่าคำขอถึงเซิร์ฟเวอร์หรือยัง (รีวิวทั้งสาขา M11)
  */
 export function canRetryCreate(e: unknown, fromRound = false): boolean {
   const status = (e as { response?: { status?: number } })?.response?.status;
   if (status === 400 || status === 409) return true;
-  return fromRound && (status === 403 || status === 404 || status === 429);
+  if (!fromRound) return false;
+  if (status === 403 || status === 404 || status === 429) return true;
+  return status === 503 && serverThai(e) !== null;
+}
+
+/** ข้อความไทยที่เซิร์ฟเวอร์ส่งมาใน detail (ไม่มี/ไม่ใช่ไทย = null — เช่นคำตอบของตัวกลาง) */
+function serverThai(e: unknown): string | null {
+  const d = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  return typeof d === "string" && /[\u0E00-\u0E7F]/.test(d) ? d.trim() : null;
+}
+
+/**
+ * ข้อความเมื่อกดสร้างใหม่ไม่ได้ (canRetryCreate เป็นเท็จ) — ปุ่มยังล็อก
+ * ทางรอบที่ได้ 500 พร้อมข้อความไทยของเซิร์ฟเวอร์ ("…ข้อมูลเดิมยังอยู่ครบ") = เซิร์ฟเวอร์ย้อนแล้ว แสดงข้อความนั้น ไม่ใช่ "ยังไม่รู้ว่าสร้างหรือยัง"
+ * แต่ยังให้ดูรายการเทอมก่อนลองใหม่ (COMMIT ที่ล้มแบบกำกวมก็ตอบ 500) (รีวิวทั้งสาขา M11) · ที่เหลือ (ทางเดิม · หมดเวลา ·
+ * ตัวกลางตอบแทน) = ข้อความเดิมทุกตัวอักษร
+ */
+export function createLockedText(e: unknown, fromRound = false): string {
+  const status = (e as { response?: { status?: number } })?.response?.status;
+  const thai = serverThai(e);
+  if (fromRound && status === 500 && thai) {
+    return `${thai} — ปิดหน้าต่างนี้แล้วดูรายการเทอมก่อน ถ้ายังไม่มีเทอมใหม่ ค่อยเปิดหน้าต่างใหม่แล้วกดสร้างอีกครั้ง`;
+  }
+  return termErrorText(e, "ไม่ได้รับคำตอบที่แน่ชัดจากเซิร์ฟเวอร์")
+    + " — ยังไม่รู้ว่าเทอมถูกสร้างหรือยัง ปิดหน้าต่างนี้แล้วดูรายการเทอมก่อน อย่ากดสร้างซ้ำ";
 }
 
 /**
@@ -343,7 +369,7 @@ export function newTermWarning(active: TermMeta | null): string {
     return "กดแล้วตารางที่ลงไว้ตอนนี้จะถูกเก็บเป็นเทอมของตัวเองและปิด แก้ไม่ได้อีก"
       + " · คาบที่ลงไว้ทั้งหมดจะเริ่มจากว่างในเทอมใหม่";
   }
-  return `กดแล้วเทอม ${active.label}จะถูกปิดและแก้ไม่ได้อีก · คาบที่ลงไว้ทั้งหมดจะเริ่มจากว่างในเทอมใหม่`;
+  return `กดแล้วเทอม ${active.label} จะถูกปิดและแก้ไม่ได้อีก · คาบที่ลงไว้ทั้งหมดจะเริ่มจากว่างในเทอมใหม่`;
 }
 
 // ── สร้างเทอมใหม่จากรอบอัตรากำลัง (ขั้นที่ 3 · แบบข้อ 4.5) ──────────────────────
@@ -399,7 +425,24 @@ export interface RoundReport {
   /** ชุดกิจกรรม — ต้องลงคาบเอง (ตารางของเทอมใหม่เริ่มว่าง) */
   activity_sets: { name: string; group_ids?: number[]; group_names: string[]; weekly: number;
     teacher_ids?: number[]; teacher_names: (string | null)[] }[];
+  // ── แบบข้อ 4.2 (รีวิวทั้งสาขา M3) — ไม่มีในรายงานรุ่นก่อน จึงเป็นตัวเลือก ──
+  /** ห้อง+วิชาที่ยกเซ็ตห้องย่อย/คาบที่ปักจากแผนเดิมไม่ได้ (แถวเดิมไม่ตรงกัน) */
+  not_carried?: (RoundCell & { fields?: string[]; field_labels?: string[] })[];
+  /** ห้อง+วิชาที่ไม่มีในแผนเดิม (ช่องที่เว็บไม่มีเริ่มว่าง) */
+  new_cells?: RoundCell[];
+  /** จำนวนแถวแผนของวิชาเสรี / กิจกรรมทั้งระดับที่สร้างตามรูปของแผนเดิม */
+  elective_rows?: number;
+  activity_rows?: number;
+  pattern_rows?: (RoundCell & { kind: string; teacher_id?: number | null; teacher_name?: string | null;
+    weekly_count?: number | null })[];
+  /** วิชาที่ถูกเพิ่มเข้าหลักสูตรเพื่อให้แถวแผนข้างบนผ่านการตรวจหลักสูตร */
+  curriculum_rows_added?: { curriculum_id?: number; curriculum_name?: string | null; subject_id?: number;
+    code?: string | null; name?: string | null; weekly_count?: number }[];
 }
+
+/** หนึ่งห้อง+วิชาในรายงาน (ชื่อห้อง รหัส/ชื่อวิชามากับรายงาน) */
+export interface RoundCell { group_id: number; subject_id: number; group_name?: string; code?: string | null;
+  name?: string | null }
 
 /** GET /terms/preview?round_id= — ตัวเลขเดิม 5 ตัว + ของรอบ */
 export interface RoundPreview extends PreviewLike {
@@ -424,10 +467,35 @@ export function roundSelectable(r: Pick<TermRound, "exported_at">): boolean {
   return !r.exported_at;
 }
 
-/** ค่าเริ่มต้นของตัวเลือกรอบ: รอบล่าสุดที่ใช้ได้ · ไม่มี → รอบล่าสุดที่ยังไม่ส่ง · ส่งแล้วทุกรอบ → null */
-export function defaultTermRound(rounds: TermRound[]): TermRound | null {
-  const open = [...rounds].sort((a, b) => b.year - a.year || b.semester - a.semester).filter(roundSelectable);
-  return open.find((r) => r.usable) ?? open[0] ?? null;
+/**
+ * ภาคเรียนปัจจุบัน: เทอมที่เปิดในรายการเทอม · ยังไม่มีเทอมที่บันทึกไว้ (เว็บจริงตอนกดครั้งแรก) → ปี/ภาคในหน้าตั้งค่า
+ * (ตามที่ปุ่มสร้างเทอมจะใช้เก็บตารางที่ลงไว้ — running_term_identity ของเซิร์ฟเวอร์) · บอกไม่ได้ → null
+ */
+export function runningTerm(
+  active: Pick<TermMeta, "year" | "semester"> | null, config: { year?: string; term?: string } | null,
+): { year: number; semester: number } | null {
+  if (active) return { year: active.year, semester: active.semester };
+  const y = (config?.year ?? "").trim();
+  const t = (config?.term ?? "").trim();
+  if (!/^\d{4}$/.test(y) || (t !== "1" && t !== "2")) return null;
+  const year = Number(y);
+  return year >= 2500 && year <= 2700 ? { year, semester: Number(t) } : null;
+}
+
+/**
+ * ค่าเริ่มต้นของตัวเลือกรอบ (รีวิวทั้งสาขา M2): รอบที่ใช้ได้ของภาคเรียน "หลัง" ภาคเรียนปัจจุบัน (ที่ใกล้ที่สุด) ·
+ * ไม่มี หรือบอกไม่ได้ว่าภาคเรียนปัจจุบันคืออะไร → null (ไม่เลือกรอบ — หน้าต่างใช้แผนเดิม)
+ * ไม่ถอยไปรอบของภาคเรียนปัจจุบัน (ปุ่มจะเก็บตารางที่ลงไว้เป็นเทอมนั้น — สร้างซ้ำไม่ได้) หรือภาคเรียนที่ผ่านมา (จะปิดเทอมปัจจุบัน
+ * แล้วเปิดเทอมเก่า) · รอบที่ส่งแล้วเลือกไม่ได้
+ */
+export function defaultTermRound(
+  rounds: TermRound[], current: { year: number; semester: number } | null,
+): TermRound | null {
+  if (current === null) return null;
+  const after = rounds.filter((r) => roundSelectable(r) && r.usable
+    && (r.year > current.year || (r.year === current.year && r.semester > current.semester)));
+  after.sort((a, b) => a.year - b.year || a.semester - b.semester);
+  return after[0] ?? null;
 }
 
 /** ข้อความเดียวกับ TERM_ADMIN_CODE_MISSING ของเซิร์ฟเวอร์ (ตัวทดสอบเทียบกับ mock_api.py) */
@@ -521,6 +589,25 @@ export function roundPreviewRows(
   }
   const acts = activitySetLines(r);
   add("ชุดกิจกรรมที่ต้องลงคาบเอง", acts.length, "ชุด", "warn", acts);
+  // แบบข้อ 4.2 (รีวิวทั้งสาขา M3): สิ่งที่เทอมใหม่ได้ต่างจากรอบตรง ๆ — ให้เห็นก่อนกด (กระทบการจัดคาบ) แต่ไม่ต้องทำอะไร = info
+  const cellText = (c: RoundCell): string =>
+    `${text(c.group_name) || `ห้องรหัส ${c.group_id}`} · ${subjectText({ id: c.subject_id, code: c.code, name: c.name ?? null })}`;
+  const pattern = items<NonNullable<RoundReport["pattern_rows"]>[number]>(r.pattern_rows);
+  add("แถวแผนของวิชาเสรี/กิจกรรมที่สร้างตามรูปของแผนเดิม", num(r.elective_rows) + num(r.activity_rows), "แถว", "info",
+    pattern.map((x) => [cellText(x), text(x.teacher_name) || "ยังไม่มีครู",
+      `${thaiNum(num(x.weekly_count))} คาบ/สัปดาห์ (${x.kind === "activity" ? "กิจกรรม" : "คาบเสรี"})`].join(" · ")));
+  const added = items<NonNullable<RoundReport["curriculum_rows_added"]>[number]>(r.curriculum_rows_added);
+  add("วิชาที่ถูกเพิ่มเข้าหลักสูตร (ให้แถวแผนข้างบนผ่านการตรวจหลักสูตร)", added.length, "รายการ", "info",
+    added.map((x) => `${text(x.curriculum_name) || "หลักสูตร"}: `
+      + `${subjectText({ id: x.subject_id ?? 0, code: x.code, name: x.name ?? null })} · ${thaiNum(num(x.weekly_count))} คาบ/สัปดาห์`));
+  const notCarried = items<NonNullable<RoundReport["not_carried"]>[number]>(r.not_carried);
+  add("ห้อง+วิชาที่ยกเซ็ตห้องย่อย/คาบที่ปักจากแผนเดิมไม่ได้ (แถวเดิมไม่ตรงกัน — ปล่อยว่าง)", notCarried.length, "รายการ",
+    "info", notCarried.map((c) => {
+      const fields = (Array.isArray(c.field_labels) ? c.field_labels : []).map(text).filter(Boolean);
+      return fields.length ? `${cellText(c)}: ${fields.join(", ")}` : cellText(c);
+    }));
+  const fresh = items<RoundCell>(r.new_cells);
+  add("ห้อง+วิชาที่ไม่มีในแผนเดิม (เซ็ตห้องย่อย/คาบที่ปักเริ่มว่าง)", fresh.length, "รายการ", "info", fresh.map(cellText));
   const tOff = named(r.inactive_teachers_used);
   add("ครูที่ปิดใช้งานในโปรแกรม แต่อยู่ในเทอมใหม่", tOff.length, "คน", "warn", tOff.map(teacherText));
   const sOff = named(r.inactive_subjects_used);

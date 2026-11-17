@@ -458,6 +458,34 @@ def test_build_names_activity_sets_and_curricula_that_got_subjects():
          "code": "ศ21201", "name": "ดนตรีสากล", "weekly_count": 2}], rep["curriculum_rows_added"]
     assert rep["activity_sets"] == [{"name": "แนะแนวรวม", "group_ids": [2, 1], "group_names": ["ม.1/2", "ม.1/1"],
                                      "weekly": 1, "teacher_ids": [510], "teacher_names": ["ครู 510"]}], rep["activity_sets"]
+    # รีวิวทั้งสาขา M3 (แบบข้อ 4.2): แถวแผนของวิชาเสรี/กิจกรรมที่สร้างตามรูปของแผนเดิมเป็นรายการที่เปิดดูได้ (ห้อง วิชา ครู คาบ)
+    (pr,) = rep["pattern_rows"]
+    teacher = next(t for t in built["registry"]["teachers"] if t["id"] == pr["teacher_id"])
+    assert pr == {"kind": "elective", "group_id": 1, "group_name": "ม.1/1", "subject_id": 904, "code": "ศ21201",
+                  "name": "ดนตรีสากล", "teacher_id": teacher["id"], "teacher_name": teacher["name"], "weekly_count": 2}, pr
+    assert len(rep["pattern_rows"]) == rep["elective_rows"] + rep["activity_rows"]
+
+
+def test_report_names_cells_whose_fields_could_not_be_carried():
+    # รีวิวทั้งสาขา M3 (แบบข้อ 4.2 "ไม่ตรงกัน/ไม่มีในแผนเดิม → ว่าง (นับและบอกในสรุป)"): ห้อง+วิชาที่ยกเซ็ตห้องย่อย/คาบที่ปักไม่ได้
+    # มีชื่อห้อง รหัส/ชื่อวิชา และชื่อไทยของช่อง ให้หน้าต่างแสดง "ดูรายการ" โดยไม่ต้องเรียกเพิ่ม
+    plan = copy.deepcopy(PLAN)
+    plan[2]["pinned_day"], plan[3]["pinned_day"] = 1, 2                  # สอนร่วมสองแถวของ ม.1/1 ค21102 ปักวันไม่ตรงกัน
+    with _program(requirements=plan):
+        db, t, rnd = _scenario()
+        source, built = _build(db, rnd)
+    rep = built["report"]
+    assert built["reasons"] == [], built["reasons"]
+    assert rep["not_carried"] == [{"group_id": 1, "subject_id": 901, "fields": ["pinned_day"], "group_name": "ม.1/1",
+                                   "code": "ค21102", "name": "คณิตศาสตร์พื้นฐาน 2", "field_labels": ["วันที่ปัก"]}], \
+        rep["not_carried"]
+    assert rep["new_cells"] and all(set(c) == {"group_id", "subject_id", "group_name", "code", "name"} and
+                                    c["group_name"].startswith("ม.") and c["code"] for c in rep["new_cells"]), rep["new_cells"]
+    assert rep["new_cells"][0] == {"group_id": 3, "subject_id": 900, "group_name": "ม.1/3", "code": "ท21102",
+                                   "name": "ภาษาไทยพื้นฐาน 2"}, rep["new_cells"][0]
+    assert sorted(mock_api._TERM_CARRY_TEXT) == sorted(mock_api._TFR.CARRY_KEYS), mock_api._TERM_CARRY_TEXT  # ทุกช่องมีชื่อไทย
+    assert all(_thai(v) for v in mock_api._TERM_CARRY_TEXT.values())
+    assert rep["pattern_rows"] == [] and json.dumps(rep, ensure_ascii=False)
 
 
 def test_skipped_items_are_reasons():
