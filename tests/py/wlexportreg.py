@@ -373,6 +373,50 @@ def test_code_linked_after_patch_of_linked_subject():
     assert (_by_id(plan["subjects"], 40)["code"], _by_id(plan["subjects"], 41)["code"]) == ("ค31102", "ค31101")
 
 
+def test_two_web_subjects_without_sched_id_on_one_code_give_one_program_subject():
+    # รีวิว Task 1 M1: ทะเบียนของเว็บมีวิชารหัสเดียวกันสองวิชา (ค้างจากขั้นที่ 1) ทั้งคู่ยังไม่มี sched_id
+    # ตัวแรกสร้างในโปรแกรม ตัวที่สองต้องเป็นเหตุ — ไม่ใช่วิชารหัส Z9 สองวิชาในโปรแกรม (แบบข้อ 2 "ห้ามเกิด")
+    src = _src(wl_subjects=[_ws(1, code="Z9", name="วิชาแรก"), _ws(2, code="Z9 ", name="วิชาซ้ำ")])
+    plan = T.registry_plan(src, _out(), {"subject": 0})
+    assert len(plan["subjects"]) == 1 and plan["subject_map"] == {1: 1}
+    assert len(plan["reasons"]) == 1, plan["reasons"]
+    why = plan["reasons"][0]
+    # ข้อความต้องตรงกรณี: วิชาในโปรแกรมเพิ่งจะถูกสร้างในรอบนี้ ไม่ได้ "ผูกกับวิชาอื่นของเว็บแล้ว"
+    assert "Z9" in why and "มากกว่าหนึ่งวิชา" in why and "ผูกกับวิชาอื่น" not in why, why
+
+
+def test_typed_line_without_name_or_department_does_not_blank_program_subject():
+    # รีวิว Task 1 M2: บรรทัดที่พิมพ์รหัสเองแต่ไม่มีชื่อ/กลุ่มสาระ ผูกด้วยรหัสกับวิชาในโปรแกรม
+    # → ห้ามทับชื่อด้วยรหัส และห้ามล้างกลุ่มสาระเป็น None (แก้เฉพาะช่องที่บรรทัดมีค่าจริง)
+    prog = _ps(40, code="ง30200", name="งานช่าง", department_id=6)
+    src = _src(curricula=[_cur(1, [_line(120, code="ง30200", name="", department_id=None)])])
+    plan = T.registry_plan(src, _out(subjects=[prog]), {"subject": 40})
+    after = _by_id(plan["subjects"], 40)
+    assert (after["name"], after["department_id"]) == ("งานช่าง", 6), after
+    assert plan["report"]["subjects_patched"] == []
+    assert [(c["wl_id"], c["id"]) for c in plan["report"]["code_links"]] == [(None, 40)]
+    [w] = plan["writeback"]["new_wl_subjects"]
+    assert (w["name"], w["department_id"], w["sched_id"]) == ("งานช่าง", 6, 40)
+    # บรรทัดที่มีชื่อและกลุ่มสาระจริงยังแก้ได้ตามเดิม
+    src = _src(curricula=[_cur(1, [_line(121, code="ง30200", name="งานช่างใหม่", department_id=None)])])
+    after = _by_id(T.registry_plan(src, _out(subjects=[prog]), {"subject": 40})["subjects"], 40)
+    assert (after["name"], after["department_id"]) == ("งานช่างใหม่", 6), after
+
+
+def test_web_subject_referenced_only_by_typed_lines_takes_credits_from_line():
+    # รีวิว Task 1 M3: วิชาของเว็บที่ยังไม่มี sched_id และถูกอ้างผ่านบรรทัดพิมพ์รหัสเองเท่านั้น
+    # ต้องได้ credits จากบรรทัด เหมือนทาง typed_new (ต่างกันแค่ว่าเว็บมีวิชานี้หรือไม่ ผลต้องไม่ต่าง)
+    src = _src(wl_subjects=[_ws(9, sched_id=None, code="X1", active=False)],
+               curricula=[_cur(1, [_line(130, code="X1 ", name="x", credits=1.5)]),
+                          _cur(2, [_line(131, subject_id=9, credits=2.0)])])
+    plan = T.registry_plan(src, _out(), {"subject": 0})
+    assert plan["subject_map"] == {9: 1}
+    # ค่าแรกตามลำดับหลักสูตร: บรรทัด 130 (พิมพ์รหัส ผูกกับวิชา 9) มาก่อนบรรทัด 131
+    assert _by_id(plan["subjects"], 1)["credits"] == 1.5
+    src["curricula"].reverse()
+    assert _by_id(T.registry_plan(src, _out(), {"subject": 0})["subjects"], 1)["credits"] == 2.0
+
+
 def test_new_subject_credits_from_first_line():
     src = _src(wl_subjects=[_ws(1), _ws(2), _ws(3)],
                curricula=[_cur(1, [_line(10, subject_id=3, credits=None), _line(11, subject_id=1, credits=1.5)]),

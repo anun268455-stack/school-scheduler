@@ -12,12 +12,16 @@
   - อ้างครู/วิชาด้วยรหัสเท่านั้น ไม่จับคู่ด้วยชื่อ (รหัสวิชาที่ตรงกันหลังตัดช่องว่างใช้ผูกได้ตามแบบข้อ 4.3)
 
 รูปข้อมูลขาเข้าตามสัญญาร่วมของแผน: source = ข้อมูลของรอบ (wl_teachers wl_subjects curricula options rows ...) ·
-outgoing = ของเทอมที่กำลังปิด (teachers subjects = สำเนาของ TEACHERS SUBJECTS) · counters = สำเนาของ _counters
+outgoing = ของเทอมที่กำลังปิด (รูป _wl_timetable_source: requirements pools slots served sched_subjects groups
++ teachers subjects curricula = สำเนาของ TEACHERS SUBJECTS CURRICULA) · counters = สำเนาของ _counters
+ลำดับ: registry_plan (ทะเบียน) ก่อนเสมอ แล้ว plan_from_round (แผน คาบเสรี หลักสูตร) ใช้ map ที่ได้
 """
 from __future__ import annotations
 
 import copy
 from typing import Any, Callable
+
+import curriculum as _curriculum    # ตรรกะล้วนของหลักสูตร (normalise_rows) — ไม่ลากตัวแปรของโปรแกรมมา
 
 # ── ทะเบียน: ช่องที่เว็บลงอัตรากำลังเป็นเจ้าของ และค่าตั้งต้นของรายการใหม่ ─────────────────────
 # ช่องนอกจากนี้ (ห้องประจำ คาบสูงสุด/วัน วันที่ไม่สอน advanced_settings credits ฯลฯ) เป็นของโปรแกรมจัดตาราง
@@ -141,13 +145,20 @@ def _subjects_used(source: dict[str, Any]) -> set[Any]:
     return used
 
 
-def _first_credits(source: dict[str, Any]) -> dict[Any, Any]:
-    """หน่วยกิตของวิชาใหม่ = บรรทัดแรกที่อ้างถึงวิชานั้น ตามลำดับหลักสูตรแล้วบรรทัด (แม้บรรทัดนั้นหน่วยกิตว่าง)"""
+def _first_credits(source: dict[str, Any], typed_bound: dict[str, Any] | None = None) -> dict[Any, Any]:
+    """หน่วยกิตของวิชาใหม่ = บรรทัดแรกที่อ้างถึงวิชานั้น ตามลำดับหลักสูตรแล้วบรรทัด (แม้บรรทัดนั้นหน่วยกิตว่าง)
+
+    typed_bound = {รหัส: wl_id} ของบรรทัดที่พิมพ์รหัสเองแล้วผูกกับวิชาของเว็บ — บรรทัดเหล่านั้นก็ "อ้างถึง" วิชานั้น
+    ถ้าไม่นับ วิชาที่ถูกอ้างทางนั้นทางเดียวจะได้หน่วยกิตว่าง ทั้งที่ทาง typed_new ของรหัสเดียวกันได้หน่วยกิตจากบรรทัด"""
+    bound = typed_bound or {}
     out: dict[Any, Any] = {}
     for c in source.get("curricula") or []:
         for ln in c.get("lines") or []:
-            if ln.get("subject_id") is not None:
-                out.setdefault(ln["subject_id"], ln.get("credits"))
+            wl_id = ln.get("subject_id")
+            if wl_id is None:
+                wl_id = bound.get(_code_key(ln.get("code")))
+            if wl_id is not None:
+                out.setdefault(wl_id, ln.get("credits"))
     return out
 
 
@@ -232,10 +243,10 @@ def registry_plan(source: dict[str, Any], outgoing: dict[str, Any], counters: di
     s_by_id = {s["id"]: s for s in subjects}
     s_taken = set(s_by_id) | {s for s in (_sched_id(w.get("sched_id")) for w in wl_subjects) if s is not None}
     s_used = _subjects_used(source)
-    credits_of = _first_credits(source)
     subject_map: dict[Any, int] = {}
     typed_map: dict[str, int] = {}
     linked: set[int] = set()        # วิชาของโปรแกรมที่มีวิชาของเว็บผูกอยู่ (หรือผูกในรอบนี้)
+    created: set[int] = set()       # วิชาของโปรแกรมที่สร้างในรอบนี้
 
     # บรรทัด/ตัวเลือกที่พิมพ์รหัสเอง: ตัดสินก่อน เพราะการผูกกับวิชาของเว็บทำให้วิชานั้น "ถูกอ้างในรอบ"
     wl_by_code: dict[str, list[dict[str, Any]]] = {}
@@ -255,6 +266,7 @@ def registry_plan(source: dict[str, Any], outgoing: dict[str, Any], counters: di
             s_used.add(hits[0]["id"])
         else:
             typed_new.append(g)
+    credits_of = _first_credits(source, {g["code"]: w["id"] for g, w in typed_bind})
 
     # วิชาของเว็บที่ผูกอยู่แล้ว: แก้ช่องตัวตนก่อน แล้วค่อยสร้างดัชนีรหัสของโปรแกรมจากค่าหลังแก้
     need: list[dict[str, Any]] = []
@@ -287,6 +299,12 @@ def registry_plan(source: dict[str, Any], outgoing: dict[str, Any], counters: di
             return None
         if hits:
             s = hits[0]
+            if s["id"] in created:
+                # วิชานั้นเพิ่งถูกสร้างจากวิชาของเว็บอีกตัวในรอบนี้ — ทะเบียนของเว็บมีรหัสซ้ำ (ค้างจากขั้นที่ 1)
+                reasons.append(f"รหัสวิชา {code} ({label}) ซ้ำกับวิชา {s.get('name')} ที่จะสร้างในโปรแกรมจัดตารางในรอบนี้ "
+                               "— ทะเบียนวิชาของเว็บลงอัตรากำลังมีวิชารหัสนี้มากกว่าหนึ่งวิชา จึงสร้างได้วิชาเดียว "
+                               "— แก้รหัสวิชาในทะเบียนของเว็บให้ไม่ซ้ำก่อน")
+                return None
             if s["id"] in linked:
                 reasons.append(f"รหัสวิชา {code} ({label}) ซ้ำกับวิชา {s.get('name')} ในโปรแกรมจัดตาราง "
                                "ที่ผูกกับวิชาอื่นของเว็บลงอัตรากำลังแล้ว จึงสร้างหรือผูกไม่ได้ "
@@ -309,6 +327,7 @@ def registry_plan(source: dict[str, Any], outgoing: dict[str, Any], counters: di
         subjects.append(row)
         s_by_id[new_id] = row
         linked.add(new_id)
+        created.add(new_id)
         if code:
             prog_by_code.setdefault(code, []).append(row)   # วิชาเว็บรหัสซ้ำตัวถัดไปต้องไม่ได้วิชาซ้ำรหัสในโปรแกรม
         report["subjects_created"].append({"wl_id": wl_id, "id": new_id, "code": row["code"], "name": row["name"]})
@@ -323,10 +342,15 @@ def registry_plan(source: dict[str, Any], outgoing: dict[str, Any], counters: di
     # วิชาที่พิมพ์รหัสเองและไม่มีในทะเบียนของเว็บ: บรรทัดบอกได้แค่รหัส ชื่อ กลุ่มสาระ จึงแก้แค่สามช่องนั้นเมื่อผูกด้วยรหัส
     # ช่องตัวตนอื่นของวิชาในโปรแกรมคงไว้ และแถวใหม่ในทะเบียนของเว็บรับค่าทุกช่องตัวตนจากวิชาในโปรแกรม
     # — ไม่งั้นรอบหน้าวิชานี้ "ต่างกัน" แล้วค่าตั้งต้นของเว็บไปทับคาบคู่/กิจกรรมของโปรแกรม
+    # และแก้เฉพาะช่องที่บรรทัดมีค่าจริง: บรรทัดที่ไม่มีชื่อ (typed_subjects ใช้รหัสแทนชื่อ) หรือไม่มีกลุ่มสาระ ไม่ได้บอกว่า
+    # ชื่อ/กลุ่มสาระคืออะไร — ถ้าส่งเข้า _patch ชื่อจริงของวิชาในโปรแกรมจะกลายเป็นรหัส และกลุ่มสาระถูกล้างเป็นว่าง
+    # (ตอนสร้างวิชาใหม่ยังใช้รหัสแทนชื่อได้ เพราะไม่มีชื่อเดิมให้เสีย)
     for g in typed_new:
         values = {"code": g["code"], "name": g["name"], "department_id": g["department_id"],
                   "is_activity": False, "is_elective": False}
-        sid = place(None, g["name"], values, ("code", "name", "department_id"), g["credits"])
+        fields = ("code",) + (("name",) if g["name"] != g["code"] else ()) + \
+            (("department_id",) if g["department_id"] is not None else ())
+        sid = place(None, g["name"], values, fields, g["credits"])
         if sid is not None:
             typed_map[g["code"]] = sid
             s = s_by_id[sid]
@@ -342,3 +366,275 @@ def registry_plan(source: dict[str, Any], outgoing: dict[str, Any], counters: di
     return {"teachers": teachers, "subjects": subjects, "counters": counters,
             "teacher_map": teacher_map, "subject_map": subject_map, "typed_map": typed_map,
             "writeback": writeback, "report": report, "reasons": reasons}
+
+
+# ── แผนการสอน คาบเสรี และหลักสูตรของเทอมใหม่ (แบบข้อ 4.2) ────────────────────────────────────
+# ข้อความเดียวกับ mock_api.WL_CO_UNEQUAL_FLAG ทุกตัวอักษร (import mock_api ไม่ได้ — tests/py/wlexportplan.py เทียบให้)
+# ขั้นที่ 2 ติดธงนี้ให้คู่สอนร่วมในแผนเดิมที่คาบไม่เท่ากัน แล้วเก็บเป็นสองแถวที่ไม่ชี้กัน
+CO_UNEQUAL_FLAG = "สอนร่วมในแผนเดิมคาบไม่เท่ากัน"
+# ช่องของแถวแผนที่เว็บไม่มี — ยกมาจากแผนเดิมของเทอมที่กำลังปิด
+CARRY_KEYS = ("parallel_group_key", "pinned_day", "pinned_period", "pinned_double")
+
+
+def _next_id(counters: dict[str, int], key: str) -> int:
+    """จองรหัสแบบเดียวกับ _next ของโปรแกรม · แผน คาบเสรี และหลักสูตรถูกแทนทั้งชุด รหัสเดิมจึงไม่มีอะไรให้ชน"""
+    counters[key] = counters.get(key, 0) + 1
+    return counters[key]
+
+
+def _old_pair(block: list[dict[str, Any]], t1: Any, t2: Any) -> bool:
+    """แผนเดิมของห้อง+วิชานี้เป็นสอนร่วมแบบสองแถวของครูคู่นี้ไหม (กฎเดียวกับ _fold_coteaching: แถวหนึ่งชี้ครูของอีกแถว)"""
+    for i, a in enumerate(block):
+        for b in block[i + 1:]:
+            if {a.get("teacher_id"), b.get("teacher_id")} == {t1, t2} and \
+                    (a.get("co_teacher_id") == b.get("teacher_id") or b.get("co_teacher_id") == a.get("teacher_id")):
+                return True
+    return False
+
+
+def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict[str, Any],
+                    counters: dict[str, int]) -> dict[str, Any]:
+    """รอบอัตรากำลัง → REQUIREMENTS ELECTIVE_POOLS CURRICULA และ curriculum_id ของห้อง ของเทอมใหม่ (แบบข้อ 4.2)
+
+    maps = ผลของ registry_plan: teacher_map subject_map typed_map (wl → รหัสของโปรแกรม) และ subjects (SUBJECTS ใหม่ —
+    ใช้ชื่อ/รหัสวิชาของตัวเลือกในคาบเสรี ไม่มีก็ใช้ outgoing["subjects"])
+    - แถวของรอบ → หนึ่งแถวแผน: ครู ครูสอนร่วม คาบ/สัปดาห์ของบรรทัด room_id = ห้องปฏิบัติการ pinned_double เมื่อคาบคู่ ·
+      บรรทัดที่พิมพ์รหัสเองหาวิชาจาก typed_map ด้วยรหัสของบรรทัด · แถวที่มีธง CO_UNEQUAL_FLAG ของห้อง+วิชาเดียวกัน
+      จับคู่ตามลำดับเป็นสองแถวที่ชี้กัน (โปรแกรมรวมเป็นบทเรียนเดียวเองด้วย _fold_coteaching ได้ผลเท่าแผนเดิม)
+    - สอนร่วมที่แผนเดิมเขียนเป็นสองแถวชี้กัน (ขั้นที่ 2 รวมเป็นแถวเดียวของรอบเพราะคาบเท่ากัน) → สองแถวชี้กันตามรูปเดิม
+      เมื่อครูคู่เดียวกันและรอบไม่มีแถวของครูสอนร่วมคนนั้นในห้อง+วิชานี้อยู่แล้ว — ยอดคาบรายครูของโปรแกรม (teacherLoads)
+      นับจาก teacher_id ของแถวเท่านั้น ถ้าเหลือแถวเดียว ครูสอนร่วมจะหายจากยอดทั้งที่ยังสอนเท่าเดิม (แบบข้อทดสอบ 1)
+    - ชุดคาบเสรี → หนึ่ง pool ยังไม่ลงคาบ · ตัวเลือก = หนึ่งต่อ (ตัวเลือก, ครู) เรียงครูตามรหัสแถวครูของตัวเลือก ·
+      ห้องจากครูของตัวเลือก · ตัวเลือกที่ไม่มีครูคงไว้แบบไม่มีครู (โปรแกรมนับเป็น missing_teacher_count)
+    - แถวแผนของวิชาเสรี "ตามรูปของแผนเดิม": วิชา S ของตัวเลือก × ห้อง g ของชุด ที่แผนเดิมมีแถว (g, S) และรอบไม่มีแถวของ
+      (g, S) อยู่แล้ว → หนึ่งแถวต่อแถวเดิม: ครูคนเดิมถ้ายังเป็นครูของตัวเลือกนั้น ไม่งั้นครูของตัวเลือกคนแรก · คาบและ room_id
+      เท่าแถวเดิม · ครูสอนร่วมเดิมคงไว้ถ้ายังเป็นครูของตัวเลือกนั้น · ไม่มีแถวเดิม → ชุดอย่างเดียว
+      (ขั้นที่ 2 ข้ามแถวเหล่านี้เพราะชุดนับคาบแทน แต่ยอดคาบรายครูของโปรแกรมนับจากแถวแผนเท่านั้น — ทิ้งไปยอดของครูวิชาเสรีหาย
+      · โปรแกรมรู้เองว่าแถวเหล่านี้สอนในคาบเสรีแล้ว _reqs_served_by_elective จึงไม่จัดซ้ำ)
+    - ช่องที่เว็บไม่มี (CARRY_KEYS) ยกจากแผนเดิมด้วยก้อน (ห้อง, วิชา) ทีละช่อง เมื่อทุกแถวในก้อนเห็นตรงกัน — ครูสอนร่วมแบบ
+      สองแถวจึงยังยกได้ · ไม่ตรงกัน → ว่าง และบอกใน report.not_carried · pinned_double สุดท้าย = คาบคู่จากรอบ หรือ ค่าที่ยกมา
+    - ชุดกิจกรรม → report.activity_sets เท่านั้น (โปรแกรมเก็บกิจกรรมไว้ในคาบ และตารางของเทอมใหม่เริ่มว่าง)
+    - หลักสูตร → {id, name, rows: normalise_rows(บรรทัด)} · group_curricula ให้คำตอบทุกห้องของโปรแกรม (ไม่อยู่หลักสูตรใด → None)
+    - วิชา/ครูที่ไม่อยู่ใน map (ติดเหตุของทะเบียน) หรือห้องที่ไม่มีในโปรแกรมแล้ว: ข้ามรายการที่อ้างถึง แล้วบอกใน report.skipped
+      ไม่ล้ม (หน้าดูก่อนสร้างยังต้องแสดงได้ — ผู้เรียกไม่สร้างเทอมเมื่อทะเบียนมีเหตุอยู่แล้ว)
+    รหัสใหม่จาก counters (requirement elective_pool elective_option curriculum) · ไม่แก้สิ่งที่ส่งเข้ามา
+
+    คืน {"requirements", "pools", "curricula", "group_curricula": {group_id: curriculum_id|None},
+         "elective_subjects": [รหัสวิชาของตัวเลือกในชุด — ผู้เรียกติดธงด้วย _mark_elective หลังใส่ SUBJECTS], "counters",
+         "report": {"rows", "periods", "teachers_in_plan", "pools", "pool_options" (ตัวเลข),
+                    "activity_sets": [{name, group_ids, weekly, teacher_ids}], "carried" (จำนวนแถวที่ได้ค่าที่ยกมา),
+                    "not_carried": [{group_id, subject_id, fields}] (ละห้อง+วิชา), "elective_rows" (จำนวนแถวแผนของวิชาเสรี),
+                    "skipped": [{source, ref, reason}]}}
+    """
+    counters = dict(counters)
+    teacher_map = maps.get("teacher_map") or {}
+    subject_map = maps.get("subject_map") or {}
+    typed_map = maps.get("typed_map") or {}
+    subj_rows = maps.get("subjects")
+    subj_by_id = {s["id"]: s for s in (subj_rows if subj_rows is not None else outgoing.get("subjects") or [])}
+    groups = outgoing.get("groups") or {}
+    group_by_id = dict(groups) if isinstance(groups, dict) else {g.get("id"): g for g in groups}
+    skipped: list[dict[str, Any]] = []
+
+    def skip(kind: str, ref: Any, reason: str) -> None:
+        skipped.append({"source": kind, "ref": ref, "reason": reason})
+
+    def gname(gid: Any) -> str:
+        return str((group_by_id.get(gid) or {}).get("name") or f"ห้องรหัส {gid}")
+
+    def subject_of(wl_id: Any, code: Any) -> int | None:
+        # วิชาของเว็บผ่าน subject_map · บรรทัด/ตัวเลือกที่พิมพ์รหัสเองผ่าน typed_map ด้วยรหัสหลังตัดช่องว่าง
+        if wl_id is not None:
+            return subject_map.get(wl_id)
+        return typed_map.get(_code_key(code)) if _code_key(code) else None
+
+    lines_by_id = {ln.get("id"): ln for c in source.get("curricula") or [] for ln in c.get("lines") or []}
+
+    # ── แถวของรอบ ──────────────────────────────────────────────────────────
+    requirements: list[dict[str, Any]] = []
+    round_cells: set[tuple] = set()
+    unequal: dict[tuple, list[dict[str, Any]]] = {}
+    for r in source.get("rows") or []:
+        line = lines_by_id.get(r.get("line_id")) or {}
+        wl_sid = r.get("subject_id") if r.get("subject_id") is not None else line.get("subject_id")
+        code = line.get("code") if line else r.get("code")
+        gid = r.get("group_id")
+        where = f"แถวของรอบ {gname(gid)} {_code_key(code) or ''}".rstrip()
+        sid = subject_of(wl_sid, code)
+        if sid is None:
+            skip("row", r.get("id"), f"{where}: วิชานี้ยังไม่มีในโปรแกรมจัดตาราง (ติดเหตุของทะเบียนวิชา) จึงไม่ได้ใส่ในแผน")
+            continue
+        round_cells.add((gid, sid))
+        if gid not in group_by_id:
+            skip("row", r.get("id"), f"{where}: ไม่พบห้องเรียนรหัส {gid} ในโปรแกรมจัดตารางแล้ว จึงไม่ได้ใส่ในแผน")
+            continue
+        missing = [t for t in (r.get("teacher_id"), r.get("co_teacher_id")) if t is not None and t not in teacher_map]
+        if missing:
+            skip("row", r.get("id"), f"{where}: ครูรหัส {missing[0]} ของเว็บยังไม่มีในโปรแกรมจัดตาราง "
+                                     "(ติดเหตุของทะเบียนครู) จึงไม่ได้ใส่ในแผน")
+            continue
+        co = teacher_map.get(r.get("co_teacher_id")) if r.get("co_teacher_id") is not None else None
+        row: dict[str, Any] = {
+            "id": None, "group_id": gid, "subject_id": sid,
+            # 0 = ยังไม่ได้เลือกครู แบบที่ /api/timetable/requirements/bulk เก็บ (None == None ทำให้ _fold_coteaching
+            # พับสองแถวที่ไม่มีครูเป็นบทเรียนเดียว) — รอบที่ผ่านเกณฑ์มีครูทุกแถวอยู่แล้ว
+            "teacher_id": teacher_map.get(r.get("teacher_id")) or 0,
+            "weekly_count": int(r.get("weekly") or 0), "parallel_group_key": None,
+            "co_teacher_id": co, "room_id": r.get("lab_room_id")}
+        if r.get("is_double"):
+            row["pinned_double"] = True
+        requirements.append(row)
+        if r.get("flag") == CO_UNEQUAL_FLAG:
+            unequal.setdefault((gid, sid), []).append(row)
+    for halves in unequal.values():
+        for a, b in zip(halves[0::2], halves[1::2]):
+            for x, y in ((a, b), (b, a)):
+                if x["co_teacher_id"] is None and y["teacher_id"] and y["teacher_id"] != x["teacher_id"]:
+                    x["co_teacher_id"] = y["teacher_id"]
+    old_by_cell: dict[tuple, list[dict[str, Any]]] = {}
+    for r in outgoing.get("requirements") or []:
+        old_by_cell.setdefault((r.get("group_id"), r.get("subject_id")), []).append(r)
+    teaching: dict[tuple, set[int]] = {}
+    for row in requirements:
+        teaching.setdefault((row["group_id"], row["subject_id"]), set()).add(row["teacher_id"])
+    shaped: list[dict[str, Any]] = []
+    for row in requirements:
+        shaped.append(row)
+        cell, t, co = (row["group_id"], row["subject_id"]), row["teacher_id"], row["co_teacher_id"]
+        if co and t and co != t and co not in teaching[cell] and _old_pair(old_by_cell.get(cell, []), t, co):
+            teaching[cell].add(co)
+            shaped.append({**row, "teacher_id": co, "co_teacher_id": t})
+    requirements = shaped
+    for row in requirements:
+        row["id"] = _next_id(counters, "requirement")
+
+    # ── ชุดคาบเสรี / ชุดกิจกรรม ────────────────────────────────────────────
+    options_of: dict[Any, list[dict[str, Any]]] = {}
+    for o in source.get("options") or []:
+        options_of.setdefault(o.get("set_id"), []).append(o)
+
+    def option_teachers(o: dict[str, Any], where: str) -> list[tuple[int, Any]]:
+        """[(ครูของโปรแกรม, ห้อง)] ของตัวเลือก เรียงตามรหัสแถวครูของตัวเลือก (= ลำดับที่ใส่) ไม่ซ้ำคน"""
+        out: list[tuple[int, Any]] = []
+        entries = sorted(o.get("teachers") or [], key=lambda t: (t.get("id") is None, t.get("id") or 0))
+        for t in entries:
+            wl_tid = t.get("teacher_id")
+            if wl_tid is None:
+                continue
+            tid = teacher_map.get(wl_tid)
+            if tid is None:
+                skip("option_teacher", t.get("id"), f"{where}: ครูรหัส {wl_tid} ของเว็บยังไม่มีในโปรแกรมจัดตาราง "
+                                                    "(ติดเหตุของทะเบียนครู) จึงไม่ได้ใส่เป็นครูของตัวเลือก")
+                continue
+            if all(tid != have for have, _room in out):
+                out.append((tid, t.get("room_id")))
+        return out
+
+    pools: list[dict[str, Any]] = []
+    activity_sets: list[dict[str, Any]] = []
+    cell_teachers: dict[tuple, list[int]] = {}      # (ห้อง, วิชา) ของชุดคาบเสรี → ครูของตัวเลือกวิชานั้น
+    for st in source.get("sets") or []:
+        where = f"ชุด {st.get('name') or ''}".rstrip()
+        gids = list(st.get("group_ids") or [])
+        if st.get("kind") == "activity":
+            tids: list[int] = []
+            for o in options_of.get(st.get("id"), []):
+                tids += [t for t, _room in option_teachers(o, where) if t not in tids]
+            activity_sets.append({"name": str(st.get("name") or ""), "group_ids": gids,
+                                  "weekly": int(st.get("weekly") or 0), "teacher_ids": tids})
+            continue
+        if st.get("kind") != "elective":
+            continue
+        pool: dict[str, Any] = {"id": _next_id(counters, "elective_pool"), "name": str(st.get("name") or "คาบเสรีใหม่"),
+                                "raw_group": "", "group_ids": gids, "weekly": int(st.get("weekly") or 0),
+                                "is_double": bool(st.get("is_double")), "day": None, "period": None, "options": []}
+        for o in options_of.get(st.get("id"), []):
+            sid = subject_of(o.get("subject_id"), o.get("code"))
+            if sid is None:
+                skip("option", o.get("id"), f"{where}: วิชา {_code_key(o.get('code')) or o.get('name') or ''} "
+                                            "ยังไม่มีในโปรแกรมจัดตาราง (ติดเหตุของทะเบียนวิชา) จึงไม่ได้ใส่เป็นตัวเลือก")
+                continue
+            subj = subj_by_id.get(sid) or {}
+            teachers = option_teachers(o, where)
+            for tid, room in teachers or [(None, None)]:
+                if any(x["subject_id"] == sid and x["teacher_id"] == tid for x in pool["options"]):
+                    continue
+                pool["options"].append({"key": _next_id(counters, "elective_option"), "subject_id": sid,
+                                        "teacher_id": tid, "label": subj.get("name") or o.get("name") or "",
+                                        "code": subj.get("code") or o.get("code"), "room_id": room})
+            for gid in gids:
+                have = cell_teachers.setdefault((gid, sid), [])
+                have += [t for t, _room in teachers if t not in have]
+        pools.append(pool)
+
+    # ── แถวแผนของวิชาเสรี: ตามรูปของแผนเดิม ─────────────────────────────────
+    elective_rows = 0
+    for (gid, sid), teachers in cell_teachers.items():
+        if (gid, sid) in round_cells or gid not in group_by_id:
+            continue    # รอบมีแถวของห้อง+วิชานี้อยู่แล้ว (เขียนอีกแถวคือสอนซ้ำ) · ห้องที่ไม่มีแล้วไม่มีแถวเดิมให้ตาม
+        for old in old_by_cell.get((gid, sid), []):
+            if not teachers:
+                skip("elective_row", old.get("id"), f"แถวแผนเดิม {gname(gid)} วิชารหัส {sid}: ตัวเลือกของวิชานี้ในชุด"
+                                                     "คาบเสรียังไม่มีครูในโปรแกรมจัดตาราง จึงไม่ได้ใส่ในแผน")
+                continue
+            tid = old.get("teacher_id") if old.get("teacher_id") in teachers else teachers[0]
+            co = old.get("co_teacher_id")
+            requirements.append({
+                "id": _next_id(counters, "requirement"), "group_id": gid, "subject_id": sid, "teacher_id": tid,
+                "weekly_count": old.get("weekly_count"), "parallel_group_key": None,
+                "co_teacher_id": co if co in teachers and co != tid else None, "room_id": old.get("room_id")})
+            elective_rows += 1
+
+    # ── ยกช่องที่เว็บไม่มีจากแผนเดิม ด้วยก้อน (ห้อง, วิชา) ทีละช่อง ─────────────────
+    carried = 0
+    not_carried: list[dict[str, Any]] = []
+    for row in requirements:
+        block = old_by_cell.get((row["group_id"], row["subject_id"]))
+        if not block:
+            continue        # ห้อง+วิชาใหม่ ไม่มีอะไรให้ยก
+        got, lost = False, []
+        for k in CARRY_KEYS:
+            seen = {bool(r.get(k)) if k == "pinned_double" else r.get(k) for r in block}
+            if len(seen) != 1:
+                lost.append(k)
+                continue
+            v = seen.pop()
+            if k == "parallel_group_key":
+                row[k] = v
+            elif k == "pinned_double":
+                if v:
+                    row[k] = True
+            elif v is not None:
+                row[k] = v
+            got = got or (bool(v) if k == "pinned_double" else v is not None)    # วันจันทร์คือ pinned_day 0
+        carried += got
+        miss = {"group_id": row["group_id"], "subject_id": row["subject_id"], "fields": lost}
+        if lost and miss not in not_carried:    # รายการละห้อง+วิชา แม้ก้อนนั้นได้สองแถว (สอนร่วมสองแถว)
+            not_carried.append(miss)
+
+    # ── หลักสูตร ────────────────────────────────────────────────────────────
+    curricula: list[dict[str, Any]] = []
+    group_curricula: dict[Any, int | None] = {gid: None for gid in group_by_id}
+    for c in source.get("curricula") or []:
+        rows_in = []
+        for ln in c.get("lines") or []:
+            sid = subject_of(ln.get("subject_id"), ln.get("code"))
+            if sid is None:
+                skip("line", ln.get("id"), f"หลักสูตร {c.get('name') or ''}: วิชา {_code_key(ln.get('code'))} ยังไม่มีใน"
+                                           "โปรแกรมจัดตาราง (ติดเหตุของทะเบียนวิชา) จึงไม่ได้ใส่ในหลักสูตร")
+                continue
+            rows_in.append({"subject_id": sid, "weekly_count": int(ln.get("weekly") or 0)})
+        cid = _next_id(counters, "curriculum")
+        curricula.append({"id": cid, "name": str(c.get("name") or ""), "rows": _curriculum.normalise_rows(rows_in)})
+        for gid in c.get("group_ids") or []:
+            if gid in group_curricula and group_curricula[gid] is None:
+                group_curricula[gid] = cid
+
+    teachers_in_plan = {t for r in requirements for t in (r["teacher_id"], r["co_teacher_id"]) if t}
+    report = {"rows": len(requirements), "periods": sum(int(r["weekly_count"] or 0) for r in requirements),
+              "teachers_in_plan": len(teachers_in_plan), "pools": len(pools),
+              "pool_options": sum(len(p["options"]) for p in pools), "activity_sets": activity_sets,
+              "carried": carried, "not_carried": not_carried, "elective_rows": elective_rows, "skipped": skipped}
+    return {"requirements": requirements, "pools": pools, "curricula": curricula, "group_curricula": group_curricula,
+            "elective_subjects": sorted({o["subject_id"] for p in pools for o in p["options"]}),
+            "counters": counters, "report": report}
