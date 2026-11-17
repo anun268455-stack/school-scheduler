@@ -96,6 +96,53 @@ def test_prefill_copies_the_flag_of_an_unequal_pair_and_fills_duplicate_lines_in
     assert one == {(7, 11): two[(7, 11)]}
 
 
+def _lkw(line_id, gid, sched_sid, weekly):
+    return {**_lk(line_id, gid, sched_sid), "weekly": weekly}
+
+
+def test_prefill_unequal_pair_follows_weekly_in_both_orders():
+    # หลักสูตรตั้งต้น (wl_curricula_from_proposal) เรียงบรรทัดซ้ำของวิชาเดียวกันตามคาบ — แถวแผนที่คาบมากกว่ามาก่อนในแผน
+    # เคยทำให้ครูสองคนสลับคาบกันตั้งแต่เปิดรอบ (ครู 103 สอน 2 คาบได้บรรทัด 1 คาบ) · line_keys มีคาบของบรรทัดแล้ว
+    # จับคู่คาบเท่ากันก่อน — ได้ผลเดียวกันไม่ว่าคู่นั้นเรียงแบบไหนในแผน
+    flag = mock_api.WL_CO_UNEQUAL_FLAG
+    lines = [_lkw(7, 11, 1, 1), _lkw(8, 11, 1, 2)]            # บรรทัด 1 คาบก่อน 2 คาบ (ตามคาบ)
+    want = {(7, 11): {"teacher_id": 104, "co_teacher_id": None, "lab_room_id": None, "flag": flag},
+            (8, 11): {"teacher_id": 103, "co_teacher_id": None, "lab_room_id": None, "flag": flag}}
+    big_first = _prop([_row(11, 1, 103, flag=flag, weekly=2), _row(11, 1, 104, flag=flag, weekly=1)])
+    small_first = _prop([_row(11, 1, 104, flag=flag, weekly=1), _row(11, 1, 103, flag=flag, weekly=2)])
+    for prop in (big_first, small_first):
+        got = mock_api.wl_prefill(prop, lines, [], SUBJECT_IDS)["rows"]
+        assert got == want, got
+    # คาบเท่ากันทุกแถว → ตามลำดับเหมือนเดิม
+    same = _prop([_row(11, 1, 103, weekly=2), _row(11, 1, 104, weekly=2)])
+    got = mock_api.wl_prefill(same, [_lkw(7, 11, 1, 2), _lkw(8, 11, 1, 2)], [], SUBJECT_IDS)["rows"]
+    assert (got[(7, 11)]["teacher_id"], got[(8, 11)]["teacher_id"]) == (103, 104), got
+    # คาบของบรรทัดไม่ตรงกับแผน (admin แก้หลักสูตรภายหลัง) หรือไม่ได้ส่งคาบมา → ตามลำดับเหมือนเดิม
+    for keys in ([_lkw(7, 11, 1, 3), _lkw(8, 11, 1, 2)], [_lk(7, 11, 1), _lk(8, 11, 1)]):
+        got = mock_api.wl_prefill(big_first, keys, [], SUBJECT_IDS)["rows"]
+        assert (got[(7, 11)]["teacher_id"], got[(8, 11)]["teacher_id"]) == (103, 104), (keys, got)
+    # แถวแผนที่ไม่มีครูยังกินบรรทัดคาบของมัน — ครูของแถวอื่นไม่เลื่อนมาลงบรรทัดผิด
+    hole = _prop([_row(11, 1, None, weekly=2), _row(11, 1, 104, weekly=1)])
+    got = mock_api.wl_prefill(hole, lines, [], SUBJECT_IDS)["rows"]
+    assert set(got) == {(7, 11)} and got[(7, 11)]["teacher_id"] == 104, got
+
+
+def test_open_round_unequal_pair_gets_teachers_by_weekly():
+    # route จริง: บรรทัดซ้ำของวิชาเดียวกันในห้อง (1 คาบ แล้ว 2 คาบ) + คู่สอนร่วมคาบไม่เท่าที่แถวแรกในแผนคาบมากกว่า
+    db, t = _rdb()
+    c = _call(db, ADMIN, mock_api.wl_curricula_create, REQ,
+              {"year": 2570, "semester": 1, "name": "ม.1/3", "group_ids": [3]})
+    one, two = (_call(db, ADMIN, mock_api.wl_curriculum_lines_create, REQ,
+                      {"curriculum_id": c["id"], "code": "ว21102", "weekly": w}) for w in (1, 2))
+    with _timetable():                       # PLAN: ห้อง 3 วิชา 902 ครู 505 2 คาบ (ก่อน) · ครู 506 1 คาบ (ทีหลัง)
+        p = _call(db, ADMIN, mock_api.wl_rounds_preview, REQ, year="2570", semester="1")
+        rnd = _call(db, ADMIN, mock_api.wl_rounds_create, REQ, {"year": 2570, "semester": 1})
+    by = {r["line_id"]: r for r in _rows(db, round_id=rnd["id"])}
+    assert (by[one["id"]]["teacher_id"], by[two["id"]]["teacher_id"]) == (_wl_teacher(db, 506), _wl_teacher(db, 505))
+    assert {r["flag"] for r in by.values()} == {mock_api.WL_CO_UNEQUAL_FLAG}
+    assert p["prefilled_rows"] == 2
+
+
 def test_prefill_row_without_teacher_in_the_plan_is_left_empty():
     prop = _prop([_row(11, 1, None), _row(11, 2, 105)])
     out = mock_api.wl_prefill(prop, [_lk(7, 11, 1), _lk(8, 11, 2)], [], SUBJECT_IDS)
@@ -198,7 +245,9 @@ def _sql_of(db, fn, *a):
     return [q for q, _ in cur.log]
 
 
-ROUND_KEYS = {"id", "year", "semester", "label", "status", "opened_at", "closed_at", "counts"}
+# ขั้นที่ 3: รอบบอกว่าส่งเข้าโปรแกรมจัดตารางแล้วหรือยัง (exported_*) และรายงานผลของการส่ง
+ROUND_KEYS = {"id", "year", "semester", "label", "status", "opened_at", "closed_at", "counts",
+              "exported_at", "exported_label", "export_report"}
 
 
 def test_preview_writes_nothing_and_requires_curriculum():

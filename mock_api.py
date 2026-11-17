@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 from contextvars import ContextVar
 import substitution as _SUB
 import curriculum as _CUR
+import term_from_round as _TFR    # สร้างเทอมใหม่จากรอบอัตรากำลัง — ตรรกะแปลงล้วน (ไม่ import โมดูลนี้)
 
 app = FastAPI(title="School Scheduler Mock API v3")
 
@@ -13776,6 +13777,9 @@ def _terms_schema(cur) -> None:
 #   (wl_rounds_cancel ลบลูกเองทีละตารางในธุรกรรมเดียว) ถ้าวันหนึ่งมีคนลบรอบที่มีงานแล้วด้วยมือ ให้ล้มดีกว่าหายเงียบ
 # ทั้งหมดเป็นตารางใหม่ ไม่แตะดัชนีของตารางที่มีข้อมูลจริงอยู่แล้ว (สเปกขั้นที่ 2 ข้อ 4.2)
 # ตารางของรอบยังไม่เคยขึ้นเว็บจริง จึงแก้ CREATE TABLE ตรง ๆ ได้โดยไม่ต้องย้ายข้อมูล
+# ขั้นที่ 3 (สร้างเทอมใหม่จากรอบ) เพิ่มคอลัมน์ส่งออกให้ wl_rounds ด้วย ALTER TABLE … ADD COLUMN IF NOT EXISTS ท้ายชุดนี้:
+# ฐานของโรงเรียนที่ขึ้นขั้นที่ 1–2 แล้วมีตาราง wl_rounds อยู่ก่อน CREATE TABLE IF NOT EXISTS จึงไม่เพิ่มคอลัมน์ให้ ·
+# คอลัมน์ว่างได้ ไม่มี DEFAULT/NOT NULL (ไม่เขียนทับแถวเดิม) และไม่มี index ใหม่ · รอบที่ส่งแล้ว = exported_at ไม่ว่าง
 _WL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS wl_codes (
     id            bigserial PRIMARY KEY,
@@ -13925,7 +13929,11 @@ CREATE TABLE IF NOT EXISTS wl_dept_status (
     PRIMARY KEY (round_id, department_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS wl_rounds_one_open
-    ON wl_rounds ((status <> 'closed')) WHERE status <> 'closed'
+    ON wl_rounds ((status <> 'closed')) WHERE status <> 'closed';
+ALTER TABLE wl_rounds ADD COLUMN IF NOT EXISTS exported_at timestamptz;
+ALTER TABLE wl_rounds ADD COLUMN IF NOT EXISTS exported_term_id bigint;
+ALTER TABLE wl_rounds ADD COLUMN IF NOT EXISTS exported_label text;
+ALTER TABLE wl_rounds ADD COLUMN IF NOT EXISTS export_report jsonb
 """
 
 
@@ -14583,9 +14591,26 @@ def _wl_update_row(cur, table: str, cols: tuple[str, ...], row_id: int,
     return dict(zip(cols, row))
 
 
+# ── ล็อกทะเบียน (ขั้นที่ 3 แบบข้อ 4.4 ขั้น 2) ───────────────────────────────────────────────────
+# การสร้างเทอมใหม่จากรอบ (POST /api/terms + round_id) ใส่ครู/วิชาใหม่ลง TEACHERS/SUBJECTS ในหน่วยความจำ แล้วเขียน
+# sched_id กลับลงทะเบียนของเว็บ ทั้งหมดในธุรกรรมเดียวที่ COMMIT ทีหลัง — ระหว่างนั้นการเขียนทะเบียนของเว็บ (เพิ่ม · แก้ ·
+# ดึงจากโปรแกรม) ไม่ได้ล็อกแถวรอบ ถ้าปล่อยให้ทำพร้อมกัน ปุ่มดึงครูจะเห็นครูใหม่ที่ยังไม่ COMMIT ในหน่วยความจำ แล้วเขียนแถว
+# ที่ชี้ไปครูที่ถูกย้อนทิ้ง (หรือชน UNIQUE ของ sched_id กับการเขียนกลับ) · ทุก route ที่เขียน wl_teachers/wl_subjects
+# จึงถือ advisory lock ระดับธุรกรรมตัวเดียวกันเป็น **คำสั่งแรก** (ก่อนตรวจสิทธิ์ ก่อนอ่านตัวแปรของโปรแกรม และก่อนเขียน
+# ตาราง — ลำดับล็อกเดียวกับการสร้างเทอม: ล็อกทะเบียนก่อนแถวรอบ จึงไม่ deadlock) · ปล่อยเองตอน COMMIT/ROLLBACK
+# คีย์คงที่ = "WLREG" ในรหัส ASCII (0x574C524547) ไม่ซ้ำกับ advisory lock อื่น (โค้ดนี้ไม่มีตัวอื่น)
+WL_REGISTRY_LOCK_KEY: int = 0x574C524547
+
+
+def _wl_registry_lock(cur) -> None:
+    """ถือล็อกทะเบียนจนจบธุรกรรม — รอถ้ามีคนถืออยู่ (เช่นการสร้างเทอมใหม่จากรอบที่ยังไม่ COMMIT)"""
+    cur.execute("SELECT pg_advisory_xact_lock(%s)", (WL_REGISTRY_LOCK_KEY,))
+
+
 @app.post("/api/workload/teachers")
 def wl_teachers_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
     with _wl_db() as cur:
+        _wl_registry_lock(cur)
         wl_require_admin(request, cur)
         vals = wl_check_teacher(wl_clean_fields(body, WL_TEACHER_FIELDS), True)
         return _wl_insert_row(cur, "wl_teachers", _WL_TEACHER_COLS, vals)
@@ -14594,6 +14619,7 @@ def wl_teachers_create(request: Request, body: Any = Body(None)) -> dict[str, An
 @app.put("/api/workload/teachers/{teacher_id}")
 def wl_teachers_update(teacher_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
     with _wl_db() as cur:
+        _wl_registry_lock(cur)
         wl_require_admin(request, cur)
         vals = wl_check_teacher(wl_clean_fields(body, WL_TEACHER_FIELDS), False)
         return _wl_update_row(cur, "wl_teachers", _WL_TEACHER_COLS, teacher_id, vals)
@@ -14630,6 +14656,7 @@ def _wl_refuse_code_taken(cur, code: str, subject_id: int | None) -> None:
 @app.post("/api/workload/subjects")
 def wl_subjects_create(request: Request, body: Any = Body(None)) -> dict[str, Any]:
     with _wl_db() as cur:
+        _wl_registry_lock(cur)
         wl_require_admin(request, cur)
         vals = wl_check_subject(wl_clean_fields(body, WL_SUBJECT_FIELDS), True)
         _wl_refuse_code_taken(cur, vals["code"], None)
@@ -14639,6 +14666,7 @@ def wl_subjects_create(request: Request, body: Any = Body(None)) -> dict[str, An
 @app.put("/api/workload/subjects/{subject_id}")
 def wl_subjects_update(subject_id: int, request: Request, body: Any = Body(None)) -> dict[str, Any]:
     with _wl_db() as cur:
+        _wl_registry_lock(cur)
         wl_require_admin(request, cur)
         vals = wl_check_subject(wl_clean_fields(body, WL_SUBJECT_FIELDS), False)
         if "code" in vals:
@@ -14714,31 +14742,37 @@ def _wl_import_rows(cur, kind: str, source: list[dict[str, Any]], write: bool) -
             "skipped": len(plan["skipped"]) + clashed}
 
 
-def _wl_import_from_scheduler(request: Request, kind: str, source: list[dict[str, Any]],
+def _wl_import_from_scheduler(request: Request, kind: str, source: Callable[[], list[dict[str, Any]]],
                               write: bool) -> dict[str, int]:
-    """route ดึงครูหรือวิชา: ตรวจ admin และด่านข้อมูลโรงเรียนยังไม่โหลด แล้วให้ _wl_import_rows ทำ"""
+    """route ดึงครูหรือวิชา: ตรวจ admin และด่านข้อมูลโรงเรียนยังไม่โหลด แล้วให้ _wl_import_rows ทำ
+
+    source เป็นฟังก์ชันที่คืนลิสต์ของโปรแกรม (อ่านตอนเรียก ไม่ใช่ตอนสร้างคำขอ) — ปุ่มดึง (write) อ่านหลังถือล็อกทะเบียน
+    ซึ่งรอให้การสร้างเทอมใหม่จากรอบที่กำลังทำอยู่ COMMIT หรือย้อนก่อน จึงไม่เห็นครู/วิชาที่ยังไม่ COMMIT · ดูก่อนดึงไม่เขียน
+    จึงไม่ถือล็อก"""
     with _wl_db() as cur:
+        if write:
+            _wl_registry_lock(cur)
         wl_require_admin(request, cur)
         _wl_import_guard(_WL_IMPORTS[kind][1])
-        return _wl_import_rows(cur, kind, source, write)
+        return _wl_import_rows(cur, kind, source(), write)
 
 
 @app.get("/api/workload/teachers/import-from-scheduler")
 def wl_teachers_import_preview(request: Request) -> dict[str, int]:
     """ดูก่อนดึง: ตัวเลขที่ POST จะทำ โดยไม่เขียนอะไรเลย"""
-    return _wl_import_from_scheduler(request, "teachers", TEACHERS, write=False)
+    return _wl_import_from_scheduler(request, "teachers", lambda: TEACHERS, write=False)
 
 
 @app.post("/api/workload/teachers/import-from-scheduler")
 def wl_teachers_import(request: Request) -> dict[str, int]:
     """คัดลอกครูจากโปรแกรมจัดตารางครั้งแรก · อ่าน TEACHERS อย่างเดียว ไม่เขียน"""
-    return _wl_import_from_scheduler(request, "teachers", TEACHERS, write=True)
+    return _wl_import_from_scheduler(request, "teachers", lambda: TEACHERS, write=True)
 
 
 @app.get("/api/workload/subjects/import-from-scheduler")
 def wl_subjects_import_preview(request: Request) -> dict[str, int]:
     """ดูก่อนดึงวิชา: ตัวเลขที่ POST จะทำ โดยไม่เขียนอะไรเลย"""
-    return _wl_import_from_scheduler(request, "subjects", SUBJECTS, write=False)
+    return _wl_import_from_scheduler(request, "subjects", lambda: SUBJECTS, write=False)
 
 
 @app.post("/api/workload/subjects/import-from-scheduler")
@@ -14747,7 +14781,7 @@ def wl_subjects_import(request: Request) -> dict[str, int]:
 
     ไม่มีปุ่มนี้ วิชาที่พิมพ์เองทุกแถวจะไม่มี sched_id และกลายเป็นวิชาซ้ำในขั้นที่ 3
     """
-    return _wl_import_from_scheduler(request, "subjects", SUBJECTS, write=True)
+    return _wl_import_from_scheduler(request, "subjects", lambda: SUBJECTS, write=True)
 
 
 # ── ขั้นที่ 2: แผนการสอน คาบเสรี และตาราง → แถวและชุดของรอบใหม่ (ฟังก์ชันล้วน) ──────
@@ -15294,11 +15328,17 @@ def _wl_timetable_source(cur) -> dict[str, Any]:
     for wid, sched, dept in cur.fetchall():
         subject_ids[sched] = wid
         subject_depts[wid] = dept
+    return {**_wl_program_copy(), "teacher_ids": teacher_ids, "subject_ids": subject_ids,
+            "subject_depts": subject_depts}
+
+
+def _wl_program_copy() -> dict[str, Any]:
+    """ส่วนของโปรแกรมจัดตารางใน src ของ _wl_timetable_source (สำเนาลึก ไม่อ่านฐานข้อมูล) — ใช้ร่วมกับ _term_outgoing
+    อ่านตัวแปรกลางด้วยชื่อตอนเรียก (บางตัวถูก rebind ที่อื่น เช่น SLOTS REQUIREMENTS TEACHERS SUBJECTS)"""
     return {"requirements": _copy.deepcopy(REQUIREMENTS), "pools": _copy.deepcopy(ELECTIVE_POOLS),
             "slots": _copy.deepcopy(SLOTS),
             "sched_subjects": {s.get("id"): s for s in _copy.deepcopy(SUBJECTS)},
             "groups": {g.get("id"): g for g in _copy.deepcopy(_flat_groups())},
-            "teacher_ids": teacher_ids, "subject_ids": subject_ids, "subject_depts": subject_depts,
             "served": set(_reqs_served_by_elective())}
 
 
@@ -15767,8 +15807,10 @@ def wl_curricula_seed(request: Request, body: Any = Body(None)) -> dict[str, Any
     "timetable" ดึงครูและวิชาก่อน (ตัวเดียวกับปุ่มดึง) แล้วแปลงแผนการสอน+คาบเสรี+ตารางด้วย wl_round_proposal
     · ปฏิเสธ 503 ตอนข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ: ตอนนั้นสิ่งที่อยู่ในหน่วยความจำคือข้อมูลตั้งต้นที่มากับโค้ด
     "copy" อ่านแต่ตารางของเว็บนี้ จึงไม่ติดด่านนั้น · ภาคเรียนที่มีหลักสูตรแล้ว 409 (จะได้หลักสูตรซ้ำสองชุด)
+    ถือล็อกทะเบียนเป็นคำสั่งแรก: "timetable" ดึงครู/วิชาจากโปรแกรมด้วยตัวเดียวกับปุ่มดึง (ดู WL_REGISTRY_LOCK_KEY)
     """
     with _wl_db() as cur:
+        _wl_registry_lock(cur)
         sess = wl_require_admin(request, cur)
         f = wl_clean_fields(body, WL_SEED_FIELDS)
         year, semester = _wl_term_args(f.get("year"), f.get("semester"))
@@ -16258,7 +16300,8 @@ WL_ROUND_CLOSE_FIELDS: frozenset[str] = frozenset({"confirm_label"})
 WL_ROUND_STATUS_TEXT: dict[str, str] = {"preparing": "กำลังเตรียม ยังไม่เปิดให้กลุ่มสาระกรอก",
                                         "filling": "เปิดให้กลุ่มสาระกรอกอยู่", "closed": "ปิดแล้ว"}
 WL_ROUND_MISSING: str = "ไม่พบรอบอัตรากำลังนี้"
-_WL_ROUND_COLS = ("id", "year", "semester", "label", "status", "unconverted", "opened_at", "closed_at")
+_WL_ROUND_COLS = ("id", "year", "semester", "label", "status", "unconverted", "opened_at", "closed_at",
+                  "exported_at", "exported_term_id", "exported_label", "export_report")
 # แถวของรอบในรูป "แถว (ของรอบ)" ของสัญญา = (ชื่อช่อง, นิพจน์ SQL) · ช่องวิชาอ่านจากบรรทัดหลักสูตร ไม่ได้เก็บในแถว
 # group_name ไม่อยู่ในนี้: ห้องเป็นทะเบียนของโปรแกรมจัดตาราง เติมตอนส่งออกด้วย _wl_round_row_out
 _WL_ROUND_ROW_SELECT: tuple[tuple[str, str], ...] = (
@@ -16272,6 +16315,22 @@ _WL_ROUND_ROW_SELECT: tuple[tuple[str, str], ...] = (
 _WL_CURRICULUM_TABLES = "wl_curricula, wl_curriculum_groups, wl_curriculum_lines, wl_term_sets, wl_term_set_options"
 
 
+def _wl_prefill_pairs(keys: list[dict[str, Any]],
+                      hits: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """จับคู่บรรทัดของห้อง+วิชาเดียวกัน (keys ตามลำดับหลักสูตร) กับแถวแผนของห้อง+วิชานั้น (hits ตามลำดับแผน) — ดู wl_prefill
+
+    คาบของบรรทัดตรงกับคาบของแถวแผนแบบนับซ้ำพอดี → คู่คาบเท่ากัน ตามลำดับภายในคาบเดียวกัน (คาบเท่ากันทุกแถว = ตามลำดับ
+    เหมือนเดิม) · ไม่งั้นตามลำดับ (บรรทัดที่ n กับแถวแผนที่ n) · บรรทัดที่เกินจำนวนแถวแผนไม่มีคู่"""
+    weekly = [k.get("weekly") for k in keys]
+    planned = [int(p.get("weekly") or 0) for p in hits]
+    if None in weekly or sorted(weekly) != sorted(planned):
+        return list(zip(keys, hits))
+    left: dict[int, list[dict[str, Any]]] = {}
+    for w, p in zip(planned, hits):
+        left.setdefault(w, []).append(p)
+    return [(k, left[w].pop(0)) for k, w in zip(keys, weekly)]
+
+
 def wl_prefill(proposal: dict[str, Any], line_keys: list[dict[str, Any]], option_keys: list[dict[str, Any]],
                subject_ids: dict[Any, Any]) -> dict[str, Any]:
     """ครูเทอมก่อนของแถวและตัวเลือกของรอบใหม่ (ฟังก์ชันล้วน · ไม่แก้ input และผลเป็นของใหม่ทั้งหมด)
@@ -16283,7 +16342,11 @@ def wl_prefill(proposal: dict[str, Any], line_keys: list[dict[str, Any]], option
 
     แถว: (ห้อง, วิชา) ตรงกัน → ครูผู้สอน ครูสอนร่วม ห้องปฏิบัติการ และ flag ของแผนเดิม · ห้องเดียวกันมีวิชาเดียวกันหลายแถว
     (หลักสูตรคงไว้หลายบรรทัด หรือคู่สอนร่วมที่คาบไม่เท่ากัน) จับคู่ตามลำดับ: แถวแผนที่หนึ่งกับบรรทัดที่หนึ่งของ line_keys
-    แถวแผนที่ไม่มีครูเลยไม่ใส่อะไร แต่ยังนับลำดับ — ไม่อย่างนั้นครูของแถวถัดไปเลื่อนมาลงบรรทัดผิด
+    — ยกเว้นเมื่อคาบของบรรทัดชุดนั้น (line_keys[].weekly) ตรงกับคาบของแถวแผนแบบนับซ้ำพอดี (หลักสูตรตั้งต้นจากแผนนี้):
+    จับคู่บรรทัดกับแถวแผนที่คาบเท่ากัน ตามลำดับภายในคาบเดียวกัน · เหตุ: wl_curricula_from_proposal เรียงบรรทัดซ้ำตามคาบ
+    แต่แผนเรียงตามที่ใส่ คู่สอนร่วมที่แถวแรกคาบมากกว่าเคยได้ครูสลับคาบกันตั้งแต่เปิดรอบ · คาบไม่ตรง (admin แก้หลักสูตร
+    ภายหลัง) หรือไม่ได้ส่งคาบมา → ตามลำดับแบบเดิม
+    แถวแผนที่ไม่มีครูเลยไม่ใส่อะไร แต่ยังกินบรรทัดของมัน — ไม่อย่างนั้นครูของแถวถัดไปเลื่อนมาลงบรรทัดผิด
     ตัวเลือก: วิชาเดียวกัน และห้องของชุดในรอบซ้อนกับห้องของชุดในผลแปลงอย่างน้อยหนึ่งห้อง → ครูทุกคนของตัวเลือกนั้น
     ไม่ซ้ำคน (ห้องของครูคนนั้นเอาที่พบก่อน ถ้าว่างเอาของที่พบทีหลัง) · ไม่มีครูสักคน = ไม่มีรายการ
     คืน {"rows": {(line_id, group_id): {teacher_id, co_teacher_id, lab_room_id, flag}},
@@ -16295,21 +16358,18 @@ def wl_prefill(proposal: dict[str, Any], line_keys: list[dict[str, Any]], option
         sched = sched_of.get(r.get("subject_id"))
         if sched is not None:
             plan.setdefault((r.get("group_id"), sched), []).append(r)
-    used: dict[tuple, int] = {}
-    rows: dict[tuple, dict[str, Any]] = {}
+    keys_of: dict[tuple, list[dict[str, Any]]] = {}
     for k in line_keys:
-        if k.get("sched_subject_id") is None:
-            continue
-        cell = (k.get("group_id"), k["sched_subject_id"])
-        nth = used.get(cell, 0)
-        used[cell] = nth + 1
-        hits = plan.get(cell, [])
-        if nth >= len(hits) or (hits[nth].get("teacher_id") is None and hits[nth].get("co_teacher_id") is None):
-            continue
-        p = hits[nth]
-        rows[(k["line_id"], k["group_id"])] = {"teacher_id": p.get("teacher_id"),
-                                               "co_teacher_id": p.get("co_teacher_id"),
-                                               "lab_room_id": p.get("lab_room_id"), "flag": p.get("flag")}
+        if k.get("sched_subject_id") is not None:
+            keys_of.setdefault((k.get("group_id"), k["sched_subject_id"]), []).append(k)
+    rows: dict[tuple, dict[str, Any]] = {}
+    for cell, keys in keys_of.items():
+        for k, p in _wl_prefill_pairs(keys, plan.get(cell, [])):
+            if p.get("teacher_id") is None and p.get("co_teacher_id") is None:
+                continue
+            rows[(k["line_id"], k["group_id"])] = {"teacher_id": p.get("teacher_id"),
+                                                   "co_teacher_id": p.get("co_teacher_id"),
+                                                   "lab_room_id": p.get("lab_room_id"), "flag": p.get("flag")}
     options: dict[Any, list[dict[str, Any]]] = {}
     for k in option_keys:
         if k.get("sched_subject_id") is None:
@@ -16359,12 +16419,16 @@ def wl_round_view(row: dict[str, Any]) -> dict[str, Any]:
 
     counts.unconverted = จำนวนรายการที่แปลงแผนไม่ได้ ณ ตอนเปิดรอบ (เก็บใน wl_rounds.unconverted) · ตัวรายการให้เฉพาะ admin
     ทาง GET /rounds/{id} · counts มีทั้ง sets (สัญญา) และ options (brief ของงานที่ 3): ชุด/ตัวเลือกของภาคเรียนของรอบ
+    exported_at / exported_label / export_report (ขั้นที่ 3) = รอบนี้ส่งเข้าโปรแกรมจัดตารางเป็นเทอมไหนแล้ว และรายงานผล
+    (ชุดกิจกรรมที่ต้องลงคาบเอง ฯลฯ ให้เปิดดูทีหลังในหน้ารอบ) · ยังไม่ส่ง = None ทั้งสามช่อง
     """
     return {"id": row["id"], "year": row["year"], "semester": row["semester"], "label": row["label"],
             "status": row["status"], "opened_at": _wl_iso(row["opened_at"]), "closed_at": _wl_iso(row["closed_at"]),
             "counts": {"rows": int(row.get("rows") or 0), "sets": int(row.get("sets") or 0),
                        "options": int(row.get("options") or 0),
-                       "unconverted": len(row.get("unconverted") or [])}}
+                       "unconverted": len(row.get("unconverted") or [])},
+            "exported_at": _wl_iso(row.get("exported_at")), "exported_label": row.get("exported_label"),
+            "export_report": row.get("export_report")}
 
 
 def _wl_round_counts(cur, rounds: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -16399,9 +16463,9 @@ def _wl_term_shape(cur, year: int, semester: int) -> dict[str, Any]:
     """หลักสูตรของภาคเรียนในรูปที่รอบใช้ (อ่านอย่างเดียว)
 
     cells = [(line_id, group_id, subject_id)] เรียงตามหลักสูตร → ลำดับบรรทัด (sort, id) → ห้องตามโปรแกรมจัดตาราง
-    (ลำดับบรรทัดในห้องเดียวกันมีผลต่อการจับคู่ครูเทอมก่อนของวิชาที่ซ้ำ ดู wl_prefill) · options = [(option_id, ห้องของชุด,
-    subject_id)] · sets = จำนวนชุด · lines_without_department / options_without_department = บรรทัด/ตัวเลือกที่ยังไม่ระบุ
-    กลุ่มสาระ (ไม่มีหัวหน้าคนไหนเห็น จึงไม่มีใครกรอก)
+    (ลำดับและคาบของบรรทัดในห้องเดียวกันมีผลต่อการจับคู่ครูเทอมก่อนของวิชาที่ซ้ำ ดู wl_prefill — line_weekly = {line_id: คาบ})
+    · options = [(option_id, ห้องของชุด, subject_id)] · sets = จำนวนชุด · lines_without_department /
+    options_without_department = บรรทัด/ตัวเลือกที่ยังไม่ระบุกลุ่มสาระ (ไม่มีหัวหน้าคนไหนเห็น จึงไม่มีใครกรอก)
     """
     names = _wl_group_names()
     cur.execute("SELECT curriculum_id, group_id FROM wl_curriculum_groups WHERE year = %s AND semester = %s",
@@ -16413,10 +16477,10 @@ def _wl_term_shape(cur, year: int, semester: int) -> dict[str, Any]:
     cids = [r[0] for r in cur.fetchall()]
     lines: list[tuple] = []
     if cids:
-        cur.execute("SELECT id, curriculum_id, subject_id, department_id FROM wl_curriculum_lines "
+        cur.execute("SELECT id, curriculum_id, subject_id, weekly, department_id FROM wl_curriculum_lines "
                     "WHERE curriculum_id = ANY(%s) ORDER BY curriculum_id, sort, id", (cids,))
         lines = cur.fetchall()
-    cells = [(lid, gid, sid) for lid, cid, sid, _dept in lines
+    cells = [(lid, gid, sid) for lid, cid, sid, _w, _dept in lines
              for gid in _wl_sorted_groups(groups.get(cid, []), names)]
     cur.execute("SELECT id, group_ids FROM wl_term_sets WHERE year = %s AND semester = %s ORDER BY id",
                 (year, semester))
@@ -16430,6 +16494,7 @@ def _wl_term_shape(cur, year: int, semester: int) -> dict[str, Any]:
             options.append((oid, set_groups[sid], subj))
             no_dept_options += dept is None
     return {"cells": cells, "options": options, "sets": len(set_groups),
+            "line_weekly": {lid: w for lid, _cid, _sid, w, _dept in lines},
             "lines_without_department": sum(1 for *_rest, dept in lines if dept is None),
             "options_without_department": no_dept_options}
 
@@ -16446,7 +16511,8 @@ def _wl_round_plan(cur, year: int, semester: int) -> dict[str, Any]:
     sched_of = {wl: sched for sched, wl in src["subject_ids"].items()}
     prefill = wl_prefill(
         proposal,
-        [{"line_id": lid, "group_id": gid, "sched_subject_id": sched_of.get(sid)} for lid, gid, sid in shape["cells"]],
+        [{"line_id": lid, "group_id": gid, "sched_subject_id": sched_of.get(sid), "weekly": shape["line_weekly"].get(lid)}
+         for lid, gid, sid in shape["cells"]],
         [{"option_id": oid, "group_ids": gids, "sched_subject_id": sched_of.get(sid)}
          for oid, gids, sid in shape["options"]],
         src["subject_ids"])
@@ -17861,6 +17927,306 @@ def _refuse_delete_if_in_closed_term(kind: str, entity_id: int, name: str | None
         raise HTTPException(409, msg)
 
 
+# ── ขั้นที่ 3: สร้างเทอมใหม่จากรอบอัตรากำลัง — อ่านรอบ เกณฑ์รอบ และหน้าดูก่อนสร้าง (แบบข้อ 4.1 4.5 4.6) ──────────────
+# ส่วนนี้ไม่เขียนอะไรเลย: route เป็น GET ใต้ /api/terms (ไม่มีการล็อกอินเหมือน route อื่นของโปรแกรม และไม่ผ่านตัวนับรุ่น)
+# หน้าดูก่อนสร้างกับการสร้างจริง (POST /api/terms + round_id) ใช้ตัวประกอบชุดเดียวกัน: _wl_export_source (อ่านรอบจาก cursor
+# เดียว) → _term_outgoing (สำเนาของเทอมที่กำลังปิด) → _term_build (ทะเบียน + แผน ด้วยฟังก์ชันล้วนของ term_from_round + เหตุ +
+# รายงาน) — ตัวเลขและเหตุที่ admin เห็นก่อนกดจึงตรงกับสิ่งที่จะถูกสร้าง/ปฏิเสธ
+TERM_FROM_ROUND_BLOCKED = ("เซิร์ฟเวอร์ยังโหลดข้อมูลของโรงเรียนไม่สำเร็จ จึงยังสร้างหรือดูสรุปเทอมใหม่จากรอบอัตรากำลังไม่ได้ "
+                           "(ข้อมูลในหน่วยความจำตอนนี้เป็นข้อมูลตั้งต้นที่มากับโปรแกรม) รอสักครู่แล้วลองใหม่ หรือแจ้งผู้ดูแลระบบ")
+_WL_EXPORT_ROUND_COLS = ("id", "year", "semester", "label", "status", "exported_at", "exported_label")
+_WL_EXPORT_SET_COLS = ("id", "kind", "name", "group_ids", "weekly", "is_double")
+# ชื่อไทยของช่องตัวตนที่การซิงก์ทะเบียนแก้ได้ — รายการ "ที่จะแก้" ในสรุป (Ruling T1 C4)
+_TERM_FIELD_TEXT: dict[str, str] = {"name": "ชื่อ", "code": "รหัส", "department_id": "กลุ่มสาระ",
+                                    "dept_order": "ลำดับในกลุ่มสาระ", "type": "ประเภท", "duration": "คาบคู่",
+                                    "is_activity": "เป็นกิจกรรม", "is_elective": "เป็นวิชาเสรี"}
+# รายการที่ plan_from_round ข้ามเพราะอ้างไม่ได้ (report.skipped[].source) → คำนามในเหตุ
+_TERM_SKIP_TEXT: dict[str, str] = {"row": "แถวของรอบ", "option": "ตัวเลือกของชุดคาบเสรี/กิจกรรม",
+                                   "option_teacher": "ครูของตัวเลือก", "line": "บรรทัดหลักสูตร",
+                                   "elective_row": "แถวแผนเดิมของวิชาในชุดคาบเสรี",
+                                   "activity_row": "แถวแผนเดิมของวิชาในชุดกิจกรรม"}
+_TERM_SHOW = 5        # ตัวอย่างในข้อความเหตุไม่เกินเท่านี้ (รายการเต็มอยู่ในรายงาน)
+
+
+def _wl_export_source(cur, round_id: int) -> dict[str, Any]:
+    """ข้อมูลของรอบในรูป source ของสัญญาร่วม (term_from_round) — อ่านทุกอย่างจาก cursor เดียว (ธุรกรรมเดียว) ไม่เขียน
+    ไม่ล็อก (การสร้างจริงถือล็อกทะเบียนและแถวรอบ FOR UPDATE ก่อนเรียก) · ไม่มีรอบ → 404 ไทย
+
+    round = {id, year, semester, label, status, exported_at (ISO หรือ None), exported_label}
+    rows / options = รูปเดียวกับ GET /rounds/{id}/rows ทั้งรอบ (ทุกกลุ่ม) · sets = ทุกชุดของภาคเรียน รวมชุดที่ไม่มีตัวเลือก
+    curricula = ทุกหลักสูตรของภาคเรียนตามลำดับหลักสูตร พร้อมห้อง (ลำดับของโปรแกรม) และ **ทุกบรรทัด** ตาม sort แล้ว id
+    (รวมบรรทัดที่ไม่มีแถวอ้าง — หลักสูตรของเทอมใหม่มาจากบรรทัด) · credits ของ numeric มาเป็น Decimal แปลงด้วย _wl_num
+    ไม่งั้นวิชาใหม่ถือ Decimal ไว้แล้วการบรรจุเทอม (JSON) ล้ม · wl_teachers / wl_subjects = ทั้งทะเบียนเรียงตามรหัส ·
+    dept_status = สถานะทุกกลุ่มของรอบ
+    """
+    rnd = _wl_get(cur, "wl_rounds", _WL_EXPORT_ROUND_COLS, round_id, WL_ROUND_MISSING)
+    rnd["exported_at"] = _wl_iso(rnd["exported_at"])
+    year, semester = rnd["year"], rnd["semester"]
+    rows, options = _wl_round_items(cur, rnd, _WL_ALL)
+    cur.execute(f"SELECT {', '.join(_WL_EXPORT_SET_COLS)} FROM wl_term_sets WHERE year = %s AND semester = %s "
+                "ORDER BY id", (year, semester))
+    sets = [dict(zip(_WL_EXPORT_SET_COLS, v)) for v in cur.fetchall()]
+    for st in sets:
+        st["group_ids"] = list(st["group_ids"] or [])
+    names = _wl_group_names()
+    cur.execute("SELECT id, name FROM wl_curricula WHERE year = %s AND semester = %s ORDER BY id", (year, semester))
+    curricula = [{"id": cid, "name": name, "group_ids": [], "lines": []} for cid, name in cur.fetchall()]
+    by_id = {c["id"]: c for c in curricula}
+    cur.execute("SELECT curriculum_id, group_id FROM wl_curriculum_groups WHERE year = %s AND semester = %s",
+                (year, semester))
+    for cid, gid in cur.fetchall():
+        if cid in by_id:
+            by_id[cid]["group_ids"].append(gid)
+    for c in curricula:
+        c["group_ids"] = _wl_sorted_groups(c["group_ids"], names)
+    if by_id:
+        cur.execute(f"SELECT {', '.join(_WL_LINE_COLS)} FROM wl_curriculum_lines WHERE curriculum_id = ANY(%s) "
+                    "ORDER BY curriculum_id, sort, id", (sorted(by_id),))
+        for v in cur.fetchall():
+            ln = dict(zip(_WL_LINE_COLS, v))
+            ln["credits"] = _wl_num(ln["credits"])
+            by_id[ln["curriculum_id"]]["lines"].append(ln)
+    cur.execute("SELECT department_id, status FROM wl_dept_status WHERE round_id = %s ORDER BY department_id",
+                (rnd["id"],))
+    dept_status = [{"department_id": d, "status": st} for d, st in cur.fetchall()]
+    return {"round": rnd, "rows": rows, "options": options, "sets": sets, "curricula": curricula,
+            "wl_teachers": _wl_rows(cur, "wl_teachers", _WL_TEACHER_COLS, "id"),
+            "wl_subjects": _wl_rows(cur, "wl_subjects", _WL_SUBJECT_COLS, "id"), "dept_status": dept_status}
+
+
+def _term_names(items: list[dict[str, Any]], fallback: str = "(ไม่มีชื่อ)") -> str:
+    shown = [str(i.get("name") or "").strip() or fallback for i in items[:_TERM_SHOW]]
+    return ", ".join(shown) + (f" และอีก {len(items) - _TERM_SHOW:,} รายการ" if len(items) > _TERM_SHOW else "")
+
+
+def wl_export_reasons(source: dict[str, Any], year: int, semester: int) -> list[str]:
+    """เหตุที่รอบนี้ยังสร้างเทอมใหม่ ปี/ภาคเรียน year/semester ไม่ได้ ตามแบบข้อ 4.1 (ฟังก์ชันล้วน · ไม่แก้ source) · [] = ผ่าน
+
+    1. ปี/ภาคเรียนของรอบตรงกับเทอมใหม่
+    2. สถานะรอบ filling หรือ closed และยังไม่เคยส่ง (exported_at ว่าง)
+    3. ทุกรายการของทั้งรอบครบ — ทุกกลุ่ม (รวมรายการที่ไม่ได้ระบุกลุ่มสาระ) ผ่าน wl_approve_blocker ณ ตอนนี้: admin แก้แถว
+       ของกลุ่มที่ตรวจผ่านแล้วได้ และการแก้หลักสูตรระหว่างกรอกเพิ่มแถวว่างได้ จึงตรวจซ้ำ ไม่เชื่อสถานะ "ตรวจผ่าน" อย่างเดียว
+    4. ทุกกลุ่มสาระที่มีรายการตรวจผ่านแล้ว — หรือรอบปิดแล้ว (ผู้ออกแบบตัดสิน: การปิดรอบคือคำยืนยันสุดท้ายของ admin) ·
+       กลุ่มที่ไม่มีรายการไม่นับ · รายการที่ไม่ได้ระบุกลุ่มสาระไม่มีกลุ่มใดตรวจผ่านให้ได้ จึงเป็นเหตุจนกว่าจะระบุกลุ่มหรือปิดรอบ
+    5. ทุกบรรทัดหลักสูตรของภาคเรียนและทุกตัวเลือกอ้างวิชาที่มีรหัสวิชา (รหัสของวิชาในทะเบียน หรือรหัสที่พิมพ์ไว้เมื่อไม่ผูก
+       วิชา — แถวของรอบอ่านวิชาจากบรรทัด) และทุกครูที่ถูกอ้างในแถว/ตัวเลือกยังมีในทะเบียนครูของเว็บ
+    ข้อความระบุกลุ่มสาระ/หลักสูตร/ชุด จำนวน และทางแก้ ให้ admin ไปแก้ได้ถูกที่
+    """
+    rnd = source.get("round") or {}
+    label = str(rnd.get("label") or f"{rnd.get('semester')}/{rnd.get('year')}")
+    rows = source.get("rows") or []
+    options = source.get("options") or []
+    reasons: list[str] = []
+    # 1
+    if (rnd.get("year"), rnd.get("semester")) != (year, semester):
+        reasons.append(f"รอบนี้เป็นของภาคเรียน {label} แต่เทอมใหม่ที่จะสร้างคือ {term_label(year, semester)} "
+                       "— ปีการศึกษาและภาคเรียนของเทอมใหม่ต้องตรงกับรอบ")
+    # 2
+    status = rnd.get("status")
+    if rnd.get("exported_at"):
+        term = f" (เทอม {rnd['exported_label']})" if rnd.get("exported_label") else ""
+        reasons.append(f"รอบ {label} ส่งเข้าโปรแกรมจัดตารางแล้ว{term} — ส่งซ้ำไม่ได้")
+    elif status == "preparing":
+        reasons.append(f"รอบ {label} ยังกำลังเตรียม ยังไม่เปิดให้กลุ่มสาระกรอก — เปิดให้กรอกในหน้ารอบของเว็บลงอัตรากำลัง "
+                       "แล้วให้ทุกกลุ่มกรอกให้ครบก่อน")
+    elif status not in ("filling", "closed"):
+        reasons.append(f"รอบ {label} อยู่ในสถานะที่ส่งเข้าโปรแกรมจัดตารางไม่ได้ ({status})")
+    # 3 · 4 — กลุ่มตามรหัส ไม่มีกลุ่มไว้ท้ายสุด
+    depts = sorted({r.get("department_id") for r in rows} | {o.get("department_id") for o in options},
+                   key=lambda d: (d is None, d if d is not None else 0))
+
+    def where(d: Any) -> str:
+        return "รายการที่ไม่ได้ระบุกลุ่มสาระ" if d is None else _wl_dept_text(d)
+    items = {d: ([r for r in rows if r.get("department_id") == d], [o for o in options if o.get("department_id") == d])
+             for d in depts}
+    for d in depts:
+        rs, os_ = items[d]
+        if wl_approve_blocker(rs, os_) is None:
+            continue
+        c = wl_fill_counts(rs, os_)
+        missing = c["missing_teacher"]
+        unconfirmed = c["rows"] - c["confirmed"] - missing
+        bits = ([f"ยังไม่มีครู {missing:,} รายการ"] if missing else []) + \
+               ([f"ยังไม่ยืนยัน {unconfirmed:,} รายการ"] if unconfirmed else [])
+        reasons.append(f"{' · '.join(bits)} ใน{where(d)} (นับทั้งแถววิชาและตัวเลือกคาบเสรี/กิจกรรม) "
+                       "— ใส่ครูและยืนยันให้ครบก่อน")
+    if status != "closed":
+        status_of = {s.get("department_id"): s.get("status") for s in source.get("dept_status") or []}
+        for d in depts:
+            n = len(items[d][0]) + len(items[d][1])
+            if d is None:
+                reasons.append(f"รายการที่ไม่ได้ระบุกลุ่มสาระ {n:,} รายการไม่มีกลุ่มสาระใดตรวจผ่านให้ได้ — ระบุกลุ่มสาระของ"
+                               "บรรทัด/ตัวเลือกในหน้าหลักสูตร หรือปิดรอบก่อน")
+            elif status_of.get(d) != "approved":
+                st = status_of.get(d)
+                now = WL_DEPT_STATUS_TEXT.get(st, st) if st else "ไม่พบสถานะของกลุ่มนี้ในรอบ"
+                reasons.append(f"{where(d)}ยังไม่ตรวจผ่าน ({now} · {n:,} รายการ) — ตรวจผ่านทุกกลุ่มสาระที่มีรายการ "
+                               "หรือปิดรอบก่อน")
+    # 5 — รหัสวิชา
+    subj_code = {s.get("id"): str(s.get("code") or "").strip() for s in source.get("wl_subjects") or []}
+
+    def code_of(item: dict[str, Any]) -> str:
+        sid = item.get("subject_id")
+        return subj_code.get(sid, "") if sid is not None else str(item.get("code") or "").strip()
+    for c in source.get("curricula") or []:
+        bad = [ln for ln in c.get("lines") or [] if not code_of(ln)]
+        if bad:
+            reasons.append(f"หลักสูตร {c.get('name') or ''}: บรรทัดที่ไม่มีรหัสวิชา {len(bad):,} บรรทัด ({_term_names(bad)}) "
+                           "— ใส่รหัสวิชาหรือผูกกับวิชาในทะเบียนในหน้าหลักสูตรก่อน")
+    sets_by_id = {s.get("id"): s for s in source.get("sets") or []}
+    bad_opts: dict[Any, list[dict[str, Any]]] = {}
+    for o in options:
+        if not code_of(o):
+            bad_opts.setdefault(o.get("set_id"), []).append(o)
+    for set_id, bad in bad_opts.items():
+        st = sets_by_id.get(set_id) or bad[0].get("set") or {}
+        reasons.append(f"{WL_SET_KIND_TEXT.get(st.get('kind'), 'ชุด')} {st.get('name') or ''}: ตัวเลือกที่ไม่มีรหัสวิชา "
+                       f"{len(bad):,} ตัวเลือก ({_term_names(bad)}) — ใส่รหัสวิชาหรือผูกกับวิชาในทะเบียนในหน้าหลักสูตรก่อน")
+    # 5 — ครูที่ถูกอ้างยังมีในทะเบียน (FK กันไว้แล้ว ตรวจซ้ำเพราะเป็นเงื่อนไขของการส่ง)
+    known = {t.get("id") for t in source.get("wl_teachers") or []}
+    used = {r.get(k) for r in rows for k in ("teacher_id", "co_teacher_id")}
+    used |= {t.get("teacher_id") for o in options for t in o.get("teachers") or []}
+    gone = sorted(t for t in used if t is not None and t not in known)
+    if gone:
+        reasons.append(f"ครูที่ถูกอ้างในรอบ {len(gone):,} คนไม่มีในทะเบียนครูของเว็บลงอัตรากำลังแล้ว "
+                       f"(รหัส {', '.join(str(t) for t in gone[:10])}) — แก้แถว/ตัวเลือกนั้นให้เลือกครูที่มีในทะเบียน")
+    return reasons
+
+
+def _term_outgoing() -> dict[str, Any]:
+    """ของเทอมที่กำลังปิดในรูป outgoing ของสัญญาร่วม — ส่วนของโปรแกรมใน _wl_timetable_source (requirements pools slots
+    served sched_subjects groups) + teachers subjects curricula (สำเนาลึกของ TEACHERS SUBJECTS CURRICULA) · ไม่อ่านฐาน
+    ข้อมูล · เป็นสำเนาทั้งหมด แก้ผลได้โดยไม่ย้อนถึงของสด · groups ต้องมี ไม่งั้น plan_from_round ข้ามทุกแถว (ห้องที่ไม่มี)"""
+    return {**_wl_program_copy(), "teachers": _copy.deepcopy(TEACHERS), "subjects": _copy.deepcopy(SUBJECTS),
+            "curricula": _copy.deepcopy(CURRICULA)}
+
+
+def _term_skipped_reasons(skipped: list[dict[str, Any]]) -> list[str]:
+    """รายการที่ plan_from_round ข้ามเพราะอ้างไม่ได้ (ห้อง/ครู/วิชาที่ไม่มีในโปรแกรม) = เหตุที่ยังสร้างเทอมไม่ได้ — ห้ามสร้าง
+    เทอมที่แผน/คาบเสรี/หลักสูตรขาดรายการเงียบ ๆ · หนึ่งเหตุต่อชนิด (ตามลำดับที่พบ) พร้อมตัวอย่างไม่เกิน _TERM_SHOW รายการ
+    — รายการเต็มอยู่ใน report.skipped"""
+    by: dict[Any, list[dict[str, Any]]] = {}
+    for s in skipped:
+        by.setdefault(s.get("source"), []).append(s)
+    out = []
+    for kind, items in by.items():
+        shown = " · ".join(str(i.get("reason") or "") for i in items[:_TERM_SHOW])
+        more = f" · และอีก {len(items) - _TERM_SHOW:,} รายการ" if len(items) > _TERM_SHOW else ""
+        out.append(f"{_TERM_SKIP_TEXT.get(kind, str(kind))} {len(items):,} รายการจะไม่ได้เข้าเทอมใหม่ จึงยังสร้างเทอมไม่ได้ "
+                   f"(ไม่สร้างเทอมที่ขาดรายการเงียบ ๆ): {shown}{more}")
+    return out
+
+
+def _term_changes(changes: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    return [{"field": f, "label": _TERM_FIELD_TEXT.get(f, f), "old": old, "new": new}
+            for f, (old, new) in changes.items()]
+
+
+def _term_report(outgoing: dict[str, Any], registry: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    """ตัวเลขและรายการของหน้าต่างสร้างเทอมใหม่ (แบบข้อ 4.5) — รูปเดียวกันเก็บลง export_report ของรอบ (JSON ได้ทุกค่า)
+
+    ตัวเลข: requirements periods teachers_in_plan curricula pools pool_options carried elective_rows activity_rows
+    รายการ: ครู/วิชาที่จะสร้าง · ที่จะแก้ทีละช่อง {field, label, old, new} (Ruling T1 C4 — โดยเฉพาะ is_elective/duration ที่กระทบ
+    ยอดคาบและการจัดคาบ) · ผูกด้วยรหัสวิชา · ไม่ปฏิบัติงานในเว็บแต่ยังเปิดในโปรแกรม · ครู/วิชาที่เทอมใหม่อ้างแต่ปิดใช้งานอยู่ใน
+    โปรแกรม (ไม่แก้ active — ให้เห็น) · ครูที่โปรแกรมมีแต่เว็บไม่รู้จัก · ชุดกิจกรรมที่ต้องลงคาบเอง (ชื่อห้อง/ครู) · ห้อง+วิชาที่
+    ยกช่องไม่ได้ (not_carried ไม่ตรงกัน · new_cells ไม่มีในแผนเดิม) · หลักสูตรที่ถูกเพิ่มวิชาเพราะแถวแผนของวิชาเสรี/กิจกรรม
+    (ชื่อหลักสูตรและวิชา) · ตัวเลือกคาบเสรีที่ซ้ำแล้วถูกรวม · รายการที่ถูกข้าม (เป็นเหตุด้วย)
+    """
+    reg, pr = registry["report"], plan["report"]
+    teachers = {t.get("id"): t for t in registry["teachers"]}
+    subjects = {s.get("id"): s for s in registry["subjects"]}
+    groups = outgoing.get("groups") or {}
+    group_by_id = dict(groups) if isinstance(groups, dict) else {g.get("id"): g for g in groups}
+    cname = {c["id"]: c["name"] for c in plan["curricula"]}
+
+    def gname(gid: Any) -> str:
+        return str((group_by_id.get(gid) or {}).get("name") or f"ห้องรหัส {gid}")
+    used_t = {t for r in plan["requirements"] for t in (r.get("teacher_id"), r.get("co_teacher_id")) if t}
+    used_t |= {o.get("teacher_id") for p in plan["pools"] for o in p["options"] if o.get("teacher_id") is not None}
+    used_t |= {t for a in pr["activity_sets"] for t in a["teacher_ids"]}
+    used_s = {r.get("subject_id") for r in plan["requirements"]} | set(plan["elective_subjects"])
+    used_s |= {x.get("subject_id") for c in plan["curricula"] for x in c["rows"]}
+    deep = _copy.deepcopy
+    return {
+        "requirements": pr["rows"], "periods": pr["periods"], "teachers_in_plan": pr["teachers_in_plan"],
+        "curricula": len(plan["curricula"]), "pools": pr["pools"], "pool_options": pr["pool_options"],
+        "teachers_created": deep(reg["teachers_created"]), "subjects_created": deep(reg["subjects_created"]),
+        "teachers_patched": [{"wl_id": p["wl_id"], "id": p["id"], "name": p["name"], "changes": _term_changes(p["changes"])}
+                             for p in reg["teachers_patched"]],
+        "subjects_patched": [{"wl_id": p["wl_id"], "id": p["id"], "code": p["code"], "name": p["name"],
+                              "changes": _term_changes(p["changes"])} for p in reg["subjects_patched"]],
+        "code_links": deep(reg["code_links"]), "inactive_open": deep(reg["inactive_open"]),
+        "inactive_teachers_used": [{"id": t, "name": teachers[t].get("name")} for t in sorted(used_t)
+                                   if t in teachers and not teachers[t].get("active", True)],
+        "inactive_subjects_used": [{"id": s, "code": subjects[s].get("code"), "name": subjects[s].get("name")}
+                                   for s in sorted(used_s) if s in subjects and not subjects[s].get("active", True)],
+        "unknown_teachers": deep(reg["unknown_teachers"]),
+        "activity_sets": [{**deep(a), "group_names": [gname(g) for g in a["group_ids"]],
+                           "teacher_names": [(teachers.get(t) or {}).get("name") for t in a["teacher_ids"]]}
+                          for a in pr["activity_sets"]],
+        "carried": pr["carried"], "not_carried": deep(pr["not_carried"]), "new_cells": deep(pr["new_cells"]),
+        "elective_rows": pr["elective_rows"], "activity_rows": pr["activity_rows"],
+        "curriculum_rows_added": [{"curriculum_id": x["curriculum_id"], "curriculum_name": cname.get(x["curriculum_id"]),
+                                   "subject_id": x["subject_id"],
+                                   "code": (subjects.get(x["subject_id"]) or {}).get("code"),
+                                   "name": (subjects.get(x["subject_id"]) or {}).get("name"),
+                                   "weekly_count": x["weekly_count"]} for x in pr["curriculum_rows_added"]],
+        "merged_options": deep(pr["merged_options"]), "skipped": deep(pr["skipped"]),
+    }
+
+
+def _term_build(source: dict[str, Any], outgoing: dict[str, Any], counters: dict[str, int],
+                year: int, semester: int) -> dict[str, Any]:
+    """สถานะใหม่ทั้งชุดของเทอมจากรอบ (เป็นสำเนา) + เหตุที่ยังสร้างไม่ได้ + รายงาน — หน้าดูก่อนสร้างและการสร้างจริงใช้ตัวนี้
+
+    ไม่แตะตัวแปรของโปรแกรม ไม่แก้ source/outgoing/counters (ฟังก์ชันล้วนของ term_from_round ทำงานบนสำเนา)
+    registry = registry_plan(source, outgoing, counters) — ทะเบียนก่อนเสมอ · plan = plan_from_round(source, outgoing,
+    registry ทั้งก้อนเป็น maps, ตัวนับต่อจาก registry) · reasons = เกณฑ์รอบ (wl_export_reasons) + เหตุของทะเบียน +
+    รายการที่ถูกข้าม (_term_skipped_reasons) · report = _term_report
+    คำนวณครบเสมอแม้มีเหตุ (รอบที่ใช้ไม่ได้ยังเลือกดูสรุปได้ — แบบข้อ 4.5) · ผู้เรียกห้ามสร้างเทอมเมื่อ reasons ไม่ว่าง
+    → {"registry", "plan", "reasons", "report"}
+    """
+    registry = _TFR.registry_plan(source, outgoing, counters)
+    plan = _TFR.plan_from_round(source, outgoing, registry, registry["counters"])
+    reasons = (wl_export_reasons(source, year, semester) + list(registry["reasons"])
+               + _term_skipped_reasons(plan["report"]["skipped"]))
+    return {"registry": registry, "plan": plan, "reasons": reasons, "report": _term_report(outgoing, registry, plan)}
+
+
+@app.get("/api/terms/rounds")
+def terms_rounds() -> list[dict[str, Any]]:
+    """รอบอัตรากำลังทั้งหมด ใหม่ก่อน ให้หน้าต่างสร้างเทอมใหม่เลือก — ไม่มีข้อมูลรายแถว · ไม่เขียนอะไร
+
+    usable / reasons = เกณฑ์เดียวกับหน้าดูก่อนสร้างและการสร้างจริง (_term_build ทั้งก้อน) โดยปี/ภาคเรียนของเทอมใหม่ = ของรอบ
+    เอง (หน้าต่างตั้งตามรอบแล้วล็อก) · รอบที่ส่งแล้วบอกแค่ว่าส่งแล้ว ไม่อ่านแถวของมัน (เทียบรอบเก่ากับทะเบียนตอนนี้ไม่มีความหมาย)
+    · ข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ: เกณฑ์รอบ + TERM_FROM_ROUND_BLOCKED (ไม่เทียบกับข้อมูลตั้งต้นในหน่วยความจำ)
+    · ไม่ได้ต่อฐานข้อมูล = ไม่มีรอบ (รายการว่าง — หน้าต่างสร้างเทอมเหมือนเดิมทุกอย่าง) · ต่อฐานไม่ได้ = 503 ไทย (_wl_db)
+    """
+    if _STORE_KIND != "postgres":
+        return []
+    blocked = _db_write_blocked()
+    out = []
+    with _wl_db() as cur:
+        cur.execute(f"SELECT {', '.join(_WL_EXPORT_ROUND_COLS)} FROM wl_rounds ORDER BY year DESC, semester DESC")
+        rounds = [dict(zip(_WL_EXPORT_ROUND_COLS, v)) for v in cur.fetchall()]
+        outgoing = None
+        for r in rounds:
+            r["exported_at"] = _wl_iso(r["exported_at"])
+            if r["exported_at"] is not None:
+                reasons = wl_export_reasons({"round": r}, r["year"], r["semester"])
+            elif blocked:
+                reasons = wl_export_reasons(_wl_export_source(cur, r["id"]), r["year"], r["semester"]) + \
+                    [TERM_FROM_ROUND_BLOCKED]
+            else:
+                outgoing = outgoing if outgoing is not None else _term_outgoing()
+                reasons = _term_build(_wl_export_source(cur, r["id"]), outgoing, dict(_counters),
+                                      r["year"], r["semester"])["reasons"]
+            out.append({"id": r["id"], "label": r["label"], "year": r["year"], "semester": r["semester"],
+                        "status": r["status"], "exported_at": r["exported_at"], "exported_label": r["exported_label"],
+                        "usable": not reasons, "reasons": reasons})
+    return out
+
+
 def new_term_preview() -> dict[str, Any]:
     """What a new term will start with and what will be cleared. Changes nothing."""
     total = 0
@@ -17924,8 +18290,31 @@ def _archive_target_or_refuse(requested: tuple[int, int] | None,
 
 
 @app.get("/api/terms/preview")
-def terms_preview():
-    return new_term_preview()
+def terms_preview(round_id: str | None = None):
+    """สิ่งที่เทอมใหม่จะเริ่มต้นด้วย — ไม่เขียนอะไร
+
+    ไม่ส่ง round_id = ตัวเลขเดิม 5 ตัวของ new_term_preview เป๊ะ (ทางเดิม ไม่แตะฐานข้อมูล)
+    ส่ง round_id = ตัวเลขเดิม + "round": {id, label, year, semester, usable, reasons, report} จาก _term_build ตัวเดียวกับ
+    การสร้างจริง (ปี/ภาคเรียนของเทอมใหม่ = ของรอบ — หน้าต่างตั้งตามรอบแล้วล็อก) · รอบที่ใช้ไม่ได้ยังได้สรุปครบพร้อมเหตุ
+    รหัสรอบผิดรูป = 400 · ไม่ได้ต่อฐานข้อมูล หรือข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ (สรุปจากข้อมูลตั้งต้นคือสรุปผิด) = 503 ·
+    ไม่มีรอบ = 404 — ข้อความไทยทั้งหมด
+    """
+    text = str(round_id).strip() if round_id is not None else ""
+    if not text:
+        return new_term_preview()
+    if not _re.fullmatch(r"\d{1,18}", text):
+        raise HTTPException(400, "round_id ต้องเป็นรหัสรอบอัตรากำลัง (จำนวนเต็ม)")
+    if _STORE_KIND != "postgres":
+        raise HTTPException(503, "ยังไม่ได้ต่อฐานข้อมูล จึงดูสรุปเทอมใหม่จากรอบอัตรากำลังไม่ได้")
+    if _db_write_blocked():
+        raise HTTPException(503, TERM_FROM_ROUND_BLOCKED)
+    with _wl_db() as cur:
+        source = _wl_export_source(cur, int(text))
+    rnd = source["round"]
+    built = _term_build(source, _term_outgoing(), dict(_counters), rnd["year"], rnd["semester"])
+    return {**new_term_preview(),
+            "round": {"id": rnd["id"], "label": rnd["label"], "year": rnd["year"], "semester": rnd["semester"],
+                      "usable": not built["reasons"], "reasons": built["reasons"], "report": built["report"]}}
 
 
 @app.post("/api/terms")

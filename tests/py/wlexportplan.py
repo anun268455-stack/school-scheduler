@@ -158,6 +158,12 @@ def test_carry_keys_when_group_agrees():
     # คาบคู่สุดท้าย = คาบคู่จากรอบ หรือ ค่าที่ยกมา (แผนเดิมไม่ได้ปักคาบคู่ แต่รอบบอกว่าคาบคู่)
     assert c["pinned_double"] is True and "pinned_day" not in c
     assert plan["report"]["carried"] == 1 and plan["report"]["not_carried"] == []
+    # m1 (รีวิว Task 2): ห้อง+วิชาที่ไม่มีในแผนเดิมนับแยกใน new_cells (แบบข้อ 4.2 "ไม่มีในแผนเดิม → ว่าง นับและบอกในสรุป")
+    # รายการละห้อง+วิชา — สองแถวของห้อง+วิชาเดียวกันขึ้นรายการเดียว
+    assert plan["report"]["new_cells"] == [{"group_id": 2, "subject_id": 1}], plan["report"]
+    twice = _src(rows=[_row(1, 10, 4, subject_id=501, teacher_id=105, flag=FLAG),
+                       _row(2, 11, 4, subject_id=501, teacher_id=106, weekly=3, flag=FLAG)])
+    assert _plan(twice, out)["report"]["new_cells"] == [{"group_id": 4, "subject_id": 1}]
 
 
 def test_two_row_coteach_still_carries():
@@ -211,6 +217,23 @@ def test_conflicting_old_rows_do_not_carry_and_are_counted():
                                               "fields": ["parallel_group_key", "pinned_period"]}]
 
 
+def test_parallel_key_blank_and_none_are_the_same():
+    # m2 (รีวิว Task 2): แบบนำเข้าของโปรแกรมใส่ parallel_group_key "" ส่วนหน้าแก้แถวใส่ null — โปรแกรมดูแค่ว่ามีค่าหรือไม่
+    # ก้อนที่มีทั้งสองแบบ (เช่นสอนร่วมสองแถว: แถวนำเข้า + แถวที่เพิ่มทางหน้าจอ) ต้องไม่ขึ้นว่า "ยกไม่ได้"
+    src = _src(rows=[_row(1, 10, 1, subject_id=501, teacher_id=105, co_teacher_id=106, weekly=3)])
+    out = _out([_req(1, 1, 1, 5, 3, co_teacher_id=6, parallel_group_key="", pinned_day=2, pinned_period=1),
+                _req(2, 1, 1, 6, 3, co_teacher_id=5, parallel_group_key=None, pinned_day=2, pinned_period=1)])
+    plan = _plan(src, out)
+    assert plan["report"]["not_carried"] == [], plan["report"]["not_carried"]
+    assert [r["parallel_group_key"] for r in plan["requirements"]] == [None, None]
+    assert [r["pinned_day"] for r in plan["requirements"]] == [2, 2] and plan["report"]["carried"] == 2
+    # ค่าจริงต่างจากค่าว่างยังเป็น "ไม่ตรงกัน"
+    out2 = _out([_req(1, 1, 1, 5, 3, co_teacher_id=6, parallel_group_key="K"),
+                 _req(2, 1, 1, 6, 3, co_teacher_id=5, parallel_group_key="")])
+    assert _plan(src, out2)["report"]["not_carried"] == [{"group_id": 1, "subject_id": 1,
+                                                          "fields": ["parallel_group_key"]}]
+
+
 # ── สอนร่วมคาบไม่เท่ากัน ───────────────────────────────────────────────────
 def test_unequal_coteach_rows_stay_two_and_point_at_each_other():
     assert T.CO_UNEQUAL_FLAG == mock_api.WL_CO_UNEQUAL_FLAG      # import mock_api ในโมดูลล้วนไม่ได้ จึงเทียบที่นี่
@@ -226,6 +249,27 @@ def test_unequal_coteach_rows_stay_two_and_point_at_each_other():
     # โปรแกรมรวมเป็นบทเรียนเดียวเองได้ผลเท่าแผนเดิม (คาบที่มากกว่า)
     folded, agreed = mock_api._fold_coteaching(reqs)
     assert folded == {reqs[1]["id"], reqs[4]["id"]} and agreed[reqs[0]["id"]] == 3
+
+
+def test_unequal_pair_keeps_the_order_of_the_old_plan():
+    # แถวของรอบเรียงตามบรรทัดหลักสูตร (หลักสูตรตั้งต้นเรียงบรรทัดซ้ำตามคาบ: 2 คาบก่อน 3 คาบ) แต่แผนเดิมเขียนแถว 3 คาบก่อน —
+    # _fold_coteaching เก็บแถวแรกของคู่เป็นบทเรียน (ครูหลัก ห้อง) จึงต้องเรียงคู่ตามแผนเดิม ไม่งั้นบทเรียนเปลี่ยนห้อง/ครูหลัก
+    # (เจอในไปกลับชุด ข หลังกลับลำดับคู่ตาม addendum Task 3 ข้อ 8) · คู่ที่อยู่ไกลกันในรายการ (ห้องอื่นคั่น) ก็สลับที่กัน
+    src = _src(rows=[_row(1, 10, 1, subject_id=501, teacher_id=106, weekly=2, lab_room_id=31, flag=FLAG),
+                     _row(2, 10, 2, subject_id=501, teacher_id=107),
+                     _row(3, 11, 1, subject_id=501, teacher_id=105, weekly=3, lab_room_id=30, flag=FLAG)])
+    out = _out([_req(1, 1, 1, 5, 3, co_teacher_id=6, room_id=30), _req(2, 2, 1, 7),
+                _req(3, 1, 1, 6, 2, co_teacher_id=5, room_id=31)])
+    reqs = _plan(src, out)["requirements"]
+    got = [(r["id"], r["group_id"], r["teacher_id"], r["co_teacher_id"], r["weekly_count"], r["room_id"]) for r in reqs]
+    assert got == [(1001, 1, 5, 6, 3, 30), (1002, 2, 7, None, 2, None), (1003, 1, 6, 5, 2, 31)], got
+    folded, agreed = mock_api._fold_coteaching(reqs)
+    assert folded == {1003} and agreed == {1001: 3}
+    old_folded, old_agreed = mock_api._fold_coteaching(out["requirements"])
+    assert (old_folded, old_agreed) == ({3}, {1: 3})            # บทเรียนเดียวกับแผนเดิม: ครู 5 ห้อง 30 3 คาบ
+    # แผนเดิมไม่มีคู่นี้ (ครูใหม่) → ตามลำดับของรอบ
+    reqs = _plan(src, _out([_req(2, 2, 1, 7)]))["requirements"]
+    assert [r["teacher_id"] for r in reqs] == [6, 7, 5]
 
 
 # ── คาบเสรี ───────────────────────────────────────────────────────────────
@@ -253,6 +297,25 @@ def test_elective_set_becomes_unplaced_pool_with_one_option_per_teacher():
                               "room_id": 41}]}, p
     assert plan["elective_subjects"] == [7, 8, 21] and plan["requirements"] == []
     assert (plan["report"]["pools"], plan["report"]["pool_options"]) == (1, 4)
+
+
+def test_duplicate_pool_options_are_recorded():
+    # m3 (รีวิว Task 2): ตัวเลือก (วิชา, ครู) ที่ซ้ำกันในชุดเดียวถูกรวมเป็นตัวเลือกเดียว (แบบ _clean_pool_options ของโปรแกรม)
+    # — รวมแล้วไม่เสียอะไร แต่ต้องบันทึกให้เห็น ไม่หายเงียบ ๆ
+    st = _set(7, group_ids=(1, 2), name="เสรี ม.1")
+    src = _src(sets=[st],
+               options=[_opt(70, st, subject_id=507, teachers=[(1, 108, None)]),
+                        _opt(71, st, subject_id=None, code="S007", teachers=[(2, 108, 40), (3, 109, None)]),
+                        _opt(72, st, subject_id=508, teachers=[]),
+                        _opt(73, st, subject_id=508, teachers=[])])
+    plan = _plan(src, maps=_maps(typed={"S007": 7}))
+    assert [(o["subject_id"], o["teacher_id"]) for o in plan["pools"][0]["options"]] == [(7, 8), (7, 9), (8, None)]
+    assert plan["report"]["merged_options"] == [
+        {"set": "เสรี ม.1", "option_id": 71, "subject_id": 7, "teacher_id": 8},
+        {"set": "เสรี ม.1", "option_id": 73, "subject_id": 8, "teacher_id": None}], plan["report"]["merged_options"]
+    assert plan["report"]["skipped"] == []
+    assert _plan(_src(sets=[st], options=[_opt(70, st, subject_id=507, teachers=[(1, 108, None)])]))[
+        "report"]["merged_options"] == []
 
 
 def test_elective_rows_follow_outgoing_shape():
@@ -489,7 +552,8 @@ def _round_source(out, prop, wl_t, wl_s):
             oid += 1
             opts.append((oid, sets[-1], o))
     pre = mock_api.wl_prefill(
-        prop, [{"line_id": lid, "group_id": g, "sched_subject_id": sched_of.get(ln["subject_id"])} for lid, g, ln in cells],
+        prop, [{"line_id": lid, "group_id": g, "sched_subject_id": sched_of.get(ln["subject_id"]), "weekly": ln["weekly"]}
+               for lid, g, ln in cells],
         [{"option_id": oid, "group_ids": st["group_ids"], "sched_subject_id": sched_of.get(o["subject_id"])}
          for oid, st, o in opts], out["subject_ids"])
     rows = []
@@ -706,15 +770,14 @@ def _live_shape():
                              "parallel_group_key": None, "pinned_day": 4, "pinned_period": 1})
     mock_api.update_req(50, {"co_teacher_id": other, "pinned_day": 4, "pinned_period": 1})
     # สอนร่วมแบบสองแถวที่ชี้กันแต่คาบไม่เท่ากัน → ขั้นที่ 2 ติดธง WL_CO_UNEQUAL_FLAG เก็บสองแถว
-    # แถวแรกในแผนต้องคาบน้อยกว่า: wl_prefill (ขั้นที่ 2) จับคู่แถวแผนกับบรรทัดหลักสูตรซ้ำของห้อง+วิชาเดียวกันตามลำดับ
-    # โดยไม่ดูคาบ แต่ wl_curricula_from_proposal เรียงบรรทัดตามคาบ — ลำดับกลับกันครูสองคนสลับคาบกันตั้งแต่เปิดรอบ
-    # (บั๊กของขั้นที่ 2 ไม่ใช่ของการแปลงนี้ — รายงาน Task 2 ข้อกังวล)
+    # แถวแรกในแผนคาบ **มากกว่า** (addendum Task 3 ข้อ 8): wl_curricula_from_proposal เรียงบรรทัดซ้ำตามคาบ (น้อยก่อน)
+    # ถ้า wl_prefill จับคู่ตามลำดับโดยไม่ดูคาบ ครูสองคนสลับคาบกันตั้งแต่เปิดรอบ แล้ว teacherLoads ข้างล่างไม่เท่าเดิม
+    # — ลำดับนี้คือกรณีที่บั๊กของขั้นที่ 2 (แก้ใน Task 3) เคยเกิด ไปกลับจึงคุมการแก้นั้นด้วย
     u = next(r for r in mock_api.REQUIREMENTS if r["id"] >= 60)
-    other = 5 if u["teacher_id"] != 5 else 6
+    other, w = (5 if u["teacher_id"] != 5 else 6), u["weekly_count"]
+    mock_api.update_req(u["id"], {"co_teacher_id": other, "weekly_count": w + 1})
     v = mock_api.create_req({"group_id": u["group_id"], "subject_id": u["subject_id"], "teacher_id": other,
-                             "weekly_count": u["weekly_count"] + 1, "co_teacher_id": u["teacher_id"],
-                             "parallel_group_key": None})
-    mock_api.update_req(u["id"], {"co_teacher_id": other})
+                             "weekly_count": w, "co_teacher_id": u["teacher_id"], "parallel_group_key": None})
 
     # กิจกรรมทั้งระดับครอบแถวแผนแนะแนวรายห้อง (แบบที่ข้อมูลตั้งต้นมี: ห้องละ 1 คาบ) — ขั้นที่ 2 ข้ามแถวเหล่านั้น (block_cells)
     # แล้วยกเป็นชุดกิจกรรม · แบบรายชื่อครูคุม: แนะแนว 4 (วิชา 224) ม.2/1–ม.2/12 ครูคุม 141

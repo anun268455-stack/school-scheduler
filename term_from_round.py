@@ -400,19 +400,22 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
     ใช้ชื่อ/รหัสวิชาของตัวเลือกในคาบเสรี ไม่มีก็ใช้ outgoing["subjects"])
     - แถวของรอบ → หนึ่งแถวแผน: ครู ครูสอนร่วม คาบ/สัปดาห์ของบรรทัด room_id = ห้องปฏิบัติการ pinned_double เมื่อคาบคู่ ·
       บรรทัดที่พิมพ์รหัสเองหาวิชาจาก typed_map ด้วยรหัสของบรรทัด · แถวที่มีธง CO_UNEQUAL_FLAG ของห้อง+วิชาเดียวกัน
-      จับคู่ตามลำดับเป็นสองแถวที่ชี้กัน (โปรแกรมรวมเป็นบทเรียนเดียวเองด้วย _fold_coteaching ได้ผลเท่าแผนเดิม)
+      จับคู่ตามลำดับเป็นสองแถวที่ชี้กัน เรียงคู่ตามแผนเดิม (โปรแกรมรวมเป็นบทเรียนเดียวเองด้วย _fold_coteaching โดยเก็บแถวแรก
+      — ได้บทเรียนเดียวกับแผนเดิม)
     - สอนร่วมที่แผนเดิมเขียนเป็นสองแถวชี้กัน (ขั้นที่ 2 รวมเป็นแถวเดียวของรอบเพราะคาบเท่ากัน) → สองแถวชี้กันตามรูปเดิม
       เมื่อครูคู่เดียวกันและรอบไม่มีแถวของครูสอนร่วมคนนั้นในห้อง+วิชานี้อยู่แล้ว — ยอดคาบรายครูของโปรแกรม (teacherLoads)
       นับจาก teacher_id ของแถวเท่านั้น ถ้าเหลือแถวเดียว ครูสอนร่วมจะหายจากยอดทั้งที่ยังสอนเท่าเดิม (แบบข้อทดสอบ 1)
     - ชุดคาบเสรี → หนึ่ง pool ยังไม่ลงคาบ · ตัวเลือก = หนึ่งต่อ (ตัวเลือก, ครู) เรียงครูตามรหัสแถวครูของตัวเลือก ·
-      ห้องจากครูของตัวเลือก · ตัวเลือกที่ไม่มีครูคงไว้แบบไม่มีครู (โปรแกรมนับเป็น missing_teacher_count)
+      ห้องจากครูของตัวเลือก · ตัวเลือกที่ไม่มีครูคงไว้แบบไม่มีครู (โปรแกรมนับเป็น missing_teacher_count) · (วิชา, ครู)
+      ที่ซ้ำกับตัวที่มีแล้วในชุดเดียวถูกรวม และบอกใน report.merged_options
     - แถวแผนของวิชาเสรี "ตามรูปของแผนเดิม": วิชา S ของตัวเลือก × ห้อง g ของชุด ที่แผนเดิมมีแถว (g, S) และรอบไม่มีแถวของ
       (g, S) อยู่แล้ว → หนึ่งแถวต่อแถวเดิม: ครูคนเดิมถ้ายังเป็นครูของตัวเลือกนั้น ไม่งั้นครูของตัวเลือกคนแรก · คาบและ room_id
       เท่าแถวเดิม · ครูสอนร่วมเดิมคงไว้ถ้ายังเป็นครูของตัวเลือกนั้น · ไม่มีแถวเดิม → ชุดอย่างเดียว
       (ขั้นที่ 2 ข้ามแถวเหล่านี้เพราะชุดนับคาบแทน แต่ยอดคาบรายครูของโปรแกรมนับจากแถวแผนเท่านั้น — ทิ้งไปยอดของครูวิชาเสรีหาย
       · โปรแกรมรู้เองว่าแถวเหล่านี้สอนในคาบเสรีแล้ว _reqs_served_by_elective จึงไม่จัดซ้ำ)
     - ช่องที่เว็บไม่มี (CARRY_KEYS) ยกจากแผนเดิมด้วยก้อน (ห้อง, วิชา) ทีละช่อง เมื่อทุกแถวในก้อนเห็นตรงกัน — ครูสอนร่วมแบบ
-      สองแถวจึงยังยกได้ · ไม่ตรงกัน → ว่าง และบอกใน report.not_carried · pinned_double สุดท้าย = คาบคู่จากรอบ หรือ ค่าที่ยกมา
+      สองแถวจึงยังยกได้ (parallel_group_key "" กับ None คือค่าเดียวกัน) · ไม่ตรงกัน → ว่าง และบอกใน report.not_carried ·
+      ห้อง+วิชาที่ไม่มีในแผนเดิม → ว่าง และบอกใน report.new_cells · pinned_double สุดท้าย = คาบคู่จากรอบ หรือ ค่าที่ยกมา
     - ชุดกิจกรรม → report.activity_sets (ต้องลงคาบเอง: โปรแกรมเก็บกิจกรรมไว้ในคาบ และตารางของเทอมใหม่เริ่มว่าง) ไม่เป็น pool
       · แถวแผนของห้อง+วิชาที่กิจกรรมทั้งระดับครอบไว้ (ขั้นที่ 2 ข้ามแล้วยกเป็นชุดกิจกรรม) ใช้กฎ "ตามรูปของแผนเดิม" ข้างบน
       ครูคนเดิมถ้ายังเป็นครูที่คุมของชุด ไม่งั้นครูที่คุมคนแรก (รหัสรายการน้อยสุด) · คาบเท่าแถวเดิม (คำตัดสินแก้รอบ 1)
@@ -427,9 +430,12 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
          "elective_subjects": [รหัสวิชาของตัวเลือกในชุด — ผู้เรียกติดธงด้วย _mark_elective หลังใส่ SUBJECTS], "counters",
          "report": {"rows", "periods", "teachers_in_plan", "pools", "pool_options" (ตัวเลข),
                     "activity_sets": [{name, group_ids, weekly, teacher_ids}], "carried" (จำนวนแถวที่ได้ค่าที่ยกมา),
-                    "not_carried": [{group_id, subject_id, fields}] (ละห้อง+วิชา), "elective_rows" (จำนวนแถวแผนของวิชาเสรี),
+                    "not_carried": [{group_id, subject_id, fields}] (ละห้อง+วิชา),
+                    "new_cells": [{group_id, subject_id}] (ห้อง+วิชาที่ไม่มีในแผนเดิม ละห้อง+วิชา),
+                    "elective_rows" (จำนวนแถวแผนของวิชาเสรี),
                     "activity_rows" (จำนวนแถวแผนที่กิจกรรมทั้งระดับครอบ),
                     "curriculum_rows_added": [{curriculum_id, subject_id, weekly_count}] (ละหลักสูตร+วิชา),
+                    "merged_options": [{set, option_id, subject_id, teacher_id}] (ตัวเลือกคาบเสรีซ้ำที่ถูกรวม),
                     "skipped": [{source (row option option_teacher line elective_row activity_row), ref, reason}]}}
     """
     counters = dict(counters)
@@ -492,14 +498,22 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
         requirements.append(row)
         if r.get("flag") == CO_UNEQUAL_FLAG:
             unequal.setdefault((gid, sid), []).append(row)
-    for halves in unequal.values():
+    old_by_cell: dict[tuple, list[dict[str, Any]]] = {}
+    for r in outgoing.get("requirements") or []:
+        old_by_cell.setdefault((r.get("group_id"), r.get("subject_id")), []).append(r)
+    for cell, halves in unequal.items():
+        old_order = [r.get("teacher_id") for r in old_by_cell.get(cell, [])]
         for a, b in zip(halves[0::2], halves[1::2]):
             for x, y in ((a, b), (b, a)):
                 if x["co_teacher_id"] is None and y["teacher_id"] and y["teacher_id"] != x["teacher_id"]:
                     x["co_teacher_id"] = y["teacher_id"]
-    old_by_cell: dict[tuple, list[dict[str, Any]]] = {}
-    for r in outgoing.get("requirements") or []:
-        old_by_cell.setdefault((r.get("group_id"), r.get("subject_id")), []).append(r)
+            # ลำดับของคู่ตามแผนเดิม: _fold_coteaching เก็บแถวแรกของคู่เป็นบทเรียน (ครูหลัก ห้อง) แต่แถวของรอบเรียงตาม
+            # บรรทัดหลักสูตร (ตั้งต้นเรียงบรรทัดซ้ำตามคาบ) — แผนเดิมเขียนแถวคาบมากก่อนแล้วบทเรียนจะเปลี่ยนห้อง/ครูหลัก
+            if a["teacher_id"] in old_order and b["teacher_id"] in old_order and \
+                    old_order.index(b["teacher_id"]) < old_order.index(a["teacher_id"]):
+                ia = next(i for i, r in enumerate(requirements) if r is a)
+                ib = next(i for i, r in enumerate(requirements) if r is b)
+                requirements[ia], requirements[ib] = b, a
     teaching: dict[tuple, set[int]] = {}
     for row in requirements:
         teaching.setdefault((row["group_id"], row["subject_id"]), set()).add(row["teacher_id"])
@@ -538,6 +552,7 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
 
     pools: list[dict[str, Any]] = []
     activity_sets: list[dict[str, Any]] = []
+    merged: list[dict[str, Any]] = []       # ตัวเลือก (วิชา, ครู) ที่ซ้ำกับตัวที่มีแล้วในชุดเดียว → รวม (บันทึกไว้ ไม่หายเงียบ)
     # (ห้อง, วิชา) ของชุดคาบเสรี/ชุดกิจกรรม → {"kind": ชนิดของชุดแรกที่ครอบ, "teachers": ครูของตัวเลือกวิชานั้นทุกชุดที่ครอบห้องนั้น}
     cell_teachers: dict[tuple, dict[str, Any]] = {}
 
@@ -578,6 +593,8 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
             teachers = option_teachers(o, where)
             for tid, room in teachers or [(None, None)]:
                 if any(x["subject_id"] == sid and x["teacher_id"] == tid for x in pool["options"]):
+                    # โปรแกรมเก็บตัวเลือกละ (วิชา, ครู) อยู่แล้ว (_clean_pool_options ตัดแบบเดียวกัน) รวมแล้วไม่เสียอะไร
+                    merged.append({"set": pool["name"], "option_id": o.get("id"), "subject_id": sid, "teacher_id": tid})
                     continue
                 pool["options"].append({"key": _next_id(counters, "elective_option"), "subject_id": sid,
                                         "teacher_id": tid, "label": subj.get("name") or o.get("name") or "",
@@ -614,13 +631,20 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
     # ── ยกช่องที่เว็บไม่มีจากแผนเดิม ด้วยก้อน (ห้อง, วิชา) ทีละช่อง ─────────────────
     carried = 0
     not_carried: list[dict[str, Any]] = []
+    new_cells: list[dict[str, Any]] = []
     for row in requirements:
         block = old_by_cell.get((row["group_id"], row["subject_id"]))
         if not block:
-            continue        # ห้อง+วิชาใหม่ ไม่มีอะไรให้ยก
+            # ห้อง+วิชาที่ไม่มีในแผนเดิม: ไม่มีอะไรให้ยก ช่องที่เว็บไม่มีจึงว่าง — นับไว้บอกในสรุป (แบบข้อ 4.2) ละห้อง+วิชา
+            cell = {"group_id": row["group_id"], "subject_id": row["subject_id"]}
+            if cell not in new_cells:
+                new_cells.append(cell)
+            continue
         got, lost = False, []
         for k in CARRY_KEYS:
-            seen = {bool(r.get(k)) if k == "pinned_double" else r.get(k) for r in block}
+            # เซ็ตห้องย่อย: แบบนำเข้าของโปรแกรมใส่ "" หน้าแก้แถวใส่ null — โปรแกรมดูแค่ว่ามีค่าหรือไม่ จึงเป็นค่าเดียวกัน
+            seen = {bool(r.get(k)) if k == "pinned_double" else (r.get(k) or None) if k == "parallel_group_key"
+                    else r.get(k) for r in block}
             if len(seen) != 1:
                 lost.append(k)
                 continue
@@ -679,9 +703,9 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
     report = {"rows": len(requirements), "periods": sum(int(r["weekly_count"] or 0) for r in requirements),
               "teachers_in_plan": len(teachers_in_plan), "pools": len(pools),
               "pool_options": sum(len(p["options"]) for p in pools), "activity_sets": activity_sets,
-              "carried": carried, "not_carried": not_carried, "elective_rows": elective_rows,
+              "carried": carried, "not_carried": not_carried, "new_cells": new_cells, "elective_rows": elective_rows,
               "activity_rows": activity_rows,
-              "curriculum_rows_added": list(added.values()), "skipped": skipped}
+              "curriculum_rows_added": list(added.values()), "merged_options": merged, "skipped": skipped}
     return {"requirements": requirements, "pools": pools, "curricula": curricula, "group_curricula": group_curricula,
             "elective_subjects": sorted({o["subject_id"] for p in pools for o in p["options"]}),
             "counters": counters, "report": report}

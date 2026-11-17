@@ -75,6 +75,9 @@ def _parse_schema(sql):
             if m and "ON DELETE CASCADE" in line:
                 t["cascade"].append((m.group(1), word))
         tables[name] = t
+    # ขั้นที่ 3: คอลัมน์ที่เพิ่มให้ตารางเดิมด้วย ALTER TABLE … ADD COLUMN IF NOT EXISTS (ว่างได้ ไม่มีค่าตั้งต้น)
+    for name, col in re.findall(r"ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+) ", sql):
+        tables[name]["cols"][col] = {"serial": False, "notnull": False, "default": None, "has_default": False}
     return tables
 
 
@@ -157,6 +160,11 @@ class FakeCur:
             self._out = [self.session_row] if self.session_row else []
             return
         self.db.tick += 1
+        if s == "SELECT pg_advisory_xact_lock(%s)":
+            # ล็อกทะเบียน (ขั้นที่ 3) ไม่มีความหมายในของปลอมที่มีคำขอเดียว — ตรวจแค่คีย์ (ตัวทดสอบดูลำดับจาก cur.log)
+            assert params == [mock_api.WL_REGISTRY_LOCK_KEY], params
+            self._out, self.rowcount = [("",)], 1
+            return
         verb = s.split()[0].upper()
         if verb == "LOCK":
             # ล็อกตารางไม่มีความหมายในของปลอมที่มีคำขอเดียว — ตรวจแค่ชื่อตารางกับรูปคำสั่ง (ตัวทดสอบดูจาก cur.log)
@@ -1294,11 +1302,14 @@ def test_schema_round_rows_reference_curriculum_lines():
     assert re.search(r"set_id\s+bigint NOT NULL REFERENCES wl_term_sets\(id\) ON DELETE CASCADE",
                      _table("wl_term_set_options"))
     assert _cols("wl_curriculum_log") == {"id", "year", "semester", "at", "by_label", "action", "detail"}
-    # ไม่มีดัชนี unique ใหม่บนตารางที่มีข้อมูลจริง · ไม่ ALTER ตารางเดิม · ทุกคำสั่งรันซ้ำได้
+    # ไม่มีดัชนี unique ใหม่บนตารางที่มีข้อมูลจริง · ทุกคำสั่งรันซ้ำได้ · ALTER มีได้เฉพาะคอลัมน์ส่งออกของรอบ (ขั้นที่ 3
+    # แบบข้อ 4.7: ADD COLUMN IF NOT EXISTS บน wl_rounds) — ตารางอื่นไม่ถูก ALTER
     uniq = re.findall(r"CREATE\s+UNIQUE\s+INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s+ON\s+(\w+)", sql, re.I)
     assert {n for n, t in uniq if t in ("wl_codes", "wl_teachers", "wl_subjects")} == {
         "wl_codes_one_admin", "wl_codes_one_per_dept"}
-    assert not re.search(r"ALTER\s+TABLE", sql, re.I)
+    alters = re.findall(r"ALTER\s+TABLE\s+(\S+)\s+(.*)", sql, re.I)
+    assert [(t, rest.split()[:5]) for t, rest in alters] == [
+        ("wl_rounds", ["ADD", "COLUMN", "IF", "NOT", "EXISTS"])] * 4, alters
     for stmt in re.findall(r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+(\S+)", sql, re.I):
         assert stmt.upper() == "IF", stmt
     # ลำดับ: ตารางที่ถูกอ้างต้องสร้างก่อนตารางที่อ้างมัน

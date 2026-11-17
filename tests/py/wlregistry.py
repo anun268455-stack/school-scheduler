@@ -181,6 +181,9 @@ class _Cur:
         if "wl_sessions" in sql:
             self._cur = [self.session_row] if self.session_row else []
             return
+        if "pg_advisory_xact_lock" in sql:      # ล็อกทะเบียน (ขั้นที่ 3) ไม่กินผลในคิว
+            self._cur = [("",)]
+            return
         nxt = self.results.pop(0) if self.results else []
         if isinstance(nxt, int):
             self.rowcount, self._cur = nxt, []
