@@ -748,13 +748,15 @@ def test_report_returned():
         # report ของ _term_build ทั้งก้อน + ค่าก่อนเปลี่ยนให้ปลดล็อกเทอมย้อนได้ (Task 5)
         assert {k: rep[k] for k in want["report"]} == want["report"]
         assert set(rep) == set(want["report"]) | {"prior_status", "teachers", "subjects", "created_wl_subjects",
-                                                  "bound_lines", "bound_options"}, set(rep)
+                                                  "created_subjects", "bound_lines", "bound_options"}, set(rep)
         assert rep["prior_status"] == "filling"
         new_id = next(t["id"] for t in mock_api.TEACHERS if t["name"] == "ครูใหม่")
         assert rep["teachers"] == [{"id": new_teacher_wl, "old": None, "new": new_id}], rep["teachers"]
         assert rep["subjects"] == [], rep["subjects"]
         wl_zz9 = next(r["id"] for r in db.tables["wl_subjects"] if r["code"] == "ZZ9")
         assert rep["created_wl_subjects"] == [wl_zz9]
+        zz9_sched = next(r["sched_id"] for r in db.tables["wl_subjects"] if r["id"] == wl_zz9)
+        assert rep["created_subjects"] == [{"id": wl_zz9, "old": None, "new": zz9_sched}] and zz9_sched, rep["created_subjects"]
         assert rep["bound_lines"] == [ns.line["id"]] and rep["bound_options"] == [ns.opt["id"]]
         assert len(rep["activity_sets"]) == len(want["report"]["activity_sets"])
         stored = next(r for r in db.tables["wl_rounds"] if r["id"] == ns.rnd["id"])["export_report"]

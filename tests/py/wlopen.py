@@ -245,9 +245,10 @@ def _sql_of(db, fn, *a):
     return [q for q, _ in cur.log]
 
 
-# ขั้นที่ 3: รอบบอกว่าส่งเข้าโปรแกรมจัดตารางแล้วหรือยัง (exported_*) และรายงานผลของการส่ง
+# ขั้นที่ 3: รอบบอกว่าส่งเข้าโปรแกรมจัดตารางแล้วหรือยัง (exported_*) รายงานผลของการส่ง และข้อความของรอบที่คำนวณตอนอ่าน
+# (exported_text — เทอมของรอบเปิดอยู่หรือถูกปิดไว้ · Task 5 แก้รอบ 2)
 ROUND_KEYS = {"id", "year", "semester", "label", "status", "opened_at", "closed_at", "counts",
-              "exported_at", "exported_label", "export_report"}
+              "exported_at", "exported_label", "export_report", "exported_text"}
 
 
 def test_preview_writes_nothing_and_requires_curriculum():

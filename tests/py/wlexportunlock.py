@@ -1,6 +1,6 @@
 """
-ขั้นที่ 3 งานที่ 5: ปลดล็อกเทอม — ทะเบียนของเว็บตามเทอมที่เปิดอยู่ทั้งสองทิศ (แบบข้อ 4.8 ตามคำตัดสินแก้รอบ 1) และรอบที่ส่งแล้ว/
-ย้อนแล้วแก้ไม่ได้ (แบบข้อ 4.7): ปลดล็อกเทอมเก่า = ย้อนการส่ง (รอบยังปิด เก็บรายงาน) · ปลดล็อกเทอมที่สร้างจากรอบกลับมา = ผูกกลับ
+ขั้นที่ 3 งานที่ 5: ปลดล็อกเทอม — ทะเบียนของเว็บชี้ตามข้อมูลของเทอมที่เปิดอยู่ ไม่ว่าจะปลดล็อกลำดับใด (แบบข้อ 4.8 ตามคำตัดสินแก้รอบ 2:
+ปรับเทียบทุกรอบที่ส่งแล้วหลังทุกการปลดล็อก) และรอบที่ส่งแล้วแก้ไม่ได้ถาวร (แบบข้อ 4.7 — ข้อความตามว่าเทอมของรอบเปิดอยู่ไหม)
 
 ฐานข้อมูลปลอมชุดเดียวกับ wlexportcreate.py (ตาราง wl_* จาก _WL_SCHEMA + app_terms / app_state บนการเชื่อมต่อที่ COMMIT/ROLLBACK
 ได้จริง) เพิ่มคำสั่งเปิดเทอมของการปลดล็อก · ส่งรอบด้วยทางจริง (POST /api/terms + round_id) แล้วปลดล็อกเทอมเดิมด้วย route จริง
@@ -103,17 +103,12 @@ def _apply_sql(db, stmts):
     return cur
 
 
-NOW_AT = "2026-11-17T09:00:00+07:00"
-UNDONE_MSG = "แผนของรอบนี้อยู่ในเทอม 2/2569 ที่ถูกปิดไว้ — ปลดล็อกเทอมนั้นเพื่อใช้ต่อ"
-EXPORTED_MSG = "รอบนี้ส่งเข้าโปรแกรมแล้ว (เทอม 2/2569) แก้ไม่ได้"
+ACTIVE_MSG = "รอบนี้ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569"
+CLOSED_MSG = "รอบนี้ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569 (ถูกปิดไว้ ปลดล็อกเทอมนั้นเพื่อใช้ต่อ)"
 
 
-def _without(d, *keys):
-    return {k: v for k, v in d.items() if k not in keys}
-
-
-def _exported(rec, subjects=None, richer=True):
-    """ฉากครบทุกทาง → ส่งรอบด้วยทางจริง → (db, ns) · ns.before = ทะเบียน/หลักสูตร/รอบก่อนส่ง · ns.after = หลังส่ง · ns.rep · ns.new_id"""
+def _exported(rec, richer=True):
+    """ฉากครบทุกทาง → ส่งรอบด้วยทางจริง → (db, ns) · ns.before/after = wl_* ก่อน/หลังส่ง · ns.rep · ns.new_id (B)"""
     db, ns = (_richer() if richer else _rich())
     rec.use(db)
     ns.before = _wl(db)
@@ -126,258 +121,266 @@ def _rows_of(snap, table):
     return {r["id"]: r for r in snap[table]}
 
 
-# ── ฟังก์ชันล้วน: คำสั่งย้อน / ผูกกลับ ───────────────────────────────────────────────
-def test_undo_sql_restores_every_recorded_value():
-    # ส่งด้วยทางจริงแล้วรันคำสั่งย้อนบนฐานเดียวกัน → ทะเบียน บรรทัด ตัวเลือก กลับเป็นค่าก่อนส่ง (แถววิชาที่สร้างอยู่ต่อ sched_id ว่าง)
-    # รอบ: ยังปิด (สถานะ/เวลาปิดของการส่ง) · ลบแค่ exported_at · เก็บเทอม ชื่อเทอม รายงาน + บันทึก "ย้อนแล้ว" (ค่าที่ต้องใช้ผูกกลับ)
+def _unlock(term_id, label):
+    return mock_api.unlock_term(term_id, {"confirm": label})
+
+
+def _consistent(db, tag, rounds=None):
+    """หลังทุกขั้น: ทุก sched_id ที่ไม่ว่างของเว็บอยู่ในเทอมที่เปิด · ปุ่มดึงครู/วิชา (ดูก่อน) สร้าง 0 แถว · รอบที่ส่งแล้วไม่ถูกแตะ"""
+    open_t, open_s = {t["id"] for t in mock_api.TEACHERS}, {x["id"] for x in mock_api.SUBJECTS}
+    wl_t = {r["sched_id"] for r in db.tables["wl_teachers"] if r["sched_id"] is not None}
+    wl_s = {r["sched_id"] for r in db.tables["wl_subjects"] if r["sched_id"] is not None}
+    assert wl_t <= open_t and wl_s <= open_s, (tag, sorted(wl_t - open_t), sorted(wl_s - open_s))
+    pt = _call(db, ADMIN, mock_api.wl_teachers_import_preview, REQ)
+    ps = _call(db, ADMIN, mock_api.wl_subjects_import_preview, REQ)
+    assert pt["created"] == 0 and ps["created"] == 0, (tag, pt, ps)
+    for rid, row in (rounds or {}).items():
+        assert _round_row(db, rid) == row, (tag, rid)
+
+
+# ── ฟังก์ชันล้วน: ปรับเทียบทะเบียน ──────────────────────────────────────────────────
+def _rep(teachers=(), subjects=(), created=()):
+    return {"teachers": [dict(id=i, old=o, new=n) for i, o, n in teachers],
+            "subjects": [dict(id=i, old=o, new=n) for i, o, n in subjects],
+            "created_subjects": [dict(id=i, old=None, new=n) for i, n in created]}
+
+
+def _now(teachers=(), subjects=()):
+    t = {i: (v, f"ครู{i}") for i, v in teachers}
+    s_ = {i: (v, f"วิชา{i}") for i, v in subjects}
+    return {"teachers": t, "subjects": s_,
+            "teacher_held": {v: (i, n) for i, (v, n) in t.items() if v is not None},
+            "subject_held": {v: (i, n) for i, (v, n) in s_.items() if v is not None}}
+
+
+def _sets(res):
+    return {(x["table"], x["id"]): (x["from"], x["to"]) for x in res["set"]}
+
+
+def test_reconcile_follows_the_open_terms_data():
+    rc = mock_api.wl_registry_reconcile
+    r1 = _rep(teachers=[(1, None, 8), (2, 598, 9), (3, 5, 144)], subjects=[(21, None, 906)], created=[(22, 907)])
+    after = _now(teachers=[(1, 8), (2, 9), (3, 144)], subjects=[(21, 906), (22, 907)])
+    # เปิดเทอมก่อนส่ง (ไม่มี 8 9 144 907 · มี 5 906): ค่าใหม่ไม่อยู่ → ค่าเดิมของรอบที่เก่าสุดถ้าอยู่ในเทอมที่เปิด ไม่งั้นว่าง
+    res = rc([r1], {5, 501}, {906}, after)
+    assert _sets(res) == {("wl_teachers", 1): (8, None), ("wl_teachers", 2): (9, None), ("wl_teachers", 3): (144, 5),
+                          ("wl_subjects", 22): (907, None)}, res
+    assert res["skipped"] == []
+    # เปิดเทอมของรอบ (หรือเทอมที่สืบมา) จากสถานะหลังย้อน → ค่าใหม่ทั้งหมด · แถวที่ตรงอยู่แล้วไม่อยู่ในรายการ
+    back = _now(teachers=[(1, None), (2, None), (3, 5)], subjects=[(21, 906), (22, None)])
+    res = rc([r1], {5, 8, 9, 144}, {906, 907}, back)
+    assert _sets(res) == {("wl_teachers", 1): (None, 8), ("wl_teachers", 2): (None, 9), ("wl_teachers", 3): (5, 144),
+                          ("wl_subjects", 22): (None, 907)}, res
+    assert rc([r1], {8, 9, 144}, {906, 907}, after) == {"set": [], "skipped": []}
+    # หลายรอบ: ไล่จากรอบใหม่ไปเก่า — รอบแรกที่ค่าใหม่อยู่ในเทอมที่เปิดชนะ
+    r2 = _rep(teachers=[(1, 8, 20)])
+    now2 = _now(teachers=[(1, 20)])
+    assert _sets(rc([r1, r2], {8, 20}, set(), now2)) == {}
+    assert _sets(rc([r1, r2], {8}, set(), now2)) == {("wl_teachers", 1): (20, 8)}
+    assert _sets(rc([r1, r2], set(), set(), now2)) == {("wl_teachers", 1): (20, None)}
+    # กฎให้สองแถวชี้รหัสเดียวกัน (ก. new 144 ไม่มี → old 5 · ข. new 5 มี) → แถวที่ถือ 5 อยู่และไม่ย้ายชนะ · ก. ข้าม และเพราะ 144 ไม่มี
+    # ในเทอมที่เปิด จึงตั้งว่าง (ไม่ปล่อยชี้ของที่ไม่มี) · รหัสของโปรแกรมไม่เคยใช้ซ้ำ ข้อมูลการส่งจริงไม่ให้คู่แบบนี้ — นี่คือทางกันไว้
+    clash = _rep(teachers=[(1, 5, 144), (2, None, 5)])
+    res = rc([clash], {5}, set(), _now(teachers=[(1, 144), (2, 5)]))
+    assert _sets(res) == {("wl_teachers", 1): (144, None)} and len(res["skipped"]) == 1, res
+    # แถวที่ถือค่าปลายทางอยู่แต่กำลังย้ายออกในชุดเดียวกัน ไม่ถือว่าชน
+    vacate = _now(teachers=[(1, None), (2, 8)])                       # ข. ถือ 8 อยู่ แต่ปลายทางของ ข. คือ 9
+    res = rc([_rep(teachers=[(1, None, 8)]), _rep(teachers=[(2, None, 9)])], {8, 9}, set(), vacate)
+    assert res["skipped"] == [] and _sets(res) == {("wl_teachers", 1): (None, 8), ("wl_teachers", 2): (8, 9)}, res
+    assert mock_api.wl_registry_reconcile_sql(res) == [
+        ("UPDATE wl_teachers SET sched_id = %s WHERE id = %s AND sched_id = %s", (None, 2, 8)),
+        ("UPDATE wl_teachers SET sched_id = %s WHERE id = %s AND sched_id IS NULL", (8, 1)),
+        ("UPDATE wl_teachers SET sched_id = %s WHERE id = %s AND sched_id IS NULL", (9, 2))]
+    # ชน: ค่าปลายทางมีแถวอื่น (ไม่ได้อยู่ในชุดที่ย้าย) ถืออยู่ → ข้าม พร้อมชื่อทั้งสองฝ่าย · ค่าเดิมของแถวที่ข้ามไม่อยู่ในเทอมที่เปิด → ตั้งว่าง
+    held = _now(teachers=[(1, None), (2, None)])
+    held["teacher_held"][8] = (99, "ครูที่ผูกรหัสไปก่อน")
+    res = rc([r1], {8, 9}, set(), held)
+    assert _sets(res) == {("wl_teachers", 2): (None, 9)}, res
+    (msg,) = res["skipped"]
+    assert "ครู1" in msg and "ครูที่ผูกรหัสไปก่อน" in msg and "8" in msg and _thai(msg), msg
+    stale = _now(teachers=[(1, 77)])
+    stale["teacher_held"][8] = (99, "ครูที่ผูกรหัสไปก่อน")
+    res = rc([_rep(teachers=[(1, None, 8)])], {8}, set(), stale)
+    assert _sets(res) == {("wl_teachers", 1): (77, None)} and "ยังไม่ผูก" in res["skipped"][0], res
+    # คำสั่ง: สองรอบ (ว่างก่อน แล้วค่อยใส่ — สลับเลขกันได้) ทุกคำสั่งระบุค่าปัจจุบัน
+    sql = mock_api.wl_registry_reconcile_sql({"set": [{"table": "wl_teachers", "id": 1, "from": 144, "to": 5},
+                                                      {"table": "wl_teachers", "id": 2, "from": 5, "to": None}],
+                                              "skipped": []})
+    assert sql == [("UPDATE wl_teachers SET sched_id = %s WHERE id = %s AND sched_id = %s", (None, 1, 144)),
+                   ("UPDATE wl_teachers SET sched_id = %s WHERE id = %s AND sched_id = %s", (None, 2, 5)),
+                   ("UPDATE wl_teachers SET sched_id = %s WHERE id = %s AND sched_id IS NULL", (5, 1))], sql
+
+
+def test_export_records_created_subjects_for_reconcile():
     with _world(subjects=_subjects_with_906()) as rec:
         db, ns = _exported(rec)
-        rep = ns.rep
-        assert {w["id"]: w["old"] for w in rep["teachers"]} == {ns.new_t["id"]: None, ns.stale["id"]: 598}, rep["teachers"]
-        assert [(w["id"], w["old"], w["new"]) for w in rep["subjects"]] == [(ns.wl_sub["id"], None, 906)], rep["subjects"]
-        assert rep["created_wl_subjects"] and rep["bound_lines"] and rep["bound_options"]
-        now = mock_api._wl_export_now(FakeCur(db, None), rep)
-        stmts = mock_api.wl_export_undo_sql(rep, ns.rnd["id"], now, NOW_AT)
-        assert all(isinstance(q, str) and isinstance(p, tuple) for q, p in stmts)
-        _apply_sql(db, stmts)
-        after = _wl(db)
-        created = set(rep["created_wl_subjects"])
-        for t in ("wl_teachers", "wl_curriculum_lines", "wl_term_set_options"):
-            assert after[t] == ns.before[t], t
-        assert [r for r in after["wl_subjects"] if r["id"] not in created] == ns.before["wl_subjects"]
-        assert [r["sched_id"] for r in after["wl_subjects"] if r["id"] in created] == [None] * len(created)
-        r_exp, r_now = _rows_of(ns.after, "wl_rounds")[ns.rnd["id"]], _rows_of(after, "wl_rounds")[ns.rnd["id"]]
-        assert _without(r_now, "exported_at", "export_report") == _without(r_exp, "exported_at", "export_report")
-        assert r_now["status"] == "closed" and r_now["closed_at"] is not None and r_now["exported_at"] is None
-        assert (r_now["exported_term_id"], r_now["exported_label"]) == (ns.new_id, "2/2569")
-        undone = r_now["export_report"].pop("undone")
-        assert r_now["export_report"] == rep, "รายงานเดิมอยู่ครบ"
-        assert undone["at"] == NOW_AT
-        assert undone["created"] == [[i, r["sched_id"]] for i, r in sorted(_rows_of(ns.after, "wl_subjects").items())
-                                     if i in created]
-        assert undone["lines"] == [[i, _rows_of(ns.after, "wl_curriculum_lines")[i]["subject_id"]]
-                                   for i in sorted(rep["bound_lines"])]
-        assert undone["options"] == [[i, _rows_of(ns.after, "wl_term_set_options")[i]["subject_id"]]
-                                     for i in sorted(rep["bound_options"])]
-    # คืนเฉพาะค่าที่การส่งเขียนไว้ · ลำดับคืน UNIQUE ไม่ชนกันเอง (ก. 5→144 · ข. ว่าง→5 · ค. ไม่ใช่ของเรา)
-    from wlcurriculum import FakeDb
-    db = FakeDb()
-    a = db.add("wl_teachers", sched_id=144, name="ก", department_id=1)
-    b = db.add("wl_teachers", sched_id=5, name="ข", department_id=1)
-    c = db.add("wl_teachers", sched_id=77, name="ค", department_id=1)
-    db.add("wl_rounds", year=2569, semester=2, label="2/2569", status="closed", exported_term_id=3,
-           exported_label="2/2569", exported_at=mock_api._dt.datetime(2026, 11, 1, tzinfo=mock_api._dt.timezone.utc))
-    rep2 = {"prior_status": "filling", "subjects": [], "created_wl_subjects": [], "bound_lines": [], "bound_options": [],
-            "teachers": [{"id": a["id"], "old": 5, "new": 144}, {"id": b["id"], "old": None, "new": 5},
-                         {"id": c["id"], "old": None, "new": 145}]}
-    _apply_sql(db, mock_api.wl_export_undo_sql(rep2, 1, mock_api._wl_export_now(FakeCur(db, None), rep2), NOW_AT))
-    assert [(r["id"], r["sched_id"]) for r in db.tables["wl_teachers"]] == [(a["id"], 5), (b["id"], None), (c["id"], 77)]
-    assert db.tables["wl_rounds"][0]["status"] == "closed" and db.tables["wl_rounds"][0]["exported_at"] is None
-    # ผูกกลับบนฐานเดียวกัน: สลับเลขกลับได้โดยไม่ชน UNIQUE · ค. (ไม่ใช่ค่าที่การย้อนทิ้งไว้) ถูกข้ามพร้อมเหตุ
-    rep3 = db.tables["wl_rounds"][0]["export_report"]
-    stmts, notes = mock_api.wl_export_redo_sql(rep3, 1, mock_api._wl_export_now(FakeCur(db, None), rep3), {5, 144, 145}, set())
-    _apply_sql(db, stmts)
-    assert [(r["id"], r["sched_id"]) for r in db.tables["wl_teachers"]] == [(a["id"], 144), (b["id"], 5), (c["id"], 77)]
-    assert len(notes) == 1 and "ครู ค" in notes[0] and _thai(notes[0]), notes
-    assert db.tables["wl_rounds"][0]["exported_at"] is not None and "undone" not in db.tables["wl_rounds"][0]["export_report"]
+        created = ns.rep["created_wl_subjects"]
+        assert ns.rep["created_subjects"] == [{"id": i, "old": None, "new": _rows_of(ns.after, "wl_subjects")[i]["sched_id"]}
+                                              for i in created] and created, ns.rep["created_subjects"]
 
 
-# ── ปลดล็อกโดยไม่มีรอบที่ส่งเข้าเทอมนั้น: โค้ดเดิม ─────────────────────────────────
+# ── ปลดล็อกโดยไม่มีรอบที่ส่งแล้วเลย: โค้ดเดิม ─────────────────────────────────────
 def test_unlock_without_export_is_unchanged():
-    # เทอมที่เปิดอยู่สร้างด้วยปุ่มเดิม (ไม่มีรอบที่ผูกกับเทอมที่ปิดหรือเทอมที่เปิด) → การสลับเทอมเป็นคำสั่งเดิมตรงตัวในการเชื่อมต่อของมันเอง
-    # ไม่ถือล็อกทะเบียน ไม่แตะตาราง wl_* · คำตอบ ตัวแปร และบันทึกประวัติเหมือนก่อนงานนี้
-    for other_round_exported in (False, True):
-        with _world() as rec, _unlockable(rec):
-            db, ns = _rich()
-            rec.use(db)
-            mock_api.create_term({"year": 2569, "semester": 2})            # ปุ่มเดิม → เทอม 16 active
-            if other_round_exported:                                      # รอบของเทอมอื่นที่ส่งไปแล้วไม่เกี่ยว
-                _round_row(db, ns.rnd["id"]).update(status="closed", exported_term_id=4, exported_label="1/2568",
-                                                    exported_at=mock_api._dt.datetime.now(mock_api._dt.timezone.utc))
-            wl_before, n_conns = _wl(db), len(rec.conns)
-            del rec.logged[:]
-            out = mock_api.unlock_term(5, {"confirm": "1/2569"})
-            swap = rec.conns[n_conns:]
-            assert len(swap) == 1, len(swap)
-            log = swap[0].cur.log
-            assert [s for s, _p in log] == TERMS_DDL + [ROTATE_UPDATE, ACTIVATE, "COMMIT"], [s for s, _p in log]
-            assert log[2][1][1:] == (0, 16) and log[3][1] == (5,), (log[2][1][1:], log[3][1])
-            assert _wl(db) == wl_before
-            assert rec.wl_logs[-1] == [("SELECT id FROM wl_rounds WHERE exported_term_id = ANY(%s)", ([16, 5],))]
-            assert all(not _writes(lg) and not any("pg_advisory" in s for s, _p in lg) for lg in rec.wl_logs)
-            assert set(out) == {"closed", "active", "save_error", "save_pending"}, set(out)
-            assert out["closed"]["id"] == 16 and out["active"]["id"] == 5
-            assert mock_api.CURRENT_TERM == ACTIVE5, mock_api.CURRENT_TERM
-            assert rec.logged == [(16, "close", "ปิดเทอม 2/2569 (0 คาบ)"), (5, "unlock", "ปลดล็อกเทอม 1/2569")], rec.logged
-    # ไม่มีแถว active (ทางเก็บเทอมแรก): ไม่มีเทอมที่จะถูกปิด จึงไม่ถามตารางของรอบเลย
+    with _world() as rec, _unlockable(rec):
+        db, ns = _rich()
+        rec.use(db)
+        mock_api.create_term({"year": 2569, "semester": 2})            # ปุ่มเดิม → เทอม 16 active · ไม่มีรอบที่ส่งแล้ว
+        wl_before, n_conns = _wl(db), len(rec.conns)
+        del rec.logged[:]
+        out = _unlock(5, "1/2569")
+        swap = rec.conns[n_conns:]
+        assert len(swap) == 1, len(swap)
+        log = swap[0].cur.log
+        assert [s for s, _p in log] == TERMS_DDL + [ROTATE_UPDATE, ACTIVATE, "COMMIT"], [s for s, _p in log]
+        assert log[2][1][1:] == (0, 16) and log[3][1] == (5,), (log[2][1][1:], log[3][1])
+        assert _wl(db) == wl_before
+        assert rec.wl_logs[-1] == [("SELECT id FROM wl_rounds WHERE export_report IS NOT NULL LIMIT 1", ())], rec.wl_logs[-1]
+        assert set(out) == {"closed", "active", "save_error", "save_pending"}, set(out)
+        assert out["closed"]["id"] == 16 and out["active"]["id"] == 5 and mock_api.CURRENT_TERM == ACTIVE5
+        assert rec.logged == [(16, "close", "ปิดเทอม 2/2569 (0 คาบ)"), (5, "unlock", "ปลดล็อกเทอม 1/2569")], rec.logged
+    # ไม่มีแถว active (ทางเก็บเทอมแรก): ไม่ถามตารางของรอบเลย
     blank = {"id": None, "year": None, "semester": None, "label": None, "status": None}
     with _world(terms=({**ACTIVE5, "status": "closed"},), current=blank) as rec, _unlockable(rec):
         db, ns = _rich()
         rec.use(db)
         db.terms[0]["data"] = mock_api._pack(mock_api._snapshot())
-        mock_api.SCHOOL_CONFIG.update({"term": "2", "year": "2569"})     # ตารางที่ลงอยู่ = 2/2569 (ยังไม่มีแถว)
-        out = mock_api.unlock_term(5, {"confirm": "1/2569"})
-        assert out["active"]["id"] == 5 and rec.wl_logs == [], rec.wl_logs
-    # ทางเดิมยังผ่าน _term_swap_active แบบไม่ส่ง cursor (ตัวทดสอบเดิมของชั้นเทอมดูตรงนี้)
+        mock_api.SCHOOL_CONFIG.update({"term": "2", "year": "2569"})
+        assert _unlock(5, "1/2569")["active"]["id"] == 5 and rec.wl_logs == [], rec.wl_logs
     src = inspect.getsource(mock_api.unlock_term)
     assert "closed_id = _term_swap_active(\n            old_id, old_blob, old_slots, term_id," in src
 
 
-# ── ปลดล็อกเทอมเก่า: ย้อนการส่งในธุรกรรมเดียวกับการสลับเทอม ────────────────────────────
-def test_unlock_after_export_reverts_in_same_transaction():
-    with _world(subjects=_subjects_with_906()) as rec, _unlockable(rec):
-        db, ns = _richer()
-        rec.use(db)
-        wl_before, mem_before = _wl(db), _program_state()
-        out = _post(ns.rnd)
-        new_id, rep = out["active"]["id"], out["report"]
-        exported = _wl(db)
-        n_conns = len(rec.conns)
-        del rec.logged[:]
-        res = mock_api.unlock_term(5, {"confirm": "1/2569"})
-        assert len(rec.conns) == n_conns + 1, "ทั้งหมดในการเชื่อมต่อเดียว"
-        conn = rec.conns[-1]
-        log = conn.cur.log
-        stmts = [s for s, _p in log]
-        assert conn.commits == 1 and stmts.count("COMMIT") == 1 and stmts[-1] == "COMMIT", stmts
-        # ล็อกทะเบียนเป็นคำสั่งแรก → ล็อกแถวรอบที่ผูกกับสองเทอม → สลับเทอม → ย้อน → ลบเครื่องหมาย (คำสั่งเขียนสุดท้าย) → COMMIT
-        assert log[0] == LOCK, log[0]
-        assert log[1] == ("SELECT id, label, exported_at, exported_term_id, export_report FROM wl_rounds "
-                          "WHERE exported_term_id = ANY(%s) FOR UPDATE", ([new_id, 5],)), log[1]
-        assert not any(s.split()[0].upper() in ("CREATE", "ALTER", "DROP", "LOCK") for s in stmts), stmts
-        i_close, i_open = stmts.index(ROTATE_UPDATE), stmts.index(ACTIVATE)
-        i_undo = next(i for i, s in enumerate(stmts) if s.startswith("UPDATE wl_"))
-        assert 1 < i_close < i_open < i_undo, stmts
-        writes = [s for s in stmts if s.split()[0] == "UPDATE"]
-        assert writes[-1] == "UPDATE wl_rounds SET exported_at = %s, export_report = %s::jsonb " \
-                             "WHERE id = %s AND exported_at IS NOT NULL", writes[-1]
-        assert log[i_close][1][2] == new_id and log[i_open][1] == (5,)
-        # ฐาน: ทะเบียน หลักสูตร ตัวเลือก = ก่อนส่ง (วิชาที่สร้างอยู่ต่อ sched_id ว่าง) · รอบ = ยังปิด เก็บรายงาน ลบแค่ exported_at
-        after = _wl(db)
-        created = set(rep["created_wl_subjects"])
-        for t in ("wl_teachers", "wl_curriculum_lines", "wl_term_set_options"):
-            assert after[t] == wl_before[t], t
-        assert [r for r in after["wl_subjects"] if r["id"] not in created] == wl_before["wl_subjects"]
-        assert all(r["sched_id"] is None for r in after["wl_subjects"] if r["id"] in created) and created
-        r_exp, r_now = _rows_of(exported, "wl_rounds")[ns.rnd["id"]], _rows_of(after, "wl_rounds")[ns.rnd["id"]]
-        assert _without(r_now, "exported_at", "export_report") == _without(r_exp, "exported_at", "export_report")
-        assert r_now["exported_at"] is None and "undone" in r_now["export_report"]
-        assert [(t["id"], t["status"]) for t in db.terms] == [(5, "active"), (new_id, "closed")]
-        # หน่วยความจำ = เทอม 1/2569 ที่ปิดไว้ · คำตอบ = รูปเดิม + ข้อความของรอบ (m5)
-        mem = _program_state()
-        for k in ("TEACHERS", "SUBJECTS", "REQUIREMENTS", "ELECTIVE_POOLS", "CURRICULA", "SLOTS", "CURRENT_TERM"):
-            assert mem[k] == mem_before[k], k
-        assert set(res) == {"closed", "active", "save_error", "save_pending", "workload"} and res["active"]["id"] == 5
-        (note,) = res["workload"]
-        assert "ย้อนการส่งรอบอัตรากำลัง 2/2569" in note and "รอบยังปิดอยู่" in note and UNDONE_MSG in note, note
-        assert rec.logged == [(new_id, "close", "ปิดเทอม 2/2569 (0 คาบ)"),
-                              (5, "unlock", "ปลดล็อกเทอม 1/2569 · ย้อนการส่งรอบอัตรากำลัง 2/2569 (รอบยังปิดอยู่)")], rec.logged
-        # ไม่มีแถวของเว็บชี้ครูที่โปรแกรมไม่มี (นอกจากที่ห้อยอยู่ก่อนส่ง) · ปุ่มดึงครูจากโปรแกรมไม่สร้างแถวซ้ำ
-        sched_t = {t["id"] for t in mock_api.TEACHERS}
-        assert {r["sched_id"] for r in after["wl_teachers"] if r["sched_id"] is not None} - sched_t == {598}
-        got = _call(db, ADMIN, mock_api.wl_teachers_import, REQ)
-        assert got["created"] == 0 and len(db.tables["wl_teachers"]) == len(wl_before["wl_teachers"]), got
-        # รอบแก้ไม่ได้ (ทางตันที่หลอกผู้ใช้ — คำตัดสินแก้รอบ 1) · บอกให้ปลดล็อกเทอมที่ถือแผนของรอบ
-        code, detail = _code(lambda: _call(db, ADMIN, mock_api.wl_curriculum_lines_update, ns.line2["id"], REQ, None,
-                                           {"name": "การงานอาชีพ ก"}))
-        assert code == 409 and detail.startswith(UNDONE_MSG), (code, detail)
-
-
-def test_reopening_the_round_term_puts_the_registry_back_and_cycles():
-    # ย้อน → ปลดล็อกเทอม 2/2569 กลับ (ผูกกลับ) → ทะเบียน/การผูก/exported_at = หลังส่งตรงตัว · ย้อนอีกครั้ง = ก่อนส่ง · ผูกกลับอีกครั้ง = หลังส่ง
+# ── A ↔ B: ปรับเทียบในธุรกรรมเดียวกับการสลับเทอม ─────────────────────────────────
+def test_unlock_reconciles_in_the_swap_transaction():
     with _world(subjects=_subjects_with_906()) as rec, _unlockable(rec):
         db, ns = _exported(rec)
+        mem_before_export = None
+        rid, rnd_after = ns.rnd["id"], copy.deepcopy(_round_row(db, ns.rnd["id"]))
         for cycle in range(2):
-            mock_api.unlock_term(5, {"confirm": "1/2569"})                     # ย้อน
-            now = _wl(db)
-            for t in ("wl_teachers", "wl_curriculum_lines", "wl_term_set_options"):
-                assert now[t] == ns.before[t], (cycle, t)
             n_conns = len(rec.conns)
             del rec.logged[:]
-            res = mock_api.unlock_term(ns.new_id, {"confirm": "2/2569"})        # ผูกกลับ
+            res = _unlock(5, "1/2569")                                   # A: เทอมก่อนส่ง
             conn = rec.conns[-1]
-            assert len(rec.conns) == n_conns + 1 and conn.commits == 1 and conn.cur.log[0] == LOCK, cycle
-            assert not any(s.split()[0].upper() in ("CREATE", "ALTER") for s, _p in conn.cur.log)
+            log = conn.cur.log
+            stmts = [s for s, _p in log]
+            assert len(rec.conns) == n_conns + 1 and conn.commits == 1 and stmts[-1] == "COMMIT", stmts
+            assert log[0] == LOCK, log[0]                                # ล็อกทะเบียนเป็นคำสั่งแรก
+            assert log[1] == ("SELECT export_report FROM wl_rounds WHERE export_report IS NOT NULL "
+                              "ORDER BY exported_at, id", ()), log[1]
+            assert not any(s.split()[0].upper() in ("CREATE", "ALTER", "DROP", "LOCK") for s in stmts), stmts
+            i_open = stmts.index(ACTIVATE)
+            regs = [i for i, s in enumerate(stmts) if s.startswith("UPDATE wl_")]
+            assert regs and min(regs) > i_open, stmts                    # ทะเบียนหลังสลับเทอม
+            assert not any(s.startswith(("UPDATE wl_rounds", "UPDATE wl_curriculum_lines", "UPDATE wl_term_set_options"))
+                           for s in stmts), stmts                        # ไม่แตะรอบ ไม่ถอดการผูก
             now = _wl(db)
-            for t in ("wl_teachers", "wl_subjects", "wl_curriculum_lines", "wl_term_set_options"):
-                assert now[t] == ns.after[t], (cycle, t)
-            r_exp, r_now = _rows_of(ns.after, "wl_rounds")[ns.rnd["id"]], _rows_of(now, "wl_rounds")[ns.rnd["id"]]
-            assert _without(r_now, "exported_at") == _without(r_exp, "exported_at"), (cycle, r_now)   # รายงานเดิม ไม่มี "undone"
-            assert r_now["exported_at"] is not None
-            # ทะเบียนตรงกับเทอมที่เปิด (ครูของเว็บชี้ครูที่โปรแกรมมีเท่านั้น) · ปุ่มดึงครูไม่สร้างแถวซ้ำ
-            sched_t = {t["id"] for t in mock_api.TEACHERS}
-            assert {r["sched_id"] for r in now["wl_teachers"] if r["sched_id"] is not None} <= sched_t
-            assert _call(db, ADMIN, mock_api.wl_teachers_import, REQ)["created"] == 0
-            assert _call(db, ADMIN, mock_api.wl_subjects_import, REQ)["created"] == 0
+            t_now, t_before = _rows_of(now, "wl_teachers"), _rows_of(ns.before, "wl_teachers")
+            assert t_now[ns.new_t["id"]]["sched_id"] is None
+            assert t_now[ns.stale["id"]]["sched_id"] is None             # 598 ไม่มีในเทอมที่เปิด → ว่าง (กฎใหม่)
+            assert {i: r for i, r in t_now.items() if i not in (ns.stale["id"],)} == \
+                   {i: r for i, r in t_before.items() if i not in (ns.stale["id"],)}
+            s_now = _rows_of(now, "wl_subjects")
+            assert s_now[ns.wl_sub["id"]]["sched_id"] == 906             # วิชาที่ผูกด้วยรหัส มีในเทอมที่เปิด → คงไว้
+            assert all(s_now[i]["sched_id"] is None for i in ns.rep["created_wl_subjects"])
+            for t in ("wl_curriculum_lines", "wl_term_set_options"):
+                assert now[t] == ns.after[t], t                           # การผูกบรรทัด/ตัวเลือกไม่ถูกถอด
+            assert _round_row(db, rid) == rnd_after                      # รอบไม่ถูกแตะ (exported_at เดิม)
+            _consistent(db, f"A {cycle}", {rid: rnd_after})
+            assert set(res) == {"closed", "active", "save_error", "save_pending", "workload"}
             (note,) = res["workload"]
-            assert "ผูกทะเบียน" in note and "รอบอัตรากำลัง 2/2569" in note and "ข้าม" not in note, note
-            assert rec.logged[-1] == (ns.new_id, "unlock", "ปลดล็อกเทอม 2/2569 · ผูกทะเบียนตามรอบอัตรากำลัง 2/2569 อีกครั้ง")
-            # รอบกลับเป็น "ส่งแล้ว" — route เขียนได้ 409 ข้อความของรอบที่ส่งแล้ว
+            assert "ปรับทะเบียน" in note and "เทอม 1/2569" in note and "ครู 2 คน" in note and "วิชา 1 วิชา" in note, note
+            assert rec.logged[-1] == (5, "unlock", "ปลดล็อกเทอม 1/2569 · ปรับทะเบียนของเว็บลงอัตรากำลังตามเทอมนี้ "
+                                               "(ครู 2 คน · วิชา 1 วิชา)"), rec.logged
             code, detail = _code(lambda: _call(db, ADMIN, mock_api.wl_curriculum_lines_update, ns.line2["id"], REQ, None,
                                                {"name": "x"}))
-            assert code == 409 and detail.startswith(EXPORTED_MSG), (code, detail)
+            assert code == 409 and detail.startswith(CLOSED_MSG), (code, detail)
+            res = _unlock(ns.new_id, "2/2569")                           # B: เทอมของรอบ
+            now = _wl(db)
+            for t in ("wl_teachers", "wl_subjects", "wl_curriculum_lines", "wl_term_set_options"):
+                assert now[t] == ns.after[t], (cycle, t)                  # = หลังส่งตรงตัว
+            _consistent(db, f"B {cycle}", {rid: rnd_after})
+            assert "ครู 2 คน" in res["workload"][0] and "วิชา 1 วิชา" in res["workload"][0], res["workload"]
+            code, detail = _code(lambda: _call(db, ADMIN, mock_api.wl_curriculum_lines_update, ns.line2["id"], REQ, None,
+                                               {"name": "x"}))
+            assert code == 409 and detail.startswith(ACTIVE_MSG) and "ถูกปิดไว้" not in detail, (code, detail)
 
 
-def test_reopening_skips_what_others_changed_and_says_so():
-    # ระหว่างย้อนกับผูกกลับ: มีแถวอื่นในทะเบียนถือรหัสครูใหม่ไปแล้ว และครูรหัสห้อยถูกแก้รหัสไปแล้ว → สองรายการนั้นข้าม (ไม่ชน UNIQUE
-    # ไม่ทับ) พร้อมเหตุไทยในคำตอบ · ที่เหลือผูกกลับครบ · รอบกลับเป็นส่งแล้ว
-    with _world(subjects=_subjects_with_906()) as rec, _unlockable(rec):
-        db, ns = _exported(rec)
-        new_sched = next(w["new"] for w in ns.rep["teachers"] if w["id"] == ns.new_t["id"])
-        mock_api.unlock_term(5, {"confirm": "1/2569"})
-        taker = db.add("wl_teachers", sched_id=new_sched, name="ครูที่ผูกรหัสนั้นไปก่อน", department_id=1)
-        next(r for r in db.tables["wl_teachers"] if r["id"] == ns.stale["id"])["sched_id"] = 597
-        res = mock_api.unlock_term(ns.new_id, {"confirm": "2/2569"})
-        now = _rows_of(_wl(db), "wl_teachers")
-        assert now[ns.new_t["id"]]["sched_id"] is None and now[taker["id"]]["sched_id"] == new_sched
-        assert now[ns.stale["id"]]["sched_id"] == 597
-        for t in ("wl_subjects", "wl_curriculum_lines", "wl_term_set_options"):
-            assert _wl(db)[t] == ns.after[t], t
-        assert _round_row(db, ns.rnd["id"])["exported_at"] is not None
-        (note,) = res["workload"]
-        assert "ข้าม 2 รายการ" in note and "ครูใหม่" in note and "ครูที่ผูกรหัสนั้นไปก่อน" in note and "ครูรหัสห้อย" in note, note
+# ── ลำดับอื่นของผู้ตรวจ (S1–S5): ทะเบียนตรงกับเทอมที่เปิดทุกขั้น ───────────────────────
+def test_any_unlock_order_keeps_the_registry_on_the_open_term():
+    def case(name, steps):
+        with _world(subjects=_subjects_with_906()) as rec, _unlockable(rec):
+            db, ns = _exported(rec)
+            rounds = {ns.rnd["id"]: copy.deepcopy(_round_row(db, ns.rnd["id"]))}
+            terms = {"A": (5, "1/2569"), "B": (ns.new_id, "2/2569")}
+            _consistent(db, f"{name} หลังส่ง", rounds)
+            for step in steps:
+                if step in ("C", "C'") and "C" not in terms:              # ครั้งแรก = สร้าง 1/2570 ด้วยปุ่มเดิม (ต่อจากเทอมที่เปิด)
+                    terms["C"] = (mock_api.create_term({"year": 2570, "semester": 1})["active"]["id"], "1/2570")
+                elif step in ("C", "C'"):                                  # ครั้งต่อไป = ปลดล็อก 1/2570
+                    _unlock(*terms["C"])
+                elif step == "R2":                                       # รอบที่สองส่งเข้า C: ครูใหม่ที่มีเฉพาะใน C
+                    tid = mock_api.create_teacher({"name": "ครูของรอบสอง"})["id"]
+                    z = db.add("wl_teachers", sched_id=tid, name="ครูของรอบสอง", department_id=1)
+                    r2 = db.add("wl_rounds", year=2570, semester=1, label="1/2570", status="closed",
+                                exported_term_id=terms["C"][0], exported_label="1/2570",
+                                exported_at=mock_api._dt.datetime(2027, 5, 1, tzinfo=mock_api._dt.timezone.utc),
+                                export_report={"teachers": [{"id": z["id"], "old": None, "new": tid}], "subjects": [],
+                                               "created_subjects": [], "created_wl_subjects": [], "bound_lines": [],
+                                               "bound_options": []})
+                    rounds[r2["id"]] = copy.deepcopy(r2)
+                    ns.z, ns.z_sched = z["id"], tid
+                elif step == "pull":
+                    _call(db, ADMIN, mock_api.wl_teachers_import, REQ)
+                else:
+                    _unlock(*terms[step])
+                _consistent(db, f"{name} {step}", rounds)
+                if hasattr(ns, "z"):
+                    z_now = next(r for r in db.tables["wl_teachers"] if r["id"] == ns.z)["sched_id"]
+                    assert z_now == (ns.z_sched if ns.z_sched in {t["id"] for t in mock_api.TEACHERS} else None), (name, step)
+            return db, ns
+    case("S1", ["C", "A", "B"])                      # ปลดล็อก A จาก C (ข้าม B) แล้ว B
+    case("S2", ["C", "B", "A", "C", "pull", "B"])    # C → B → A → C (ทางเดิมเดิม) → ดึงครู → B
+    case("S3", ["A", "C'", "B", "C"])                # ย้อน → ปุ่มเดิมจาก A → B → C'
+    db, ns = case("S4", ["C", "B", "C"])             # ข้อค้นพบหลัก: C ต่อจาก B → ปลดล็อก B → ปลดล็อก C
+    assert next(r for r in db.tables["wl_teachers"] if r["id"] == ns.new_t["id"])["sched_id"] is not None
+    case("S5", ["C", "R2", "B", "C", "A", "C"])      # C จากรอบที่สอง → B → C → A → C
 
 
-def test_unlock_revert_failure_restores_everything():
-    # ล้มกลางธุรกรรม (หลังสลับเทอมและย้อนแล้ว ก่อน COMMIT) → ฐานย้อนทั้งก้อน · หน่วยความจำกลับเป็นเทอมที่สร้างจากรอบ · 500 ไทย
+def test_unlock_failure_restores_everything():
+    # ล้มกลางธุรกรรม (หลังสลับเทอมและปรับทะเบียนแล้ว ก่อน COMMIT) → ฐานย้อนทั้งก้อน · หน่วยความจำกลับเป็นเทอมที่เปิดอยู่ · 500 ไทย
     # m4: คำขอเขียนอื่นจบระหว่างนั้น (รุ่นขยับ) → เซฟของที่คืนแล้วทับ + บวกรุ่น (แบบ _term_restore)
     with _world(subjects=_subjects_with_906()) as rec, _unlockable(rec):
         db, ns = _exported(rec)
         mem, snap = _program_state(), _db_snapshot(db)
-        real_sql, real_swap = mock_api.wl_export_undo_sql, mock_api._term_swap_active
+        real_sql, real_swap = mock_api.wl_registry_reconcile_sql, mock_api._term_swap_active
 
-        def mark_gone(report, round_id, now, at):
-            stmts = real_sql(report, round_id, now, at)
-            q, p = stmts[-1]
-            return stmts[:-1] + [(q, p[:-1] + (-1,))]          # ลบเครื่องหมายได้ 0 แถว (มีอีกคำขอย้อนไปก่อน)
+        def miss(result):
+            return real_sql(result) + [("UPDATE wl_teachers SET sched_id = %s WHERE id = %s AND sched_id IS NULL", (1, -1))]
         for concurrent in (False, True):
             def swap(*a, **kw):
                 if concurrent:
-                    mock_api.REVISION["n"] += 1                # = มิดเดิลแวร์ของคำขอเขียนอื่นที่จบระหว่างนั้น
+                    mock_api.REVISION["n"] += 1
                 return real_swap(*a, **kw)
             del rec.logged[:]
             calls_before, rev = list(rec.calls), mock_api.REVISION["n"]
-            with _patched(wl_export_undo_sql=mark_gone, _term_swap_active=swap):
-                _expect(lambda: mock_api.unlock_term(5, {"confirm": "1/2569"}), 500, "ข้อมูลเดิมยังอยู่ครบ")
+            with _patched(wl_registry_reconcile_sql=miss, _term_swap_active=swap):
+                _expect(lambda: _unlock(5, "1/2569"), 500, "ข้อมูลเดิมยังอยู่ครบ")
             assert _db_snapshot(db) == snap
             after = _program_state()
             for k in PROGRAM:
                 if k not in ("_counters", "REVISION"):
                     assert after[k] == mem[k], (concurrent, k)
-            # ตัวนับไม่ถอย: การคืนแบบทางเดิม (_apply_snapshot) ดันตัวนับขึ้นตามรหัสที่มีอยู่เสมอ (ไม่ออกรหัสซ้ำ)
             assert all(after["_counters"].get(k, 0) >= v for k, v in mem["_counters"].items()), after["_counters"]
             assert rec.conns[-1].commits == 0 and rec.logged == []
             saves = [c for c in rec.calls[len(calls_before):] if c[0] == "save"]
-            assert saves == ([("save", saves[0][1])] if concurrent else []), (concurrent, rec.calls)
+            assert len(saves) == (1 if concurrent else 0), (concurrent, rec.calls)
             assert mock_api.REVISION["n"] == rev + (2 if concurrent else 0), (concurrent, mock_api.REVISION)
-        # ลองใหม่ได้ผล
-        mock_api.unlock_term(5, {"confirm": "1/2569"})
-        assert _round_row(db, ns.rnd["id"])["exported_at"] is None
+        _unlock(5, "1/2569")
+        _consistent(db, "ลองใหม่")
 
 
 def test_unlock_records_the_running_term_after_the_registry_lock():
-    # m2: ค่าที่ใช้คืน/บันทึก (CURRENT_TERM · จำนวนคาบ · ปี/ภาคในการตั้งค่า) จดหลังได้ล็อกทะเบียน — ครูลงคาบระหว่างรอ
-    # ต้องนับในแถวเทอมที่ปิดและบันทึกประวัติ ตรงกับคาบในไฟล์ของมัน
+    # m2: ค่าที่ใช้คืน/บันทึก จดหลังได้ล็อกทะเบียน — ครูลงคาบระหว่างรอต้องนับในแถวเทอมที่ปิดและบันทึกประวัติ
     with _world(subjects=_subjects_with_906()) as rec, _unlockable(rec):
         db, ns = _exported(rec)
         real = mock_api._wl_registry_lock
@@ -387,31 +390,48 @@ def test_unlock_records_the_running_term_after_the_registry_lock():
             return real(cur)
         del rec.logged[:]
         with _patched(_wl_registry_lock=lock_after_a_lesson):
-            mock_api.unlock_term(5, {"confirm": "1/2569"})
+            _unlock(5, "1/2569")
         close = next(p for s, p in rec.conns[-1].cur.log if s == ROTATE_UPDATE)
         assert close[1] == 1 and len(mock_api._unpack(close[0])["slots"]) == 1, close[1:]
         assert rec.logged[0] == (ns.new_id, "close", "ปิดเทอม 2/2569 (1 คาบ)"), rec.logged
 
 
-def test_undone_round_cannot_be_sent_again():
-    # รอบที่ย้อนแล้ว: รายการรอบ หน้าดูก่อนสร้าง และการสร้างจริง บอกเหตุเดียวกัน (ปลดล็อกเทอมที่ถือแผนของรอบ) — ไม่ใช่ "ใช้ได้"
+def test_reconcile_conflicts_are_listed_in_the_answer_and_the_term_log():
     with _world(subjects=_subjects_with_906()) as rec, _unlockable(rec):
         db, ns = _exported(rec)
-        mock_api.unlock_term(5, {"confirm": "1/2569"})
-        rnd = mock_api._wl_get(FakeCur(db, None), "wl_rounds", mock_api._WL_EXPORT_ROUND_COLS, ns.rnd["id"], "x")
-        reasons = mock_api.wl_export_reasons({"round": rnd}, 2569, 2)
-        assert any(UNDONE_MSG in r for r in reasons), reasons
-        (r,) = [x for x in mock_api.terms_rounds() if x["id"] == ns.rnd["id"]]
-        assert r["usable"] is False and any(UNDONE_MSG in x for x in r["reasons"]), r
-        pv = mock_api.terms_preview(round_id=str(ns.rnd["id"]))["round"]
-        assert pv["usable"] is False and any(UNDONE_MSG in x for x in pv["reasons"]), pv["reasons"]
-        # ยิงตรง: ขั้น 1 ของการสร้างปฏิเสธก่อนอ่านรอบ (เทอม 2/2569 ยังมีแถว — ข้อความเดิมของ Task 4) · ไม่มีอะไรถูกสร้าง/เปลี่ยน
-        before = _db_snapshot(db)
-        d = _expect(lambda: _post(ns.rnd), 409, "มีเทอม 2/2569")
-        assert _db_snapshot(db) == before, d
+        new_sched = next(w["new"] for w in ns.rep["teachers"] if w["id"] == ns.new_t["id"])
+        _unlock(5, "1/2569")
+        taker = db.add("wl_teachers", sched_id=new_sched, name="ครูที่ผูกรหัสไปก่อน", department_id=1)
+        del rec.logged[:]
+        res = _unlock(ns.new_id, "2/2569")
+        now = _rows_of(_wl(db), "wl_teachers")
+        assert now[ns.new_t["id"]]["sched_id"] is None and now[taker["id"]]["sched_id"] == new_sched
+        _consistent(db, "หลังชน")
+        (note,) = res["workload"]
+        assert "ข้าม 1 รายการ" in note and "ครูใหม่" in note and "ครูที่ผูกรหัสไปก่อน" in note, note
+        log = rec.logged[-1][2]
+        assert "ข้าม: " in log and "ครูใหม่" in log and "ครูที่ผูกรหัสไปก่อน" in log, log   # รายการเต็มในบันทึกเทอม
 
 
-# ── รอบที่ส่งแล้ว / ย้อนแล้ว: ทุก route ที่เขียนรอบ/หลักสูตรของภาคเรียนนั้น → 409 ─────────────────
+def test_round_text_is_computed_from_the_open_term():
+    with _world(subjects=_subjects_with_906()) as rec, _unlockable(rec):
+        db, ns = _exported(rec)
+        rid = ns.rnd["id"]
+        for term, label, want in ((None, None, "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569"),
+                                  (5, "1/2569", "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569 (ถูกปิดไว้ ปลดล็อกเทอมนั้นเพื่อใช้ต่อ)"),
+                                  (ns.new_id, "2/2569", "ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569")):
+            if term:
+                _unlock(term, label)
+            row = _round_row(db, rid)
+            assert mock_api.wl_round_export_text(row, mock_api.CURRENT_TERM["id"]) == want, (label, want)
+            got = _call(db, ADMIN, mock_api.wl_round_get, rid, REQ)
+            assert got["exported_text"] == want and got["exported_at"] is not None, got["exported_text"]
+            (r,) = [x for x in mock_api.terms_rounds() if x["id"] == rid]
+            assert r["usable"] is False and any("ส่งเข้าโปรแกรมจัดตารางแล้ว" in x for x in r["reasons"]), r
+        assert mock_api.wl_round_export_text({"exported_at": None, "exported_term_id": None}, 5) is None
+
+
+# ── รอบที่ส่งแล้ว: ทุก route ที่เขียนรอบ/หลักสูตรของภาคเรียนนั้น → 409 ─────────────────
 _ROUTE_RE = re.compile(r'@app\.(post|put|delete)\("(/api/workload/[^"]+)"\)\s*\ndef (\w+)\(')
 # route เขียนของเว็บลงอัตรากำลังที่ไม่ได้เขียนรอบหรือหลักสูตรของภาคเรียนใด (ทะเบียน · รหัส · ล็อกอิน)
 _NOT_ROUND = {"wl_login", "wl_logout", "wl_setup", "wl_codes_create", "wl_codes_update", "wl_teachers_create",
@@ -461,17 +481,14 @@ def _route_calls(db, ns):
 
 
 def test_exported_round_refuses_every_write_route():
-    # ส่งแล้ว (ข้อความ "ส่งเข้าโปรแกรมแล้ว") และย้อนแล้ว (ข้อความ "แผนของรอบนี้อยู่ในเทอม … ที่ถูกปิดไว้") — ทุก route เขียนของรอบ
-    # และหลักสูตรของภาคเรียนนั้น 409 ข้อความเดียวกันทุกตัว ไม่มีอะไรเปลี่ยนในฐาน
-    for undone, want in ((False, EXPORTED_MSG), (True, UNDONE_MSG)):
+    # เทอมของรอบเปิดอยู่ ("ส่งเข้าโปรแกรมแล้ว — เทอม X") และถูกปิดไว้ ("… (ถูกปิดไว้ ปลดล็อกเทอมนั้นเพื่อใช้ต่อ)") — ทุก route เขียน
+    # ของรอบและหลักสูตรของภาคเรียนนั้น 409 ข้อความของสถานะนั้นทุกตัว ไม่มีอะไรเปลี่ยนในฐาน
+    for closed, want in ((False, ACTIVE_MSG), (True, CLOSED_MSG)):
         with _world() as rec, _unlockable(rec):
             db, ns = _exported(rec, richer=False)
-            if undone:
-                mock_api.unlock_term(5, {"confirm": "1/2569"})
-            rnd = _round_row(db, ns.rnd["id"])
-            assert (rnd["exported_at"] is None) == undone and rnd["exported_label"] == "2/2569"
+            if closed:
+                _unlock(5, "1/2569")
             calls = _route_calls(db, ns)
-            # เปิดรอบใหม่ของภาคเรียนเดียวกัน: UNIQUE (year, semester) ปฏิเสธอยู่แล้ว (ข้อความเดิม "มีรอบแล้ว")
             already = {"wl_rounds_create": (ADMIN, lambda: mock_api.wl_rounds_create(REQ, {"year": 2569, "semester": 2}))}
             routes = {fn for _m, _p, fn in _ROUTE_RE.findall(inspect.getsource(mock_api))}
             assert routes, "อ่าน route จากซอร์สไม่ได้"
@@ -481,20 +498,19 @@ def test_exported_round_refuses_every_write_route():
             for name, (sess, fn) in {**calls, **already}.items():
                 snap = copy.deepcopy(db.tables)
                 code, detail = _code(lambda: _call(db, sess, fn))
-                assert code == 409 and isinstance(detail, str) and _thai(detail), (undone, name, code, detail)
+                assert code == 409 and isinstance(detail, str) and _thai(detail), (closed, name, code, detail)
                 if name in calls:
-                    assert detail.startswith(want), (undone, name, detail)
-                assert db.tables == snap, (undone, name)
-            # ทุก route ผ่านตัวตรวจร่วม (ฟังก์ชันล้วน) ตัวเดียว
-            assert mock_api.wl_round_exported_refusal(_round_row(db, ns.rnd["id"])).startswith(want)
-    assert mock_api.wl_round_exported_refusal({"exported_at": None, "exported_term_id": None}) is None
-    # รอบที่ยังไม่ส่ง (ปิดแล้วธรรมดา) ยังได้ข้อความเดิมของรอบปิด
+                    assert detail.startswith(want) and (("ถูกปิดไว้" in detail) == closed), (closed, name, detail)
+                assert db.tables == snap, (closed, name)
+            assert mock_api.wl_round_exported_refusal(_round_row(db, ns.rnd["id"]), mock_api.CURRENT_TERM["id"]) \
+                .startswith(want)
+    assert mock_api.wl_round_exported_refusal({"exported_at": None, "exported_term_id": None}, 5) is None
     with _world() as rec:
         db, ns = _rich()
         rec.use(db)
         _round_row(db, ns.rnd["id"])["status"] = "closed"
         code, detail = _code(lambda: _call(db, ADMIN, _route_calls(db, ns)["wl_curricula_update"][1]))
-        assert code == 409 and "ปิดแล้ว" in detail and "ส่งเข้าโปรแกรม" not in detail and "ถูกปิดไว้" not in detail, detail
+        assert code == 409 and "ปิดแล้ว" in detail and "ส่งเข้าโปรแกรม" not in detail, detail
 
 
 if __name__ == "__main__":
