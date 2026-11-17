@@ -415,6 +415,8 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
       สองแถวจึงยังยกได้ · ไม่ตรงกัน → ว่าง และบอกใน report.not_carried · pinned_double สุดท้าย = คาบคู่จากรอบ หรือ ค่าที่ยกมา
     - ชุดกิจกรรม → report.activity_sets เท่านั้น (โปรแกรมเก็บกิจกรรมไว้ในคาบ และตารางของเทอมใหม่เริ่มว่าง)
     - หลักสูตร → {id, name, rows: normalise_rows(บรรทัด)} · group_curricula ให้คำตอบทุกห้องของโปรแกรม (ไม่อยู่หลักสูตรใด → None)
+      · แถวแผนที่เขียน (รวมแถวแผนของวิชาเสรี) ที่วิชาไม่อยู่ในหลักสูตรของห้อง หรือคาบน้อยกว่าแถว → เพิ่ม (วิชา, คาบ) เข้าหลักสูตรนั้น
+      ทุกแถวจึงผ่าน check_row (แบบข้อทดสอบ 9) · บอกใน report.curriculum_rows_added
     - วิชา/ครูที่ไม่อยู่ใน map (ติดเหตุของทะเบียน) หรือห้องที่ไม่มีในโปรแกรมแล้ว: ข้ามรายการที่อ้างถึง แล้วบอกใน report.skipped
       ไม่ล้ม (หน้าดูก่อนสร้างยังต้องแสดงได้ — ผู้เรียกไม่สร้างเทอมเมื่อทะเบียนมีเหตุอยู่แล้ว)
     รหัสใหม่จาก counters (requirement elective_pool elective_option curriculum) · ไม่แก้สิ่งที่ส่งเข้ามา
@@ -424,6 +426,7 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
          "report": {"rows", "periods", "teachers_in_plan", "pools", "pool_options" (ตัวเลข),
                     "activity_sets": [{name, group_ids, weekly, teacher_ids}], "carried" (จำนวนแถวที่ได้ค่าที่ยกมา),
                     "not_carried": [{group_id, subject_id, fields}] (ละห้อง+วิชา), "elective_rows" (จำนวนแถวแผนของวิชาเสรี),
+                    "curriculum_rows_added": [{curriculum_id, subject_id, weekly_count}] (ละหลักสูตร+วิชา),
                     "skipped": [{source, ref, reason}]}}
     """
     counters = dict(counters)
@@ -625,16 +628,36 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
                 continue
             rows_in.append({"subject_id": sid, "weekly_count": int(ln.get("weekly") or 0)})
         cid = _next_id(counters, "curriculum")
-        curricula.append({"id": cid, "name": str(c.get("name") or ""), "rows": _curriculum.normalise_rows(rows_in)})
+        curricula.append({"id": cid, "name": str(c.get("name") or ""), "rows": rows_in})
         for gid in c.get("group_ids") or []:
             if gid in group_curricula and group_curricula[gid] is None:
                 group_curricula[gid] = cid
+    # ทุกแถวแผนที่เขียนต้องผ่าน check_row ของหลักสูตรที่ผูกกับห้องนั้น (แบบข้อทดสอบ 9: แก้ผ่านหน้าเดิมได้โดยไม่ถูกปฏิเสธ
+    # เรื่องหลักสูตร) — แถวแผนของวิชาเสรีไม่มีบรรทัดหลักสูตร เพราะขั้นที่ 2 ข้ามแถวที่คาบเสรีสอนแทน ถ้าไม่เพิ่ม แก้คาบ/ย้ายแถว
+    # เหล่านั้นภายหลังได้ 400 "ไม่มีวิชา … เพิ่มวิชานี้ลงในหลักสูตรก่อน" · วิชาที่ขาดหรือคาบน้อยกว่าแถว (รวมบรรทัดคาบ 0)
+    # → เพิ่ม (วิชา, คาบของแถว) แล้ว normalise_rows เก็บค่ามากสุด · หลักสูตรที่หลายห้องใช้ร่วมจึงอนุญาตวิชานั้นให้ทุกห้องของมัน
+    # · ห้องที่ไม่มีหลักสูตรไม่ถูกตรวจอยู่แล้ว · แถว 0 คาบไม่สอนอะไร ไม่เพิ่ม (บรรทัด 0 คาบแปลว่า "ห้องนี้ไม่เรียนวิชานี้")
+    by_cid = {c["id"]: c for c in curricula}
+    added: dict[tuple, dict[str, Any]] = {}
+    for row in requirements:
+        cid, sid, n = group_curricula.get(row["group_id"]), row["subject_id"], int(row["weekly_count"] or 0)
+        if cid is None or n <= 0:
+            continue
+        cur_rows = by_cid[cid]["rows"]
+        if max((x["weekly_count"] for x in cur_rows if x["subject_id"] == sid), default=-1) >= n:
+            continue
+        cur_rows.append({"subject_id": sid, "weekly_count": n})
+        entry = added.setdefault((cid, sid), {"curriculum_id": cid, "subject_id": sid, "weekly_count": n})
+        entry["weekly_count"] = max(entry["weekly_count"], n)
+    for c in curricula:
+        c["rows"] = _curriculum.normalise_rows(c["rows"])
 
     teachers_in_plan = {t for r in requirements for t in (r["teacher_id"], r["co_teacher_id"]) if t}
     report = {"rows": len(requirements), "periods": sum(int(r["weekly_count"] or 0) for r in requirements),
               "teachers_in_plan": len(teachers_in_plan), "pools": len(pools),
               "pool_options": sum(len(p["options"]) for p in pools), "activity_sets": activity_sets,
-              "carried": carried, "not_carried": not_carried, "elective_rows": elective_rows, "skipped": skipped}
+              "carried": carried, "not_carried": not_carried, "elective_rows": elective_rows,
+              "curriculum_rows_added": list(added.values()), "skipped": skipped}
     return {"requirements": requirements, "pools": pools, "curricula": curricula, "group_curricula": group_curricula,
             "elective_subjects": sorted({o["subject_id"] for p in pools for o in p["options"]}),
             "counters": counters, "report": report}

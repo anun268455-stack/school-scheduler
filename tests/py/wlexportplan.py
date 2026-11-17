@@ -100,6 +100,22 @@ def _plan(src, out=None, maps=None, counters=None):
     return T.plan_from_round(src, out if out is not None else _out(), maps or _maps(), counters or _counters())
 
 
+def _curriculum_refusals(plan, groups, subjects):
+    """แถวแผนที่ curriculum.check_row ตัวจริงปฏิเสธ เมื่อเทอมใหม่ใช้หลักสูตรและ curriculum_id ของห้องตามผล
+    curriculum.DATA ผูกกับตัวแปรของโปรแกรมอยู่ (mock_api bind ไว้) จึง bind ชั่วคราวกับผลนี้แล้วคืนของเดิมใน finally"""
+    rooms = {gid: {**g, "curriculum_id": plan["group_curricula"].get(gid)} for gid, g in groups.items()}
+    books = {s["id"]: s for s in subjects}
+    saved = dict(curriculum.DATA)
+    try:
+        curriculum.bind(curricula=lambda: plan["curricula"], groups_by_id=lambda: rooms, subjects_by_id=lambda: books)
+        return [(r["group_id"], r["subject_id"], r["weekly_count"], why) for r in plan["requirements"]
+                if (why := curriculum.check_row(r["group_id"], r["subject_id"], r["weekly_count"]))]
+    finally:
+        curriculum.DATA.clear()
+        curriculum.DATA.update(saved)
+        assert curriculum.DATA == saved
+
+
 def _cells(plan):
     return collections.Counter((r["group_id"], r["subject_id"], r["teacher_id"]) for r in plan["requirements"])
 
@@ -288,6 +304,34 @@ def test_curricula_rows_and_group_attach():
     # ทุกห้องของโปรแกรมมีคำตอบ: ห้องที่ไม่อยู่หลักสูตรใด → None · ห้อง 99 ไม่มีในโปรแกรม ไม่ได้รับคำตอบ
     assert plan["group_curricula"] == {1: 1, 2: 1, 3: 2, 4: None, 5: None, 6: None}
     assert plan["counters"]["curriculum"] == 2
+
+
+def test_written_rows_are_allowed_by_their_curriculum():
+    # แบบข้อทดสอบ 9: แผนใหม่แก้ผ่านหน้าเดิมได้โดยไม่ถูกปฏิเสธเรื่องหลักสูตร — แถวแผนของวิชาเสรี (ขั้นที่ 2 ไม่ได้ทำบรรทัด
+    # หลักสูตรให้ เพราะชุดสอนแทน) ต้องมีวิชานั้นในหลักสูตรของห้องด้วยคาบ ≥ คาบของแถว ไม่งั้นแก้คาบภายหลังได้ 400
+    st = _set(1, group_ids=(1, 2, 3, 4))
+    src = _src(curricula=[_cur(1, [_line(10, subject_id=501, weekly=3)], [1, 2], name="ก"),
+                          _cur(2, [_line(20, subject_id=502), _line(21, subject_id=505, weekly=0)], [3], name="ข")],
+               rows=[_row(1, 10, 1, subject_id=501, teacher_id=105, weekly=3),
+                     _row(2, 10, 2, subject_id=501, teacher_id=105, weekly=3),
+                     _row(3, 20, 3, subject_id=502, teacher_id=106)],
+               sets=[st], options=[_opt(10, st, subject_id=507, teachers=[(1, 111, None)]),
+                                   _opt(11, st, subject_id=505, teachers=[(2, 112, None)])])
+    out = _out([_req(1, 1, 7, 11, 2), _req(2, 3, 7, 11, 3), _req(3, 4, 7, 11, 2),   # ห้อง 4 ไม่มีหลักสูตร
+                _req(4, 3, 5, 12, 2), _req(5, 1, 7, 11, 1), _req(6, 2, 7, 11, 4)])   # ห้อง 2 ใช้หลักสูตร ก ร่วม
+    plan = _plan(src, out)
+    assert plan["report"]["elective_rows"] == 6
+    # วิชาเสรีเข้าหลักสูตรของห้อง ด้วยคาบมากสุดของแถวในหลักสูตรนั้น · บรรทัดคาบ 0 (ห้องนี้ไม่เรียน) ถูกยกขึ้นเท่าแถว
+    # (ซ้ำ → ค่ามากสุด ตาม normalise_rows) · ห้องที่ไม่มีหลักสูตรไม่ถูกตรวจอยู่แล้ว ไม่ต้องเพิ่ม
+    assert [c["rows"] for c in plan["curricula"]] == [
+        [{"subject_id": 1, "weekly_count": 3}, {"subject_id": 7, "weekly_count": 4}],
+        [{"subject_id": 2, "weekly_count": 2}, {"subject_id": 5, "weekly_count": 2}, {"subject_id": 7, "weekly_count": 3}]]
+    assert plan["report"]["curriculum_rows_added"] == [
+        {"curriculum_id": 1, "subject_id": 7, "weekly_count": 4}, {"curriculum_id": 2, "subject_id": 7, "weekly_count": 3},
+        {"curriculum_id": 2, "subject_id": 5, "weekly_count": 2}], plan["report"]["curriculum_rows_added"]
+    assert _curriculum_refusals(plan, GROUPS, _subjects()) == []
+    # แถวของรอบที่ตรงหลักสูตรอยู่แล้วไม่เพิ่มอะไร
+    assert _plan(_src(curricula=src["curricula"], rows=src["rows"]))["report"]["curriculum_rows_added"] == []
 
 
 def test_ids_from_counters():
@@ -520,15 +564,14 @@ def _round_trip(out, wl_t, wl_s, counters, want_pools, label):
     old_load, new_load = _teacher_loads(out["requirements"], old_el), _teacher_loads(plan["requirements"], new_el)
     assert old_load == new_load, (label, [(t, old_load.get(t), new_load.get(t))
                                           for t in set(old_load) | set(new_load) if old_load.get(t) != new_load.get(t)][:5])
-    # 5) หลักสูตร: ทุกห้องที่มีแถวของรอบอยู่ในหลักสูตรหนึ่งเดียว และแถวของรอบไม่เกินคาบของหลักสูตร (check_row)
+    # 5) หลักสูตร (แบบข้อทดสอบ 9): ทุกห้องที่มีแถวของรอบอยู่ในหลักสูตร และ **ทุกแถวแผน** (รวมแถวแผนของวิชาเสรี)
+    #    ผ่าน curriculum.check_row ตัวจริง — แก้คาบ/ครูของแถวไหนก็ได้ผ่านหน้าเดิมโดยไม่ถูกปฏิเสธเรื่องหลักสูตร
     gc = plan["group_curricula"]
     assert set(gc) == set(out["groups"])
-    allowed = {c["id"]: {r["subject_id"]: r["weekly_count"] for r in c["rows"]} for c in plan["curricula"]}
     ordinary = plan["requirements"][:len(plan["requirements"]) - rep["elective_rows"]]
-    assert all(gc[r["group_id"]] is not None and allowed[gc[r["group_id"]]].get(r["subject_id"], -1) >= r["weekly_count"]
-               for r in ordinary)
-    elective_outside = sum(1 for r in plan["requirements"][len(ordinary):]
-                           if r["subject_id"] not in allowed.get(gc.get(r["group_id"]), {}))
+    assert all(gc[r["group_id"]] is not None for r in ordinary)
+    refused = _curriculum_refusals(plan, out["groups"], reg["subjects"])
+    assert refused == [], (label, len(refused), refused[:3])
     nums = {"old_rows": len(out["requirements"]), "new_rows": rep["rows"], "round_rows": len(source["rows"]),
             "lessons": sum(new.values()), "periods": rep["periods"], "teachers_in_plan": rep["teachers_in_plan"],
             "pools": rep["pools"], "pool_options": rep["pool_options"], "activity_sets": len(rep["activity_sets"]),
@@ -536,7 +579,8 @@ def _round_trip(out, wl_t, wl_s, counters, want_pools, label):
             "unconverted": len(prop["unconverted"]), "unconverted_plan_rows": len(lost),
             "unequal_coteach_rows": sum(1 for r in source["rows"] if r["flag"] == FLAG),
             "curricula": len(plan["curricula"]), "teachers_compared": len(old_load),
-            "elective_subjects": len(new_el), "elective_rows_outside_curriculum": elective_outside}
+            "elective_subjects": len(new_el), "curriculum_rows_added": len(rep["curriculum_rows_added"]),
+            "check_row_refusals": len(refused)}
     print(f"ไปกลับ {label}: " + " · ".join(f"{k} {v}" for k, v in nums.items()))
     return nums
 
@@ -550,6 +594,7 @@ def test_round_trip_seed():
     n = _round_trip(out, wl_t, wl_s, counters, out["pools"], "ชุด ก")
     assert (n["old_rows"], n["new_rows"], n["pools"], n["pool_options"], n["elective_rows"]) == (1220, 1220, 13, 44, 0), n
     assert n["unconverted"] == 0 and n["activity_sets"] == 0
+    assert n["curriculum_rows_added"] == 0       # แถวของรอบตรงหลักสูตรตั้งต้นอยู่แล้ว ไม่มีแถววิชาเสรี
 
 
 # ── ชุด ข: ช่องคาบเสรีรายห้อง + แถวแผนของวิชาเสรีรายห้อง แบบข้อมูลจริงของโรงเรียน ─────────────────
@@ -664,6 +709,7 @@ def test_round_trip_live_shape():
     # แถวแผนเท่าเดิม และโปรแกรมพับเหลือบทเรียนละหนึ่ง
     assert n["new_rows"] == n["old_rows"] == 1220 + made["elective_rows"] + 2 and n["lessons"] == n["old_rows"] - 2, n
     assert n["unequal_coteach_rows"] == 2 and n["round_rows"] == 1221, n
+    assert n["curriculum_rows_added"] > 0 and n["check_row_refusals"] == 0, n    # วิชาเสรีเข้าหลักสูตรของห้อง
 
 
 for name, fn in list(globals().items()):
