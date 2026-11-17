@@ -297,7 +297,7 @@ def test_export_source_reads_the_whole_round():
     assert not _writes(cur.log)
     assert set(src) == {"round", "rows", "options", "sets", "curricula", "wl_teachers", "wl_subjects", "dept_status"}
     assert src["round"] == {"id": rnd["id"], "year": 2569, "semester": 2, "label": "2/2569", "status": "filling",
-                            "exported_at": None, "exported_label": None}, src["round"]
+                            "exported_at": None, "exported_label": None, "exported_term_id": None}, src["round"]
     assert len(src["rows"]) == 18 and {"line_id", "subject_id", "weekly", "teacher_id", "co_teacher_id", "lab_room_id",
                                        "is_double", "confirmed", "flag", "department_id"} <= set(src["rows"][0])
     assert len(src["options"]) == 1 and len(src["options"][0]["teachers"]) == 2

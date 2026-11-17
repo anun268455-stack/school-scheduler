@@ -13779,7 +13779,8 @@ def _terms_schema(cur) -> None:
 # ตารางของรอบยังไม่เคยขึ้นเว็บจริง จึงแก้ CREATE TABLE ตรง ๆ ได้โดยไม่ต้องย้ายข้อมูล
 # ขั้นที่ 3 (สร้างเทอมใหม่จากรอบ) เพิ่มคอลัมน์ส่งออกให้ wl_rounds ด้วย ALTER TABLE … ADD COLUMN IF NOT EXISTS ท้ายชุดนี้:
 # ฐานของโรงเรียนที่ขึ้นขั้นที่ 1–2 แล้วมีตาราง wl_rounds อยู่ก่อน CREATE TABLE IF NOT EXISTS จึงไม่เพิ่มคอลัมน์ให้ ·
-# คอลัมน์ว่างได้ ไม่มี DEFAULT/NOT NULL (ไม่เขียนทับแถวเดิม) และไม่มี index ใหม่ · รอบที่ส่งแล้ว = exported_at ไม่ว่าง
+# คอลัมน์ว่างได้ ไม่มี DEFAULT/NOT NULL (ไม่เขียนทับแถวเดิม) และไม่มี index ใหม่ · รอบที่ส่งแล้ว = exported_at ไม่ว่าง ·
+# ส่งแล้วถูกย้อน (ปลดล็อกเทอมเก่ากลับ) = exported_at ว่าง แต่ exported_term_id/exported_label/export_report ยังอยู่ (ดู wl_export_undo_sql)
 _WL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS wl_codes (
     id            bigserial PRIMARY KEY,
@@ -15392,16 +15393,26 @@ def _wl_term_locked(cur, year: int, semester: int) -> bool:
 
 
 def wl_round_exported_refusal(rnd: dict[str, Any]) -> str | None:
-    """รอบที่ส่งเข้าโปรแกรมจัดตารางแล้ว (exported_at ไม่ว่าง) ปิดถาวร (ขั้นที่ 3 แบบข้อ 4.7) → ข้อความไทย · None = ยังไม่ส่ง (ฟังก์ชันล้วน)
+    """รอบที่ส่งเข้าโปรแกรมจัดตารางแล้ว (exported_at ไม่ว่าง) หรือส่งแล้วถูกย้อน (exported_at ว่าง แต่ exported_term_id ยังอยู่ —
+    ปลดล็อกเทอมเก่ากลับ แบบข้อ 4.8) ปิดถาวร (แบบข้อ 4.7) → ข้อความไทย · None = ยังไม่เคยส่ง (ฟังก์ชันล้วน)
+    ย้อนแล้วก็ห้ามแก้ (คำตัดสินแก้รอบ 1): แถวเทอมของรอบยังอยู่ สร้างเทอมปี/ภาคเดิมซ้ำไม่ได้ การแก้รอบจึงส่งเข้าโปรแกรมไม่ได้อีก —
+    ทางใช้ต่อคือปลดล็อกเทอมนั้นกลับ (ผูกทะเบียนกลับ) ข้อความจึงบอกทางนั้น
 
     ตัวตรวจร่วมของทุกการเขียนรอบและหลักสูตรของภาคเรียนนั้น — เรียกจากจุดที่ทุก route อ่านแถวรอบอยู่แล้ว (_wl_refuse_locked ·
     _wl_round_for_write · _wl_option_for_write · _wl_round_for_update) จึงตามด้วยล็อกของแถวรอบที่จุดนั้นถืออยู่: การปลดล็อกเทอมที่ย้อนการส่ง
     (FOR UPDATE แถวรอบ) กับการเขียนที่แข่งกันต่อคิวกัน ฝั่งที่มาทีหลังเห็นค่าล่าสุด · ตรวจก่อนสถานะ "ปิดแล้ว" ให้ผู้ใช้รู้ว่าทางกลับคือ
     ปลดล็อกเทอม ไม่ใช่เปิดรอบใหม่"""
-    if rnd.get("exported_at") is None:
-        return None
-    return (f"รอบนี้ส่งเข้าโปรแกรมแล้ว (เทอม {rnd.get('exported_label') or '-'}) แก้ไม่ได้ — ถ้าส่งผิด "
-            "ให้ปลดล็อกเทอมเดิมกลับในหน้ารายการเทอมของโปรแกรมจัดตาราง")
+    if rnd.get("exported_at") is not None:
+        return (f"รอบนี้ส่งเข้าโปรแกรมแล้ว (เทอม {rnd.get('exported_label') or '-'}) แก้ไม่ได้ — ถ้าส่งผิด "
+                "ให้ปลดล็อกเทอมเดิมกลับในหน้ารายการเทอมของโปรแกรมจัดตาราง")
+    if rnd.get("exported_term_id") is not None:
+        return wl_round_undone_text(rnd) + " (รอบนี้จึงแก้ไม่ได้)"
+    return None
+
+
+def wl_round_undone_text(rnd: dict[str, Any]) -> str:
+    return (f"แผนของรอบนี้อยู่ในเทอม {rnd.get('exported_label') or '-'} ที่ถูกปิดไว้ — "
+            "ปลดล็อกเทอมนั้นเพื่อใช้ต่อ")
 
 
 def _wl_refuse_exported(rnd: dict[str, Any]) -> None:
@@ -15419,11 +15430,11 @@ def _wl_refuse_locked(cur, year: int, semester: int) -> str | None:
     # · ไม่ขัดกับ FK ของ wl_rows ที่ชี้รอบ (FOR KEY SHARE) · ภาคเรียนที่ยังไม่มีรอบไม่มีแถวให้ล็อก และไม่มีอะไรให้ sync
     #   — การเปิดรอบล็อกตารางหลักสูตรเอง (wl_rounds_create)
     # คืนสถานะของรอบภาคเรียนนี้ (None = ยังไม่มีรอบ) — ล็อกไว้แล้ว จึงใช้ตัดสินต่อในธุรกรรมเดียวกันได้ (_wl_refuse_no_department)
-    cur.execute("SELECT status, exported_at, exported_label FROM wl_rounds WHERE year = %s AND semester = %s "
-                "FOR NO KEY UPDATE", (year, semester))
+    cur.execute("SELECT status, exported_at, exported_label, exported_term_id FROM wl_rounds WHERE year = %s "
+                "AND semester = %s FOR NO KEY UPDATE", (year, semester))
     rows = cur.fetchall()
     for r in rows:
-        _wl_refuse_exported({"exported_at": r[1], "exported_label": r[2]})
+        _wl_refuse_exported({"exported_at": r[1], "exported_label": r[2], "exported_term_id": r[3]})
     statuses = [r[0] for r in rows]
     if "closed" in statuses:
         raise HTTPException(409, f"รอบอัตรากำลังภาคเรียน {term_label(year, semester)} ปิดแล้ว "
@@ -16862,7 +16873,7 @@ WL_OPTION_MISSING: str = "ไม่พบตัวเลือกนี้ (อ�
 WL_OPTION_TEACHER_MISSING: str = "ไม่พบครูของตัวเลือกนี้ (อาจถูกเอาออกหรือถูกลบตามหลักสูตร) โหลดหน้าใหม่แล้วดูอีกครั้ง"
 # ขอบเขตของการอ่าน: _WL_ALL = ทุกกลุ่ม (admin) · None = บรรทัด/ตัวเลือกที่ไม่มีกลุ่มสาระ · ตัวเลข = กลุ่มนั้น
 _WL_ALL = "all"
-_WL_ROUND_LOCK_COLS = ("id", "year", "semester", "label", "status", "exported_at", "exported_label")
+_WL_ROUND_LOCK_COLS = ("id", "year", "semester", "label", "status", "exported_at", "exported_label", "exported_term_id")
 _WL_DEPT_STATUS_COLS = ("department_id", "status", "submitted_at", "submitted_by", "reviewed_at", "reviewed_by", "note")
 _WL_OPTION_TEACHER_COLS = ("id", "round_id", "option_id", "teacher_id", "room_id", "note", "confirmed", "from_plan")
 _WL_ROW_EDIT_COLS = ("teacher_id", "co_teacher_id", "lab_room_id", "is_double", "note", "confirmed", "from_plan")
@@ -18005,7 +18016,7 @@ def _refuse_delete_if_in_closed_term(kind: str, entity_id: int, name: str | None
 # รายงาน) — ตัวเลขและเหตุที่ admin เห็นก่อนกดจึงตรงกับสิ่งที่จะถูกสร้าง/ปฏิเสธ
 TERM_FROM_ROUND_BLOCKED = ("เซิร์ฟเวอร์ยังโหลดข้อมูลของโรงเรียนไม่สำเร็จ จึงยังสร้างหรือดูสรุปเทอมใหม่จากรอบอัตรากำลังไม่ได้ "
                            "(ข้อมูลในหน่วยความจำตอนนี้เป็นข้อมูลตั้งต้นที่มากับโปรแกรม) รอสักครู่แล้วลองใหม่ หรือแจ้งผู้ดูแลระบบ")
-_WL_EXPORT_ROUND_COLS = ("id", "year", "semester", "label", "status", "exported_at", "exported_label")
+_WL_EXPORT_ROUND_COLS = ("id", "year", "semester", "label", "status", "exported_at", "exported_label", "exported_term_id")
 _WL_EXPORT_SET_COLS = ("id", "kind", "name", "group_ids", "weekly", "is_double")
 # ชื่อไทยของช่องตัวตนที่การซิงก์ทะเบียนแก้ได้ — รายการ "ที่จะแก้" ในสรุป (Ruling T1 C4)
 _TERM_FIELD_TEXT: dict[str, str] = {"name": "ชื่อ", "code": "รหัส", "department_id": "กลุ่มสาระ",
@@ -18042,7 +18053,8 @@ def _wl_export_source(cur, round_id: int) -> dict[str, Any]:
     """ข้อมูลของรอบในรูป source ของสัญญาร่วม (term_from_round) — อ่านทุกอย่างจาก cursor เดียว (ธุรกรรมเดียว) ไม่เขียน
     ไม่ล็อก (การสร้างจริงถือล็อกทะเบียนและแถวรอบ FOR UPDATE ก่อนเรียก) · ไม่มีรอบ → 404 ไทย
 
-    round = {id, year, semester, label, status, exported_at (ISO หรือ None), exported_label}
+    round = {id, year, semester, label, status, exported_at (ISO หรือ None), exported_label, exported_term_id}
+    (exported_at ว่าง + exported_term_id ไม่ว่าง = ส่งแล้วถูกย้อน — wl_round_exported_refusal)
     rows / options = รูปเดียวกับ GET /rounds/{id}/rows ทั้งรอบ (ทุกกลุ่ม) · sets = ทุกชุดของภาคเรียน รวมชุดที่ไม่มีตัวเลือก
     curricula = ทุกหลักสูตรของภาคเรียนตามลำดับหลักสูตร พร้อมห้อง (ลำดับของโปรแกรม) และ **ทุกบรรทัด** ตาม sort แล้ว id
     (รวมบรรทัดที่ไม่มีแถวอ้าง — หลักสูตรของเทอมใหม่มาจากบรรทัด) · credits ของ numeric มาเป็น Decimal แปลงด้วย _wl_num
@@ -18116,6 +18128,8 @@ def wl_export_reasons(source: dict[str, Any], year: int, semester: int) -> list[
     if rnd.get("exported_at"):
         term = f" (เทอม {rnd['exported_label']})" if rnd.get("exported_label") else ""
         reasons.append(f"รอบ {label} ส่งเข้าโปรแกรมจัดตารางแล้ว{term} — ส่งซ้ำไม่ได้")
+    elif rnd.get("exported_term_id") is not None:
+        reasons.append(f"รอบ {label} ส่งแล้วถูกย้อน: {wl_round_undone_text(rnd)} (ส่งซ้ำไม่ได้)")
     elif status == "preparing":
         reasons.append(f"รอบ {label} ยังกำลังเตรียม ยังไม่เปิดให้กลุ่มสาระกรอก — เปิดให้กรอกในหน้ารอบของเว็บลงอัตรากำลัง "
                        "แล้วให้ทุกกลุ่มกรอกให้ครบก่อน")
@@ -18322,7 +18336,7 @@ def terms_rounds() -> list[dict[str, Any]]:
         outgoing = None
         for r in rounds:
             r["exported_at"] = _wl_iso(r["exported_at"])
-            if r["exported_at"] is not None:
+            if r["exported_at"] is not None or r["exported_term_id"] is not None:     # ส่งแล้ว / ส่งแล้วถูกย้อน
                 reasons = wl_export_reasons({"round": r}, r["year"], r["semester"])
             elif blocked:
                 reasons = _term_exists_reasons(existing, r["year"], r["semester"]) + \
@@ -18425,7 +18439,7 @@ def terms_preview(round_id: str | None = None):
         source = _wl_export_source(cur, int(text))
     rnd = source["round"]
     built = _term_build(source, _term_outgoing(), dict(_counters), rnd["year"], rnd["semester"])
-    reasons = built["reasons"] if rnd["exported_at"] else \
+    reasons = built["reasons"] if rnd["exported_at"] or rnd["exported_term_id"] is not None else \
         _term_exists_reasons(existing, rnd["year"], rnd["semester"]) + built["reasons"]
     return {**new_term_preview(),
             "round": {"id": rnd["id"], "label": rnd["label"], "year": rnd["year"], "semester": rnd["semester"],
@@ -19077,22 +19091,52 @@ def unlock_check(term: dict[str, Any], typed: str) -> str | None:
     return None
 
 
-# ── ขั้นที่ 3: ปลดล็อกเทอมที่สร้างจากรอบอัตรากำลัง — ย้อนการส่งของรอบ (แบบข้อ 4.8) ─────────────────────────────────────────
-# การปลดล็อกเอาข้อมูลของเทอมที่ปิดกลับมาทั้งก้อน (_apply_snapshot) ครู/วิชา/แผนของเทอมที่สร้างจากรอบจึงหายจากของสด ถ้าทะเบียนของเว็บยัง
-# ชี้ sched_id ที่การส่งเขียนไว้ (ครู/วิชาที่ไม่มีในของสดแล้ว) ครั้งหน้าที่ส่ง ตัวนับรหัสของโปรแกรมไม่ถอย (_apply_snapshot ใช้ max) แต่แถวของ
-# เว็บชี้ครูที่ไม่มีจริง และรอบยังบอกว่าส่งแล้วจึงส่งใหม่ไม่ได้ → ย้อนทุกค่าที่การส่งเปลี่ยน (export_report เก็บค่าเดิมไว้แล้ว)
-# ในธุรกรรมเดียวกับการสลับเทอม · ทางที่ไม่มีรอบที่ส่งเข้าเทอมนั้นเป็นโค้ดเดิมของ unlock_term ทุกบรรทัด
-def wl_export_undo_sql(report: dict[str, Any], round_id: int, keep_closed: bool = False) -> list[tuple[str, tuple]]:
-    """คำสั่งย้อนการส่งของรอบตาม export_report (ฟังก์ชันล้วน ไม่เปิดฐาน) — ผู้เรียกรันตามลำดับในธุรกรรมของการปลดล็อก
+# ── ขั้นที่ 3: ปลดล็อกเทอม — ทะเบียนของเว็บตามเทอมที่เปิดอยู่ทั้งสองทิศ (แบบข้อ 4.8 · คำตัดสินแก้รอบ 1) ──────────────────────────────
+# การปลดล็อกเอาข้อมูลของเทอมที่ปิดกลับมาทั้งก้อน (_apply_snapshot) ครู/วิชาที่โปรแกรมมีจึงเปลี่ยนทั้งชุด ทะเบียนของเว็บ (sched_id) และการ
+# ผูกวิชาของหลักสูตรที่การส่งเขียนไว้ต้องตามไปด้วย ไม่งั้นแถวของเว็บชี้ครูที่ไม่มี หรือครูที่มีไม่มีแถวของเว็บชี้ (ปุ่มดึงครูสร้างแถวซ้ำ):
+# · ย้อน — เทอมที่จะถูกปิดคือเทอมที่รอบส่งเข้าไป (exported_term_id = เทอมนั้น · exported_at ไม่ว่าง): คืนทุกค่าที่การส่งเปลี่ยน
+#   (export_report เก็บค่าเดิม) · รอบยังปิด แก้ไม่ได้ เก็บเทอม/รายงานไว้ ลบแค่ exported_at + บันทึก "undone" (ค่าที่ต้องใช้ผูกกลับ)
+#   — แถวเทอมยังอยู่ สร้างเทอมปี/ภาคเดิมซ้ำไม่ได้ เปิดให้แก้รอบจึงเป็นทางตันที่หลอกผู้ใช้
+# · ผูกกลับ — เทอมที่กำลังเปิดคือ exported_term_id ของรอบที่ย้อนแล้ว: ใส่ค่าของการส่งกลับ เฉพาะแถวที่ยังเป็นค่าที่การย้อนทิ้งไว้และค่านั้นไม่มี
+#   แถวอื่นถืออยู่ (ที่ชนข้าม พร้อมเหตุไทยในคำตอบ) · ตั้ง exported_at กลับ
+# ทั้งหมดในธุรกรรมเดียวกับการสลับเทอม ล็อกทะเบียนเป็นคำสั่งแรก · ไม่มีรอบที่ผูกกับสองเทอมนี้ = โค้ดเดิมของ unlock_term ทุกบรรทัด
+def _wl_export_now(cur, report: dict[str, Any]) -> dict[str, Any]:
+    """ค่าปัจจุบันในทะเบียน/หลักสูตรของทุกแถวที่ export_report อ้าง (อ่านใน cursor ของผู้เรียก — ธุรกรรมที่ถือล็อกทะเบียนและแถวรอบอยู่)
+    → {"teachers"/"subjects": {wl_id: (sched_id, ชื่อ)}, "teacher_held"/"subject_held": {sched_id: (wl_id, ชื่อ)} ของค่าที่การส่ง/การย้อน
+    เขียน, "lines"/"options": {id: (subject_id, รหัส)}} · ใช้ทั้งบันทึกของการย้อน และตัดสินว่าอะไรผูกกลับได้"""
+    undone = report.get("undone") or {}
+    out: dict[str, Any] = {}
+    for kind, table, cols, entries, extra in (
+            ("teachers", "wl_teachers", "name", report.get("teachers") or [], []),
+            ("subjects", "wl_subjects", "code, name", report.get("subjects") or [],
+             [[i, None] for i in report.get("created_wl_subjects") or []] + list(undone.get("created") or []))):
+        ids = sorted({int(w["id"]) for w in entries} | {int(i) for i, _s in extra})
+        scheds = sorted({int(v) for w in entries for v in (w.get("old"), w.get("new")) if v is not None}
+                        | {int(s) for _i, s in extra if s is not None})
+
+        def named(r):                     # ชื่อที่ผู้ใช้อ่านในเหตุที่ข้าม: ครู = ชื่อ · วิชา = รหัส ชื่อ
+            return " ".join(str(x) for x in r[2:] if x)
+        cur.execute(f"SELECT id, sched_id, {cols} FROM {table} WHERE id = ANY(%s)", (ids,))
+        out[kind] = {r[0]: (r[1], named(r)) for r in cur.fetchall()}
+        cur.execute(f"SELECT id, sched_id, {cols} FROM {table} WHERE sched_id = ANY(%s)", (scheds,))
+        out[kind[:-1] + "_held"] = {r[1]: (r[0], named(r)) for r in cur.fetchall()}
+    for kind, table, ids in (("lines", "wl_curriculum_lines", report.get("bound_lines")),
+                             ("options", "wl_term_set_options", report.get("bound_options"))):
+        cur.execute(f"SELECT id, subject_id, code FROM {table} WHERE id = ANY(%s)", (sorted({int(i) for i in ids or []}),))
+        out[kind] = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+    return out
+
+
+def wl_export_undo_sql(report: dict[str, Any], round_id: int, now: dict[str, Any], at: str) -> list[tuple[str, tuple]]:
+    """คำสั่งย้อนการส่งของรอบตาม export_report (ฟังก์ชันล้วน · now = _wl_export_now ในธุรกรรมเดียวกัน · at = เวลาที่ย้อน ISO)
 
     · บรรทัด/ตัวเลือกที่การส่งผูกวิชา (bound_lines/bound_options — เดิม subject_id ว่างทุกแถว) → ว่าง
     · วิชาที่การส่งสร้างในทะเบียนของเว็บ (created_wl_subjects) → sched_id ว่าง แถววิชาอยู่ต่อ (บรรทัดที่พิมพ์รหัสอาจอ้างอยู่)
     · sched_id ของครู/วิชา → ค่าเดิม เฉพาะแถวที่ยังเป็นค่าที่การส่งเขียน ("new") — ค่าที่ใครเปลี่ยนทีหลังไม่ใช่ของเรา ไม่ทับ
       สองรอบ: ทุกแถวเป็นว่างก่อน แล้วค่อยใส่ค่าเดิม — UNIQUE (sched_id) ไม่ชนกันเองระหว่างแถวที่สลับเลขกัน (ก. 5→144 · ข. ว่าง→5)
-    · แถวรอบ: ลบเครื่องหมายส่งแล้วทั้งสี่ช่อง + คืนสถานะเดิม (prior_status) · เดิม filling = closed_at ว่าง (การส่งตั้งให้ · รอบที่เปิด
-      ให้กรอกไม่มีเวลาปิด) · เดิม closed = เวลาปิดเดิม (การส่งใช้ coalesce จึงไม่ได้แตะ) · keep_closed (มีรอบอื่นถือช่อง "เปิดได้ทีละรอบ"
-      ของ wl_rounds_one_open อยู่) = คืนเป็น closed แทน filling ไม่งั้นดัชนีปฏิเสธแล้วปลดล็อกไม่ได้เลย
-    คำสั่งสุดท้ายเป็นของแถวรอบเสมอ (ผู้เรียกตรวจว่าโดนหนึ่งแถว) · WHERE exported_at IS NOT NULL = ไม่ย้อนซ้ำ"""
+    · แถวรอบ (คำสั่งสุดท้ายเสมอ ผู้เรียกตรวจว่าโดนหนึ่งแถว · WHERE exported_at IS NOT NULL = ไม่ย้อนซ้ำ): ลบแค่ exported_at —
+      สถานะ เวลาปิด เทอม ชื่อเทอมไม่แตะ (รอบยังปิด แก้ไม่ได้ · route ทั้งหมดบอกให้ปลดล็อกเทอมนั้น) · รายงานเดิมอยู่ครบ + "undone" =
+      {at, created [[wl_id, sched_id]], lines/options [[id, subject_id]]} ค่าที่การย้อนลบทิ้ง ซึ่งรายงานของการส่งไม่ได้เก็บไว้ ให้ผูกกลับได้"""
     out: list[tuple[str, tuple]] = []
     for table, ids in (("wl_curriculum_lines", report.get("bound_lines")),
                        ("wl_term_set_options", report.get("bound_options"))):
@@ -19109,52 +19153,122 @@ def wl_export_undo_sql(report: dict[str, Any], round_id: int, keep_closed: bool 
     for table, w in pairs:
         if w.get("old") is not None:
             out.append((f"UPDATE {table} SET sched_id = %s WHERE id = %s AND sched_id IS NULL", (w["old"], w["id"])))
-    status = "filling" if report.get("prior_status") == "filling" and not keep_closed else "closed"
-    sets = ["status = %s"] + (["closed_at = %s"] if status == "filling" else []) + \
-           [f"{c} = %s" for c in ("exported_at", "exported_term_id", "exported_label", "export_report")]
-    params = (status,) + ((None,) if status == "filling" else ()) + (None,) * 4 + (round_id,)
-    out.append((f"UPDATE wl_rounds SET {', '.join(sets)} WHERE id = %s AND exported_at IS NOT NULL", params))
+    undone = {"at": at,
+              "created": [[i, now["subjects"][i][0]] for i in created
+                          if i in now["subjects"] and now["subjects"][i][0] is not None],
+              "lines": [[i, now["lines"][i][0]] for i in sorted({int(x) for x in report.get("bound_lines") or []})
+                        if i in now["lines"] and now["lines"][i][0] is not None],
+              "options": [[i, now["options"][i][0]] for i in sorted({int(x) for x in report.get("bound_options") or []})
+                          if i in now["options"] and now["options"][i][0] is not None]}
+    kept = {k: v for k, v in report.items() if k != "undone"}
+    out.append(("UPDATE wl_rounds SET exported_at = %s, export_report = %s::jsonb WHERE id = %s AND exported_at IS NOT NULL",
+                (None, _json.dumps({**kept, "undone": undone}, ensure_ascii=False), round_id)))
     return out
 
 
-def _term_round_exported_to(term_id: int) -> bool:
-    """มีรอบที่ส่งเข้าเทอมนี้ไหม (exported_term_id) — อ่านอย่างเดียว ไม่ล็อก (ทางย้อนอ่านซ้ำพร้อมล็อกในธุรกรรมของมัน) · ต่อฐานไม่ได้ = 503
-    ไม่มีช่องให้พลาด: exported_term_id ของรอบถูกเขียนในธุรกรรมเดียวกับที่สร้างแถวเทอมนั้น (เทอมที่มีอยู่แล้วไม่มีวันกลายเป็นเทอมที่
-    สร้างจากรอบทีหลัง) ค่าที่อ่านว่า "ไม่มี" จึงยังจริงตอนสลับเทอม"""
+def wl_export_redo_sql(report: dict[str, Any], round_id: int, now: dict[str, Any], teacher_ids: set,
+                       subject_ids: set) -> tuple[list[tuple[str, tuple]], list[str]]:
+    """คำสั่งผูกทะเบียนกลับตามการส่ง เมื่อปลดล็อกเทอมที่รอบ (ย้อนแล้ว) ส่งเข้าไปกลับมา (ฟังก์ชันล้วน) → (คำสั่ง, เหตุไทยของสิ่งที่ข้าม)
+    now = _wl_export_now หลังสลับเทอมในธุรกรรมเดียวกัน · teacher_ids/subject_ids = รหัสครู/วิชาของเทอมที่เปิด (หลัง _apply_snapshot)
+
+    ใส่ค่า "new" ของการส่งกลับ เฉพาะแถวที่ยังเป็นค่าที่การย้อนทิ้งไว้ ("old" — ใครแก้ระหว่างนั้น = ไม่ใช่ของเรา) · ค่านั้นมีในเทอมที่เปิด ·
+    และไม่มีแถวอื่นถือค่านั้นอยู่ (ถ้าแถวที่ถืออยู่เป็นแถวในชุดที่กำลังย้ายออก ถือว่าว่าง — สลับเลขกันได้ สองรอบเหมือนการย้อน) · วิชาที่การส่ง
+    สร้าง และบรรทัด/ตัวเลือกที่การส่งผูก ใช้ค่าที่การย้อนบันทึกไว้ (report["undone"]) เฉพาะแถวที่ยังว่าง · ที่ไม่ผ่าน = ข้าม ไม่ล้มทั้งการปลดล็อก
+    (ทางกลับต้องไม่ตัน) · คำสั่งสุดท้าย = แถวรอบ: exported_at = now() รายงานกลับเป็นของการส่ง (ไม่มี "undone") — ผู้เรียกตรวจว่าโดนหนึ่งแถว"""
+    undone = report.get("undone") or {}
+    skipped: list[str] = []
+    first: list[tuple[str, tuple]] = []
+    second: list[tuple[str, tuple]] = []
+    groups = (("wl_teachers", "teachers", "ครู", teacher_ids,
+               [(w["id"], w.get("old"), w["new"]) for w in report.get("teachers") or []]),
+              ("wl_subjects", "subjects", "วิชา", subject_ids,
+               [(w["id"], w.get("old"), w["new"]) for w in report.get("subjects") or []]
+               + [(i, None, sched) for i, sched in undone.get("created") or []]))
+    for table, kind, noun, program, entries in groups:
+        rows, held = now[kind], now[kind[:-1] + "_held"]
+        moving: dict[int, tuple[Any, Any]] = {}
+        for wl_id, old, new in entries:
+            hit = rows.get(wl_id)
+            name = hit[1] if hit else f"รหัส {wl_id}"
+            if hit is None:
+                skipped.append(f"{noun} {name}: ไม่พบในทะเบียนของเว็บแล้ว")
+            elif hit[0] == new:
+                continue
+            elif hit[0] != old:
+                skipped.append(f"{noun} {name}: รหัสในโปรแกรมที่ผูกไว้เปลี่ยนไปหลังย้อนการส่ง")
+            elif new not in program:
+                skipped.append(f"{noun} {name}: เทอมที่เปิดไม่มี{noun}รหัส {new} ของโปรแกรม")
+            else:
+                moving[wl_id] = (old, new)
+        again = True
+        while again:                      # แถวที่ถือค่าปลายทางและไม่ได้ย้ายออก = ชน (ตัดแล้วอาจทำให้อีกแถวชนต่อ)
+            again = False
+            for wl_id, (old, new) in list(moving.items()):
+                h = held.get(new)
+                if h is not None and h[0] != wl_id and h[0] not in moving:
+                    skipped.append(f"{noun} {rows[wl_id][1]}: รหัส {new} ของโปรแกรมถูกผูกกับ{noun}อื่นในทะเบียนอยู่ ({h[1]})")
+                    del moving[wl_id]
+                    again = True
+        for wl_id, (old, new) in moving.items():
+            if old is not None:
+                first.append((f"UPDATE {table} SET sched_id = %s WHERE id = %s AND sched_id = %s", (None, wl_id, old)))
+            second.append((f"UPDATE {table} SET sched_id = %s WHERE id = %s AND sched_id IS NULL", (new, wl_id)))
+    binds: list[tuple[str, tuple]] = []
+    for table, kind, noun in (("wl_curriculum_lines", "lines", "บรรทัดหลักสูตร"),
+                              ("wl_term_set_options", "options", "ตัวเลือกของชุด")):
+        for i, subject_id in undone.get(kind) or []:
+            hit = now[kind].get(i)
+            if hit is None or hit[0] is not None:
+                skipped.append(f"{noun} {hit[1] if hit else i}: ถูกลบหรือผูกวิชาอื่นแล้ว")
+            else:
+                binds.append((f"UPDATE {table} SET subject_id = %s WHERE id = %s AND subject_id IS NULL", (subject_id, i)))
+    kept = {k: v for k, v in report.items() if k != "undone"}
+    last = ("UPDATE wl_rounds SET exported_at = now(), export_report = %s::jsonb WHERE id = %s AND exported_at IS NULL",
+            (_json.dumps(kept, ensure_ascii=False), round_id))
+    return first + second + binds + [last], skipped
+
+
+def _term_round_exported_to(term_ids: list[int]) -> bool:
+    """มีรอบที่ผูกกับเทอมเหล่านี้ไหม (exported_term_id — ส่งอยู่หรือย้อนแล้ว) — อ่านอย่างเดียว ไม่ล็อก (ทางของรอบอ่านซ้ำพร้อมล็อกใน
+    ธุรกรรมของมัน) · ต่อฐานไม่ได้ = 503 · ไม่มีช่องให้พลาด: exported_term_id ถูกเขียนในธุรกรรมเดียวกับที่สร้างแถวเทอมนั้น และไม่เคยถูกลบ
+    (การย้อนเก็บไว้) ค่าที่อ่านว่า "ไม่มี" จึงยังจริงตอนสลับเทอม"""
     try:
         with _wl_db() as cur:
-            cur.execute("SELECT id FROM wl_rounds WHERE exported_term_id = %s", (term_id,))
+            cur.execute("SELECT id FROM wl_rounds WHERE exported_term_id = ANY(%s)", (list(term_ids),))
             return cur.fetchone() is not None
     except HTTPException:
         raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง") from None
 
 
-def _unlock_term_reverting(term_id: int, row: dict[str, Any], old_id: int, new_data: dict[str, Any],
-                           old_label: Any) -> dict[str, Any]:
-    """unlock_term เมื่อเทอมที่จะถูกปิด (old_id — แถว active) สร้างจากรอบ: การเชื่อมต่อเดียว ธุรกรรมเดียว (แบบข้อ 4.8)
-    ล็อกทะเบียนเป็นคำสั่งแรก (addendum ข้อ 2 — ลำดับเดียวกับการสร้างเทอมจากรอบและทุก route ที่เขียนทะเบียน: ปุ่มดึงครูที่กดพร้อมกันรอ
-    จน COMMIT แล้วเห็นทั้ง TEACHERS ของเทอมที่ปลดล็อกและ sched_id ที่ย้อนแล้ว) → ล็อกแถวรอบที่ส่งเข้าเทอมนี้ FOR UPDATE → ตัวแปรของ
-    โปรแกรม (โค้ดเดียวกับทางเดิม: บรรจุเทอมที่ปิด · _apply_snapshot · CURRENT_TERM จากแถว) → สลับเทอมด้วย cursor เดียวกัน → ย้อนการส่ง
-    (wl_export_undo_sql) → COMMIT ครั้งเดียว · ล้มก่อน COMMIT = ฐานย้อน (with conn) + คืนตัวแปรแบบทางเดิม → 500 ข้อความเดิม
+def _unlock_term_with_rounds(term_id: int, row: dict[str, Any], old_id: int, new_data: dict[str, Any],
+                             old_label: Any) -> dict[str, Any]:
+    """unlock_term เมื่อมีรอบผูกกับเทอมที่จะถูกปิด (old_id) หรือเทอมที่จะเปิด (term_id): การเชื่อมต่อเดียว ธุรกรรมเดียว (แบบข้อ 4.8)
+    ล็อกทะเบียนเป็นคำสั่งแรก (ลำดับเดียวกับการสร้างเทอมจากรอบและทุก route ที่เขียนทะเบียน: ปุ่มดึงครูที่กดพร้อมกันรอจน COMMIT แล้วเห็นทั้ง
+    TEACHERS ของเทอมที่เปิดและ sched_id ที่ตามแล้ว) → ล็อกแถวรอบที่ผูกกับสองเทอมนี้ FOR UPDATE → จดค่าคืนของหน่วยความจำ **หลังได้ล็อก**
+    (รีวิว m2 — คาบที่ลงระหว่างรอต้องนับในแถวเทอมที่ปิด) → ตัวแปรของโปรแกรม (โค้ดเดียวกับทางเดิม) → สลับเทอมด้วย cursor เดียวกัน →
+    ย้อนรอบที่ส่งเข้าเทอมที่ปิด → ผูกกลับรอบ (ย้อนแล้ว) ของเทอมที่เปิด → COMMIT ครั้งเดียว
+    ล้มก่อน COMMIT = ฐานย้อน (with conn) + คืนตัวแปรแบบทางเดิม + (รีวิว m4) ถ้ามีคำขอเขียนอื่นจบระหว่างนั้น (รุ่นขยับ) เซฟของที่คืนทับและบวกรุ่น
+    แบบ _term_restore → 500 ข้อความเดิม · คำตอบ = ของทางเดิม + "workload" (ข้อความไทยว่ารอบเป็นอย่างไรหลังปลดล็อก — รีวิว m5)
     ไม่มี DDL ในธุรกรรมนี้ (_wl_db ของ _term_round_exported_to สร้างตาราง/คอลัมน์ไว้แล้ว · app_terms มีจาก _term_row)"""
     try:
         conn = _db_connect()
     except Exception:                              # noqa: BLE001
         raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง") from None
-    old = dict(CURRENT_TERM)
-    old_slots = len(SLOTS)
-    saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
     old_blob = None
-    reverted: list[str] = []
+    notes: list[str] = []
+    logs: list[str] = []
     try:
         with conn:
             with conn.cursor() as cur:
                 _wl_registry_lock(cur)
-                cur.execute("SELECT id, label, status, export_report FROM wl_rounds WHERE exported_term_id = %s "
-                            "FOR UPDATE", (old_id,))
-                rounds = [dict(zip(("id", "label", "status", "export_report"), r)) for r in cur.fetchall()]
-                cur.execute("SELECT id FROM wl_rounds WHERE status <> %s", ("closed",))
-                still_open = {r[0] for r in cur.fetchall()}
+                cur.execute("SELECT id, label, exported_at, exported_term_id, export_report FROM wl_rounds "
+                            "WHERE exported_term_id = ANY(%s) FOR UPDATE", ([old_id, term_id],))
+                rounds = [dict(zip(("id", "label", "exported_at", "exported_term_id", "export_report"), r))
+                          for r in cur.fetchall()]
+                old = dict(CURRENT_TERM)
+                old_slots = len(SLOTS)
+                saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
+                rev0 = REVISION["n"]
                 snap = _snapshot()
                 snap["current_term"] = {**snap["current_term"], "status": "closed"}
                 old_blob = _pack(snap)
@@ -19163,14 +19277,29 @@ def _unlock_term_reverting(term_id: int, row: dict[str, Any], old_id: int, new_d
                                      "semester": row["semester"], "label": row["label"],
                                      "status": "active"})
                 closed_id = _term_swap_active(old_id, old_blob, old_slots, term_id, cur=cur)
+                at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
                 for rnd in rounds:
-                    stmts = wl_export_undo_sql(rnd["export_report"] or {}, rnd["id"],
-                                               keep_closed=bool(still_open - {rnd["id"]}))
+                    report = rnd["export_report"] or {}
+                    if rnd["exported_term_id"] == old_id and rnd["exported_at"] is not None:
+                        stmts = wl_export_undo_sql(report, rnd["id"], _wl_export_now(cur, report), at)
+                        skipped: list[str] = []
+                        notes.append(f"ย้อนการส่งรอบอัตรากำลัง {rnd['label']} แล้ว: ทะเบียนครู/วิชาของเว็บลงอัตรากำลังกลับเป็นแบบก่อนส่ง "
+                                     f"· รอบยังปิดอยู่ แก้ไม่ได้ เพราะ{wl_round_undone_text({'exported_label': old_label})}")
+                        logs.append(f"ย้อนการส่งรอบอัตรากำลัง {rnd['label']} (รอบยังปิดอยู่)")
+                    elif rnd["exported_term_id"] == term_id and rnd["exported_at"] is None:
+                        stmts, skipped = wl_export_redo_sql(report, rnd["id"], _wl_export_now(cur, report),
+                                                            {t.get("id") for t in TEACHERS}, {s.get("id") for s in SUBJECTS})
+                        notes.append(f"ผูกทะเบียนครู/วิชาของเว็บลงอัตรากำลังกับเทอม {row['label']} อีกครั้งตามการส่งรอบอัตรากำลัง "
+                                     f"{rnd['label']} · รอบกลับเป็นสถานะส่งเข้าโปรแกรมแล้ว"
+                                     + (f" · ข้าม {len(skipped)} รายการ: " + " · ".join(skipped) if skipped else ""))
+                        logs.append(f"ผูกทะเบียนตามรอบอัตรากำลัง {rnd['label']} อีกครั้ง"
+                                    + (f" (ข้าม {len(skipped)} รายการ)" if skipped else ""))
+                    else:
+                        continue        # ส่งเข้าเทอมที่เปิดอยู่แล้ว (ทะเบียนตามอยู่แล้ว) / ย้อนไปแล้ว
                     for sql, params in stmts:
                         cur.execute(sql, params)
-                    if cur.rowcount != 1:      # คำสั่งสุดท้าย = ลบเครื่องหมายส่งแล้วของแถวรอบที่ล็อกไว้
+                    if cur.rowcount != 1:      # คำสั่งสุดท้าย = เครื่องหมายของแถวรอบที่ล็อกไว้
                         raise RuntimeError("export mark of the round changed meanwhile")
-                    reverted.append(str(rnd["label"]))
             conn.commit()
     except Exception as e:                         # noqa: BLE001
         # ยังไม่ COMMIT: เอาเทอมที่กำลังใช้อยู่กลับมาแบบทางเดิม
@@ -19181,6 +19310,9 @@ def _unlock_term_reverting(term_id: int, row: dict[str, Any], old_id: int, new_d
                 pass
             CURRENT_TERM.update(old)
             SCHOOL_CONFIG.update(saved_cfg)
+            if REVISION["n"] != rev0:              # คำขออื่นอาจเซฟเทอมที่ไม่เคยปลดล็อกจริงลงคิวไปแล้ว — เซฟของที่คืนทับ
+                REVISION["n"] += 1
+                _save_state()
         _wl_log_server_error(e)                    # ชื่อชนิด + sqlstate + stack เท่านั้น
         raise HTTPException(500, "ปลดล็อกเทอมไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง") from None
     finally:
@@ -19188,14 +19320,14 @@ def _unlock_term_reverting(term_id: int, row: dict[str, Any], old_id: int, new_d
         _invalidate_entity_index()
     if closed_id is not None:
         _term_log(closed_id, "close", f"ปิดเทอม {old_label} ({old_slots} คาบ)")
-    _term_log(term_id, "unlock", f"ปลดล็อกเทอม {row['label']}"
-              + (f" · ย้อนการส่งรอบอัตรากำลัง {', '.join(reverted)}" if reverted else ""))
+    _term_log(term_id, "unlock", " · ".join([f"ปลดล็อกเทอม {row['label']}"] + logs))
     _save_state()
     save_error, save_pending = _flush_after_term_change("ปลดล็อกเทอมแล้ว")
     return {"closed": _term_row(closed_id) if closed_id is not None else None,
             "active": _term_row(term_id),
             "save_error": save_error,
-            "save_pending": save_pending}
+            "save_pending": save_pending,
+            "workload": notes}
 
 
 @app.post("/api/terms/{term_id}/unlock")
@@ -19253,9 +19385,9 @@ def unlock_term(term_id: int, body: dict[str, Any]):
             (row["year"], row["semester"]), existing, "ปลดล็อกเทอม")
     old_label = ((active_row.get("label") or old_id) if has_old
                  else (archive["label"] if archive else None))
-    # ขั้นที่ 3 (แบบข้อ 4.8): เทอมที่การปลดล็อกจะปิดสร้างจากรอบอัตรากำลัง → ย้อนการส่งของรอบในธุรกรรมเดียวกับการสลับเทอม
-    if has_old and _term_round_exported_to(old_id):
-        return _unlock_term_reverting(term_id, row, old_id, new_data, old_label)
+    # ขั้นที่ 3 (แบบข้อ 4.8): มีรอบผูกกับเทอมที่จะปิด/จะเปิด → ทะเบียนของเว็บตามเทอมที่เปิด ในธุรกรรมเดียวกับการสลับเทอม
+    if has_old and _term_round_exported_to([old_id, term_id]):
+        return _unlock_term_with_rounds(term_id, row, old_id, new_data, old_label)
 
     old = dict(CURRENT_TERM)
     old_slots = len(SLOTS)
