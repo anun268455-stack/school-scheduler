@@ -320,17 +320,36 @@ class FakeCur:
         m = re.fullmatch(r"UPDATE (\w+) SET (.+?) WHERE (.+?)(?: RETURNING (.+))?", s)
         assert m, f"ฐานข้อมูลปลอมไม่รู้จัก SQL: {s}"
         table, sets, where, ret = m.groups()
-        assign = {}
-        for part in sets.split(","):
-            mm = re.fullmatch(r"(\w+) = (%s|now\(\))", part.strip())
+        now = dt.datetime(2026, 11, 16, 9, 0, tzinfo=dt.timezone.utc) + dt.timedelta(seconds=self.db.tick)
+        assign, keep = {}, {}
+        # คั่นด้วยจุลภาคที่ไม่อยู่ในวงเล็บ (coalesce(x, now()) มีจุลภาคข้างใน) · รูปที่รู้จัก: = %s · = %s::jsonb (ข้อความ JSON
+        # ที่ Postgres เก็บเป็นค่า) · = now() · = 'ค่าคงที่' · = coalesce(คอลัมน์เดิม, now()) (ขั้นที่ 3 ทำเครื่องหมายรอบที่ส่งแล้ว)
+        parts, depth, start = [], 0, 0
+        for i, ch in enumerate(sets):
+            depth += {"(": 1, ")": -1}.get(ch, 0)
+            if ch == "," and depth == 0:
+                parts.append(sets[start:i])
+                start = i + 1
+        for part in parts + [sets[start:]]:
+            mm = re.fullmatch(r"(\w+) = (%s::jsonb|%s|now\(\)|'[^']*'|coalesce\((\w+), now\(\)\))", part.strip())
             assert mm and mm.group(1) in self.db.schema[table]["cols"], part
-            assign[mm.group(1)] = (params.pop(0) if mm.group(2) == "%s" else
-                                   dt.datetime(2026, 11, 16, 9, 0, tzinfo=dt.timezone.utc)
-                                   + dt.timedelta(seconds=self.db.tick))
+            col, val = mm.group(1), mm.group(2)
+            if val == "%s":
+                assign[col] = params.pop(0)
+            elif val == "%s::jsonb":
+                assign[col] = json.loads(params.pop(0))
+            elif val == "now()":
+                assign[col] = now
+            elif val.startswith("'"):
+                assign[col] = val[1:-1]
+            else:
+                assert mm.group(3) == col, part
+                keep[col] = now
         pred = self._pred(table, where, params)
         hit = [r for r in self.db.tables[table] if pred(r)]
         for r in hit:
-            new = {**r, **copy.deepcopy(assign)}
+            new = {**r, **copy.deepcopy(assign),
+                   **{c: (r[c] if r[c] is not None else v) for c, v in keep.items()}}
             for c, info in self.db.schema[table]["cols"].items():
                 if new[c] is None and info["notnull"]:
                     raise DbError("23502", f"{table}.{c} ห้ามว่าง")

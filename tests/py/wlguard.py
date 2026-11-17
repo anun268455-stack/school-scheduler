@@ -267,7 +267,9 @@ def test_wl_db_http_exception_inside_block_passes_through():
     ok("commit" not in log and printed == "", "409 ไม่ commit และไม่พิมพ์อะไร")
 
 
-def test_schema_flag_not_set_when_first_block_fails():
+def test_schema_flag_follows_the_schema_commit_not_the_block():
+    # ขั้นที่ 3 Task 4 addendum ข้อ 5: DDL commit แยกก่อนบล็อก — สัญญาเดิม "บล็อกแรกล้ม = DDL ย้อนกลับ ห้ามตั้งธง" เปลี่ยนเป็น
+    # "บล็อกแรกล้มหลัง DDL commit แล้ว = ตารางอยู่จริง ตั้งธงได้" · ยังห้ามตั้งธงเมื่อ DDL เองล้มหรือ commit ของ DDL ล้ม
     log: list[str] = []
     with patched(_STORE_KIND="postgres", _db_connect=lambda: _Conn(log), _WL_SCHEMA_READY=False):
         try:
@@ -275,7 +277,55 @@ def test_schema_flag_not_set_when_first_block_fails():
                 raise HTTPException(401, "x")
         except HTTPException:
             pass
-        ok(mock_api._WL_SCHEMA_READY is False, "บล็อกแรกล้ม = ถูกย้อนกลับ ห้ามตั้งธง")
+        ok(log == ["execute", "commit"], f"commit ของ DDL เท่านั้น บล็อกที่ล้มไม่ commit: {log}")
+        ok(mock_api._WL_SCHEMA_READY is True, "DDL commit แล้ว = ตั้งธง แม้บล็อกแรกล้ม")
+
+    class BadDdl(_Cur):
+        def execute(self, sql, *a):
+            raise RuntimeError(_secret("ddl"))
+
+    class BadDdlConn(_Conn):
+        def cursor(self):
+            return BadDdl(self.log)
+
+    class BadDdlCommit(_Conn):
+        def commit(self):
+            raise RuntimeError(_secret("ddl-commit"))
+    for conn, what in ((BadDdlConn([]), "DDL ล้ม"), (BadDdlCommit([]), "commit ของ DDL ล้ม")):
+        with patched(_STORE_KIND="postgres", _db_connect=lambda c=conn: c, _WL_SCHEMA_READY=False):
+            ran = []
+            try:
+                with mock_api._wl_db():
+                    ran.append("block")
+            except HTTPException as e:
+                ok(e.status_code == 503 and e.detail == mock_api.wl_db_error_detail(), f"{what}: 503 ไทย")
+            else:
+                fails.append(f"{what}: ต้อง 503")
+            ok(ran == [] and mock_api._WL_SCHEMA_READY is False, f"{what}: ไม่เข้าบล็อก ไม่ตั้งธง")
+
+
+def test_wl_db_commits_the_schema_before_the_route_transaction_starts():
+    # รีวิว Task 3 m1: ALTER TABLE wl_rounds (ACCESS EXCLUSIVE) ในธุรกรรมเดียวกับ route ทำให้ล็อกทะเบียนไม่ใช่คำสั่งแรก แล้ว deadlock
+    # กับธุรกรรมที่ถือล็อกทะเบียนแล้วอ่าน wl_rounds — DDL ต้อง commit ก่อนคำสั่งแรกของ route เสมอ
+    log: list[str] = []
+
+    class Cur(_Cur):
+        def execute(self, sql, *a):
+            self.log.append("ddl" if sql == mock_api._WL_SCHEMA else sql)
+
+    class Conn(_Conn):
+        def cursor(self):
+            return Cur(self.log)
+    with patched(_STORE_KIND="postgres", _db_connect=lambda: Conn(log), _WL_SCHEMA_READY=False):
+        with mock_api._wl_db() as cur:
+            ok(log == ["ddl", "commit"], f"DDL commit แล้วก่อนเข้าบล็อก: {log}")
+            ok(mock_api._WL_SCHEMA_READY is True, "ตั้งธงหลัง commit ของ DDL")
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (mock_api.WL_REGISTRY_LOCK_KEY,))
+        ok(log == ["ddl", "commit", "SELECT pg_advisory_xact_lock(%s)", "commit"], f"ลำดับ: {log}")
+        log.clear()
+        with mock_api._wl_db() as cur:
+            cur.execute("SELECT 1")
+        ok(log == ["SELECT 1", "commit"], f"ธงตั้งแล้วไม่มี DDL: {log}")
 
 
 def test_schema_has_four_tables_and_one_per_group_indexes():

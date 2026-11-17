@@ -27,12 +27,13 @@ SCHED_TEACHERS = [{"id": t, "name": f"ครู {t}", "department_id": 1, "max_s
 
 @contextlib.contextmanager
 def _program(**over):
-    """ตัวแปรของโปรแกรมชุดเล็กของ wlopen.py (แผน 8 แถว ชุดเสรี 1 ชุด วิชา 900-905 ครู 501-510) + ฐานข้อมูลจริง"""
+    """ตัวแปรของโปรแกรมชุดเล็กของ wlopen.py (แผน 8 แถว ชุดเสรี 1 ชุด วิชา 900-905 ครู 501-510) + ฐานข้อมูลจริง
+    terms = แถวของ app_terms ที่รายการรอบ/หน้าดูก่อนสร้างเห็น (เหตุ "มีเทอมนี้อยู่แล้ว" — Task 4 addendum ข้อ 3) ค่าตั้งต้นว่าง"""
     with _patched(REQUIREMENTS=copy.deepcopy(over.get("requirements", PLAN)),
                   ELECTIVE_POOLS=copy.deepcopy(over.get("pools", POOLS)), SLOTS=[],
                   SUBJECTS=copy.deepcopy(over.get("subjects", SCHED_SUBJECTS)),
                   TEACHERS=copy.deepcopy(over.get("teachers", SCHED_TEACHERS)), CURRICULA=[], PARKED=[],
-                  _STORE_KIND="postgres"):
+                  _STORE_KIND="postgres", _terms_list=lambda: copy.deepcopy(list(over.get("terms", [])))):
         yield
 
 
@@ -512,6 +513,66 @@ def test_rounds_list_shape():
         assert mock_api.terms_rounds() == []
     paths = {(v, p) for v, p, _ in mock_api.app.routes}
     assert ("get", "/api/terms/rounds") in paths and ("get", "/api/terms/preview") in paths
+
+
+def test_rounds_and_preview_say_the_term_already_exists():
+    # Task 4 addendum ข้อ 3 (Ruling T3 C2): app_terms มีปี/ภาคของรอบแล้ว → เหตุนำหน้า ข้อความเดียวกับ POST /api/terms ·
+    # รอบที่ส่งแล้วบอกแค่ว่าส่งแล้ว (เทอมของมันมีอยู่แน่นอน ไม่ซ้ำเหตุ) · ปี/ภาคอื่นไม่เป็นเหตุ
+    want = mock_api._term_exists_reasons([{"year": 2569, "semester": 2}], 2569, 2)
+    assert len(want) == 1 and "มีเทอม 2/2569" in want[0] and _thai(want[0]), want
+    assert mock_api._term_exists_reasons([{"year": 2569, "semester": 1}], 2569, 2) == []
+    for terms in ([{"id": 9, "year": 2569, "semester": 2, "label": "2/2569", "status": "closed"}], []):
+        with _program(terms=terms):
+            db, t, rnd = _scenario()
+            got, _log = _run(db, mock_api.terms_rounds)
+            prev, _log = _run(db, mock_api.terms_preview, round_id=str(rnd["id"]))
+            with _patched(_db_write_blocked=lambda: True):
+                blocked, _log = _run(db, mock_api.terms_rounds)
+        if terms:
+            assert got[0]["usable"] is False and got[0]["reasons"] == want, got[0]
+            assert prev["round"]["usable"] is False and prev["round"]["reasons"] == want, prev["round"]
+            assert blocked[0]["reasons"][0] == want[0] and blocked[0]["reasons"][-1] == mock_api.TERM_FROM_ROUND_BLOCKED
+        else:
+            assert got[0]["usable"] is True and prev["round"]["reasons"] == [], (got[0], prev["round"])
+    with _program(terms=[{"year": 2569, "semester": 2}]):
+        db, t, rnd = _scenario()
+        for r in db.tables["wl_rounds"]:
+            r.update(status="closed", exported_at=dt.datetime(2026, 11, 17, tzinfo=dt.timezone.utc),
+                     exported_label="2/2569")
+        got, _log = _run(db, mock_api.terms_rounds)
+    assert len(got[0]["reasons"]) == 1 and "ส่งเข้าโปรแกรมจัดตารางแล้ว" in got[0]["reasons"][0], got[0]
+    # อ่านรายการเทอมไม่ได้ → 503 ไทย (หน้าต่างถอยไปแบบเดิม — Task 6)
+    def boom():
+        raise RuntimeError("postgresql://u:SECRET@h/d")
+    with _program(), _patched(_terms_list=boom):
+        db, t, rnd = _scenario()
+        for fn in (lambda: _run(db, mock_api.terms_rounds), lambda: _run(db, mock_api.terms_preview,
+                                                                           round_id=str(rnd["id"]))):
+            c, d = _code(fn)
+            assert c == 503 and _thai(d) and "SECRET" not in d, (c, d)
+
+
+def test_line_bound_to_a_subject_without_code_points_to_the_registry():
+    # Task 4 addendum ข้อ 6 (รีวิว Task 3 m2): บรรทัด/ตัวเลือกที่ผูกวิชาแล้วแต่วิชาในทะเบียนไม่มีรหัส ต้องแก้ที่ "ทะเบียนวิชา"
+    # ส่วนบรรทัดที่ไม่ได้ผูกและไม่ได้พิมพ์รหัสยังบอกให้แก้ที่หน้าหลักสูตรเหมือนเดิม
+    lines = [{"id": 1, "subject_id": 11, "code": "", "name": "คณิตในบรรทัด", "credits": 1, "weekly": 2, "kind": "basic",
+              "department_id": 2},
+             {"id": 2, "subject_id": None, "code": " ", "name": "พิมพ์ไม่ครบ", "credits": 1, "weekly": 1,
+              "kind": "basic", "department_id": 2}]
+    subj = [{"id": 11, "sched_id": 900, "code": "  ", "name": "คณิตศาสตร์ในทะเบียน", "type": None, "department_id": 2,
+             "duration": 1, "is_activity": False, "is_elective": False, "active": True},
+            {"id": 12, "sched_id": 904, "code": "", "name": "ดนตรีในทะเบียน", "type": None, "department_id": 7,
+             "duration": 1, "is_activity": False, "is_elective": False, "active": True}]
+    src = _source(rows=[], options=[_opt(1, 7, subject_id=12, code="ศ21201"), _opt(2, 7, subject_id=None, code="")],
+                  lines=lines, wl_subjects=subj)
+    got = mock_api.wl_export_reasons(src, 2569, 2)
+    reg = [g for g in got if "ทะเบียนวิชา" in g]
+    cur = [g for g in got if "ในหน้าหลักสูตร" in g]
+    assert len(reg) == 2 and len(cur) == 2, got
+    assert "คณิตศาสตร์ในทะเบียน" in reg[0] and "1 บรรทัด" in reg[0] and "หน้าหลักสูตร" not in reg[0], reg[0]
+    assert "ดนตรีในทะเบียน" in reg[1] and "1 ตัวเลือก" in reg[1] and "หน้าหลักสูตร" not in reg[1], reg[1]
+    assert "พิมพ์ไม่ครบ" in cur[0] and "1 บรรทัด" in cur[0], cur[0]
+    assert "1 ตัวเลือก" in cur[1], cur[1]
 
 
 def test_round_view_has_export_fields():

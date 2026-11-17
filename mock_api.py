@@ -13943,8 +13943,8 @@ def _wl_schema(cur) -> None:
 
 
 # DDL ชุดนี้เป็นหลายคำสั่ง = ไปกลับ Neon หลายรอบ จึงรันแค่ครั้งแรกที่สำเร็จของแต่ละ process
-# ตั้งธงหลัง commit เท่านั้น: DDL ของ Postgres อยู่ในธุรกรรม ถ้าบล็อกแรกล้มแล้วย้อนกลับ
-# ตารางก็หายไปด้วย การตั้งธงก่อนจะทำให้คำขอถัดไปข้ามการสร้างตารางที่ไม่มีอยู่จริง
+# ตั้งธงหลัง commit ของ DDL เท่านั้น: DDL ของ Postgres อยู่ในธุรกรรม ถ้าล้มแล้วย้อนกลับ ตารางก็หายไปด้วย
+# การตั้งธงก่อนจะทำให้คำขอถัดไปข้ามการสร้างตารางที่ไม่มีอยู่จริง (DDL commit แยกจากธุรกรรมของ route — ดู _wl_db)
 _WL_SCHEMA_READY: bool = False
 
 
@@ -13992,10 +13992,16 @@ def _wl_db():
         with conn:
             with conn.cursor() as cur:
                 if not _WL_SCHEMA_READY:
+                    # DDL เป็นธุรกรรมของมันเอง commit ก่อน yield (รีวิว Task 3 m1): ALTER TABLE wl_rounds ถือ ACCESS EXCLUSIVE
+                    # จนจบธุรกรรม ถ้ารวมกับธุรกรรมของ route คำสั่งแรกของ route (ล็อกทะเบียน) จะมาหลัง ALTER แล้ว deadlock กับ
+                    # ธุรกรรมอื่นที่ถือล็อกทะเบียนแล้วอ่าน wl_rounds (ลองแล้วด้วย psql สองเซสชัน) · แยกแล้ว ALTER รอแค่ให้อีกฝั่ง
+                    # จบ (ไม่ได้ถืออะไรที่อีกฝั่งรอ) และธุรกรรมของ route เริ่มหลัง DDL จบเสมอ
                     try:
                         _wl_schema(cur)
+                        conn.commit()
                     except Exception:
                         raise HTTPException(503, wl_db_error_detail()) from None
+                    _set_wl_schema_ready()
                 yield cur
             conn.commit()
     except HTTPException:
@@ -14003,7 +14009,6 @@ def _wl_db():
     except Exception as e:
         _wl_log_server_error(e)
         raise HTTPException(500, wl_server_error_detail()) from None
-    _set_wl_schema_ready()
 
 
 def _set_wl_schema_ready() -> None:
@@ -17670,7 +17675,7 @@ def _term_set_status(term_id: int, status: str) -> None:
 def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
                  year: int, semester: int, label: str, new_blob: bytes,
                  old_year: int | None = None, old_semester: int | None = None,
-                 old_label: str | None = None) -> tuple[int | None, int]:
+                 old_label: str | None = None, cur=None) -> tuple[int | None, int]:
     """Close the running term and open the next one, in ONE transaction.
 
     -> (id of the row the old term ended up in, id of the new active row)
@@ -17695,28 +17700,37 @@ def _term_rotate(old_id: int | None, old_blob: bytes | None, old_slots: int,
 
     The row is authoritative for `id` and `status`: the `current_term` inside
     either stored blob must not be trusted for those two fields.
+
+    cur (ขั้นที่ 3 — สร้างเทอมจากรอบ): ผู้เรียกถือธุรกรรมเอง → ใช้ cursor นั้น ไม่เปิดการเชื่อมต่อ ไม่ COMMIT และไม่รัน
+    _terms_schema (CREATE INDEX IF NOT EXISTS ถือ ShareLock ของ app_terms จนจบธุรกรรมแม้ดัชนีมีแล้ว — ห้ามมี DDL ใน
+    ธุรกรรมที่ถือล็อกทะเบียน ผู้เรียกสร้างตารางไว้ก่อนแล้วด้วย _terms_list) · ไม่ส่ง = ทางเดิมทุกอย่าง
     """
+    def rotate(cur) -> tuple[int | None, int]:
+        closed_id = old_id
+        if old_id is not None:
+            cur.execute(
+                "UPDATE app_terms SET status = 'closed', data = %s, slots = %s, "
+                "closed_at = now() WHERE id = %s", (old_blob, old_slots, old_id))
+        elif old_year is not None and old_semester is not None:
+            cur.execute(
+                "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+                "VALUES (%s, %s, %s, 'closed', %s, %s, now()) RETURNING id",
+                (old_year, old_semester,
+                 old_label or term_label(old_year, old_semester),
+                 old_blob, old_slots))
+            closed_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
+            "VALUES (%s, %s, %s, 'active', %s, 0, NULL) RETURNING id",
+            (year, semester, label, new_blob))
+        return closed_id, cur.fetchone()[0]
+
+    if cur is not None:
+        return rotate(cur)
     with _db_connect() as conn:
         with conn.cursor() as cur:
             _terms_schema(cur)
-            closed_id = old_id
-            if old_id is not None:
-                cur.execute(
-                    "UPDATE app_terms SET status = 'closed', data = %s, slots = %s, "
-                    "closed_at = now() WHERE id = %s", (old_blob, old_slots, old_id))
-            elif old_year is not None and old_semester is not None:
-                cur.execute(
-                    "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
-                    "VALUES (%s, %s, %s, 'closed', %s, %s, now()) RETURNING id",
-                    (old_year, old_semester,
-                     old_label or term_label(old_year, old_semester),
-                     old_blob, old_slots))
-                closed_id = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO app_terms (year, semester, label, status, data, slots, closed_at) "
-                "VALUES (%s, %s, %s, 'active', %s, 0, NULL) RETURNING id",
-                (year, semester, label, new_blob))
-            new_id = cur.fetchone()[0]
+            closed_id, new_id = rotate(cur)
         conn.commit()
     return closed_id, new_id
 
@@ -17948,6 +17962,25 @@ _TERM_SKIP_TEXT: dict[str, str] = {"row": "แถวของรอบ", "option
 _TERM_SHOW = 5        # ตัวอย่างในข้อความเหตุไม่เกินเท่านี้ (รายการเต็มอยู่ในรายงาน)
 
 
+def _term_exists_reasons(existing: list[dict[str, Any]], year: int, semester: int) -> list[str]:
+    """เหตุ "มีเทอมนี้ในโปรแกรมอยู่แล้ว" (Ruling T3 C2) — ข้อความเดียวกันทั้งรายการรอบ หน้าดูก่อนสร้าง และ POST /api/terms
+    existing = แถวของ app_terms (มี year semester) · ปุ่มเดิมปฏิเสธปี/ภาคซ้ำอยู่แล้ว (UNIQUE (year, semester)) จึงบอกตั้งแต่ก่อนกด
+    ฟังก์ชันล้วน · [] = ไม่มีเทอมนี้"""
+    if not any(t.get("year") == year and t.get("semester") == semester for t in existing):
+        return []
+    label = term_label(year, semester)
+    return [f"มีเทอม {label} ในโปรแกรมจัดตารางอยู่แล้ว — สร้างเทอมเดียวกันซ้ำไม่ได้ (ถ้าสร้างผิด ให้ปลดล็อกเทอมเดิมกลับ"
+            "ในหน้ารายการเทอม)"]
+
+
+def _term_rows_or_503() -> list[dict[str, Any]]:
+    """แถวของ app_terms (รายการเทอม) สำหรับเหตุ "มีเทอมนี้อยู่แล้ว" ของรายการรอบและหน้าดูก่อนสร้าง · อ่านไม่ได้ = 503 ไทย"""
+    try:
+        return _terms_list()
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง") from None
+
+
 def _wl_export_source(cur, round_id: int) -> dict[str, Any]:
     """ข้อมูลของรอบในรูป source ของสัญญาร่วม (term_from_round) — อ่านทุกอย่างจาก cursor เดียว (ธุรกรรมเดียว) ไม่เขียน
     ไม่ล็อก (การสร้างจริงถือล็อกทะเบียนและแถวรอบ FOR UPDATE ก่อนเรียก) · ไม่มีรอบ → 404 ไทย
@@ -18068,11 +18101,22 @@ def wl_export_reasons(source: dict[str, Any], year: int, semester: int) -> list[
     def code_of(item: dict[str, Any]) -> str:
         sid = item.get("subject_id")
         return subj_code.get(sid, "") if sid is not None else str(item.get("code") or "").strip()
+    # บรรทัด/ตัวเลือกที่ผูกวิชาในทะเบียนอยู่แล้วแต่วิชานั้นไม่มีรหัส (ปุ่มดึงวิชารับรหัสว่างได้) ต้องแก้ที่ทะเบียนวิชา ไม่ใช่หน้า
+    # หลักสูตร (addendum ข้อ 6) จึงแยกเหตุจากบรรทัดที่ไม่ได้ผูกและไม่ได้พิมพ์รหัส
+    subj_name = {s.get("id"): str(s.get("name") or "").strip() for s in source.get("wl_subjects") or []}
+
+    def registry_names(items: list[dict[str, Any]]) -> str:
+        return _term_names([{"name": subj_name.get(i.get("subject_id")) or i.get("name")} for i in items])
     for c in source.get("curricula") or []:
         bad = [ln for ln in c.get("lines") or [] if not code_of(ln)]
-        if bad:
-            reasons.append(f"หลักสูตร {c.get('name') or ''}: บรรทัดที่ไม่มีรหัสวิชา {len(bad):,} บรรทัด ({_term_names(bad)}) "
+        typed = [ln for ln in bad if ln.get("subject_id") is None]
+        bound = [ln for ln in bad if ln.get("subject_id") is not None]
+        if typed:
+            reasons.append(f"หลักสูตร {c.get('name') or ''}: บรรทัดที่ไม่มีรหัสวิชา {len(typed):,} บรรทัด ({_term_names(typed)}) "
                            "— ใส่รหัสวิชาหรือผูกกับวิชาในทะเบียนในหน้าหลักสูตรก่อน")
+        if bound:
+            reasons.append(f"หลักสูตร {c.get('name') or ''}: บรรทัดที่ผูกกับวิชาซึ่งไม่มีรหัสในทะเบียนวิชา {len(bound):,} บรรทัด "
+                           f"(วิชา {registry_names(bound)}) — ใส่รหัสวิชาในหน้าทะเบียนวิชาของเว็บลงอัตรากำลังก่อน")
     sets_by_id = {s.get("id"): s for s in source.get("sets") or []}
     bad_opts: dict[Any, list[dict[str, Any]]] = {}
     for o in options:
@@ -18080,8 +18124,15 @@ def wl_export_reasons(source: dict[str, Any], year: int, semester: int) -> list[
             bad_opts.setdefault(o.get("set_id"), []).append(o)
     for set_id, bad in bad_opts.items():
         st = sets_by_id.get(set_id) or bad[0].get("set") or {}
-        reasons.append(f"{WL_SET_KIND_TEXT.get(st.get('kind'), 'ชุด')} {st.get('name') or ''}: ตัวเลือกที่ไม่มีรหัสวิชา "
-                       f"{len(bad):,} ตัวเลือก ({_term_names(bad)}) — ใส่รหัสวิชาหรือผูกกับวิชาในทะเบียนในหน้าหลักสูตรก่อน")
+        where_set = f"{WL_SET_KIND_TEXT.get(st.get('kind'), 'ชุด')} {st.get('name') or ''}"
+        typed = [o for o in bad if o.get("subject_id") is None]
+        bound = [o for o in bad if o.get("subject_id") is not None]
+        if typed:
+            reasons.append(f"{where_set}: ตัวเลือกที่ไม่มีรหัสวิชา {len(typed):,} ตัวเลือก ({_term_names(typed)}) "
+                           "— ใส่รหัสวิชาหรือผูกกับวิชาในทะเบียนในหน้าหลักสูตรก่อน")
+        if bound:
+            reasons.append(f"{where_set}: ตัวเลือกที่ผูกกับวิชาซึ่งไม่มีรหัสในทะเบียนวิชา {len(bound):,} ตัวเลือก "
+                           f"(วิชา {registry_names(bound)}) — ใส่รหัสวิชาในหน้าทะเบียนวิชาของเว็บลงอัตรากำลังก่อน")
     # 5 — ครูที่ถูกอ้างยังมีในทะเบียน (FK กันไว้แล้ว ตรวจซ้ำเพราะเป็นเงื่อนไขของการส่ง)
     known = {t.get("id") for t in source.get("wl_teachers") or []}
     used = {r.get(k) for r in rows for k in ("teacher_id", "co_teacher_id")}
@@ -18201,10 +18252,12 @@ def terms_rounds() -> list[dict[str, Any]]:
     เอง (หน้าต่างตั้งตามรอบแล้วล็อก) · รอบที่ส่งแล้วบอกแค่ว่าส่งแล้ว ไม่อ่านแถวของมัน (เทียบรอบเก่ากับทะเบียนตอนนี้ไม่มีความหมาย)
     · ข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ: เกณฑ์รอบ + TERM_FROM_ROUND_BLOCKED (ไม่เทียบกับข้อมูลตั้งต้นในหน่วยความจำ)
     · ไม่ได้ต่อฐานข้อมูล = ไม่มีรอบ (รายการว่าง — หน้าต่างสร้างเทอมเหมือนเดิมทุกอย่าง) · ต่อฐานไม่ได้ = 503 ไทย (_wl_db)
+    · รอบที่ยังไม่ส่งแต่โปรแกรมมีเทอมปี/ภาคของรอบอยู่แล้ว: เหตุ _term_exists_reasons นำหน้า (Ruling T3 C2)
     """
     if _STORE_KIND != "postgres":
         return []
     blocked = _db_write_blocked()
+    existing = _term_rows_or_503()
     out = []
     with _wl_db() as cur:
         cur.execute(f"SELECT {', '.join(_WL_EXPORT_ROUND_COLS)} FROM wl_rounds ORDER BY year DESC, semester DESC")
@@ -18215,12 +18268,14 @@ def terms_rounds() -> list[dict[str, Any]]:
             if r["exported_at"] is not None:
                 reasons = wl_export_reasons({"round": r}, r["year"], r["semester"])
             elif blocked:
-                reasons = wl_export_reasons(_wl_export_source(cur, r["id"]), r["year"], r["semester"]) + \
+                reasons = _term_exists_reasons(existing, r["year"], r["semester"]) + \
+                    wl_export_reasons(_wl_export_source(cur, r["id"]), r["year"], r["semester"]) + \
                     [TERM_FROM_ROUND_BLOCKED]
             else:
                 outgoing = outgoing if outgoing is not None else _term_outgoing()
-                reasons = _term_build(_wl_export_source(cur, r["id"]), outgoing, dict(_counters),
-                                      r["year"], r["semester"])["reasons"]
+                reasons = _term_exists_reasons(existing, r["year"], r["semester"]) + \
+                    _term_build(_wl_export_source(cur, r["id"]), outgoing, dict(_counters),
+                                r["year"], r["semester"])["reasons"]
             out.append({"id": r["id"], "label": r["label"], "year": r["year"], "semester": r["semester"],
                         "status": r["status"], "exported_at": r["exported_at"], "exported_label": r["exported_label"],
                         "usable": not reasons, "reasons": reasons})
@@ -18297,7 +18352,7 @@ def terms_preview(round_id: str | None = None):
     ส่ง round_id = ตัวเลขเดิม + "round": {id, label, year, semester, usable, reasons, report} จาก _term_build ตัวเดียวกับ
     การสร้างจริง (ปี/ภาคเรียนของเทอมใหม่ = ของรอบ — หน้าต่างตั้งตามรอบแล้วล็อก) · รอบที่ใช้ไม่ได้ยังได้สรุปครบพร้อมเหตุ
     รหัสรอบผิดรูป = 400 · ไม่ได้ต่อฐานข้อมูล หรือข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ (สรุปจากข้อมูลตั้งต้นคือสรุปผิด) = 503 ·
-    ไม่มีรอบ = 404 — ข้อความไทยทั้งหมด
+    ไม่มีรอบ = 404 — ข้อความไทยทั้งหมด · โปรแกรมมีเทอมปี/ภาคของรอบอยู่แล้ว = เหตุ _term_exists_reasons นำหน้า (Ruling T3 C2)
     """
     text = str(round_id).strip() if round_id is not None else ""
     if not text:
@@ -18308,18 +18363,24 @@ def terms_preview(round_id: str | None = None):
         raise HTTPException(503, "ยังไม่ได้ต่อฐานข้อมูล จึงดูสรุปเทอมใหม่จากรอบอัตรากำลังไม่ได้")
     if _db_write_blocked():
         raise HTTPException(503, TERM_FROM_ROUND_BLOCKED)
+    existing = _term_rows_or_503()
     with _wl_db() as cur:
         source = _wl_export_source(cur, int(text))
     rnd = source["round"]
     built = _term_build(source, _term_outgoing(), dict(_counters), rnd["year"], rnd["semester"])
+    reasons = built["reasons"] if rnd["exported_at"] else \
+        _term_exists_reasons(existing, rnd["year"], rnd["semester"]) + built["reasons"]
     return {**new_term_preview(),
             "round": {"id": rnd["id"], "label": rnd["label"], "year": rnd["year"], "semester": rnd["semester"],
-                      "usable": not built["reasons"], "reasons": built["reasons"], "report": built["report"]}}
+                      "usable": not reasons, "reasons": reasons, "report": built["report"]}}
 
 
 @app.post("/api/terms")
 def create_term(body: dict[str, Any]):
     """Save the running term as a closed file, clear the lessons, open a new term."""
+    # ขั้นที่ 3: มี round_id = สร้างจากรอบอัตรากำลังในธุรกรรมเดียว (_create_term_from_round) · ไม่มี = ทางเดิมทุกบรรทัดข้างล่าง
+    if isinstance(body, dict) and body.get("round_id") is not None:
+        return _create_term_from_round(body)
     _require_db()
     year = body.get("year") if isinstance(body, dict) else None
     semester = body.get("semester") if isinstance(body, dict) else None
@@ -18440,6 +18501,316 @@ def _flush_after_term_change(done: str) -> tuple[str | None, bool]:
         save_error = (f"{done} แต่ข้อมูลยังบันทึกลงฐานข้อมูลไม่สำเร็จ "
                       "ระบบจะลองบันทึกซ้ำ อย่าปิดหน้านี้จนกว่าจะบันทึกได้")
     return save_error, _pending_blob is not None
+
+
+# ── ขั้นที่ 3: สร้างเทอมใหม่จากรอบอัตรากำลัง — POST /api/terms + round_id ในธุรกรรมเดียว (แบบข้อ 4.4) ──────────────
+# ทำตามลำดับ 9 ขั้นของแบบข้อ 4.4 ตรงตัว (เลขขั้นอยู่ในคอมเมนต์ของ _create_term_from_round):
+#  1 ตรวจรูปคำขอ → รหัส admin ของเว็บลงอัตรากำลัง (นับผิดร่วมกับการล็อกอิน · ตรวจก่อนเปิดธุรกรรม: PBKDF2 ห้ามอยู่ใต้ล็อก
+#    ทะเบียน) → ตรวจเหมือนปุ่มเดิมทุกข้อ (เทอมซ้ำ · ล้างคิวเซฟ · เขียนฐานไม่ได้ · แถว active · แถวเก็บเทอมแรก)
+#  2 การเชื่อมต่อเดียว ธุรกรรมเดียว: ล็อกทะเบียนเป็นคำสั่งแรก แล้วค่อย FOR UPDATE แถวรอบ ก่อนอ่านอะไรของรอบ — ลำดับเดียวกับ
+#    ทุก route ที่เขียนทะเบียน (ล็อกทะเบียนก่อนแตะ wl_rounds) จึงไม่มีวงล็อก · ปุ่มดึงครูที่กดพร้อมกันรอจน COMMIT/ROLLBACK
+#    แล้วอ่าน TEACHERS ที่ตรงกับฐาน · **ไม่มี DDL ในธุรกรรมนี้** (DDL ของ wl_* commit แยกไปแล้วใน _wl_db ตอนตรวจรหัส ·
+#    app_terms สร้างโดย _terms_list ในขั้น 1 · app_state โดย _load_state ตอนเริ่ม process) — CREATE INDEX IF NOT EXISTS ถือ
+#    ShareLock ของ app_terms และ ALTER ถือ ACCESS EXCLUSIVE ถึง COMMIT ทำให้ล็อกทะเบียนไม่ใช่คำสั่งแรกและ deadlock ได้
+#  3 อ่านรอบทั้งหมดใน cursor นี้ → ตรวจเกณฑ์ซ้ำ (เหตุไม่ว่าง → 409 ไทยรวมเหตุ) → สถานะใหม่ทั้งชุดเป็นสำเนา (_term_build)
+#  4 จุดย้อนของทุกตัวแปรที่จะแตะ (_term_restore_point)
+#  5 บรรจุเทอมเก่าก่อน — ยังไม่มีอะไรถูกแตะ ไฟล์เทอมเก่าจึงเหมือนปุ่มเดิมทุกไบต์ → ล้างคาบ (โค้ดเดิมของปุ่ม — ที่เดียวที่แตะ SLOTS)
+#  6 ใส่สถานะใหม่แทนในที่ (_term_apply) → บรรจุไฟล์เทอมใหม่
+#  7 หมุนเทอมด้วย cursor เดียวกัน → app_state เป็นสำเนาสดของเทอมใหม่ **ในธุรกรรมนี้** (เซิร์ฟเวอร์เริ่มใหม่โหลดจาก app_state
+#    อย่างเดียว ปุ่มเดิมเขียนมันทีหลังแบบเข้าคิว ถ้าเครื่องดับในช่องนั้น ฐานบอกว่าเทอมใหม่เปิดแล้ว รอบส่งแล้ว แต่โปรแกรมกลับมา
+#    พร้อมแผนและครูชุดเก่า = เทอมครึ่ง ๆ) → เขียน sched_id กลับ · สร้าง/ผูกวิชาที่พิมพ์รหัสเอง → ทำเครื่องหมายรอบ → COMMIT ครั้งเดียว
+#  8 ล้มก่อน COMMIT → ROLLBACK (with conn) + คืนทุกตัวแปรจากจุดย้อน → 500/409 ไทย "ข้อมูลเดิมยังอยู่ครบ"
+#  9 หลัง COMMIT: เหมือนปุ่มเดิม (id เทอม · บันทึกประวัติ · เซฟ) + ล้าง LAST_RUN และแคชที่อ้างแผนเก่า
+TERM_FROM_ROUND_FAILED = "สร้างเทอมใหม่ไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง"
+TERM_ADMIN_CODE_MISSING = "กรอกรหัสผู้ดูแลระบบของเว็บลงอัตรากำลังเพื่อยืนยันการสร้างเทอมใหม่จากรอบอัตรากำลัง"
+TERM_ADMIN_CODE_WRONG = "รหัสผู้ดูแลระบบของเว็บลงอัตรากำลังไม่ถูกต้อง — ยังไม่ได้สร้างเทอมใหม่ ข้อมูลเดิมยังอยู่ครบ"
+TERM_ACTIVE_MOVED = ("เทอมที่เปิดอยู่เปลี่ยนไประหว่างที่กำลังสร้าง (มีการสร้างหรือปลดล็อกเทอมจากอีกหน้าหนึ่ง) "
+                     "— เปิดหน้านี้ใหม่แล้วลองอีกครั้ง")
+LAST_RUN_EMPTY: dict[str, Any] = {"unplaced_requirement_ids": [], "skipped_requirement_ids": []}
+_TERM_FROM_ROUND_LISTS = ("TEACHERS", "SUBJECTS", "REQUIREMENTS", "ELECTIVE_POOLS", "CURRICULA", "SLOTS", "PARKED")
+
+# ตัวแปรสภาพแวดล้อมสำหรับทดสอบเท่านั้น (Ruling P2) — เซิร์ฟเวอร์ของโรงเรียนไม่ตั้ง · ไม่ตั้ง = ไม่มีผล · อ่านตอนเรียกทุกครั้ง
+# SCHED_TEST_FAIL_AT=<ขั้น> ทำให้การสร้างเทอมจากรอบล้มที่ขั้นนั้น เพื่อพิสูจน์ "ทั้งหมดหรือไม่มีเลย" กับ Postgres จริง:
+#   apply (กลางการใส่สถานะใหม่) · pack (ก่อนบรรจุเทอมใหม่) · rotate (หลังหมุนเทอม) · app_state (หลังเขียนสำเนาสด) ·
+#   writeback (หลังเขียน sched_id กลับและสร้าง/ผูกวิชา) · mark (หลังทำเครื่องหมายรอบ) · commit (แทนการ COMMIT)
+#   after_commit = ปิด process ทันทีหลัง COMMIT ก่อนเซฟ/ตอบ (os._exit) — จำลองเครื่องดับหลัง COMMIT (แบบข้อทดสอบ 11)
+# ทางเดิม (ไม่มี round_id) ไม่อ่านตัวแปรนี้
+TERM_TEST_FAIL_ENV = "SCHED_TEST_FAIL_AT"
+
+
+def _term_test_fail(step: str) -> None:
+    if _os.environ.get(TERM_TEST_FAIL_ENV, "").strip() != step:
+        return
+    if step == "after_commit":
+        _os._exit(70)
+    raise RuntimeError(f"{TERM_TEST_FAIL_ENV}={step}")
+
+
+def _term_admin_check(raw: str) -> None:
+    """รหัสผู้ดูแลระบบของเว็บลงอัตรากำลัง (แบบข้อ 2 เป้าหมาย 3) — ต้องตรงกับรหัส role 'admin' ที่เปิดใช้ (รหัสหัวหน้ากลุ่ม = ผิด)
+    ด่านเดียวกับ /api/workload/login: จำกัดการเดาก่อนแฮช นับครั้งผิดร่วมกัน (_WL_FAILS["login"]) และแฮชทีละคำขอในประตูเดียวกัน
+    ไม่ถือการเชื่อมต่อระหว่างแฮช · ผิด = 403 ไทย · ผิดเกินเกณฑ์ = 429 ไทย · ต่อฐานไม่ได้ = 503 ไทย (_wl_db)
+    _wl_db ตรงนี้ยังเป็นที่ commit DDL ของ wl_* (ถ้า process นี้ยังไม่เคยทำ) แยกจากธุรกรรมของการสร้างเทอม"""
+    _wl_fail_guard("login", WL_LOGIN_FAIL_LIMIT, WL_LOGIN_FAIL_WINDOW)
+    with _WL_LOGIN_HASH_GATE:
+        _wl_fail_guard("login", WL_LOGIN_FAIL_LIMIT, WL_LOGIN_FAIL_WINDOW)
+        with _wl_db() as cur:
+            admins = [r for r in _wl_code_rows(cur) if r["role"] == "admin"]
+        if wl_check_code(raw, admins) is None:
+            _wl_fail_record("login")
+            raise HTTPException(403, TERM_ADMIN_CODE_WRONG)
+
+
+def _term_refusal(rnd: dict[str, Any], label: str, reasons: list[str]) -> str:
+    return (f"ยังสร้างเทอม {label} จากรอบอัตรากำลัง {rnd.get('label') or ''} ไม่ได้ (ไม่มีอะไรถูกเปลี่ยน ข้อมูลเดิมยังอยู่ครบ): "
+            + " | ".join(reasons))
+
+
+def _term_restore_point() -> dict[str, Any]:
+    """ขั้น 4: สำเนาเพื่อย้อนของทุกตัวแปรที่การสร้างเทอมจากรอบแตะ — อ่านด้วยชื่อตอนเรียก (บางตัวถูก rebind ที่อื่น)
+    ลิสต์เก็บแบบตื้น (แถวตัวเดิม): ขั้น 5–6 ไม่แก้แถวเดิมเลย — ล้างลิสต์ แล้วใส่แถวใหม่ที่เป็นสำเนาลึกจาก _term_build
+    (_mark_elective แก้ได้แค่แถวใหม่) · ห้องเรียนถูกแก้ curriculum_id ในที่ จึงเก็บรายห้อง (รวมว่าเคยมีคีย์ไหม)"""
+    return {"lists": {name: list(globals()[name]) for name in _TERM_FROM_ROUND_LISTS},
+            "groups": [(g, "curriculum_id" in g, g.get("curriculum_id")) for g in _flat_groups()],
+            "counters": dict(_counters), "applied": {},
+            "term": dict(CURRENT_TERM), "config": {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")},
+            "last_run": _copy.deepcopy(LAST_RUN), "revision": REVISION["n"]}
+
+
+def _term_restore(back: dict[str, Any]) -> None:
+    """ขั้น 8: คืนทุกตัวแปรจากจุดย้อน แทนในที่ (ลิสต์ตัวเดิม — curriculum.py และที่อื่นถือ alias ไว้) · idempotent
+    ตัวนับคืนเฉพาะคีย์ที่ _term_apply ขยับ และเฉพาะเมื่อยังเป็นค่าที่ขยับไว้ (คำขออื่นที่ออกรหัสระหว่างนั้นต้องไม่ได้รหัสซ้ำ)
+    ระหว่างใส่สถานะใหม่จนถึง COMMIT คำขอเขียนอื่นที่จบก่อนอาจเซฟสถานะใหม่ที่ยังไม่ COMMIT ลงคิวไปแล้ว (ตัวนับรุ่นขยับ) —
+    เซฟของที่คืนแล้วทับ ไม่งั้นเซิร์ฟเวอร์เริ่มใหม่โหลดเทอมที่ไม่เคยเกิด"""
+    for name, rows in back["lists"].items():
+        globals()[name][:] = rows
+    for g, had, cid in back["groups"]:
+        if had:
+            g["curriculum_id"] = cid
+        else:
+            g.pop("curriculum_id", None)
+    for k, v in back["applied"].items():
+        if _counters.get(k) == v:
+            if k in back["counters"]:
+                _counters[k] = back["counters"][k]
+            else:
+                _counters.pop(k, None)
+    CURRENT_TERM.update(back["term"])
+    SCHOOL_CONFIG.update(back["config"])
+    LAST_RUN.clear()
+    LAST_RUN.update(back["last_run"])
+    if REVISION["n"] != back["revision"]:
+        _save_state()
+
+
+def _term_apply(built: dict[str, Any], back: dict[str, Any]) -> None:
+    """ขั้น 6: ใส่สถานะใหม่ทั้งชุดแทนในที่ (`[:] =` — ลิสต์ตัวเดิม · อ่านตัวแปรด้วยชื่อตอนเรียก)
+    ครู/วิชา (ใหม่ได้รหัสจากตัวนับ · แก้ช่องตัวตน) → ติดธงวิชาเสรีให้วิชาของตัวเลือกในชุด **หลัง** ใส่ SUBJECTS (ค่า is_elective
+    ของเว็บมากับทะเบียน ติดก่อนแล้วค่า False ของเว็บจะทับ — addendum ข้อ 2) → แผน คาบเสรี หลักสูตร → curriculum_id ทุกห้อง
+    (ห้องที่ไม่อยู่หลักสูตรใดของภาคเรียน = ว่าง) → ตัวนับเดินต่อ (ไม่ถอย) · บันทึกค่าตัวนับที่ขยับไว้ใน back ให้ _term_restore"""
+    reg, plan = built["registry"], built["plan"]
+    TEACHERS[:] = reg["teachers"]
+    SUBJECTS[:] = reg["subjects"]
+    _mark_elective(*plan["elective_subjects"])
+    REQUIREMENTS[:] = plan["requirements"]
+    _term_test_fail("apply")
+    ELECTIVE_POOLS[:] = plan["pools"]
+    CURRICULA[:] = plan["curricula"]
+    group_curricula = plan["group_curricula"]
+    for g in _flat_groups():
+        cid = group_curricula.get(g.get("id"))
+        if cid is not None or "curriculum_id" in g:
+            g["curriculum_id"] = cid
+    for k, v in plan["counters"].items():
+        if v > _counters.get(k, 0):
+            _counters[k] = v
+            back["applied"][k] = v
+
+
+def _term_writeback(cur, writeback: dict[str, Any]) -> dict[str, Any]:
+    """ขั้น 7: ทะเบียนของเว็บตามโปรแกรม — sched_id ของครู/วิชาที่สร้างหรือผูกด้วยรหัส · วิชาที่พิมพ์รหัสเองได้แถวในทะเบียนของเว็บ
+    ทุกช่องตัวตน (addendum ข้อ 1: type/duration/is_activity/is_elective ไม่ปล่อยเป็นค่าตั้งต้น ไม่งั้นรอบหน้าค่าของเว็บทับโปรแกรม) ·
+    บรรทัด/ตัวเลือกที่พิมพ์รหัสเองผูกกับวิชานั้น หรือกับวิชาของเว็บที่รหัสตรง (bind_wl_subjects)
+    ทุกคำสั่งต้องโดนแถวครบตามที่คาด (แถวรอบถูกล็อก การแก้หลักสูตรต่อคิวหลังเรา) ไม่ครบ = ยกข้อผิดพลาดให้ทั้งธุรกรรมย้อน
+    → ค่าก่อนเปลี่ยนสำหรับ export_report (ปลดล็อกเทอมย้อนได้ — แบบข้อ 4.8)"""
+    def update(sql: str, params: tuple, want: int) -> None:
+        cur.execute(sql, params)
+        if cur.rowcount != want:
+            raise RuntimeError(f"writeback touched {cur.rowcount} rows, expected {want}")
+    for w in writeback["teachers"]:
+        update("UPDATE wl_teachers SET sched_id = %s WHERE id = %s", (w["new"], w["id"]), 1)
+    for w in writeback["subjects"]:
+        update("UPDATE wl_subjects SET sched_id = %s WHERE id = %s", (w["new"], w["id"]), 1)
+    created: list[int] = []
+    lines: list[int] = []
+    options: list[int] = []
+
+    def bind(subject_id: int, line_ids: list[int], option_ids: list[int]) -> None:
+        for table, ids, out in (("wl_curriculum_lines", line_ids, lines), ("wl_term_set_options", option_ids, options)):
+            ids = sorted(set(ids))
+            if ids:
+                # subject_id IS NULL: ผูกเฉพาะบรรทัดที่ยังพิมพ์รหัสเองอยู่ (ไม่ทับการผูกของคนอื่น)
+                update(f"UPDATE {table} SET subject_id = %s WHERE id = ANY(%s) AND subject_id IS NULL",
+                       (subject_id, ids), len(ids))
+                out.extend(ids)
+    for n in writeback["new_wl_subjects"]:
+        cur.execute("INSERT INTO wl_subjects (sched_id, code, name, type, department_id, duration, is_activity, is_elective) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    (n["sched_id"], n["code"], n["name"] or n["code"], n["type"], n["department_id"], n["duration"],
+                     n["is_activity"], n["is_elective"]))
+        wl_id = cur.fetchone()[0]
+        created.append(wl_id)
+        bind(wl_id, n["line_ids"], n["option_ids"])
+    for b in writeback["bind_wl_subjects"]:
+        bind(b["id"], b["line_ids"], b["option_ids"])
+    return {"teachers": [{"id": w["id"], "old": w["old"], "new": w["new"]} for w in writeback["teachers"]],
+            "subjects": [{"id": w["id"], "old": w["old"], "new": w["new"]} for w in writeback["subjects"]],
+            "created_wl_subjects": created, "bound_lines": lines, "bound_options": options}
+
+
+def _create_term_from_round(body: dict[str, Any]):
+    """POST /api/terms + round_id + admin_code — เทอมใหม่จากรอบอัตรากำลัง ทั้งหมดหรือไม่มีเลย (ลำดับที่หัวส่วนนี้)
+
+    คำตอบ = ของปุ่มเดิม {closed, active, save_error, save_pending} + "report" (= export_report ที่เก็บในแถวรอบ:
+    report ของ _term_build + prior_status · teachers/subjects [{id (wl), old, new}] · created_wl_subjects · bound_lines ·
+    bound_options) · 400 รูปคำขอ/ไม่มีรหัส · 403 รหัสผิด · 429 ผิดเกินเกณฑ์ · 404 ไม่มีรอบ · 409 เหตุ/ส่งแล้ว/มีเทอมแล้ว ·
+    500 ล้มกลางทาง · 503 ต่อฐานไม่ได้ — ข้อความไทยทั้งหมด
+    """
+    # 1 ── ตรวจรูปคำขอ (ข้อความเดียวกับปุ่มเดิม) → รหัส admin → ตรวจเหมือนปุ่มเดิมทุกข้อ
+    _require_db()
+    year, semester, round_id = body.get("year"), body.get("semester"), body.get("round_id")
+    if type(year) is not int or not 2500 <= year <= 2700:
+        raise HTTPException(400, "ปีการศึกษาต้องเป็นตัวเลข พ.ศ. 2500–2700")
+    if type(semester) is not int or semester not in (1, 2):
+        raise HTTPException(400, "ภาคเรียนต้องเป็น 1 หรือ 2")
+    if type(round_id) is not int or not 1 <= round_id <= _WL_BIGINT_MAX:
+        raise HTTPException(400, "round_id ต้องเป็นรหัสรอบอัตรากำลัง (จำนวนเต็ม)")
+    raw = body.get("admin_code")
+    if not isinstance(raw, str) or not raw.strip():
+        raise HTTPException(400, TERM_ADMIN_CODE_MISSING)
+    label = term_label(year, semester)
+    _term_admin_check(raw)
+    try:
+        existing = _terms_list()
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    exists = _term_exists_reasons(existing, year, semester)
+    if exists:
+        raise HTTPException(409, exists[0])
+    _flush_pending(blocking=True)
+    if _db_write_blocked():
+        raise HTTPException(
+            409, "เซิร์ฟเวอร์ยังไม่ยอมเขียนข้อมูลลงฐาน จึงสร้างเทอมใหม่ไม่ได้ — "
+                 "ยืนยันข้อมูลที่ถืออยู่ก่อน")
+    try:
+        active_row = _term_active()
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")
+    has_old = active_row is not None
+    old_id = active_row["id"] if has_old else None
+    archive = None
+    if not has_old and not _nothing_a_term_change_would_destroy():
+        archive = _archive_target_or_refuse((year, semester), existing, "สร้างเทอมใหม่")
+    old_label = ((active_row.get("label") or old_id) if has_old
+                 else (archive["label"] if archive else None))
+
+    try:
+        conn = _db_connect()
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง") from None
+    back = None
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                # 2 ── ล็อกทะเบียน (คำสั่งแรก) แล้วล็อกแถวรอบ ก่อนอ่านอะไรของรอบ
+                _wl_registry_lock(cur)
+                cur.execute("SELECT id FROM wl_rounds WHERE id = %s FOR UPDATE", (round_id,))
+                if cur.fetchone() is None:
+                    raise HTTPException(404, WL_ROUND_MISSING)
+                # 3 ── อ่านรอบในธุรกรรมนี้ → ตรวจเกณฑ์ซ้ำ → สถานะใหม่เป็นสำเนา (ยังไม่แตะตัวแปรของโปรแกรม)
+                source = _wl_export_source(cur, round_id)
+                rnd = source["round"]
+                cur.execute("SELECT id, year, semester, status FROM app_terms")
+                terms_now = [{"id": i, "year": y, "semester": s, "status": st} for i, y, s, st in cur.fetchall()]
+                built = _term_build(source, _term_outgoing(), dict(_counters), year, semester)
+                reasons = _term_exists_reasons(terms_now, year, semester) + built["reasons"]
+                # แถว active ถูกอ่านก่อนเปิดธุรกรรม (เหมือนปุ่มเดิม) — อีกหน้าหนึ่งสร้าง/ปลดล็อกเทอมไปก่อนได้ ตรวจซ้ำตรงนี้
+                # (รวมในเหตุ: คำขอที่แพ้การกดพร้อมกันได้ทั้ง "ส่งแล้ว/มีเทอมแล้ว" และเหตุนี้ในข้อความเดียว)
+                if sorted(t["id"] for t in terms_now if t["status"] == "active") != ([old_id] if has_old else []):
+                    reasons.append(TERM_ACTIVE_MOVED)
+                if reasons:
+                    raise HTTPException(409, _term_refusal(rnd, label, reasons))
+                # 4 ── จุดย้อน
+                back = _term_restore_point()
+                old_slots = len(SLOTS)
+                # 5 ── โค้ดเดิมของปุ่ม: ไฟล์ที่เก็บเป็นเทอมที่ปิด จึงบอกสถานะ closed ก่อนบรรจุ · เทอมแรกตั้งชื่อเทอมก่อนบรรจุ
+                CURRENT_TERM["status"] = "closed"
+                if archive is not None:
+                    CURRENT_TERM.update({"year": archive["year"],
+                                         "semester": archive["semester"],
+                                         "label": archive["label"]})
+                old_blob = _pack(_snapshot())
+                SLOTS.clear()
+                PARKED.clear()      # lifted-out lessons point at last term's plan
+                CURRENT_TERM.update({"id": None, "year": year, "semester": semester,
+                                     "label": label, "status": "active"})
+                SCHOOL_CONFIG["term"], SCHOOL_CONFIG["year"] = str(semester), str(year)
+                # 6 ── ใส่สถานะใหม่ → บรรจุไฟล์เทอมใหม่ (id ของแถวยังไม่รู้ — แถวเป็นเจ้าของ id ตามปุ่มเดิม)
+                _term_apply(built, back)
+                _term_test_fail("pack")
+                new_blob = _pack(_snapshot())
+                # 7 ── หมุนเทอม → app_state → เขียนกลับ → ทำเครื่องหมายรอบ (cursor เดียวกันทั้งหมด)
+                closed_id, new_id = _term_rotate(
+                    old_id, old_blob, old_slots, year, semester, label, new_blob,
+                    old_year=archive["year"] if archive else None,
+                    old_semester=archive["semester"] if archive else None,
+                    old_label=archive["label"] if archive else None, cur=cur)
+                _term_test_fail("rotate")
+                # สำเนาสดมี id ของแถวใหม่แล้ว: เริ่มใหม่หลังเครื่องดับ CURRENT_TERM ต้องตรงกับฐาน (หน้าตั้งค่าล็อกปี/ภาคด้วย id นี้)
+                CURRENT_TERM["id"] = new_id
+                cur.execute(_DB_UPSERT, (_pack(_snapshot()),))
+                _term_test_fail("app_state")
+                done = _term_writeback(cur, built["registry"]["writeback"])
+                _term_test_fail("writeback")
+                export_report = {**built["report"], "prior_status": rnd["status"], **done}
+                cur.execute("UPDATE wl_rounds SET status = 'closed', closed_at = coalesce(closed_at, now()), "
+                            "exported_at = now(), exported_term_id = %s, exported_label = %s, "
+                            "export_report = %s::jsonb WHERE id = %s AND exported_at IS NULL",
+                            (new_id, label, _json.dumps(export_report, ensure_ascii=False), round_id))
+                if cur.rowcount != 1:
+                    raise HTTPException(409, f"รอบ {rnd['label']} ถูกส่งเข้าโปรแกรมจัดตารางไปแล้วระหว่างนี้ — "
+                                             "ยังไม่ได้สร้างเทอมใหม่ ข้อมูลเดิมยังอยู่ครบ")
+                _term_test_fail("mark")
+            _term_test_fail("commit")
+            conn.commit()
+            _term_test_fail("after_commit")
+    except HTTPException:
+        # 8 ── ฐานย้อนแล้ว (with conn) → คืนตัวแปร (ยังไม่ได้แตะ = ไม่มีอะไรต้องคืน)
+        if back is not None:
+            _term_restore(back)
+        raise
+    except Exception as e:                         # noqa: BLE001
+        if back is not None:
+            _term_restore(back)
+        _wl_log_server_error(e)                    # ชื่อชนิด + sqlstate + stack เท่านั้น ไม่พิมพ์ข้อความ (อาจมีค่าในแถว)
+        raise HTTPException(500, TERM_FROM_ROUND_FAILED) from None
+    finally:
+        # การหมุนเทอมล้างดัชนีไปแล้วก่อน COMMIT — ล้างซ้ำหลังจบธุรกรรม ไม่งั้นดัชนีที่สร้างระหว่างนั้นจากแถวเก่าค้างอยู่
+        _invalidate_entity_index()
+    # 9 ── หลัง COMMIT: เหมือนปุ่มเดิม + ล้างค่าที่อ้างแผนเก่า
+    if closed_id is not None:
+        _term_log(closed_id, "close", f"ปิดเทอม {old_label} ({old_slots} คาบ)")
+    _term_log(new_id, "create", f"สร้างเทอม {label} จากรอบอัตรากำลัง {rnd['label']}")
+    LAST_RUN.clear()
+    LAST_RUN.update(_copy.deepcopy(LAST_RUN_EMPTY))
+    _lookup_cache_clear()
+    _save_state()
+    save_error, save_pending = _flush_after_term_change("สร้างเทอมใหม่จากรอบอัตรากำลังแล้ว")
+    return {"closed": _term_row(closed_id) if closed_id is not None else None,
+            "active": _term_row(new_id),
+            "save_error": save_error,
+            "save_pending": save_pending,
+            "report": export_report}
 
 
 @app.get("/api/terms")
