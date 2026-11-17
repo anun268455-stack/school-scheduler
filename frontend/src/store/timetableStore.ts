@@ -297,7 +297,8 @@ interface TimetableStore {
    * `save_error: null` ไม่ได้แปลว่าบันทึกแล้ว — แค่ต่อคิวเขียนไว้ ตัวตัดสินคือ
    * /state/version (pending, saved_at, store, store_error) ที่ซิงค์สดอ่านอยู่
    */
-  makeNewTerm:    (year: number, semester: number) => Promise<api.CreateTermResult>;
+  /** opts = สร้างจากรอบอัตรากำลัง (ขั้นที่ 3) · ไม่ส่ง = ทางเดิม */
+  makeNewTerm:    (year: number, semester: number, opts?: api.CreateTermFromRound) => Promise<api.CreateTermResult>;
   /** ปลดล็อกเทอมเก่า: เซิร์ฟเวอร์ปิดเทอมที่ใช้อยู่ไปด้วย แล้วดึงข้อมูลสดของเทอมที่เปิดมาแทนที่ */
   unlockOldTerm:  (id: number, confirm: string) => Promise<api.UnlockTermResult>;
   setLiveSync:   (on: boolean) => void;
@@ -1183,8 +1184,8 @@ export const useTimetableStore = create<TimetableStore>((rawSet, get) => {
     } finally { termOps.leave(op); }
   },
 
-  makeNewTerm: async (year, semester) => {
-    const r = await api.createTerm(year, semester);
+  makeNewTerm: async (year, semester, opts) => {
+    const r = await api.createTerm(year, semester, opts);
     // ข้อมูลสดถูกล้างฝั่งเซิร์ฟเวอร์แล้ว ดึงมาใหม่ แล้วค่อยอ่านรายการเทอม
     // ถ้ายังดูเทอมเก่าอยู่ ให้ออกให้ถูกวิธี (แบนเนอร์อยู่จนกว่าข้อมูลสดมาครบ)
     if (get().viewingTerm) {

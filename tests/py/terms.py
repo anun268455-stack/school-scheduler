@@ -298,10 +298,11 @@ LOGGED: list = []
 def _with_fake_db(fn, fail_on=None, existing=(), active=_FROM_MEMORY):
     saved = {k: getattr(mock_api, k) for k in
              ("_db_connect", "_term_active", "_terms_list", "_term_row", "_flush_pending", "_save_state",
-              "_STORE_KIND", "_DB_HAD_DATA", "_STATE_SOURCE", "_term_log")}
+              "_STORE_KIND", "_DB_HAD_DATA", "_STATE_SOURCE", "_term_log", "_term_round_exported_to")}
     log: list = []
     calls: list = []
     mock_api._db_connect = lambda: _FakeConn(log, fail_on)
+    mock_api._term_round_exported_to = lambda term_id: False   # ขั้นที่ 3: ไม่มีรอบที่ส่งเข้าเทอมใด = ทางเดิมของปลดล็อก
     mock_api._terms_list = lambda: list(existing)
     if active is _FROM_MEMORY:
         mock_api._term_active = lambda: (
