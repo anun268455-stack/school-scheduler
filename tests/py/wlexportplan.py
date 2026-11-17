@@ -283,7 +283,32 @@ def test_activity_set_only_in_report():
     assert plan["pools"] == [] and plan["requirements"] == [] and plan["elective_subjects"] == []
     assert plan["report"]["activity_sets"] == [{"name": "ลูกเสือ ม.1/1–ม.1/3", "group_ids": [1, 2, 3], "weekly": 1,
                                                 "teacher_ids": [14, 13]}], plan["report"]["activity_sets"]
-    assert plan["counters"] == _counters()
+    assert plan["counters"] == _counters()      # แผนเดิมไม่มีแถวของห้อง+วิชาของชุด → ไม่มีแถวแผน ไม่จองรหัส
+
+
+def test_activity_set_rows_follow_outgoing_shape():
+    # แก้รอบ 1 (I1): ขั้นที่ 2 ข้ามแถวแผนของห้อง+วิชาที่กิจกรรมทั้งระดับครอบไว้ (block_cells) แล้วยกเป็นชุดกิจกรรม
+    # → กฎ "ทำตามรูปของแผนเดิม" แบบเดียวกับแถวแผนของวิชาเสรี ไม่งั้นแถวหาย และยอดคาบของครูที่คุมลด
+    act = _set(3, kind="activity", group_ids=(1, 2, 3, 5), weekly=1, name="แนะแนว ม.1/1–ม.1/5")
+    src = _src(sets=[act], options=[_opt(30, act, subject_id=509, teachers=[(5, 114, None), (4, 113, None)])],
+               curricula=[_cur(1, [_line(10, subject_id=509, weekly=1)], [5]), _cur(2, [_line(20, subject_id=501)], [1, 2])],
+               rows=[_row(1, 10, 5, subject_id=509, teacher_id=113, weekly=1), _row(2, 20, 1, subject_id=501, teacher_id=105),
+                     _row(3, 20, 2, subject_id=501, teacher_id=105)])
+    out = _out([_req(1, 1, 9, 14, 1),       # ครูเดิม 14 ยังคุมชุดนี้ → คนเดิม
+                _req(2, 2, 9, 20, 2),       # ครูเดิม 20 ไม่คุมแล้ว → ครูที่คุมคนแรก (รหัสรายการน้อยสุด = 13) คาบเท่าแถวเดิม
+                _req(3, 4, 9, 14, 1),       # ห้อง 4 ไม่อยู่ในชุด → ไม่เขียน
+                _req(4, 5, 9, 13, 1)])      # ห้อง 5 มีแถวของรอบอยู่แล้ว → ไม่เขียนซ้ำ · ห้อง 3 ไม่มีแถวเดิม → ชุดอย่างเดียว
+    plan = _plan(src, out)
+    got = [(r["group_id"], r["subject_id"], r["teacher_id"], r["weekly_count"]) for r in plan["requirements"]]
+    assert got == [(5, 9, 13, 1), (1, 1, 5, 2), (2, 1, 5, 2), (1, 9, 14, 1), (2, 9, 13, 2)], got
+    rep = plan["report"]
+    assert (rep["activity_rows"], rep["elective_rows"], rep["rows"]) == (2, 0, 5), rep
+    # ชุดกิจกรรมยังขึ้นในรายการที่ต้องลงคาบเอง · ไม่เป็น pool · วิชาไม่ถูกติดธงวิชาเสรี
+    assert [a["teacher_ids"] for a in rep["activity_sets"]] == [[13, 14]]
+    assert plan["pools"] == [] and plan["elective_subjects"] == []
+    # ผ่านกฎหลักสูตรเหมือนแถวอื่น: วิชากิจกรรมเข้าหลักสูตรของห้อง 1–2 ด้วยคาบมากสุดของแถว
+    assert plan["curricula"][1]["rows"] == [{"subject_id": 1, "weekly_count": 2}, {"subject_id": 9, "weekly_count": 2}]
+    assert _curriculum_refusals(plan, GROUPS, _subjects()) == []
 
 
 # ── หลักสูตร ──────────────────────────────────────────────────────────────
@@ -568,14 +593,15 @@ def _round_trip(out, wl_t, wl_s, counters, want_pools, label):
     #    ผ่าน curriculum.check_row ตัวจริง — แก้คาบ/ครูของแถวไหนก็ได้ผ่านหน้าเดิมโดยไม่ถูกปฏิเสธเรื่องหลักสูตร
     gc = plan["group_curricula"]
     assert set(gc) == set(out["groups"])
-    ordinary = plan["requirements"][:len(plan["requirements"]) - rep["elective_rows"]]
+    ordinary = plan["requirements"][:len(plan["requirements"]) - rep["elective_rows"] - rep["activity_rows"]]
     assert all(gc[r["group_id"]] is not None for r in ordinary)
     refused = _curriculum_refusals(plan, out["groups"], reg["subjects"])
     assert refused == [], (label, len(refused), refused[:3])
     nums = {"old_rows": len(out["requirements"]), "new_rows": rep["rows"], "round_rows": len(source["rows"]),
             "lessons": sum(new.values()), "periods": rep["periods"], "teachers_in_plan": rep["teachers_in_plan"],
             "pools": rep["pools"], "pool_options": rep["pool_options"], "activity_sets": len(rep["activity_sets"]),
-            "elective_rows": rep["elective_rows"], "carried": rep["carried"], "not_carried": len(rep["not_carried"]),
+            "elective_rows": rep["elective_rows"], "activity_rows": rep["activity_rows"], "carried": rep["carried"],
+            "not_carried": len(rep["not_carried"]),
             "unconverted": len(prop["unconverted"]), "unconverted_plan_rows": len(lost),
             "unequal_coteach_rows": sum(1 for r in source["rows"] if r["flag"] == FLAG),
             "curricula": len(plan["curricula"]), "teachers_compared": len(old_load),
@@ -689,8 +715,26 @@ def _live_shape():
                              "weekly_count": u["weekly_count"] + 1, "co_teacher_id": u["teacher_id"],
                              "parallel_group_key": None})
     mock_api.update_req(u["id"], {"co_teacher_id": other})
+
+    # กิจกรรมทั้งระดับครอบแถวแผนแนะแนวรายห้อง (แบบที่ข้อมูลตั้งต้นมี: ห้องละ 1 คาบ) — ขั้นที่ 2 ข้ามแถวเหล่านั้น (block_cells)
+    # แล้วยกเป็นชุดกิจกรรม · แบบรายชื่อครูคุม: แนะแนว 4 (วิชา 224) ม.2/1–ม.2/12 ครูคุม 141
+    lower, upper = list(range(13, 25)), list(range(41, 53))
+    res = mock_api.create_level_activity({"day": 0, "period": 7, "subject_id": 224, "group_ids": lower,
+                                          "teacher_ids": [141], "label": "แนะแนว ม.2"})
+    assert len(res["created"]) == 12 and not res["skipped"] and not res["warnings"], res
+    # แบบครูคนเดียว: แนะแนว 2 (วิชา 226) ม.4/1–ม.4/12 ครู 142 · แถวของ ม.4/1 เป็น 2 คาบ คาบหนึ่งอยู่ในกิจกรรม อีกคาบ
+    # ลงเป็นคาบธรรมดา (create_slot) — ขั้นที่ 2 ยกคาบที่เหลือเป็นชุดกิจกรรมอีกชุด แถวแผนต้องกลับมาครบ 2 คาบ
+    res = mock_api.create_level_activity({"day": 1, "period": 7, "subject_id": 226, "group_ids": upper,
+                                          "teacher_mode": "single", "teacher_id": 142, "label": "แนะแนว ม.4"})
+    assert len(res["created"]) == 12 and not res["skipped"] and not res["warnings"], res
+    r41 = next(r for r in mock_api.REQUIREMENTS if (r["group_id"], r["subject_id"]) == (41, 226))
+    mock_api.update_req(r41["id"], {"weekly_count": 2})
+    mock_api.create_slot({"group_id": 41, "subject_id": 226, "teacher_id": 142, "day": 3, "period": 2})
+    activity_rows = sum(1 for r in mock_api.REQUIREMENTS
+                        if (r["subject_id"], r["group_id"] in lower) == (224, True)
+                        or (r["subject_id"], r["group_id"] in upper) == (226, True))
     return want, {"elective_rows": elective_rows, "cells": sum(1 for s in mock_api.SLOTS if s.get("is_elective")),
-                  "co_pair": (50, b["id"]), "unequal_pair": (u["id"], v["id"])}
+                  "co_pair": (50, b["id"]), "unequal_pair": (u["id"], v["id"]), "activity_rows": activity_rows}
 
 
 def test_round_trip_live_shape():
@@ -708,7 +752,9 @@ def test_round_trip_live_shape():
     # สอนร่วมสองแถว: คาบเท่ากัน 1 คู่ (รอบรวมเป็นแถวเดียว แล้วเขียนกลับสองแถวตามรูปเดิม) + คาบไม่เท่ากัน 1 คู่ (ธง) →
     # แถวแผนเท่าเดิม และโปรแกรมพับเหลือบทเรียนละหนึ่ง
     assert n["new_rows"] == n["old_rows"] == 1220 + made["elective_rows"] + 2 and n["lessons"] == n["old_rows"] - 2, n
-    assert n["unequal_coteach_rows"] == 2 and n["round_rows"] == 1221, n
+    assert n["unequal_coteach_rows"] == 2 and n["round_rows"] == 1221 - made["activity_rows"], n
+    # กิจกรรมทั้งระดับ: 3 ชุดที่ต้องลงคาบเอง (แนะแนว ม.2 · แนะแนว ม.4 · คาบธรรมดาที่เหลือของ ม.4/1) และแถวแผนกลับมาครบ
+    assert n["activity_sets"] == 3 and n["activity_rows"] == made["activity_rows"] == 24, (n, made)
     assert n["curriculum_rows_added"] > 0 and n["check_row_refusals"] == 0, n    # วิชาเสรีเข้าหลักสูตรของห้อง
 
 

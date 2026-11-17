@@ -413,7 +413,9 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
       · โปรแกรมรู้เองว่าแถวเหล่านี้สอนในคาบเสรีแล้ว _reqs_served_by_elective จึงไม่จัดซ้ำ)
     - ช่องที่เว็บไม่มี (CARRY_KEYS) ยกจากแผนเดิมด้วยก้อน (ห้อง, วิชา) ทีละช่อง เมื่อทุกแถวในก้อนเห็นตรงกัน — ครูสอนร่วมแบบ
       สองแถวจึงยังยกได้ · ไม่ตรงกัน → ว่าง และบอกใน report.not_carried · pinned_double สุดท้าย = คาบคู่จากรอบ หรือ ค่าที่ยกมา
-    - ชุดกิจกรรม → report.activity_sets เท่านั้น (โปรแกรมเก็บกิจกรรมไว้ในคาบ และตารางของเทอมใหม่เริ่มว่าง)
+    - ชุดกิจกรรม → report.activity_sets (ต้องลงคาบเอง: โปรแกรมเก็บกิจกรรมไว้ในคาบ และตารางของเทอมใหม่เริ่มว่าง) ไม่เป็น pool
+      · แถวแผนของห้อง+วิชาที่กิจกรรมทั้งระดับครอบไว้ (ขั้นที่ 2 ข้ามแล้วยกเป็นชุดกิจกรรม) ใช้กฎ "ตามรูปของแผนเดิม" ข้างบน
+      ครูคนเดิมถ้ายังเป็นครูที่คุมของชุด ไม่งั้นครูที่คุมคนแรก (รหัสรายการน้อยสุด) · คาบเท่าแถวเดิม (คำตัดสินแก้รอบ 1)
     - หลักสูตร → {id, name, rows: normalise_rows(บรรทัด)} · group_curricula ให้คำตอบทุกห้องของโปรแกรม (ไม่อยู่หลักสูตรใด → None)
       · แถวแผนที่เขียน (รวมแถวแผนของวิชาเสรี) ที่วิชาไม่อยู่ในหลักสูตรของห้อง หรือคาบน้อยกว่าแถว → เพิ่ม (วิชา, คาบ) เข้าหลักสูตรนั้น
       ทุกแถวจึงผ่าน check_row (แบบข้อทดสอบ 9) · บอกใน report.curriculum_rows_added
@@ -426,8 +428,9 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
          "report": {"rows", "periods", "teachers_in_plan", "pools", "pool_options" (ตัวเลข),
                     "activity_sets": [{name, group_ids, weekly, teacher_ids}], "carried" (จำนวนแถวที่ได้ค่าที่ยกมา),
                     "not_carried": [{group_id, subject_id, fields}] (ละห้อง+วิชา), "elective_rows" (จำนวนแถวแผนของวิชาเสรี),
+                    "activity_rows" (จำนวนแถวแผนที่กิจกรรมทั้งระดับครอบ),
                     "curriculum_rows_added": [{curriculum_id, subject_id, weekly_count}] (ละหลักสูตร+วิชา),
-                    "skipped": [{source, ref, reason}]}}
+                    "skipped": [{source (row option option_teacher line elective_row activity_row), ref, reason}]}}
     """
     counters = dict(counters)
     teacher_map = maps.get("teacher_map") or {}
@@ -535,14 +538,28 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
 
     pools: list[dict[str, Any]] = []
     activity_sets: list[dict[str, Any]] = []
-    cell_teachers: dict[tuple, list[int]] = {}      # (ห้อง, วิชา) ของชุดคาบเสรี → ครูของตัวเลือกวิชานั้น
+    # (ห้อง, วิชา) ของชุดคาบเสรี/ชุดกิจกรรม → {"kind": ชนิดของชุดแรกที่ครอบ, "teachers": ครูของตัวเลือกวิชานั้นทุกชุดที่ครอบห้องนั้น}
+    cell_teachers: dict[tuple, dict[str, Any]] = {}
+
+    def cover(kind: str, gids: list[Any], sid: int, teachers: list[tuple[int, Any]]) -> None:
+        for gid in gids:
+            have = cell_teachers.setdefault((gid, sid), {"kind": kind, "teachers": []})["teachers"]
+            have += [t for t, _room in teachers if t not in have]
+
     for st in source.get("sets") or []:
         where = f"ชุด {st.get('name') or ''}".rstrip()
         gids = list(st.get("group_ids") or [])
         if st.get("kind") == "activity":
             tids: list[int] = []
             for o in options_of.get(st.get("id"), []):
-                tids += [t for t, _room in option_teachers(o, where) if t not in tids]
+                teachers = option_teachers(o, where)
+                tids += [t for t, _room in teachers if t not in tids]
+                sid = subject_of(o.get("subject_id"), o.get("code"))
+                if sid is None:
+                    skip("option", o.get("id"), f"{where}: วิชา {_code_key(o.get('code')) or o.get('name') or ''} "
+                                                "ยังไม่มีในโปรแกรมจัดตาราง (ติดเหตุของทะเบียนวิชา) จึงไม่ได้ใส่แถวแผนของกิจกรรม")
+                    continue
+                cover("activity", gids, sid, teachers)
             activity_sets.append({"name": str(st.get("name") or ""), "group_ids": gids,
                                   "weekly": int(st.get("weekly") or 0), "teacher_ids": tids})
             continue
@@ -565,20 +582,23 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
                 pool["options"].append({"key": _next_id(counters, "elective_option"), "subject_id": sid,
                                         "teacher_id": tid, "label": subj.get("name") or o.get("name") or "",
                                         "code": subj.get("code") or o.get("code"), "room_id": room})
-            for gid in gids:
-                have = cell_teachers.setdefault((gid, sid), [])
-                have += [t for t, _room in teachers if t not in have]
+            cover("elective", gids, sid, teachers)
         pools.append(pool)
 
-    # ── แถวแผนของวิชาเสรี: ตามรูปของแผนเดิม ─────────────────────────────────
-    elective_rows = 0
-    for (gid, sid), teachers in cell_teachers.items():
+    # ── แถวแผนของวิชาในชุดคาบเสรี/ชุดกิจกรรม: ตามรูปของแผนเดิม ─────────────────────
+    # ขั้นที่ 2 ข้ามแถวแผนที่คาบเสรีสอนแทน (served) และแถวที่กิจกรรมทั้งระดับครอบไว้ (block_cells) แล้วยกเป็นชุด
+    # ยอดคาบรายครูของโปรแกรมนับจากแถวแผนเท่านั้น — ไม่เขียนกลับ ยอดของครูวิชาเสรี/ครูที่คุมกิจกรรมหาย (แนะแนว: ครู 141 20 → 8)
+    # ชุดกิจกรรมยังต้องลงคาบเอง (report.activity_sets) — เมื่อลงแล้ว ตารางนับช่องกิจกรรมว่าลงแถวแผนนั้นแล้ว เหมือนเทอมเดิม
+    elective_rows = activity_rows = 0
+    for (gid, sid), cell in cell_teachers.items():
         if (gid, sid) in round_cells or gid not in group_by_id:
             continue    # รอบมีแถวของห้อง+วิชานี้อยู่แล้ว (เขียนอีกแถวคือสอนซ้ำ) · ห้องที่ไม่มีแล้วไม่มีแถวเดิมให้ตาม
+        teachers, kind = cell["teachers"], cell["kind"]
         for old in old_by_cell.get((gid, sid), []):
             if not teachers:
-                skip("elective_row", old.get("id"), f"แถวแผนเดิม {gname(gid)} วิชารหัส {sid}: ตัวเลือกของวิชานี้ในชุด"
-                                                     "คาบเสรียังไม่มีครูในโปรแกรมจัดตาราง จึงไม่ได้ใส่ในแผน")
+                skip(f"{kind}_row", old.get("id"), f"แถวแผนเดิม {gname(gid)} วิชารหัส {sid}: ตัวเลือกของวิชานี้ใน"
+                                                    f"{'ชุดคาบเสรี' if kind == 'elective' else 'ชุดกิจกรรม'}ยังไม่มีครูใน"
+                                                    "โปรแกรมจัดตาราง จึงไม่ได้ใส่ในแผน")
                 continue
             tid = old.get("teacher_id") if old.get("teacher_id") in teachers else teachers[0]
             co = old.get("co_teacher_id")
@@ -586,7 +606,10 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
                 "id": _next_id(counters, "requirement"), "group_id": gid, "subject_id": sid, "teacher_id": tid,
                 "weekly_count": old.get("weekly_count"), "parallel_group_key": None,
                 "co_teacher_id": co if co in teachers and co != tid else None, "room_id": old.get("room_id")})
-            elective_rows += 1
+            if kind == "elective":
+                elective_rows += 1
+            else:
+                activity_rows += 1
 
     # ── ยกช่องที่เว็บไม่มีจากแผนเดิม ด้วยก้อน (ห้อง, วิชา) ทีละช่อง ─────────────────
     carried = 0
@@ -657,6 +680,7 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
               "teachers_in_plan": len(teachers_in_plan), "pools": len(pools),
               "pool_options": sum(len(p["options"]) for p in pools), "activity_sets": activity_sets,
               "carried": carried, "not_carried": not_carried, "elective_rows": elective_rows,
+              "activity_rows": activity_rows,
               "curriculum_rows_added": list(added.values()), "skipped": skipped}
     return {"requirements": requirements, "pools": pools, "curricula": curricula, "group_curricula": group_curricula,
             "elective_subjects": sorted({o["subject_id"] for p in pools for o in p["options"]}),
