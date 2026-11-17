@@ -384,9 +384,10 @@ def test_new_state_applied_and_counters_advanced():
         assert mock_api.CURRICULA == plan["curricula"]
         new_teacher = next(t for t in mock_api.TEACHERS if t["name"] == "ครูใหม่")
         assert any(r["teacher_id"] == new_teacher["id"] for r in mock_api.REQUIREMENTS)
-        # addendum ข้อ 2: วิชาในชุดคาบเสรีที่เว็บไม่ติ๊ก (ทะเบียนแก้เป็น False) → หลังสร้างเป็นวิชาเสรี (ติดธงหลังใส่ SUBJECTS)
-        assert any(c["field"] == "is_elective" and c["new"] is False
-                   for p in want["report"]["subjects_patched"] if p["id"] == 904 for c in p["changes"])
+        # addendum ข้อ 2: วิชาในชุดคาบเสรีที่เว็บไม่ติ๊ก → หลังสร้างเป็น True · คำตัดสินรอบแก้สุดท้าย: สรุปไม่บอกว่า "ใช่ → ไม่ใช่"
+        # (ไม่ใช่สิ่งที่เกิดหลังสร้าง) — ทดสอบละเอียดใน test_set_subjects_are_not_reported_as_losing_the_elective_flag
+        assert not any(c["field"] == "is_elective"
+                       for p in want["report"]["subjects_patched"] if p["id"] == 904 for c in p["changes"])
         by_id = {s["id"]: s for s in mock_api.SUBJECTS}
         for sid in plan["elective_subjects"]:
             assert by_id[sid]["is_elective"] is True, sid
@@ -428,6 +429,46 @@ def test_new_state_applied_and_counters_advanced():
         assert rec.logged == [(5, "close", "ปิดเทอม 1/2569 (1 คาบ)"),
                               (new_id, "create", "สร้างเทอม 2/2569 จากรอบอัตรากำลัง 2/2569")], rec.logged
         assert rec.calls == [("flush", True), ("save", 1), ("flush", True)], rec.calls
+
+
+def test_set_subjects_are_not_reported_as_losing_the_elective_flag():
+    # คำตัดสินของผู้คุม (รอบแก้สุดท้าย): ค่า is_elective สุดท้าย = ค่าของเว็บ หรือ วิชานั้นอยู่ในชุดคาบเสรีของรอบนี้ — ทั้งตอนแก้ทะเบียนและในสรุป
+    # ไม่งั้นสรุปบอก "N วิชาจะถูกแก้ · เป็นวิชาเสรี: ใช่ → ไม่ใช่" ทั้งที่หลังสร้าง _mark_elective ติ๊กกลับ = คำเตือนเท็จทุกภาคเรียน
+    # · วิชาที่ไม่อยู่ในชุดยังตามเว็บ (Ruling T1 C4): โปรแกรมติ๊ก เว็บไม่ติ๊ก → ยังรายงานและแก้เป็นไม่ใช่
+    subjects = copy.deepcopy(SCHED_SUBJECTS)
+    for s_ in subjects:
+        if s_["id"] in (904, 905, 901):                  # 904/905 = วิชาของตัวเลือกในชุดคาบเสรี · 901 ไม่อยู่ในชุด
+            s_["is_elective"] = True
+    with _world(subjects=subjects) as rec:
+        db, ns = _rich()
+        rec.use(db)
+        assert all(not r.get("is_elective") for r in db.tables["wl_subjects"]), "เว็บไม่ติ๊กวิชาเสรีเลย"
+        want = _expected(db, ns.rnd)
+        in_set = set(want["plan"]["elective_subjects"])
+        assert {904, 905} <= in_set and 901 not in in_set, in_set
+        patched = {p["id"]: p for p in want["report"]["subjects_patched"]}
+        assert not any(c["field"] == "is_elective" for sid in in_set if sid in patched for c in patched[sid]["changes"]), \
+            [patched[sid] for sid in in_set if sid in patched]
+        assert all(p["changes"] for p in want["report"]["subjects_patched"]), "ไม่มีรายการที่ไม่มีช่องเปลี่ยน"
+        assert [c for c in patched[901]["changes"] if c["field"] == "is_elective"] == \
+            [{"field": "is_elective", "label": "เป็นวิชาเสรี", "old": True, "new": False}], patched.get(901)
+        reg = {x["id"]: x for x in want["registry"]["subjects"]}
+        assert all(reg[sid]["is_elective"] is True for sid in in_set) and reg[901]["is_elective"] is False
+        # สร้างจริง: วิชาในชุดยังเป็นวิชาเสรี · 901 ตามเว็บ · สรุปที่คืนมา = ที่เห็นก่อนกด
+        out = _post(ns.rnd)
+        by_id = {x["id"]: x for x in mock_api.SUBJECTS}
+        assert all(by_id[sid]["is_elective"] is True for sid in in_set) and by_id[901]["is_elective"] is False
+        assert out["report"]["subjects_patched"] == want["report"]["subjects_patched"]
+    # ไม่มีอะไรต่างนอกจากธงวิชาเสรีของวิชาในชุด → ไม่มีรายการ is_elective (รูปของข้อมูลตั้งต้นบนฐานทดลอง: 44 วิชา)
+    subjects = copy.deepcopy(SCHED_SUBJECTS)
+    for s_ in subjects:
+        if s_["id"] in (904, 905):
+            s_["is_elective"] = True
+    with _world(subjects=subjects) as rec:
+        db, ns = _rich()
+        rec.use(db)
+        assert [p for p in _expected(db, ns.rnd)["report"]["subjects_patched"]
+                if any(c["field"] == "is_elective" for c in p["changes"])] == []
 
 
 def test_one_commit_one_connection():

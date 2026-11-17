@@ -18361,6 +18361,30 @@ def _term_report(outgoing: dict[str, Any], registry: dict[str, Any], plan: dict[
     }
 
 
+def _term_keep_set_electives(registry: dict[str, Any], elective_subjects: list[Any]) -> None:
+    """ค่า is_elective สุดท้าย = ค่าของเว็บ **หรือ** วิชานั้นอยู่ในชุดคาบเสรีของรอบนี้ (คำตัดสินของผู้คุม รอบแก้สุดท้าย) — แก้ผลของ registry_plan ในที่
+    registry_plan แก้ is_elective ตามเว็บ (Ruling T1 C4) แล้ว _term_apply ติดธงวิชาของตัวเลือกในชุดกลับเป็นใช่ (_mark_elective) — สรุปจึงเคยบอก
+    "N วิชาจะถูกแก้ · เป็นวิชาเสรี: ใช่ → ไม่ใช่" ทั้งที่ไม่เกิดจริงหลังสร้าง (คำเตือนเท็จทุกภาคเรียน เมื่อทะเบียนของเว็บถูกดึงก่อนโปรแกรมติ๊กเอง) ·
+    วิชาในชุด: ทะเบียนที่จะใส่ = ใช่ · ช่องที่เปลี่ยน: เดิมใช่ = ไม่เปลี่ยน (ตัดออก) · เดิมไม่ใช่ = ไม่ใช่ → ใช่ · รายการที่ไม่เหลือช่องเปลี่ยนตัดออก ·
+    วิชาที่ไม่อยู่ในชุดตามเว็บเหมือนเดิม · ผลในหน่วยความจำหลังสร้างเท่าเดิม (_mark_elective ยังทำงาน — ซ้ำแล้วไม่มีผล)"""
+    in_set = set(elective_subjects)
+    if not in_set:
+        return
+    for s in registry["subjects"]:
+        if s.get("id") in in_set:
+            s["is_elective"] = True
+    report = registry["report"]
+    for p in report["subjects_patched"]:
+        change = p["changes"].get("is_elective") if p.get("id") in in_set else None
+        if change is None:
+            continue
+        if bool(change[0]):
+            del p["changes"]["is_elective"]
+        else:
+            p["changes"]["is_elective"] = [change[0], True]
+    report["subjects_patched"] = [p for p in report["subjects_patched"] if p["changes"]]
+
+
 def _term_build(source: dict[str, Any], outgoing: dict[str, Any], counters: dict[str, int],
                 year: int, semester: int) -> dict[str, Any]:
     """สถานะใหม่ทั้งชุดของเทอมจากรอบ (เป็นสำเนา) + เหตุที่ยังสร้างไม่ได้ + รายงาน — หน้าดูก่อนสร้างและการสร้างจริงใช้ตัวนี้
@@ -18371,9 +18395,11 @@ def _term_build(source: dict[str, Any], outgoing: dict[str, Any], counters: dict
     รายการที่ถูกข้าม (_term_skipped_reasons) · report = _term_report
     คำนวณครบเสมอแม้มีเหตุ (รอบที่ใช้ไม่ได้ยังเลือกดูสรุปได้ — แบบข้อ 4.5) · ผู้เรียกห้ามสร้างเทอมเมื่อ reasons ไม่ว่าง
     → {"registry", "plan", "reasons", "report"}
+    ค่า is_elective สุดท้ายของวิชาในชุดคาบเสรีของรอบนี้ = ใช่ ทั้งในทะเบียนที่จะใส่และในสรุป (_term_keep_set_electives)
     """
     registry = _TFR.registry_plan(source, outgoing, counters)
     plan = _TFR.plan_from_round(source, outgoing, registry, registry["counters"])
+    _term_keep_set_electives(registry, plan["elective_subjects"])
     reasons = (wl_export_reasons(source, year, semester) + list(registry["reasons"])
                + _term_skipped_reasons(plan["report"]["skipped"]))
     return {"registry": registry, "plan": plan, "reasons": reasons, "report": _term_report(outgoing, registry, plan)}
