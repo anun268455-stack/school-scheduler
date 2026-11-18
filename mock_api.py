@@ -15541,7 +15541,8 @@ def _wl_get(cur, table: str, cols: tuple[str, ...], row_id: Any, missing: str,
 
 
 def _wl_round_for_update(cur, round_id: Any) -> dict[str, Any]:
-    """แถวรอบ FOR UPDATE ของ route ยกเลิก/เปิดให้กรอก/ปิดรอบ · ไม่มี = 404 · ส่งเข้าโปรแกรมแล้ว = 409 (แบบข้อ 4.7 — ไม่ใช้กับรอบนี้)"""
+    """แถวรอบ FOR UPDATE ของ route ยกเลิก/เปิดให้กรอก/ปิดรอบ · ไม่มี = 404 · ส่งเข้าโปรแกรมแล้ว = 409 (แบบข้อ 4.7 — ไม่ใช้กับรอบนี้)
+    ยกเว้นรอบที่กำลังแก้กลางเทอม (amending_since ไม่ว่าง — ทาง ข.) ซึ่งผ่านได้ (wl_round_exported_refusal) เช่นปิดรอบกลับ"""
     r = _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING, for_update=True)
     _wl_refuse_exported(r)
     return r
@@ -16466,8 +16467,10 @@ def wl_prefill(proposal: dict[str, Any], line_keys: list[dict[str, Any]], option
     แต่แผนเรียงตามที่ใส่ คู่สอนร่วมที่แถวแรกคาบมากกว่าเคยได้ครูสลับคาบกันตั้งแต่เปิดรอบ · คาบไม่ตรง (admin แก้หลักสูตร
     ภายหลัง) หรือไม่ได้ส่งคาบมา → ตามลำดับแบบเดิม
     แถวแผนที่ไม่มีครูเลยไม่ใส่อะไร แต่ยังกินบรรทัดของมัน — ไม่อย่างนั้นครูของแถวถัดไปเลื่อนมาลงบรรทัดผิด
-    ตัวเลือก: วิชาเดียวกัน และห้องของชุดในรอบซ้อนกับห้องของชุดในผลแปลงอย่างน้อยหนึ่งห้อง → ครูทุกคนของตัวเลือกนั้น
+    ตัวเลือก: วิชาเดียวกัน ในชุดของผลแปลงที่เป็น "ชุดของตัวเลือกนี้" (_wl_prefill_sets: ชนิดเดียวกันและห้องตรงกันพอดีก่อน ·
+    ยังเหลือหลายชุด → ชื่อเดียวกัน · ไม่มีชุดไหนห้องตรง → ทุกชุดที่ห้องซ้อนกันอย่างน้อยหนึ่งห้อง) → ครูทุกคนของตัวเลือกนั้น
     ไม่ซ้ำคน (ห้องของครูคนนั้นเอาที่พบก่อน ถ้าว่างเอาของที่พบทีหลัง) · ไม่มีครูสักคน = ไม่มีรายการ
+    option_keys[] = {option_id, group_ids, sched_subject_id, kind?, name?} — kind/name ของชุดในหลักสูตร (ไม่มี = ไม่ใช้ตัดสิน)
     คืน {"rows": {(line_id, group_id): {teacher_id, co_teacher_id, lab_room_id, flag}},
          "options": {option_id: [{teacher_id, room_id}]}}
     """
@@ -16493,11 +16496,8 @@ def wl_prefill(proposal: dict[str, Any], line_keys: list[dict[str, Any]], option
     for k in option_keys:
         if k.get("sched_subject_id") is None:
             continue
-        rooms = set(k.get("group_ids") or [])
         found: list[dict[str, Any]] = []
-        for s in proposal.get("sets") or []:
-            if not rooms & set(s.get("group_ids") or []):
-                continue
+        for s in _wl_prefill_sets(k, proposal.get("sets") or []):
             for o in s.get("options") or []:
                 tid = o.get("teacher_id")
                 if tid is None or sched_of.get(o.get("subject_id")) != k["sched_subject_id"]:
@@ -16510,6 +16510,26 @@ def wl_prefill(proposal: dict[str, Any], line_keys: list[dict[str, Any]], option
         if found:
             options[k["option_id"]] = found
     return {"rows": rows, "options": options}
+
+
+def _wl_prefill_sets(key: dict[str, Any], sets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """ชุดของผลแปลง (pool/ชุดรายห้อง/กิจกรรมของโปรแกรม) ที่ตัวเลือกของรอบรับครูเทอมก่อน (คำตัดสิน T3+ · ฟังก์ชันล้วน)
+
+    1. ชนิดเดียวกัน (key ไม่มี kind = ไม่ดูชนิด) และห้องตรงกันพอดี (ไม่สนลำดับ) — ชุดในหลักสูตรตั้งต้นมาจาก pool ทีละชุด
+       (wl_curricula_from_proposal) ห้องจึงตรงกับ pool ของมันเอง
+    2. ยังเหลือหลายชุด (pool สองชุดห้องเดียวกัน) → ชื่อเดียวกัน (หลักสูตรคัดลอกชื่อ pool มา) · ชื่อไม่ตรงชุดไหนเลย (admin เปลี่ยนชื่อ)
+       → ทุกชุดที่ห้องตรง
+    3. ไม่มีชุดชนิดเดียวกันที่ห้องตรง (admin แก้ห้องของชุดหลังตั้งต้น) → ทุกชุดที่ห้องซ้อนกันอย่างน้อยหนึ่งห้อง (กฎเดิมของขั้นที่ 2)
+    เหตุ: กฎเดิม (ข้อ 3 อย่างเดียว) ให้ตัวเลือกได้ครูของทุก pool ที่ห้องซ้อนกันและเปิดวิชาเดียวกัน — pool สองชุดที่ห้องซ้อนกันคนละครู
+    จึงได้ครูของกันและกัน แล้วทาง ก. เขียนครูที่รวมแล้วลง pool ของเทอมใหม่ และหน้าเทียบของทาง ข. ขึ้นข้อชุดเท็จ (S5)"""
+    rooms = set(key.get("group_ids") or [])
+    kind, name = key.get("kind"), key.get("name")
+    exact = [s for s in sets if set(s.get("group_ids") or []) == rooms and (kind is None or s.get("kind") == kind)]
+    if len(exact) > 1 and name is not None:
+        exact = [s for s in exact if s.get("name") == name] or exact
+    if exact:
+        return exact
+    return [s for s in sets if rooms & set(s.get("group_ids") or [])]
 
 
 def _wl_round_rows_sql(where: str) -> str:
@@ -16587,7 +16607,8 @@ def _wl_term_shape(cur, year: int, semester: int) -> dict[str, Any]:
 
     cells = [(line_id, group_id, subject_id)] เรียงตามหลักสูตร → ลำดับบรรทัด (sort, id) → ห้องตามโปรแกรมจัดตาราง
     (ลำดับและคาบของบรรทัดในห้องเดียวกันมีผลต่อการจับคู่ครูเทอมก่อนของวิชาที่ซ้ำ ดู wl_prefill — line_weekly = {line_id: คาบ})
-    · options = [(option_id, ห้องของชุด, subject_id)] · sets = จำนวนชุด · lines_without_department /
+    · options = [(option_id, ห้องของชุด, subject_id)] · option_sets = {option_id: {kind, name}} ของชุด (ให้ wl_prefill
+    จับชุดของตัวเลือกกับ pool ของมันเอง) · sets = จำนวนชุด · lines_without_department /
     options_without_department = บรรทัด/ตัวเลือกที่ยังไม่ระบุกลุ่มสาระ (ไม่มีหัวหน้าคนไหนเห็น จึงไม่มีใครกรอก)
     """
     names = _wl_group_names()
@@ -16605,18 +16626,22 @@ def _wl_term_shape(cur, year: int, semester: int) -> dict[str, Any]:
         lines = cur.fetchall()
     cells = [(lid, gid, sid) for lid, cid, sid, _w, _dept in lines
              for gid in _wl_sorted_groups(groups.get(cid, []), names)]
-    cur.execute("SELECT id, group_ids FROM wl_term_sets WHERE year = %s AND semester = %s ORDER BY id",
+    cur.execute("SELECT id, kind, name, group_ids FROM wl_term_sets WHERE year = %s AND semester = %s ORDER BY id",
                 (year, semester))
-    set_groups = {sid: list(gids or []) for sid, gids in cur.fetchall()}
+    set_rows = cur.fetchall()
+    set_groups = {sid: list(gids or []) for sid, _kind, _name, gids in set_rows}
+    set_info = {sid: {"kind": kind, "name": name} for sid, kind, name, _gids in set_rows}
     options: list[tuple] = []
+    option_sets: dict[int, dict[str, Any]] = {}
     no_dept_options = 0
     if set_groups:
         cur.execute("SELECT id, set_id, subject_id, department_id FROM wl_term_set_options WHERE set_id = ANY(%s) "
                     "ORDER BY id", (sorted(set_groups),))
         for oid, sid, subj, dept in cur.fetchall():
             options.append((oid, set_groups[sid], subj))
+            option_sets[oid] = set_info[sid]
             no_dept_options += dept is None
-    return {"cells": cells, "options": options, "sets": len(set_groups),
+    return {"cells": cells, "options": options, "option_sets": option_sets, "sets": len(set_groups),
             "line_weekly": {lid: w for lid, _cid, _sid, w, _dept in lines},
             "lines_without_department": sum(1 for *_rest, dept in lines if dept is None),
             "options_without_department": no_dept_options}
@@ -16636,7 +16661,7 @@ def _wl_round_plan(cur, year: int, semester: int) -> dict[str, Any]:
         proposal,
         [{"line_id": lid, "group_id": gid, "sched_subject_id": sched_of.get(sid), "weekly": shape["line_weekly"].get(lid)}
          for lid, gid, sid in shape["cells"]],
-        [{"option_id": oid, "group_ids": gids, "sched_subject_id": sched_of.get(sid)}
+        [{"option_id": oid, "group_ids": gids, "sched_subject_id": sched_of.get(sid), **shape["option_sets"][oid]}
          for oid, gids, sid in shape["options"]],
         src["subject_ids"])
     return {**shape, "prefill": prefill, "unconverted": proposal["unconverted"]}
@@ -16938,8 +16963,15 @@ def wl_rounds_amend(round_id: int, request: Request) -> dict[str, Any]:
         label = r["label"]
         if r["status"] != "closed":
             now = WL_ROUND_STATUS_TEXT.get(r["status"], r["status"])
-            hint = ("ใช้อัปเดตแผนในโปรแกรมจัดตารางได้เลยเมื่อทุกกลุ่มตรวจผ่าน ไม่ต้องเปิดให้แก้" if r["status"] == "filling"
-                    else "เปิดให้กรอกตามปกติแทน")
+            # คำแนะนำให้ไปใช้อัปเดตแผนตรง ๆ ถูกเฉพาะรอบของภาคที่เปิดอยู่ — รอบที่กรอกอยู่ของภาคอื่น (เช่นภาคหน้า) ใช้ทาง ข. ไม่ได้
+            running = _term_running_identity()
+            mine = running is not None and (r["year"], r["semester"]) == (running["year"], running["semester"])
+            if r["status"] != "filling":
+                hint = "เปิดให้กรอกตามปกติแทน"
+            elif mine:
+                hint = "รอบนี้แก้ได้อยู่แล้ว และใช้อัปเดตแผนในโปรแกรมจัดตารางได้เลยเมื่อทุกกลุ่มตรวจผ่าน ไม่ต้องเปิดให้แก้"
+            else:
+                hint = "รอบนี้ยังเปิดให้กรอก แก้ได้อยู่แล้ว ไม่ต้องเปิดให้แก้"
             raise HTTPException(409, f"รอบ {label} {now} — เปิดให้แก้กลางเทอมได้เฉพาะรอบที่ปิดแล้ว ({hint})")
         if CURRENT_TERM.get("status") not in (None, "active"):
             name = f"เทอม {CURRENT_TERM.get('label')}" if CURRENT_TERM.get("label") else "เทอมที่เปิดดูอยู่"
@@ -19084,10 +19116,12 @@ def _create_term_from_round(body: dict[str, Any]):
                     done = _term_writeback(cur, built["registry"]["writeback"])
                     _term_test_fail("writeback")
                     export_report = {**built["report"], "prior_status": rnd["status"], **done}
+                    # amending_since ว่าง: รอบที่ส่งจากระหว่างแก้กลางเทอม (ยังไม่เคยส่ง · ทาง ข.) กลับเป็นปิด อ่านอย่างเดียว
+                    # ตัวกันรอบที่ส่งแล้วจึงกลับมา (แบบทาง ข. ข้อ 4.1) · รอบที่ไม่เคยแก้กลางเทอมว่างอยู่แล้ว ผลเท่าเดิม
                     cur.execute("UPDATE wl_rounds SET status = 'closed', closed_at = coalesce(closed_at, now()), "
                                 "exported_at = now(), exported_term_id = %s, exported_label = %s, "
-                                "export_report = %s::jsonb WHERE id = %s AND exported_at IS NULL",
-                                (new_id, label, _json.dumps(export_report, ensure_ascii=False), round_id))
+                                "export_report = %s::jsonb, amending_since = %s WHERE id = %s AND exported_at IS NULL",
+                                (new_id, label, _json.dumps(export_report, ensure_ascii=False), None, round_id))
                     if cur.rowcount != 1:
                         raise HTTPException(409, f"รอบ {rnd['label']} ถูกส่งเข้าโปรแกรมจัดตารางไปแล้วระหว่างนี้ — "
                                                  "ยังไม่ได้สร้างเทอมใหม่ ข้อมูลเดิมยังอยู่ครบ")

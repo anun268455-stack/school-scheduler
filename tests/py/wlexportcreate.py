@@ -506,7 +506,8 @@ def test_app_state_written_inside_transaction():
         assert i_rot < i_ins < i_state < i_wb < i_new < i_bind < i_mark < log.index("COMMIT"), log
         assert log[i_mark] == ("UPDATE wl_rounds SET status = 'closed', closed_at = coalesce(closed_at, now()), "
                                "exported_at = now(), exported_term_id = %s, exported_label = %s, "
-                               "export_report = %s::jsonb WHERE id = %s AND exported_at IS NULL"), log[i_mark]
+                               "export_report = %s::jsonb, amending_since = %s WHERE id = %s AND exported_at IS NULL"), \
+            log[i_mark]                                  # amending_since = NULL: ทาง ข. (รีวิว Task 3 m1)
         # สำเนาสดในฐาน = เทอมใหม่ทั้งชุด พร้อมรหัสแถวเทอม (เซิร์ฟเวอร์เริ่มใหม่โหลดจากตรงนี้อย่างเดียว)
         snap = mock_api._unpack(db.app_state)
         assert snap["current_term"] == {"id": out["active"]["id"], "year": 2569, "semester": 2, "label": "2/2569",

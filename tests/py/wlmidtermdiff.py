@@ -209,6 +209,19 @@ def test_fresh_round_diff_is_empty_live_shape():
     _report("ชุด ข", diff, out)
 
 
+def test_fresh_round_overlapping_pools_of_one_subject_stay_empty():
+    # T3+ (probe S5 ของผู้ตรวจ): pool ที่ห้องซ้อนกัน (ห้องเดียวกันพอดี / ซ้อนบางส่วน) เปิดวิชาเดียวกันคนละครู — wl_prefill เคยให้
+    # ตัวเลือกได้ครูของกันและกัน → ข้อ sets:edit เท็จ auto ชุดละข้อ · ตอนนี้ได้ครูของ pool ตัวเอง → ว่างทุกกอง
+    for gids_b in ((1, 2), (2, 3)):
+        pools = [_pool(1, (1, 2), [(10, 8)], name="เสรี ก"), _pool(2, gids_b, [(10, 9)], name="เสรี ข")]
+        live, wl_t, wl_s = _world([_req(1, 1, 1, 1)], pools=pools)
+        src, prop = _fresh(live, wl_t, wl_s)
+        got = {o["set"]["name"]: [t["teacher_id"] - 1000 for t in o["teachers"]] for o in src["options"]}
+        assert got == {"เสรี ก": [8], "เสรี ข": [9]}, (gids_b, got)
+        d = D.plan_diff(src, live, prop, _counters(live))
+        assert (d["items"], d["unknown"], d["unmatched_sets"]) == ([], [], []), (gids_b, [it["label"] for it in d["items"]])
+
+
 def test_fresh_round_subgroup_elective_rows():
     # รอบแก้ 1 ข้อ 1: แถววิชาเสรีที่สอนผ่านคาบเสรีของห้องแม่/ห้องย่อย (ข้อมูลตั้งต้น + แถวแบบ repro ของผู้ตรวจ ทั้งสองทิศ)
     # เคยขึ้น "ลบแถว" auto — ต้องว่างทุกกอง และแผนที่รอบต้องการมีแถวนั้น (ทาง ก. เขียนกลับตามรูปของแผนเดิมแล้ว)

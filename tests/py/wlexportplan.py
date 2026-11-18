@@ -554,7 +554,8 @@ def _round_source(out, prop, wl_t, wl_s):
     pre = mock_api.wl_prefill(
         prop, [{"line_id": lid, "group_id": g, "sched_subject_id": sched_of.get(ln["subject_id"]), "weekly": ln["weekly"]}
                for lid, g, ln in cells],
-        [{"option_id": oid, "group_ids": st["group_ids"], "sched_subject_id": sched_of.get(o["subject_id"])}
+        [{"option_id": oid, "group_ids": st["group_ids"], "sched_subject_id": sched_of.get(o["subject_id"]),
+          "kind": st["kind"], "name": st["name"]}                 # เหมือน _wl_round_plan: ชุดของตัวเลือกจับ pool ของมันเอง (T3+)
          for oid, st, o in opts], out["subject_ids"])
     rows = []
     for n, (lid, g, ln) in enumerate(cells, 1):

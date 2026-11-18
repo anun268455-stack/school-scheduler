@@ -163,6 +163,63 @@ def test_prefill_elective_option_takes_every_teacher_of_overlapping_rooms_once()
                                            72: [{"teacher_id": 110, "room_id": None}]}}, out
 
 
+def _named(gids, options, name, kind="elective"):
+    return {**_set(gids, options, kind), "name": name}
+
+
+def _ids(out):
+    return {k: [(t["teacher_id"], t["room_id"]) for t in v] for k, v in out["options"].items()}
+
+
+def test_prefill_option_takes_teachers_of_its_own_set_exact_rooms_then_name():
+    # คำตัดสิน T3+ (S5): ชุดสองชุดที่ห้องซ้อนกันและเปิดวิชาเดียวกันคนละครู — ตัวเลือกได้ครูของชุดตัวเองเท่านั้น
+    # ชนิดเดียวกัน + ห้องตรงกันพอดี (ไม่สนลำดับ) → ยังเหลือหลายชุด = ชื่อเดียวกัน · ชุดชนิดอื่นที่ห้องตรงกันไม่นับ
+    prop = _prop(sets=[_named([80, 81], [(6, 116, 30)], "เสรี ก"), _named([80, 81], [(6, 101, None)], "เสรี ข"),
+                       _named([1, 2], [(6, 108, None)], "ค"), _named([2, 3], [(6, 109, None)], "ง"),
+                       _named([1, 2], [(6, 120, None)], "กิจกรรม", kind="activity")])
+    keys = [{"option_id": 1, "group_ids": [81, 80], "sched_subject_id": 6, "kind": "elective", "name": "เสรี ก"},
+            {"option_id": 2, "group_ids": [80, 81], "sched_subject_id": 6, "kind": "elective", "name": "เสรี ข"},
+            {"option_id": 3, "group_ids": [1, 2], "sched_subject_id": 6, "kind": "elective", "name": "ค"},
+            {"option_id": 4, "group_ids": [2, 3], "sched_subject_id": 6, "kind": "elective", "name": "ง"},
+            {"option_id": 5, "group_ids": [1, 2], "sched_subject_id": 6, "kind": "activity", "name": "กิจกรรม"}]
+    assert _ids(mock_api.wl_prefill(prop, [], keys, SUBJECT_IDS)) == {
+        1: [(116, 30)], 2: [(101, None)], 3: [(108, None)], 4: [(109, None)], 5: [(120, None)]}
+    # ห้องตรงหลายชุดแต่ชื่อไม่ตรงชุดไหน (admin เปลี่ยนชื่อชุด) → ทุกชุดที่ห้องตรง (ไม่แย่กว่ากฎเดิม) · ไม่มีชื่อมา = ทุกชุดที่ห้องตรง
+    renamed = [{"option_id": 6, "group_ids": [80, 81], "sched_subject_id": 6, "kind": "elective", "name": "ชื่อใหม่"},
+               {"option_id": 7, "group_ids": [80, 81], "sched_subject_id": 6}]
+    assert _ids(mock_api.wl_prefill(prop, [], renamed, SUBJECT_IDS)) == {6: [(116, 30), (101, None)],
+                                                                        7: [(116, 30), (101, None)]}
+
+
+def test_prefill_option_whose_set_rooms_changed_falls_back_to_overlapping_sets():
+    # ไม่มีชุดชนิดเดียวกันที่ห้องตรงพอดี (admin เพิ่ม/ลดห้องของชุดหลังตั้งต้น) → กฎเดิม: ทุกชุดที่ห้องซ้อนอย่างน้อยหนึ่งห้อง
+    prop = _prop(sets=[_named([1, 2], [(6, 108, 30)], "ก"), _named([3, 4], [(6, 109, None)], "ข"),
+                       _named([7], [(6, 110, None)], "ค"), _named([5, 6], [(6, 111, None)], "กิจกรรม", kind="activity")])
+    keys = [{"option_id": 1, "group_ids": [1, 2, 3], "sched_subject_id": 6, "kind": "elective", "name": "ก"},
+            {"option_id": 2, "group_ids": [5, 6], "sched_subject_id": 6, "kind": "elective", "name": "กิจกรรม"},
+            {"option_id": 3, "group_ids": [8, 9], "sched_subject_id": 6, "kind": "elective", "name": "ก"}]
+    assert _ids(mock_api.wl_prefill(prop, [], keys, SUBJECT_IDS)) == {1: [(108, 30), (109, None)], 2: [(111, None)]}
+
+
+def test_open_round_option_takes_teachers_of_its_own_pool_not_of_overlapping_pools():
+    # route จริง (_wl_round_plan → wl_prefill): ชุดของรอบมีชนิดและชื่อจากหลักสูตร (_wl_term_shape) · pool ที่ห้องตรงและชื่อตรง
+    # = ของชุดนี้ · pool ห้องเดียวกันคนละชื่อ และ pool ที่ห้องซ้อนบางส่วน ไม่ให้ครูมา (ก่อนแก้ได้ครูทั้งสามคน)
+    db, t = _rdb()
+    base = {"weekly": 2, "is_double": True, "day": None, "period": None}
+    pools = [{**base, "id": 1, "name": "วิชาเสรี ม.1/1-6", "group_ids": [1, 2, 3, 4, 5, 6],
+              "options": [{"subject_id": 904, "teacher_id": 508, "code": "ศ21201", "label": "ดนตรี"}]},
+             {**base, "id": 2, "name": "เสรีซ้อน", "group_ids": [6, 5, 4, 3, 2, 1],
+              "options": [{"subject_id": 904, "teacher_id": 509, "code": "ศ21201", "label": "ดนตรี"}]},
+             {**base, "id": 3, "name": "เสรี ม.1/6-7", "group_ids": [6, 7],
+              "options": [{"subject_id": 904, "teacher_id": 510, "code": "ศ21201", "label": "ดนตรี"}]}]
+    with _timetable(pools=pools):
+        rnd = _call(db, ADMIN, mock_api.wl_rounds_create, REQ, {"year": 2569, "semester": 2})
+    sched = {r["id"]: r["sched_id"] for r in db.tables["wl_teachers"]}
+    got = [sched[o["teacher_id"]] for o in db.tables["wl_option_teachers"]
+           if o["round_id"] == rnd["id"] and o["option_id"] == t["option"]["id"]]
+    assert got == [508], got
+
+
 def test_prefill_does_not_mutate_its_input():
     prop = _prop([_row(11, 1, 103, co=104), _row(12, 1, 105)], [_set([11], [(6, 108, 30)])])
     lines = [_lk(7, 11, 1), _lk(7, 12, 1)]

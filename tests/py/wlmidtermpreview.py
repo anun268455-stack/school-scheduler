@@ -17,7 +17,7 @@ import mock_api
 import plan_diff as D
 import wlexportcreate as C
 import wlexportplan as P
-from wlcurriculum import ADMIN, HEAD, REQ, DbError, FakeCur, FakeDb, _call, _code, _patched, _state, _thai
+from wlcurriculum import ADMIN, HEAD, REQ, DbError, FakeCur, FakeDb, _call, _code, _patched, _sess, _state, _thai
 from wlexportpreview import _program, _run, _scenario
 from wlopen import _open, _rdb, _wl_teacher
 
@@ -64,6 +64,15 @@ def _dept_row(db, t, dept=2, group=2):
     """แถวของรอบของบรรทัดกลุ่มสาระ dept (หัวหน้าใน HEAD = กลุ่ม 2 = ค21102) ห้อง group"""
     line = next(ln for ln in t["lines"] if ln["department_id"] == dept)
     return next(r for r in db.tables["wl_rows"] if r["line_id"] == line["id"] and r["group_id"] == group)
+
+
+def _approve_all(db, rid):
+    """ทุกกลุ่มของรอบ: หัวหน้ากลุ่มนั้นส่ง (route จริง) แล้ว admin ตรวจผ่าน (route จริง) → สถานะที่ route คืน"""
+    out = {}
+    for d in sorted(s["department_id"] for s in db.tables["wl_dept_status"] if s["round_id"] == rid):
+        _call(db, _sess("head", d, f"หัวหน้ากลุ่ม {d}"), mock_api.wl_dept_submit, rid, d, REQ)
+        out[d] = _call(db, ADMIN, mock_api.wl_dept_approve, rid, d, REQ)["status"]
+    return out
 
 
 def _preview(db, rid):
@@ -244,8 +253,14 @@ def test_amend_exported_round_relaxes_guards_but_path_a_still_refuses():
         p, _log = _preview(db, rid)
         assert p["usable"] is False and p["reasons"] and not any("ส่ง" in r and "ซ้ำ" in r for r in p["reasons"]), p["reasons"]
         assert all("ยังไม่ตรวจผ่าน" in r for r in p["reasons"]), p["reasons"]
-        for s in db.tables["wl_dept_status"]:
-            s["status"] = "approved"
+        # ส่ง → ตีกลับ → หัวหน้าแก้ต่อ → ส่งใหม่ → ตรวจผ่าน ผ่าน route จริงบนรอบที่ส่งแล้วระหว่างแก้กลางเทอม (แบบข้อ 6.8)
+        assert _call(db, HEAD, mock_api.wl_dept_submit, rid, 2, REQ)["status"] == "submitted"
+        c, d = _code(lambda: _call(db, HEAD, mock_api.wl_rows_update, row2["id"], REQ, {"note": "หลังส่ง"}))
+        assert c == 409 and "ส่งแล้ว" in d, (c, d)                       # ส่งแล้วแก้ไม่ได้จนกว่าจะถูกตีกลับ (ไม่ใช่เพราะส่งเข้าโปรแกรม)
+        assert _call(db, ADMIN, mock_api.wl_dept_return, rid, 2, REQ, {"note": "ตรวจครูอีกที"})["status"] == "returned"
+        _call(db, HEAD, mock_api.wl_rows_update, row2["id"], REQ, {"note": "แก้ตามที่ตีกลับ"})
+        assert _approve_all(db, rid) and {s["status"] for s in db.tables["wl_dept_status"] if s["round_id"] == rid} == \
+            {"approved"}
         p, _log = _preview(db, rid)
         assert p["usable"] is True and p["reasons"] == [], p["reasons"]
         assert p["round"]["amending_since"] is not None and p["round"]["exported_label"] == "2/2569", p["round"]
@@ -279,7 +294,12 @@ def test_amend_refusals():
             c, d = _code(lambda: _amend(db, rid, sess))
             assert c == want and _thai(d) and _state(db) == before, (sess, c, d)
         c, d = _code(lambda: _amend(db, rid))
-        assert "เปิดให้กลุ่มสาระกรอกอยู่" in d and "เฉพาะรอบที่ปิดแล้ว" in d, d
+        assert "เปิดให้กลุ่มสาระกรอกอยู่" in d and "เฉพาะรอบที่ปิดแล้ว" in d and "อัปเดตแผน" in d, d
+        # รอบที่ยังกรอกอยู่ของภาคอื่น (เช่นรอบภาคหน้า): ไม่ชวนไปใช้อัปเดตแผน (ทาง ข. ใช้กับรอบนั้นไม่ได้) — รีวิว m4
+        for term, year, sem in ((ACTIVE_1, "2569", "1"), (NO_TERM, "2568", "1"), (CLOSED_2, "2569", "2")):
+            with _running(term, year, sem):
+                c, d = _code(lambda: _amend(db, rid))
+                assert c == 409 and "แก้ได้อยู่แล้ว" in d and "อัปเดตแผน" not in d, (term, d)
         c, d = _code(lambda: _amend(db, rid + 999))
         assert c == 404 and _thai(d), (c, d)
         _close(db, rid)
@@ -436,6 +456,61 @@ def test_fresh_round_from_seed_data_preview_is_empty_in_every_pile():
         assert p["usable"] is True and p["reasons"] == [] and p["token"] == D.diff_token([]), p["reasons"]
         assert _snap() == before
         print(f"หน้าเทียบรอบที่เพิ่งเปิดจากข้อมูลตั้งต้น: ข้อ 0 · ไม่อยู่ในรอบ 0 · จับคู่ชุดไม่ได้ 0 · {ms:.0f} ms")
+
+
+def test_path_a_export_of_an_amending_round_clears_amending_since():
+    # รีวิว m1: ยังไม่เคยสร้างเทอม (ไม่มีคาบ) + หน้าตั้งค่า 2/2569 → ทาง ก. สร้างเทอม 2/2569 จากรอบที่กำลังแก้กลางเทอมได้ —
+    # รอบต้องกลับเป็นปิด อ่านอย่างเดียว (amending_since ว่าง) แล้วตัวกันรอบที่ส่งแล้วกลับมา
+    with C._world(terms=(), current=NO_TERM, slots=()) as rec, _patched(PLAN_TODOS=[]):
+        mock_api.SCHOOL_CONFIG.update({"year": "2569", "term": "2"})
+        db, ns = C._rich()
+        rec.use(db)
+        rid = ns.rnd["id"]
+        _close(db, rid)
+        assert _amend(db, rid)["amending_since"] is not None
+        _approve_all(db, rid)
+        C._post(ns.rnd)
+        assert [(t["label"], t["status"]) for t in db.terms] == [("2/2569", "active")], C._terms_view(db)
+        row = _round(db, rid)
+        assert row["status"] == "closed" and row["exported_at"] is not None and row["amending_since"] is None, row
+        c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_curricula_update, ns.t["curriculum"]["id"], REQ, None,
+                                   {"note": "x"}))
+        assert c == 409 and "ส่งเข้าโปรแกรมแล้ว" in d, (c, d)
+        assert _call(db, ADMIN, mock_api.wl_round_get, rid, REQ)["amending_since"] is None
+
+
+def test_fresh_round_with_overlapping_pools_of_one_subject_is_empty_in_every_pile():
+    """คำตัดสิน T3+ (S5): ข้อมูลตั้งต้น + pool ที่ห้องตรงกับ pool 1 พอดี (ม.4/6ข-ค) และ pool ที่ห้องซ้อนบางส่วน เปิดวิชาเดียวกัน
+    (228) คนละครู → ตัวเลือกของแต่ละชุดได้ครูของ pool ตัวเองเท่านั้น และหน้าเทียบของรอบที่เพิ่งเปิดว่างทุกกอง"""
+    pools = copy.deepcopy(mock_api.ELECTIVE_POOLS)
+    one = next(p for p in pools if p["id"] == 1)
+    assert one["group_ids"] == [80, 81] and [(o["subject_id"], o["teacher_id"]) for o in one["options"]] == [(228, 16)]
+    nxt = max(p["id"] for p in pools)
+    extra = [(nxt + 1, "เสรีซ้อน (ห้องเดียวกัน)", [80, 81], 1), (nxt + 2, "เสรีซ้อน (ห้องซ้อนบางส่วน)", [79, 81], 2)]
+    for pid, name, gids, tid in extra:
+        pools.append({**copy.deepcopy(one), "id": pid, "name": name, "group_ids": gids, "day": None, "period": None,
+                      "options": [{**copy.deepcopy(one["options"][0]), "key": pid * 100, "teacher_id": tid}]})
+    db = FakeDb()
+    with _running(NO_TERM), _patched(_STORE_KIND="postgres", ELECTIVE_POOLS=pools):
+        _call(db, ADMIN, mock_api.wl_curricula_seed, REQ, {"year": 2569, "semester": 2, "source": "timetable"})
+        rnd = _call(db, ADMIN, mock_api.wl_rounds_create, REQ, {"year": 2569, "semester": 2})
+        sched = {r["id"]: r["sched_id"] for r in db.tables["wl_teachers"]}
+        set_name = {s["id"]: s["name"] for s in db.tables["wl_term_sets"]}
+        opt_set = {o["id"]: o["set_id"] for o in db.tables["wl_term_set_options"]}
+        got = {}
+        for o in db.tables["wl_option_teachers"]:
+            name = set_name[opt_set[o["option_id"]]]
+            if name in (one["name"],) + tuple(e[1] for e in extra):
+                got.setdefault(name, []).append(sched[o["teacher_id"]])
+        assert got == {one["name"]: [16], extra[0][1]: [1], extra[1][1]: [2]}, got
+        for r in db.tables["wl_rows"] + db.tables["wl_option_teachers"]:
+            r["confirmed"] = True
+        _call(db, ADMIN, mock_api.wl_rounds_open, rnd["id"], REQ)
+        _close(db, rnd["id"])
+        p, _log = _preview(db, rnd["id"])
+    assert (p["items"], p["unknown"], p["unmatched_sets"]) == ([], [], []), \
+        ([(it["pile"], it["label"]) for it in p["items"]], p["unknown"][:3], p["unmatched_sets"][:3])
+    assert p["usable"] is True, p["reasons"]
 
 
 def test_new_code_never_writes_slots_or_parked():
