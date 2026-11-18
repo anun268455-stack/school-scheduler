@@ -31,7 +31,8 @@ NO_TERM = {"id": None, "year": None, "semester": None, "label": None, "status": 
 ACTIVE_2 = {"id": 9, "year": 2569, "semester": 2, "label": "2/2569", "status": "active"}
 ACTIVE_1 = {"id": 5, "year": 2569, "semester": 1, "label": "1/2569", "status": "active"}
 CLOSED_2 = {**ACTIVE_2, "status": "closed"}
-PREVIEW_KEYS = {"round", "usable", "reasons", "items", "unknown", "unmatched_sets", "token"}
+# already_todo: ข้อที่เข้ารายการงานอย่างเดียวที่อยู่ในรายการงานแล้ว (Task 4 รอบแก้ 1 — คำตัดสินผู้คุม)
+PREVIEW_KEYS = {"round", "usable", "reasons", "items", "unknown", "unmatched_sets", "token", "already_todo"}
 ROUND_KEYS = {"id", "label", "year", "semester", "status", "amending_since", "exported_label"}
 LIST_KEYS = {"id", "label", "status", "amending_since", "exported_label", "usable", "reasons"}
 # ตัวแปรของโปรแกรมที่หน้าเทียบต้องไม่แตะ (deep-equal ก่อน/หลัง)

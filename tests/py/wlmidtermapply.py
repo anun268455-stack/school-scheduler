@@ -11,6 +11,7 @@
 import contextlib
 import copy
 import datetime as dt
+import hashlib
 import inspect
 import json
 import os
@@ -124,6 +125,10 @@ def _history(db):
     return db.tables["wl_plan_updates"]
 
 
+def _listed(p):
+    return [x["key"] for x in p["already_todo"]]
+
+
 def _fresh(db, rid):
     """หน้าเทียบที่คำนวณใหม่จากสถานะตอนนี้ + ของสดชุดเดียวกัน (ตัวที่ POST ใช้ใส่)"""
     return mock_api._midterm_build(FakeCur(db, None), rid, keep_live=True)
@@ -147,10 +152,10 @@ def test_ticking_every_item_never_touches_slots_or_parked():
         assert mock_api.TEACHERS == want["teachers"] and mock_api.REQUIREMENTS == want["requirements"]
         assert mock_api.SUBJECTS == want["subjects"] and mock_api.ELECTIVE_POOLS == want["pools"]
         assert mock_api.CURRICULA == want["curricula"] and out["todos"] == len(want["todos"]) == 5, out
-        # หลังอัปเดต หน้าเทียบเหลือเฉพาะข้อที่โปรแกรมเขียนเองไม่ได้ (ชุดที่ลงคาบแล้ว → รายการงานเท่านั้น)
+        # หลังอัปเดต หน้าเทียบไม่เหลือข้อให้ติ๊ก — ข้อที่โปรแกรมเขียนเองไม่ได้ (ชุดที่ลงคาบแล้ว) อยู่ในรายการงานแล้ว จึงย้ายไป already_todo
         again = _preview(ns.rid)
-        assert [(it["key"], it["auto"]) for it in again["items"]] == [("sets:gone:pool:1", False)], \
-            [(it["key"], it["label"]) for it in again["items"]]
+        assert again["items"] == [] and _listed(again) == ["sets:gone:pool:1"], \
+            ([(it["key"], it["label"]) for it in again["items"]], again["already_todo"])
 
 
 # ── เขียนเฉพาะข้อที่ติ๊ก ──────────────────────────────────────────────────────
@@ -301,8 +306,8 @@ def test_app_state_is_written_inside_the_transaction():
         assert snap["counters"]["todo"] == mock_api._counters["todo"] and snap["current_term"] == ACTIVE_2
         assert (json.dumps(snap["slots"], sort_keys=True, ensure_ascii=False),
                 json.dumps(snap["parked"], sort_keys=True, ensure_ascii=False)) == bb[:2]
-        # ตรวจรหัสและอ่านเลขอัปเดตล่าสุดก่อนเปิดธุรกรรม — อ่านอย่างเดียว · ล้างคิวเซฟก่อน · เซฟหลัง COMMIT
-        assert all(C._writes(w) == [] for w in rec.wl_logs), rec.wl_logs
+        # ก่อนเปิดธุรกรรมมีแค่การตรวจรหัส (อ่านอย่างเดียว) · ล้างคิวเซฟก่อน · เซฟหลัง COMMIT
+        assert len(rec.wl_logs) == 1 and all("wl_codes" in q for q, _p in rec.wl_logs[0]), rec.wl_logs
         assert rec.calls == [("flush", True), ("save", 1)], rec.calls
 
 
@@ -317,8 +322,8 @@ def test_two_presses_one_succeeds():
         assert C._expect(lambda: _post(ns.rid, _keys(p), p["token"]), 409) == STALE
         assert _state() == before and C._db_snapshot(db) == dbb and len(_history(db)) == 1
         assert sum(1 for t in mock_api.TEACHERS if t["name"] == "ครูใหม่") == 1
-    # (ข) ข้อที่เข้ารายการงานอย่างเดียว (หน้าเทียบหลังอัปเดตเหมือนเดิม token เดิม): คำขอที่สองรอล็อกทะเบียนขณะคำขอแรก COMMIT
-    # → เห็นว่ามีการอัปเดตแผนเกิดขึ้นระหว่างรอ → 409 ไม่สร้างรายการงานซ้ำ
+    # (ข) ข้อที่เข้ารายการงานอย่างเดียว (ข้อมูลของแผนไม่เปลี่ยน): คำขอที่สองรอล็อกทะเบียนขณะคำขอแรก COMMIT → หน้าเทียบที่คำนวณใหม่
+    # ใต้ล็อกผูกกับการอัปเดตครั้งล่าสุด (และข้อนั้นอยู่ในรายการงานแล้ว) → token ไม่ตรง → 409 ไม่สร้างรายการงานซ้ำ
     with _midworld() as rec:
         db, ns = _six(rec)
         p = _preview(ns.rid)
@@ -336,7 +341,72 @@ def test_two_presses_one_succeeds():
             d = C._expect(lambda: _post(ns.rid, pick, p["token"]), 409)
         assert d == STALE and first and first[0]["todos"] == 1, (d, first)
         assert len(_history(db)) == 1 and len(mock_api.PLAN_TODOS) == 1, mock_api.PLAN_TODOS
-        assert _preview(ns.rid)["token"] == p["token"]                   # หน้าเทียบเหมือนเดิมจริง (กรณีที่ token กันไม่ได้)
+    # (ค) กดซ้ำทีละครั้ง (คำตอบแรกหาย แล้วลองใหม่ · อีกแท็บ · ย้อนกลับ) ด้วยหน้าเทียบเดิม → 409 ไม่มีประวัติ/รายการงานซ้ำ (รีวิว I1)
+    with _midworld() as rec:
+        db, ns = _six(rec)
+        p = _preview(ns.rid)
+        first = _post(ns.rid, ["sets:gone:pool:1"], p["token"])
+        before, dbb = _state(), C._db_snapshot(db)
+        assert C._expect(lambda: _post(ns.rid, ["sets:gone:pool:1"], p["token"]), 409) == STALE
+        assert _state() == before and C._db_snapshot(db) == dbb
+        assert len(_history(db)) == 1 and [t["update_id"] for t in mock_api.PLAN_TODOS] == [first["update_id"]]
+
+
+def test_token_is_bound_to_the_latest_plan_update():
+    # token ของหน้าเทียบ = diff_token(ข้อ) เมื่อยังไม่เคยอัปเดตเลย (pin ของ Task 3 ใช้ได้ตามเดิม) · มีแถวประวัติแล้ว = sha256("token ของข้อ:รหัสล่าสุด")
+    # ของทั้งฐาน ไม่ใช่เฉพาะรอบนี้ → การอัปเดตครั้งใดก็ตามหลังเปิดหน้าเทียบทำให้หน้าเทียบนั้นเก่า
+    with _midworld() as rec:
+        db, ns = _six(rec)
+        p = _preview(ns.rid)
+        assert p["token"] == D.diff_token(p["items"]), p["token"]
+        out = _post(ns.rid, [_keys(p, "weekly")[0]], p["token"])
+        q = _preview(ns.rid)
+        want = hashlib.sha256(f"{D.diff_token(q['items'])}:{out['update_id']}".encode()).hexdigest()
+        assert q["token"] == want != D.diff_token(q["items"]), q["token"]
+        other = db.add("wl_plan_updates", round_id=ns.rid + 50, year=2569, semester=1, by="ผู้ดูแลระบบ", accepted=[],
+                       rejected=[], report={})                          # การอัปเดตของรอบอื่น
+        r = _preview(ns.rid)
+        assert r["items"] == q["items"] and r["token"] != q["token"], r["token"]
+        assert r["token"] == hashlib.sha256(f"{D.diff_token(r['items'])}:{other['id']}".encode()).hexdigest()
+
+
+def test_todo_only_item_already_listed_is_not_offered_again():
+    # คำตัดสินผู้คุม (รอบแก้ 1): ข้อที่เข้ารายการงานอย่างเดียว (apply.op = todo) ไม่เปลี่ยนข้อมูล จึงขึ้นทุกครั้งที่ดูหน้าเทียบ — ถ้ามีข้องาน
+    # เดียวกัน (kind group_id subject_id text) ที่ยังไม่กด "ทำแล้ว" อยู่แล้ว → ย้ายไป already_todo (ไม่อยู่ใน items และ token ติ๊กไม่ได้)
+    with _midworld() as rec:
+        db, ns = _six(rec)
+        # ข้องานชนิดเดียวกัน ห้องเดียวกัน แต่ข้อความต่าง (คนละเรื่อง) ไม่ทำให้ข้อถูกซ่อน
+        other = {"id": 98, "update_id": 9, "kind": "set", "group_id": 5, "subject_id": None, "text": "เรื่องอื่นของ ม.1/5", "done": False}
+        mock_api.PLAN_TODOS.append(other)
+        p = _preview(ns.rid)
+        assert "sets:gone:pool:1" in _keys(p) and p["already_todo"] == [], p["already_todo"]
+        mock_api.PLAN_TODOS.remove(other)
+        p = _preview(ns.rid)
+        item = next(it for it in p["items"] if it["key"] == "sets:gone:pool:1")
+        assert D.set_todo(item)["group_id"] == 5, D.set_todo(item)
+        _post(ns.rid, ["sets:gone:pool:1"], p["token"])
+        q = _preview(ns.rid)
+        assert "sets:gone:pool:1" not in _keys(q), _keys(q)
+        assert q["already_todo"] == [{"key": item["key"], "pile": item["pile"], "label": item["label"]}], q["already_todo"]
+        assert sorted(_keys(q)) == sorted(k for k in _keys(p) if k != "sets:gone:pool:1")
+        assert q["token"] == hashlib.sha256(f"{D.diff_token(q['items'])}:1".encode()).hexdigest()
+        # ติ๊กข้อนั้นด้วยหน้าเทียบเก่า → token ไม่ตรง 409 · ด้วยหน้าเทียบใหม่ (ไม่มีข้อนั้นแล้ว) → 409 ไม่พบข้อ · ไม่มีอะไรถูกเขียน
+        before, dbb = _state(), C._db_snapshot(db)
+        assert C._expect(lambda: _post(ns.rid, ["sets:gone:pool:1"], p["token"]), 409) == STALE
+        C._expect(lambda: _post(ns.rid, ["sets:gone:pool:1"], q["token"]), 409, "sets:gone:pool:1")
+        assert _state() == before and C._db_snapshot(db) == dbb
+        # ข้อที่ติ๊กได้อื่น ๆ ยังใช้ได้ (หน้าเทียบใหม่ ไม่ซ้ำรายการงาน)
+        out = _post(ns.rid, [_keys(q, "weekly")[0]], q["token"])
+        assert [t["kind"] for t in mock_api.PLAN_TODOS] == ["set", "missing"] and out["todos"] == 1, mock_api.PLAN_TODOS
+        # กด "ทำแล้ว" แต่ปัญหาในโปรแกรมยังอยู่ (pool ยังลงคาบ) → กลับมาให้ติ๊กได้เหมือนเดิม
+        mock_api.terms_todo_done(mock_api.PLAN_TODOS[0]["id"])
+        r = _preview(ns.rid)
+        assert "sets:gone:pool:1" in _keys(r) and r["already_todo"] == [], r["already_todo"]
+        assert next(it for it in r["items"] if it["key"] == "sets:gone:pool:1") == item
+        # ข้อที่เปลี่ยนข้อมูลด้วย (สร้าง pool + ข้องานให้ลงคาบ) ไม่ถูกซ่อน แม้มีข้องานข้อความเดียวกันค้างอยู่
+        r_new = next(it for it in r["items"] if it["key"] == "sets:new:1")
+        mock_api.PLAN_TODOS.append({"id": 99, "update_id": 9, "done": False, **D.set_todo(r_new)})
+        assert "sets:new:1" in _keys(_preview(ns.rid))
 
 
 # ── แก้โปรแกรมระหว่างกด ─────────────────────────────────────────────────────
@@ -501,9 +571,10 @@ def test_refusals_write_nothing():
             c, d = _code(lambda: mock_api.terms_plan_update(body))
             assert c == 400 and _thai(d), (body, c, d)
         assert rec.conns == [] and rec.wl_logs == [] and rec.calls == []
-        # รหัสผิด → 403 ถ้อยคำของการอัปเดตแผน (ไม่ใช่ของการสร้างเทอม)
+        # รหัสผิด → 403 ถ้อยคำของการอัปเดตแผน (ไม่ใช่ของการสร้างเทอม) · ก่อนตรวจรหัสไม่แตะฐานเลย (รีวิว m4)
         d = C._expect(lambda: _post(ns.rid, _keys(p), p["token"], code="wrong-code-000"), 403)
         assert "ยังไม่ได้อัปเดตแผน" in d and "เทอมใหม่" not in d and rec.conns == [], d
+        assert len(rec.wl_logs) == 1 and all("wl_codes" in q for q, _p in rec.wl_logs[0]), rec.wl_logs
         d = C._expect(lambda: _post(ns.rid, _keys(p), p["token"], code=C.HEAD_CODE), 403)    # รหัสหัวหน้ากลุ่ม = ผิด
         # เหตุของรอบ → 409 รวมเหตุ ไม่มีการเขียน
         next(r for r in db.tables["wl_rows"] if r["teacher_id"] is not None)["confirmed"] = False
@@ -612,11 +683,15 @@ def test_writeback_history_orders_exports_and_updates_by_time():
 def test_new_code_never_writes_slots_or_parked():
     for fn in (mock_api.terms_plan_update, mock_api._plan_update_transaction, mock_api._plan_update_restore_point,
                mock_api._plan_update_restore, mock_api._plan_update_apply, mock_api.wl_writeback_history,
-               mock_api.term_closed_message):
+               mock_api.term_closed_message, mock_api._plan_todos_copy, mock_api.midterm_token, D.set_todo, D.split_listed):
         src = inspect.getsource(fn)
         for bad in ("SLOTS", "PARKED", "_sync_pool_slots", "/api/timetable/coteach", "_purge_"):
             assert bad not in src, (fn.__name__, bad)
     assert "SLOTS" not in mock_api._PLAN_UPDATE_LISTS and "PARKED" not in mock_api._PLAN_UPDATE_LISTS
+    # หน้าเทียบอ่านรายการงานเป็นสำเนาเท่านั้น (ไม่แก้)
+    src = inspect.getsource(mock_api._plan_todos_copy)
+    for bad in ("PLAN_TODOS[", "PLAN_TODOS.append", "PLAN_TODOS.extend", ".clear(", "_save_state", '["done"] ='):
+        assert bad not in src, bad
 
 
 def test_program_state_restored():

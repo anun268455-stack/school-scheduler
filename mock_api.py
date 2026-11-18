@@ -19251,6 +19251,23 @@ def wl_midterm_reasons(source: dict[str, Any], running: dict[str, Any] | None) -
     return reasons + wl_export_reasons(unsent, rnd.get("year"), rnd.get("semester"))
 
 
+WL_PLAN_UPDATE_LAST_SQL = "SELECT id FROM wl_plan_updates ORDER BY id DESC LIMIT 1"
+
+
+def midterm_token(items: list[dict[str, Any]], last_update_id: Any) -> str:
+    """token ของหน้าเทียบ (ฟังก์ชันล้วน) = ลายนิ้วมือของข้อ (diff_token) ผูกกับรหัสการอัปเดตกลางเทอมครั้งล่าสุดของทั้งฐาน (ทุกรอบ)
+    — ยังไม่เคยอัปเดต = diff_token ตรงตัว · มีแล้ว = sha256("diff_token:รหัสล่าสุด") · การอัปเดตครั้งใดก็ตามหลังเปิดหน้าเทียบ (คำขอที่ซ้อนกัน
+    หรือกดซ้ำทีหลัง) ทำให้หน้าเทียบนั้นเก่า → 409 แม้ข้อที่ติ๊กไม่เปลี่ยนข้อมูล (ข้อที่เข้ารายการงานอย่างเดียว — รีวิว Task 4 I1)"""
+    base = _PD.diff_token(items)
+    return base if last_update_id is None else _hashlib.sha256(f"{base}:{last_update_id}".encode()).hexdigest()
+
+
+def _plan_todos_copy() -> list[dict[str, Any]]:
+    """สำเนาของรายการงานของภาคที่เปิดอยู่ — หน้าเทียบใช้แยกข้อที่อยู่ในรายการงานแล้ว (split_listed ดูเฉพาะข้อที่ยังไม่กด "ทำแล้ว") ·
+    อ่านอย่างเดียว ไม่แก้อะไร"""
+    return [dict(t) for t in PLAN_TODOS]
+
+
 def _midterm_build(cur, round_id: int, *, keep_live: bool = False) -> dict[str, Any]:
     """หน้าเทียบของรอบกับแผนสดของภาคที่เปิดอยู่ — หน้าเทียบ (GET) และการอัปเดตจริง (Task 4 ในธุรกรรม) ใช้ตัวนี้ · ไม่เขียนอะไร
 
@@ -19260,7 +19277,9 @@ def _midterm_build(cur, round_id: int, *, keep_live: bool = False) -> dict[str, 
     counters = สำเนาของ _counters · reasons = wl_midterm_reasons + เหตุของทะเบียน + รายการที่ plan_from_round ข้าม (แบบทาง ก.)
     คำนวณครบเสมอแม้มีเหตุ (รอบที่ใช้ไม่ได้ยังดูหน้าเทียบได้) · ผู้เรียกห้ามเขียนเมื่อ reasons ไม่ว่าง
     → {"round": {id, label, year, semester, status, amending_since, exported_label}, "reasons", "diff": ผลของ plan_diff}
-    keep_live = เพิ่ม "live" (ของสดชุดที่ใช้เทียบ) — การอัปเดตจริงใส่ลงสำเนาชุดเดียวกับที่หน้าเทียบคำนวณ ไม่ใช่สำเนาใหม่"""
+    keep_live = เพิ่ม "live" (ของสดชุดที่ใช้เทียบ) — การอัปเดตจริงใส่ลงสำเนาชุดเดียวกับที่หน้าเทียบคำนวณ ไม่ใช่สำเนาใหม่
+    diff["items"] ไม่มีข้อที่เข้ารายการงานอย่างเดียวซึ่งมีข้องานเดียวกันค้างอยู่แล้ว (ย้ายไป diff["already_todo"] — split_listed) ·
+    diff["token"] = midterm_token(items, รหัสการอัปเดตล่าสุด อ่านจาก cursor เดียวกัน) — POST คำนวณใหม่ใต้ล็อกทะเบียนแล้วเทียบตัวนี้"""
     source = _wl_export_source(cur, round_id)
     rnd = source["round"]
     cur.execute("SELECT amending_since FROM wl_rounds WHERE id = %s", (rnd["id"],))
@@ -19269,6 +19288,10 @@ def _midterm_build(cur, round_id: int, *, keep_live: bool = False) -> dict[str, 
     program = {k: live[k] for k in ("requirements", "pools", "slots", "sched_subjects", "groups", "served")}
     proposal = wl_round_proposal(_wl_timetable_source(cur, _copy.deepcopy(program)))
     diff = _PD.plan_diff(source, live, proposal, dict(_counters))
+    items, listed = _PD.split_listed(diff["items"], _plan_todos_copy())
+    cur.execute(WL_PLAN_UPDATE_LAST_SQL)
+    last = cur.fetchone()
+    diff = {**diff, "items": items, "already_todo": listed, "token": midterm_token(items, last[0] if last else None)}
     reasons = (wl_midterm_reasons(source, _term_running_identity()) + list(diff["registry"]["reasons"])
                + _term_skipped_reasons(diff["desired"]["report"]["skipped"], _MIDTERM_SKIP_EFFECT))
     view = {"id": rnd["id"], "label": rnd["label"], "year": rnd["year"], "semester": rnd["semester"],
@@ -19314,9 +19337,10 @@ def terms_plan_update_rounds() -> list[dict[str, Any]]:
 
 @app.get("/api/terms/plan-update/preview")
 def terms_plan_update_preview(round_id: str | None = None) -> dict[str, Any]:
-    """หน้าเทียบรอบกับแผนสดก่อนอัปเดต {round, usable, reasons, items, unknown, unmatched_sets, token} — ไม่เขียนอะไร (GET ไม่ผ่าน
-    ตัวนับรุ่น · ไม่แตะตัวแปรของโปรแกรม · SQL อ่านอย่างเดียว) · items/unknown/unmatched_sets/token = ของ plan_diff ตรงตัว
-    (ข้อมีช่อง apply = สิ่งที่จะถูกเขียนเมื่อติ๊ก token คลุมทั้งข้อ) · รอบที่ใช้ไม่ได้ยังได้หน้าเทียบครบพร้อมเหตุ
+    """หน้าเทียบรอบกับแผนสดก่อนอัปเดต {round, usable, reasons, items, unknown, unmatched_sets, token, already_todo} — ไม่เขียนอะไร (GET ไม่ผ่าน
+    ตัวนับรุ่น · ไม่แตะตัวแปรของโปรแกรม · SQL อ่านอย่างเดียว) · unknown/unmatched_sets = ของ plan_diff ตรงตัว · items = ของ plan_diff
+    เว้นข้อที่เข้ารายการงานอย่างเดียวซึ่งอยู่ในรายการงานแล้ว (already_todo [{key, pile, label}] — ติ๊กไม่ได้) · token = midterm_token
+    (ข้อมีช่อง apply = สิ่งที่จะถูกเขียนเมื่อติ๊ก token คลุมทั้งข้อและผูกกับการอัปเดตครั้งล่าสุด) · รอบที่ใช้ไม่ได้ยังได้หน้าเทียบครบพร้อมเหตุ
     รหัสรอบผิดรูป = 400 · ไม่ได้ต่อฐานข้อมูล หรือข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ = 503 · ไม่มีรอบ = 404 — ข้อความไทยทั้งหมด"""
     text = str(round_id).strip() if round_id is not None else ""
     if not _re.fullmatch(r"\d{1,18}", text):
@@ -19330,18 +19354,19 @@ def terms_plan_update_preview(round_id: str | None = None) -> dict[str, Any]:
     diff = built["diff"]
     return {"round": built["round"], "usable": not built["reasons"], "reasons": built["reasons"],
             "items": diff["items"], "unknown": diff["unknown"], "unmatched_sets": diff["unmatched_sets"],
-            "token": diff["token"]}
+            "token": diff["token"], "already_todo": diff["already_todo"]}
 
 
 # ── ทาง ข.: อัปเดตแผนกลางเทอม — POST /api/terms/plan-update ใส่เฉพาะข้อที่ติ๊กในธุรกรรมเดียว (แบบข้อ 4.3) ──────────────────────
 # แบบเดียวกับการสร้างเทอมจากรอบของทาง ก. (ลำดับล็อก · จุดย้อน · เทียบตัวนับรุ่นสองครั้ง · ฉีดล้ม · app_state ในธุรกรรม · ไม่มี DDL ใน
 # ธุรกรรม) ยกเว้นไม่หมุนเทอม และ **ไม่แตะคาบที่ลงไว้กับถาดพักคาบเลย** (ไม่อยู่ในจุดย้อน ไม่อยู่ในผลของ plan_apply ไม่มีคำสั่งใดเขียน)
-#  1 รูปคำขอ (ไม่ติ๊กเลย = 400 ไม่ตรวจรหัส ไม่เปิดธุรกรรม) → จดเลขการอัปเดตล่าสุด ณ ตอนคำขอมาถึง → รหัส admin (นับผิดร่วมกับล็อกอิน ·
-#    แฮชก่อนเปิดธุรกรรม) → เทอมที่เปิดอยู่ปิดแล้ว = 409 (route ใต้ /api/terms/ มิดเดิลแวร์ไม่กัน — term_closed_message) → ข้อมูลของ
-#    โรงเรียนยังโหลดไม่สำเร็จ = 503 → ล้างคิวเซฟ (สำเนาเก่าที่ค้างคิวต้องไม่ลง app_state ทับหลัง COMMIT)
-#  2 การเชื่อมต่อเดียว: ล็อกทะเบียนเป็นคำสั่งแรก → แถวรอบ FOR UPDATE → มีการอัปเดตอื่น COMMIT ระหว่างรอล็อก = 409 ดูใหม่ (กดซ้ำ/สองหน้า
-#    ที่ติ๊กแต่ข้อที่เข้ารายการงานอย่างเดียว หน้าเทียบหลังอัปเดตเหมือนเดิม token จึงกันไม่ได้)
-#  3 จดตัวนับรุ่นคู่กับสำเนาของโปรแกรม → หน้าเทียบใหม่ในธุรกรรม (ตัวประกอบเดียวกับหน้าเทียบ) → เหตุ = 409 · token ไม่ตรง = 409
+#  1 รูปคำขอ (ไม่ติ๊กเลย = 400 ไม่ตรวจรหัส ไม่เปิดธุรกรรม) → รหัส admin (นับผิดร่วมกับล็อกอิน · แฮชก่อนเปิดธุรกรรม) → เทอมที่เปิดอยู่
+#    ปิดแล้ว = 409 (route ใต้ /api/terms/ มิดเดิลแวร์ไม่กัน — term_closed_message) → ข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ = 503 → ล้างคิวเซฟ
+#    (สำเนาเก่าที่ค้างคิวต้องไม่ลง app_state ทับหลัง COMMIT)
+#  2 การเชื่อมต่อเดียว: ล็อกทะเบียนเป็นคำสั่งแรก → แถวรอบ FOR UPDATE
+#  3 จดตัวนับรุ่นคู่กับสำเนาของโปรแกรม → หน้าเทียบใหม่ในธุรกรรม (ตัวประกอบเดียวกับหน้าเทียบ) → เหตุ = 409 · token ไม่ตรง = 409 —
+#    token ผูกกับการอัปเดตครั้งล่าสุด (midterm_token) และอ่านหลังได้ล็อก จึงเห็นทุกการอัปเดตที่ COMMIT แล้ว: คำขอที่ซ้อนกัน และการกดซ้ำ
+#    ด้วยหน้าเทียบเดิมหลังคำขอแรกจบ (คำตอบหาย/อีกแท็บ) ได้ 409 แม้ติ๊กแต่ข้อที่เข้ารายการงานอย่างเดียว (รีวิว I1)
 #  4 จุดย้อน → เทียบรุ่น → plan_apply (ฟังก์ชันล้วน ใส่จาก item["apply"] เท่านั้น — หน้าเทียบที่เห็น = สิ่งที่ถูกเขียน) → ใส่แทนในที่
 #  5 เขียน sched_id กลับ → ประวัติ (ได้ update_id) → รายการงานได้รหัส → app_state เป็นสำเนาสดในธุรกรรม (ต้องหลังรายการงาน: สำเนาต้องมี
 #    update_id ของมัน) → รอบที่เปิดให้แก้กลางเทอม → ปิดกลับ
@@ -19359,7 +19384,6 @@ PLAN_UPDATE_CODE_BUSY = ("มีการตรวจรหัสผู้ดู
 # ตัวแปรของโปรแกรมที่การอัปเดตแผนแทนในที่ — จุดย้อนเก็บเฉพาะตัวเหล่านี้ (+ curriculum_id ของห้อง + ตัวนับ) · SLOTS และ PARKED ไม่อยู่ในนี้
 # โดยตั้งใจ: การอัปเดตแผนไม่แตะสองตัวนั้น จึงไม่มีอะไรต้องคืน และ "คืน" ก็คือโค้ดใหม่ที่เขียนทับมัน (ข้อห้ามของผู้ใช้)
 _PLAN_UPDATE_LISTS = ("TEACHERS", "SUBJECTS", "REQUIREMENTS", "ELECTIVE_POOLS", "CURRICULA", "PLAN_TODOS")
-WL_PLAN_UPDATE_LAST_SQL = "SELECT id FROM wl_plan_updates ORDER BY id DESC LIMIT 1"
 WL_PLAN_UPDATE_INSERT = ("INSERT INTO wl_plan_updates (round_id, term_id, year, semester, by, accepted, rejected, report) "
                          "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb) RETURNING id")
 
@@ -19427,8 +19451,8 @@ def _plan_update_refusal(rnd: dict[str, Any], reasons: list[str]) -> str:
             + " | ".join(reasons))
 
 
-def _plan_update_transaction(round_id: int, accept: list[str], token: str, by: str, seen: int) -> dict[str, Any]:
-    """ขั้น 2–7 (ลำดับที่หัวส่วนนี้) — seen = เลขการอัปเดตล่าสุดที่อ่านก่อนรอล็อก (0 = ยังไม่เคย) → คำตอบของ POST"""
+def _plan_update_transaction(round_id: int, accept: list[str], token: str, by: str) -> dict[str, Any]:
+    """ขั้น 2–7 (ลำดับที่หัวส่วนนี้) → คำตอบของ POST"""
     try:
         conn = _db_connect()
     except Exception:                              # noqa: BLE001
@@ -19438,16 +19462,13 @@ def _plan_update_transaction(round_id: int, accept: list[str], token: str, by: s
         with conn:
             try:
                 with conn.cursor() as cur:
-                    # 2 ── ล็อกทะเบียน (คำสั่งแรก) → แถวรอบ → มีการอัปเดตอื่น COMMIT ระหว่างที่คำขอนี้รอล็อก = หน้าเทียบที่กดอาจเก่า
+                    # 2 ── ล็อกทะเบียน (คำสั่งแรก) → แถวรอบ
                     _wl_registry_lock(cur)
                     cur.execute("SELECT id FROM wl_rounds WHERE id = %s FOR UPDATE", (round_id,))
                     if cur.fetchone() is None:
                         raise HTTPException(404, WL_ROUND_MISSING)
-                    cur.execute(WL_PLAN_UPDATE_LAST_SQL)
-                    last = cur.fetchone()
-                    if (last[0] if last else 0) != seen:
-                        raise HTTPException(409, PLAN_UPDATE_STALE)
-                    # 3 ── รุ่นคู่กับสำเนาของโปรแกรม (เทียบก่อนใส่และก่อน COMMIT) → หน้าเทียบใหม่ในธุรกรรมนี้ → เหตุ · token
+                    # 3 ── รุ่นคู่กับสำเนาของโปรแกรม (เทียบก่อนใส่และก่อน COMMIT) → หน้าเทียบใหม่ในธุรกรรมนี้ → เหตุ · token (ผูกกับการ
+                    #      อัปเดตครั้งล่าสุดที่ COMMIT แล้ว — อ่านหลังได้ล็อก)
                     rev = REVISION["n"]
                     built = _midterm_build(cur, round_id, keep_live=True)
                     running = _term_running_identity()
@@ -19528,10 +19549,11 @@ def _plan_update_transaction(round_id: int, accept: list[str], token: str, by: s
 def terms_plan_update(body: Any = Body(None)) -> dict[str, Any]:
     """อัปเดตแผนกลางเทอมจากรอบอัตรากำลัง (ทาง ข. แบบข้อ 4.3) {round_id, admin_code, accept: [รหัสข้อ], token}
     → {applied: [รหัสข้อที่ใส่ รวมข้อทะเบียนที่ติ๊กให้], skipped: [ข้อที่ไม่ได้ติ๊ก], todos: จำนวนรายการงานใหม่, update_id}
-    ใส่เฉพาะข้อที่ติ๊กในธุรกรรมเดียว ไม่แตะคาบที่ลงไว้ (ลำดับที่หัวส่วนนี้) · token = ของหน้าเทียบ (GET /api/terms/plan-update/preview)
+    ใส่เฉพาะข้อที่ติ๊กในธุรกรรมเดียว ไม่แตะคาบที่ลงไว้ (ลำดับที่หัวส่วนนี้) · token = ของหน้าเทียบ (GET /api/terms/plan-update/preview) ·
+    ข้อใน already_todo ของหน้าเทียบติ๊กไม่ได้ (ไม่อยู่ในข้อ → 409)
     400 รูปคำขอ/ไม่ติ๊กเลย/ไม่มีรหัส · 403 รหัสผิด · 429 ผิดเกินเกณฑ์ · 404 ไม่มีรอบ · 409 เทอมปิด/เหตุของรอบ/หน้าเทียบเก่า/มีคนแก้ระหว่างกด ·
     500 ล้มกลางทาง (ย้อนหมด) · 503 ไม่ได้ต่อฐาน/ต่อฐานไม่ได้/ข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ — ข้อความไทยทั้งหมด"""
-    # 1 ── รูปคำขอ → เลขการอัปเดตล่าสุด → รหัส admin → เทอมปิด → ข้อมูลของโรงเรียน → คิวเซฟ (ทั้งหมดก่อนเปิดธุรกรรม)
+    # 1 ── รูปคำขอ → รหัส admin → เทอมปิด → ข้อมูลของโรงเรียน → คิวเซฟ (ทั้งหมดก่อนเปิดธุรกรรม)
     if _STORE_KIND != "postgres":
         raise HTTPException(503, "ยังไม่ได้ต่อฐานข้อมูล จึงอัปเดตแผนจากรอบอัตรากำลังไม่ได้")
     if not isinstance(body, dict):
@@ -19548,11 +19570,6 @@ def terms_plan_update(body: Any = Body(None)) -> dict[str, Any]:
     raw = body.get("admin_code")
     if not isinstance(raw, str) or not raw.strip():
         raise HTTPException(400, PLAN_UPDATE_CODE_MISSING)
-    # เลขการอัปเดตล่าสุด ณ ตอนคำขอมาถึง — อ่านก่อนตรวจรหัส: ประตูแฮชรหัสให้คำขอทีละตัว คำขอที่สองของการกดซ้ำจึงผ่านประตูหลังคำขอแรก
-    # และอาจถึงล็อกทะเบียนหลังคำขอแรก COMMIT ไปแล้ว ถ้าอ่านหลังแฮชจะไม่เห็นว่ามีการอัปเดตแทรก (ข้อที่เข้ารายการงานอย่างเดียว token เท่าเดิม)
-    with _wl_db() as cur:
-        cur.execute(WL_PLAN_UPDATE_LAST_SQL)
-        last = cur.fetchone()
     by = _term_admin_check(raw, PLAN_UPDATE_CODE_WRONG, PLAN_UPDATE_CODE_BUSY)
     closed = term_closed_message(CURRENT_TERM)
     if closed is not None:
@@ -19563,7 +19580,7 @@ def terms_plan_update(body: Any = Body(None)) -> dict[str, Any]:
         _flush_pending(blocking=True)
     except Exception:                              # noqa: BLE001
         raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง") from None
-    return _plan_update_transaction(round_id, list(dict.fromkeys(accept)), token, by, last[0] if last else 0)
+    return _plan_update_transaction(round_id, list(dict.fromkeys(accept)), token, by)
 
 
 @app.get("/api/terms")

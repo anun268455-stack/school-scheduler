@@ -1002,13 +1002,38 @@ def plan_apply(diff: dict[str, Any], live: dict[str, Any], accepted: set[str], c
                               "text": f"{names.g(it['group_id'])} {names.s(it['subject_id'])}: คาบที่ลงไว้ยังเป็น "
                                       + " · ".join(parts) + " แก้ในหน้าจัดคาบ"})
         elif pile == "sets" and op.get("todo"):
-            gids = (it.get("after") or it.get("before") or {}).get("group_ids") or [None]
-            todos.append({"kind": "set", "group_id": gids[0], "subject_id": None, "done": False, "text": op["todo"]})
+            todos.append(set_todo(it))
 
     return {"teachers": teachers, "subjects": subjects, "requirements": requirements, "pools": pools,
             "curricula": curricula, "group_curricula": {gid: g.get("curriculum_id") for gid, g in groups.items()},
             "counters": counters, "writeback": writeback, "todos": todos,
             "applied": [it["key"] for it in applied], "skipped": [it["key"] for it in items if it["key"] not in chosen]}
+
+
+def set_todo(item: dict[str, Any]) -> dict[str, Any] | None:
+    """ข้องานชนิด set ที่ข้อในกองชุดสร้างเมื่อถูกติ๊ก (apply มี "todo") — ตัวเดียวที่ plan_apply ใช้ · ไม่ใช่ข้อแบบนั้น = None · ไม่แก้ item"""
+    op = item.get("apply") or {}
+    if item.get("pile") != "sets" or not op.get("todo"):
+        return None
+    gids = (item.get("after") or item.get("before") or {}).get("group_ids") or [None]
+    return {"kind": "set", "group_id": gids[0], "subject_id": None, "done": False, "text": op["todo"]}
+
+
+def split_listed(items: list[dict[str, Any]], todos: Iterable[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """แยกข้อที่ "เข้ารายการงานอย่างเดียว" (apply.op = todo — ไม่เปลี่ยนข้อมูล จึงขึ้นทุกครั้งที่ดูหน้าเทียบ) ซึ่งมีข้องานเดียวกัน (kind
+    group_id subject_id text) ที่ยังไม่กด "ทำแล้ว" อยู่ในรายการงานแล้ว ออกจากข้อที่ติ๊กได้ — ไม่งั้น "เลือกทั้งกอง" ครั้งถัดไปต่อข้องานซ้ำ
+    (คำตัดสินผู้คุม Task 4 รอบแก้ 1) · ข้อที่เปลี่ยนข้อมูลด้วย (เช่นสร้าง pool + ข้องานให้ลงคาบ) ไม่ถูกแยก · ข้องานที่กด "ทำแล้ว" แต่ปัญหา
+    ยังอยู่ = ข้อกลับมาให้ติ๊กได้ → (items ที่เหลือตามลำดับเดิม, [{key, pile, label}] ของข้อที่อยู่ในรายการงานแล้ว) · ไม่แก้ขาเข้า"""
+    have = {(t.get("kind"), t.get("group_id"), t.get("subject_id"), t.get("text")) for t in todos if not t.get("done")}
+    keep: list[dict[str, Any]] = []
+    listed: list[dict[str, Any]] = []
+    for it in items:
+        t = set_todo(it) if (it.get("apply") or {}).get("op") == "todo" else None
+        if t is not None and (t["kind"], t["group_id"], t["subject_id"], t["text"]) in have:
+            listed.append({"key": it["key"], "pile": it["pile"], "label": it["label"]})
+        else:
+            keep.append(it)
+    return keep, listed
 
 
 # ── สถานะสดของรายการงานที่ต้องไปแก้เอง (แบบข้อ 4.4) ───────────────────────────────────────────
