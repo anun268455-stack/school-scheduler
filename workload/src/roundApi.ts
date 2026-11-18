@@ -1,8 +1,8 @@
 import { ContractError, http } from "./api";
 import {
-  isDeptStatus, isOptionTeacher, isRound, isRoundDetail, isRoundOption, isRoundPreview, isRoundRow, isTeacherLoad,
-  type DeptStatus, type OptionTeacher, type Round, type RoundDetail, type RoundOption, type RoundPreview, type RoundRow,
-  type TeacherLoad,
+  isDeptStatus, isOptionTeacher, isPlanUpdate, isRound, isRoundDetail, isRoundOption, isRoundPreview, isRoundRow, isTeacherLoad,
+  type DeptStatus, type OptionTeacher, type PlanUpdate, type Round, type RoundDetail, type RoundOption, type RoundPreview,
+  type RoundRow, type TeacherLoad,
 } from "./round";
 
 // ตัวเรียก route ของรอบอัตรากำลัง (งานที่ 3–4) ฟังก์ชันละ route · ใช้ axios ตัวเดียวกับ api.ts (token · 401 → หน้าล็อกอิน)
@@ -60,6 +60,17 @@ export async function openRound(roundId: number): Promise<RoundDetail> {
 export async function closeRound(roundId: number, confirmLabel: string): Promise<RoundDetail> {
   const res = await http.post(`${base(roundId)}/close`, { confirm_label: confirmLabel });
   return check(isRoundDetail, res.data, "round close");
+}
+
+/** POST /rounds/{id}/amend — ทาง ข.: เปิดรอบที่ปิดแล้วของภาคเรียนที่เปิดอยู่ให้แก้กลางเทอม (ปิด → เปิดให้กรอก) · 409 ไทย: รอบยังไม่ปิด ·
+ *  ไม่ใช่ภาคเรียนที่เปิดอยู่ในโปรแกรมจัดตาราง · มีรอบอื่นที่ยังไม่ปิด */
+export async function amendRound(roundId: number): Promise<RoundDetail> {
+  return check(isRoundDetail, (await http.post(`${base(roundId)}/amend`)).data, "round amend");
+}
+
+/** GET /rounds/{id}/plan-updates — ประวัติการอัปเดตแผนกลางเทอมของรอบ ใหม่ก่อน (admin) · ไม่เคยอัปเดต = [] */
+export async function listPlanUpdates(roundId: number): Promise<PlanUpdate[]> {
+  return checkList(isPlanUpdate, (await http.get(`${base(roundId)}/plan-updates`)).data, "plan updates");
 }
 
 // ---- สถานะกลุ่ม ส่ง ตรวจ ตีกลับ (งานที่ 4) ----

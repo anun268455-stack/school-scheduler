@@ -3,10 +3,11 @@ import type { AxiosError } from "axios";
 import { apiErrorText } from "../api";
 import { departmentName, thaiDateTime } from "../curriculum";
 import {
-  checkReturnNote, deptProgress, deptStatusLabel, deptStatusTone, exportActivityLines, reviewActions, reviewGap,
-  ROUND_STATUS_TEXT, roundExportChip, roundStats, roundStatusTone, type DeptStatus, type Round, type Unconverted,
+  AMEND_FINISH_TEXT, amendChip, checkReturnNote, deptProgress, deptStatusLabel, deptStatusTone, exportActivityLines, planUpdateItems,
+  planUpdateLine, reviewActions, reviewGap, ROUND_STATUS_TEXT, roundExportChip, roundStats, roundStatusTone,
+  type DeptStatus, type PlanUpdate, type Round, type Unconverted,
 } from "../round";
-import { approveDept, getRound, listDeptStatuses, returnDept } from "../roundApi";
+import { approveDept, getRound, listDeptStatuses, listPlanUpdates, returnDept } from "../roundApi";
 import type { Department } from "../types";
 import { Button, Card, Chip, Notice, Progress, StatTile } from "../ui";
 
@@ -27,6 +28,13 @@ export function ExportChip(props: { round: Round }) {
       <span className="whitespace-normal">{chip.text}</span>
     </Chip>
   );
+}
+
+/** ป้าย "แก้กลางเทอม — ยังไม่ส่ง" (ทาง ข.) — อ่านจาก amending_since ของรอบเท่านั้น (ปิดรอบ/อัปเดตในโปรแกรมแล้วหายเอง) */
+export function AmendChip(props: { round: Round }) {
+  const chip = amendChip(props.round);
+  if (!chip) return null;
+  return <Chip tone={chip.tone} dot data-testid="round-amending">{chip.text}</Chip>;
 }
 
 export default function RoundOverview(props: {
@@ -95,7 +103,8 @@ export default function RoundOverview(props: {
   const list = statuses.list;
   const stats = list ? roundStats(round, list) : null;
   const opened = when(round.opened_at);
-  const closed = when(round.closed_at);
+  // เวลาปิดรอบบอกเฉพาะรอบที่ปิดอยู่ — รอบที่เปิดให้แก้กลางเทอม (ทาง ข.) ยังเก็บเวลาปิดครั้งก่อนไว้ แต่ตอนนี้เปิดอยู่
+  const closed = round.status === "closed" ? when(round.closed_at) : null;
 
   return (
     <div>
@@ -106,6 +115,7 @@ export default function RoundOverview(props: {
             <Chip tone={roundStatusTone(round.status)} dot={round.status !== "closed"} data-testid="round-status">
               {ROUND_STATUS_TEXT[round.status]}
             </Chip>
+            <AmendChip round={round} />
             <ExportChip round={round} />
           </div>
           <p className="mt-1 text-muted" data-testid="round-summary">
@@ -120,11 +130,20 @@ export default function RoundOverview(props: {
           {/* ส่งแล้ว = ปิดถาวร ทุกการแก้ของรอบและหลักสูตรของภาคเรียนนี้ถูกปฏิเสธ (ปุ่มแก้หายเองเพราะสถานะปิด) */}
           {round.exported_at && (
             <p className="mt-1 text-sm text-muted" data-testid="round-exported-note">
-              ส่งเข้าโปรแกรมจัดตารางเมื่อ {when(round.exported_at)} · แก้รอบนี้และหลักสูตรของภาคเรียนนี้ไม่ได้อีก
+              ส่งเข้าโปรแกรมจัดตารางเมื่อ {when(round.exported_at)} ·{" "}
+              {/* เปิดให้แก้กลางเทอม (ทาง ข.) = แก้ได้จนอัปเดตในโปรแกรมหรือปิดรอบ แต่สร้างเทอมใหม่จากรอบนี้ซ้ำไม่ได้ */}
+              {round.amending_since ? "สร้างเทอมใหม่จากรอบนี้ซ้ำไม่ได้" : "แก้รอบนี้และหลักสูตรของภาคเรียนนี้ไม่ได้อีก"}
               {/* เทอมของรอบเปิดอยู่ = บอกทางกลับเมื่อส่งผิด · ถูกปิดไว้ = ป้ายบอกให้ปลดล็อกเทอมนั้นอยู่แล้ว ·
                   ปิดภาคเรียนแล้ว = ไม่ชวนปลดล็อก (ปลดล็อกเทอมเก่ากลางภาคเรียนปิดเทอมปัจจุบัน) */}
-              {roundExportChip(round)?.state === "open" &&
+              {roundExportChip(round)?.state === "open" && !round.amending_since &&
                 " (ถ้าส่งผิด ให้ปลดล็อกเทอมเดิมกลับในหน้ารายการเทอมของโปรแกรมจัดตาราง)"}
+            </p>
+          )}
+          {/* ทาง ข.: รอบที่เปิดให้แก้กลางเทอม — บอกทางต่อ (อัปเดตในโปรแกรมจัดตาราง แล้วรอบกลับเป็นปิดเอง) */}
+          {round.amending_since && (
+            <p className="mt-1 text-sm text-warn" data-testid="round-amending-note">
+              เปิดให้แก้กลางเทอมเมื่อ {when(round.amending_since)} — หัวหน้ากลุ่มสาระแก้เฉพาะที่เปลี่ยน · {AMEND_FINISH_TEXT}{" "}
+              (อัปเดตแล้วรอบที่ยังเปิดอยู่จะกลับเป็นปิดเอง)
             </p>
           )}
         </div>
@@ -134,6 +153,8 @@ export default function RoundOverview(props: {
       {props.children}
 
       <ExportActivities round={round} />
+
+      <PlanUpdateHistory round={round} />
 
       {round.counts.unconverted > 0 && <UnconvertedList roundId={round.id} count={round.counts.unconverted} />}
 
@@ -335,6 +356,82 @@ function ExportActivities(props: { round: Round }) {
         {lines.map((line, i) => <li key={i} className="break-words">{line}</li>)}
       </ul>
     </details>
+  );
+}
+
+/** ประวัติการอัปเดตแผนกลางเทอมของรอบ (ทาง ข. แบบข้อ 4.5): เมื่อไหร่ · ใคร · ยอมรับ/ไม่ยอมรับกี่ข้อ — ไม่เคยอัปเดต = ไม่แสดง ·
+ *  เซิร์ฟเวอร์รุ่นก่อน (404) = ไม่แสดง · โหลดใหม่เมื่อสถานะรอบเปลี่ยน (อัปเดตแล้วรอบที่แก้กลางเทอมกลับเป็นปิด) */
+function PlanUpdateHistory(props: { round: Round }) {
+  const { id, status, amending_since: amending } = props.round;
+  const [state, setState] = useState<{ list: PlanUpdate[] | null; error: string | null }>({ list: null, error: null });
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    listPlanUpdates(id).then(
+      (list) => {
+        if (!cancelled) setState({ list, error: null });
+      },
+      (err) => {
+        if (!cancelled) setState({ list: null, error: statusOf(err) === 404 ? null : apiErrorText(err) });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [id, status, amending, tick]);
+
+  if (state.error) {
+    return (
+      <Notice tone="bad" role="alert" className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <span>โหลดประวัติการอัปเดตกลางเทอมไม่ได้: {state.error}</span>
+        <Button size="sm" onClick={() => setTick((n) => n + 1)}>ลองโหลดใหม่</Button>
+      </Notice>
+    );
+  }
+  if (!state.list || state.list.length === 0) return null;
+  return (
+    <section aria-label="ประวัติการอัปเดตแผนกลางเทอม" data-testid="plan-history"
+      className="mb-5 rounded-card border border-line bg-surface px-4 py-3 sm:px-5">
+      <h3 className="font-semibold">ประวัติการอัปเดตแผนกลางเทอม ({fmt(state.list.length)} ครั้ง)</h3>
+      <p className="text-sm text-muted">
+        กดในโปรแกรมจัดตารางสอน (ปุ่ม “อัปเดตแผนจากรอบอัตรากำลัง”) · ข้อที่ไม่ยอมรับคงเดิมในโปรแกรม · คาบที่ลงไว้ไม่ถูกแตะ
+      </p>
+      <ul className="mt-2 divide-y divide-line2">
+        {state.list.map((u) => {
+          const items = planUpdateItems(u);
+          return (
+            <li key={u.id} className="py-2" data-testid={`plan-update-${u.id}`}>
+              <p className="text-[15px]">
+                <span className="font-medium">{when(u.at)}</span>
+                {u.by && <span className="text-muted"> · โดย {u.by}</span>}
+              </p>
+              <p className="text-[15px] text-muted">{planUpdateLine(u)}</p>
+              {(items.accepted.length > 0 || items.rejected.length > 0) && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-sm text-brand">ดูข้อ</summary>
+                  {items.accepted.length > 0 && (
+                    <>
+                      <p className="mt-1 text-sm font-medium">ยอมรับ</p>
+                      <ul className="list-disc space-y-0.5 pl-5 text-sm">
+                        {items.accepted.map((t, i) => <li key={i} className="break-words">{t}</li>)}
+                      </ul>
+                    </>
+                  )}
+                  {items.rejected.length > 0 && (
+                    <>
+                      <p className="mt-1 text-sm font-medium">ไม่ยอมรับ (คงเดิม)</p>
+                      <ul className="list-disc space-y-0.5 pl-5 text-sm text-muted">
+                        {items.rejected.map((t, i) => <li key={i} className="break-words">{t}</li>)}
+                      </ul>
+                    </>
+                  )}
+                </details>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 

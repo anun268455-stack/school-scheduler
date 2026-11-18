@@ -279,7 +279,9 @@ def test_unlock_without_export_is_unchanged():
         assert [s for s, _p in log] == TERMS_DDL + [ROTATE_UPDATE, ACTIVATE, "COMMIT"], [s for s, _p in log]
         assert log[2][1][1:] == (0, 16) and log[3][1] == (5,), (log[2][1][1:], log[3][1])
         assert _wl(db) == wl_before
-        assert rec.wl_logs[-1] == [("SELECT id FROM wl_rounds WHERE export_report IS NOT NULL LIMIT 1", ())], rec.wl_logs[-1]
+        # ทาง ข. Task 4: ไม่มีรอบที่ส่งแล้ว → ถามต่อว่าเคยอัปเดตแผนกลางเทอมไหม (อ่านอย่างเดียว) · ไม่เคยทั้งสอง = ทางเดิม
+        assert rec.wl_logs[-1] == [("SELECT id FROM wl_rounds WHERE export_report IS NOT NULL LIMIT 1", ()),
+                                   ("SELECT id FROM wl_plan_updates LIMIT 1", ())], rec.wl_logs[-1]
         assert set(out) == {"closed", "active", "save_error", "save_pending"}, set(out)
         assert out["closed"]["id"] == 16 and out["active"]["id"] == 5 and mock_api.CURRENT_TERM == ACTIVE5
         assert rec.logged == [(16, "close", "ปิดเทอม 2/2569 (0 คาบ)"), (5, "unlock", "ปลดล็อกเทอม 1/2569")], rec.logged
@@ -310,8 +312,10 @@ def test_unlock_reconciles_in_the_swap_transaction():
             stmts = [s for s, _p in log]
             assert len(rec.conns) == n_conns + 1 and conn.commits == 1 and stmts[-1] == "COMMIT", stmts
             assert log[0] == LOCK, log[0]                                # ล็อกทะเบียนเป็นคำสั่งแรก
-            assert log[1] == ("SELECT export_report FROM wl_rounds WHERE export_report IS NOT NULL "
+            # ทาง ข. Task 4: อ่านเวลาส่งด้วย แล้วรวมกับประวัติการอัปเดตกลางเทอมตามเวลา (wl_writeback_history)
+            assert log[1] == ("SELECT export_report, exported_at FROM wl_rounds WHERE export_report IS NOT NULL "
                               "ORDER BY exported_at, id", ()), log[1]
+            assert log[2] == ("SELECT report, at FROM wl_plan_updates ORDER BY at, id", ()), log[2]
             assert not any(s.split()[0].upper() in ("CREATE", "ALTER", "DROP", "LOCK") for s in stmts), stmts
             i_open = stmts.index(ACTIVATE)
             regs = [i for i, s in enumerate(stmts) if s.startswith("UPDATE wl_")]
@@ -555,6 +559,8 @@ _ROUTE_RE = re.compile(r'@app\.(post|put|delete)\("(/api/workload/[^"]+)"\)\s*\n
 # route เขียนของเว็บลงอัตรากำลังที่ไม่ได้เขียนรอบหรือหลักสูตรของภาคเรียนใด (ทะเบียน · รหัส · ล็อกอิน)
 _NOT_ROUND = {"wl_login", "wl_logout", "wl_setup", "wl_codes_create", "wl_codes_update", "wl_teachers_create",
               "wl_teachers_update", "wl_subjects_create", "wl_subjects_update", "wl_teachers_import", "wl_subjects_import"}
+# ทาง ข.: route ที่ตั้งใจเปิดรอบที่ส่งแล้วให้แก้กลางเทอม (ไม่ใช่ทุกฉากจะ 409 — ดูในตัวทดสอบ)
+_AMEND = {"wl_rounds_amend"}
 
 
 def _route_calls(db, ns):
@@ -612,11 +618,15 @@ def test_exported_round_refuses_every_write_route():
                 mock_api.create_term({"year": 2570, "semester": 1})       # ขึ้นภาคเรียนถัดไปตามปกติ (ปุ่มเดิม)
             calls = _route_calls(db, ns)
             already = {"wl_rounds_create": (ADMIN, lambda: mock_api.wl_rounds_create(REQ, {"year": 2569, "semester": 2}))}
+            if state != "open":
+                # ทาง ข.: เปิดให้แก้กลางเทอม (_AMEND) เปิดรอบที่ปิดแล้วของภาคที่เปิดอยู่โดยตั้งใจ แม้ส่งแล้ว (ฉาก "open" ทดสอบใน
+                # wlmidtermpreview.py) · เทอมของรอบถูกปิดไว้/ปิดภาคแล้ว = ไม่ใช่ภาคที่เปิดอยู่ → 409 ไม่มีอะไรเปลี่ยน
+                already["wl_rounds_amend"] = (ADMIN, lambda: mock_api.wl_rounds_amend(ns.rnd["id"], REQ))
             routes = {fn for _m, _p, fn in _ROUTE_RE.findall(inspect.getsource(mock_api))}
             assert routes, "อ่าน route จากซอร์สไม่ได้"
-            missing = routes - set(calls) - set(already) - _NOT_ROUND
+            missing = routes - set(calls) - set(already) - _NOT_ROUND - _AMEND
             assert not missing, f"route เขียนของเว็บลงอัตรากำลังที่ตัวทดสอบนี้ยังไม่ครอบ: {sorted(missing)}"
-            assert not (set(calls) | set(already) | _NOT_ROUND) - routes, "ชื่อ route ในตารางไม่มีจริง"
+            assert not (set(calls) | set(already) | _NOT_ROUND | _AMEND) - routes, "ชื่อ route ในตารางไม่มีจริง"
             for name, (sess, fn) in {**calls, **already}.items():
                 snap = copy.deepcopy(db.tables)
                 code, detail = _code(lambda: _call(db, sess, fn))

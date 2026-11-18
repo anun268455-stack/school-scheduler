@@ -3,7 +3,9 @@ import type {
   Building, Department, LessonRequirement, Period, Room,
   ElectivePool, PoolTeacherCandidate, RequirementProblemReport, SchoolConfig, SolverResult, StudentGroup, Subject, Teacher, TimetableSlot,
 } from "../types";
-import type { RoundPreview, RoundReport, TermMeta, TermRound } from "../utils/terms";
+import type {
+  PlanPreview, PlanRound, PlanTodo, PlanUpdateResult, RoundPreview, RoundReport, TermMeta, TermRound,
+} from "../utils/terms";
 import { blockedReason, gateRequest, setWriteBlock } from "./writeGate";
 
 // In production (GitHub Pages), use the Render backend URL via env var
@@ -1545,6 +1547,30 @@ export interface UnlockTermResult {
 
 export const unlockTerm = (id: number, confirm: string) =>
   api.post<UnlockTermResult>(`/terms/${id}/unlock`, { confirm }).then((r) => r.data);
+
+// ── อัปเดตแผนกลางเทอมจากรอบอัตรากำลัง (ทาง ข.) — ทุกเส้นอยู่ใต้ /terms/ (ด่านขาออกตอนดูเทอมที่ปิดปล่อยผ่าน · เซิร์ฟเวอร์ปฏิเสธเอง
+// เมื่อเทอมที่เปิดอยู่ปิดแล้ว) · ไม่มีเส้นไหนแตะคาบที่ลงไว้
+
+/** รอบของภาคเรียนที่เปิดอยู่ (ไม่มีข้อมูลรายแถว) · ไม่ได้ต่อฐาน/เทอมที่เปิดอยู่ปิดแล้ว = [] (ปุ่มไม่ขึ้น) */
+export const fetchPlanRounds = () =>
+  api.get<PlanRound[]>("/terms/plan-update/rounds").then((r) => r.data);
+
+/** หน้าเทียบรอบกับแผนสด — ไม่เขียนอะไร · token ผูกกับสิ่งที่เห็นและการอัปเดตครั้งล่าสุด */
+export const fetchPlanPreview = (roundId: number) =>
+  api.get<PlanPreview>("/terms/plan-update/preview", { params: { round_id: roundId } }).then((r) => r.data);
+
+/** ใส่เฉพาะข้อที่ติ๊กในธุรกรรมเดียว · adminCode = รหัสผู้ดูแลระบบของเว็บลงอัตรากำลัง · หน้าเทียบเก่า = 409 */
+export const postPlanUpdate = (roundId: number, adminCode: string, accept: string[], token: string) =>
+  api.post<PlanUpdateResult>("/terms/plan-update", { round_id: roundId, admin_code: adminCode, accept, token })
+    .then((r) => r.data);
+
+/** รายการงานที่ต้องไปแก้เองของภาคที่เปิดอยู่ พร้อมสถานะสด */
+export const fetchPlanTodos = () =>
+  api.get<PlanTodo[]>("/terms/todos").then((r) => r.data);
+
+/** "ทำแล้ว" (done: true) · เอาข้อที่ซ่อนกลับมา (done: false) — ไม่ต้องใช้รหัส ไม่แตะคาบ/แผน */
+export const markPlanTodo = (id: number, done: boolean) =>
+  api.post<PlanTodo>(`/terms/todos/${id}/done`, { done }).then((r) => r.data);
 
 export interface TermStatsRow {
   id: number;

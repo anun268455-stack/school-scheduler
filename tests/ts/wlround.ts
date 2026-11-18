@@ -17,6 +17,9 @@ import {
   releasePending, rowPatch, rowState, settlePending, shownFields, subjectLine, submitState, teacherChoices, teacherNamer,
   termReadiness, changeRow, teacherDraft, retryFields, reviewGap, refreshDue, REFRESH_GAP_MS, bulkConfirmTargets, unsavedDraftsText,
   roundExportChip, exportActivityLines, EXPORT_DONE_TEXT, EXPORT_PARKED_TEXT,
+  amendAction, amendChip, amendNotes, AMEND_CHIP_TEXT, AMEND_OTHER_OPEN, isPlanUpdate, planUpdateLine, planUpdateItems,
+  amendBoxAfter, AMEND_FINISH_TEXT, stillClosed,
+  type PlanUpdate,
   type DeptStatus, type OptionTeacher, type Round, type RoundOption, type RoundPreview, type RoundRow, type TeacherLoad,
 } from "../../workload/src/round.ts";
 
@@ -905,6 +908,107 @@ test("รอบที่ส่งแล้ว (สถานะปิด) ไม�
   eq(roundActions("closed"), { open: false, cancel: false, close: false, review: false });
   for (const s of ["filling", "submitted", "returned", "approved"] as const) eq(reviewActions("closed", s), { approve: false, return: false });
   eq(editState("admin", "closed", "approved").can, false);
+});
+
+// ── ทาง ข.: เปิดรอบให้แก้กลางเทอม · ชิป "แก้กลางเทอม" · ประวัติการอัปเดตกลางเทอม ─────────────────────
+const AMEND_AT = "2026-11-18T06:39:37.257472+00:00";
+
+test("isRound: amending_since ไม่มี (เซิร์ฟเวอร์รุ่นก่อน)/ว่าง/เวลา ผ่าน · ผิดรูปไม่ผ่าน", () => {
+  ok(isRound(R({ amending_since: AMEND_AT })), "กำลังแก้กลางเทอม");
+  ok(isRound(R({ amending_since: null })), "ไม่ได้แก้");
+  ok(isRound(R()), "ไม่มีช่อง");
+  ok(!isRound(R({ amending_since: 5 as unknown as string })), "ตัวเลข");
+});
+
+test("amendChip: อ่านจาก amending_since ของรอบ (คำตัดสินผู้คุมข้อ 5) · ปิดรอบ/อัปเดตแล้วเป็นว่าง = ไม่มีป้าย", () => {
+  eq(AMEND_CHIP_TEXT, "แก้กลางเทอม — ยังไม่ส่ง");
+  eq(amendChip(R({ amending_since: AMEND_AT })), { tone: "warn", text: "แก้กลางเทอม — ยังไม่ส่ง" });
+  eq(amendChip(R({ amending_since: null })), null);
+  eq(amendChip(R()), null);
+  eq(amendChip(R({ status: "closed", amending_since: null, exported_at: SENT_AT })), null);
+});
+
+test("roundChip: รอบที่เปิดให้แก้กลางเทอมบอกบนแถบบน (หัวหน้ากลุ่มเห็นด้วย) · รอบปกติเหมือนเดิม", () => {
+  eq(roundChip([R({ amending_since: AMEND_AT })]), { tone: "warn", text: "ภาคเรียน 2/2569 · แก้กลางเทอม" });
+  eq(roundChip([R()]), { tone: "info", text: "ภาคเรียน 2/2569 · เปิดให้กรอก" });
+});
+
+test("amendAction: ปุ่มเปิดให้แก้กลางเทอมขึ้นเฉพาะรอบที่ปิดแล้วที่เซิร์ฟเวอร์อาจยอม · มีรอบอื่นที่ยังไม่ปิด = บอกเหตุแทนปุ่ม", () => {
+  const closed = R({ id: 1, status: "closed", closed_at: "2026-11-17T03:00:00+00:00" });
+  eq(amendAction(closed, [closed]), { show: true, blocker: null });
+  for (const s of ["preparing", "filling"] as const) eq(amendAction(R({ status: s }), [R({ status: s })]).show, false);
+  // ส่งแล้วและเทอมของรอบเปิดอยู่ = ได้ · ปิดภาคเรียนแล้ว/ถูกปิดไว้ = ไม่ใช่ภาคเรียนที่เปิดอยู่ (เซิร์ฟเวอร์ตอบ 409 แน่) จึงไม่ขึ้นปุ่ม
+  const sent = (suffix: string) => R({ id: 1, status: "closed", exported_at: SENT_AT, exported_label: "2/2569",
+    exported_text: `ส่งเข้าโปรแกรมแล้ว — เทอม 2/2569${suffix}` });
+  eq(amendAction(sent(""), [sent("")]).show, true);
+  eq(amendAction(sent(EXPORT_DONE_TEXT), [sent(EXPORT_DONE_TEXT)]).show, false);
+  eq(amendAction(sent(EXPORT_PARKED_TEXT), [sent(EXPORT_PARKED_TEXT)]).show, false);
+  // รอบที่ยังไม่ปิดมีได้ทีละรอบ (ดัชนี wl_rounds_one_open) — บอกชื่อรอบนั้นแทนปุ่มที่กดแล้วได้ 409
+  const next = R({ id: 2, year: 2570, semester: 1, label: "1/2570", status: "preparing" });
+  const blocked = amendAction(closed, [next, closed]);
+  ok(blocked.show && (blocked.blocker ?? "").includes("1/2570") && (blocked.blocker ?? "").includes(AMEND_OTHER_OPEN),
+     `ได้ ${JSON.stringify(blocked)}`);
+  const src = readFileSync(new URL("../../mock_api.py", import.meta.url), "utf8");
+  const at = src.indexOf("def wl_rounds_amend(");
+  ok(at >= 0, "หา wl_rounds_amend ใน mock_api.py ไม่เจอ");
+  ok(src.slice(at, src.indexOf("\ndef ", at + 1)).includes(AMEND_OTHER_OPEN), "ชิ้นข้อความเดียวกับ 409 ของเซิร์ฟเวอร์");
+});
+
+test("amendNotes: กล่องยืนยันบอกสิ่งที่จะเกิด · รอบที่ส่งแล้วบอกว่าส่งซ้ำไม่ได้", () => {
+  const plain = amendNotes(R({ status: "closed" }));
+  ok(plain.length >= 3 && plain.every(hasThai), "เป็นไทยหลายบรรทัด");
+  ok(plain.some((l) => l.includes("เปิดให้กรอก")) && plain.some((l) => l.includes("อัปเดตแผนจากรอบอัตรากำลัง")), "บอกทางต่อ");
+  ok(!plain.some((l) => l.includes("ส่งซ้ำ")), "รอบที่ไม่เคยส่งไม่พูดเรื่องส่งซ้ำ");
+  ok(amendNotes(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569" })).some((l) => l.includes("ส่งซ้ำไม่ได้")),
+     "รอบที่ส่งแล้ว");
+  // รีวิวทั้งสาขา I1: รอบที่ปิดแล้วใช้อัปเดตได้เลย (เปิดให้แก้เฉพาะเมื่อจะแก้) · เปิดแล้วทุกกลุ่มกลับเป็นกำลังกรอก → จบได้สองทาง
+  ok(plain[0].includes("ไม่ต้องเปิดให้แก้") && plain[0].includes("ใช้ได้เลย"), `บรรทัดแรกกันการเปิดให้แก้โดยไม่จำเป็น — ได้ ${plain[0]}`);
+  ok(plain.some((l) => l.includes("รวมกลุ่มที่ไม่ได้แก้")), "บอกว่าทุกกลุ่มกลับเป็นกำลังกรอก แม้กลุ่มที่ไม่ได้แก้");
+  ok(plain.some((l) => l.includes(AMEND_FINISH_TEXT)), "บอกสองทางที่ทำให้รอบใช้ได้อีก");
+  ok(AMEND_FINISH_TEXT.includes("ส่งใหม่และตรวจผ่าน") && AMEND_FINISH_TEXT.includes("ปิดรอบ")
+     && AMEND_FINISH_TEXT.includes("อัปเดตแผนจากรอบอัตรากำลัง"), `AMEND_FINISH_TEXT — ได้ ${AMEND_FINISH_TEXT}`);
+});
+
+test("stillClosed: หลังโหลดรายการรอบใหม่ รอบที่เปิดดู/กำลังยืนยันยังเป็นรอบที่ปิดแล้วไหม (เปิดให้แก้แล้ว/หายไป = ล้าง · รีวิว T5 m2)", () => {
+  const closed = R({ id: 1, status: "closed" });
+  eq(stillClosed([closed], 1), 1);
+  eq(stillClosed([R({ id: 1, status: "filling", amending_since: AMEND_AT })], 1), null);
+  eq(stillClosed([closed], 2), null);
+  eq(stillClosed([closed], null), null);
+});
+
+test("amendBoxAfter: กล่องยืนยันเปิดให้แก้หลังกด — สำเร็จ = ค้างไว้จนรายการรอบใหม่มาถึง · 409/404 (ข้อความขึ้นบนสุด) = ปิดกล่อง · อื่น = ค้างพร้อมข้อความ (รีวิว T5 m3)", () => {
+  eq(amendBoxAfter(true, false), "done");
+  eq(amendBoxAfter(false, false), "close");
+  eq(amendBoxAfter(false, true), "stay");
+});
+
+// รูปแถวของ wl_plan_updates ที่ GET /rounds/{id}/plan-updates คืน (accepted/rejected = [{key, pile, label(, auto)}] ของ Task 4)
+const PU = (p: Partial<PlanUpdate> = {}): PlanUpdate => ({
+  id: 3, round_id: 1, term_id: null, year: 2569, semester: 2, at: "2026-11-18T07:00:00+00:00", by: "ผู้ดูแลระบบ",
+  accepted: [{ key: "registry:teacher:144", pile: "registry", label: "สร้างครู ครูใหม่", auto: true },
+             { key: "teacher:2:20:197", pile: "teacher", label: "ม.1/2 ค21102: ครู ก → ครูใหม่", auto: false },
+             { key: "weekly:1:184:1056", pile: "weekly", label: "ม.1/1 CH21204: คาบ 2 → 3", auto: false }],
+  rejected: [{ key: "sets:edit:1", pile: "sets", label: "คาบเสรี “ม.4/6”" }],
+  report: { token: "x", todos: 2, round_closed: true, writeback: {} }, ...p,
+});
+
+test("isPlanUpdate: รูปแถวประวัติ · ผิดรูปไม่ผ่าน", () => {
+  ok(isPlanUpdate(PU()), "ถูกรูป");
+  ok(isPlanUpdate(PU({ term_id: 9, report: null })), "มีเทอม · ไม่มีรายงาน");
+  const bad: unknown[] = [PU({ id: "3" as unknown as number }), PU({ at: null as unknown as string }),
+    PU({ accepted: "x" as unknown as PlanUpdate["accepted"] }), PU({ rejected: [{ key: 1 }] as unknown as PlanUpdate["rejected"] }),
+    PU({ by: 5 as unknown as string }), null, []];
+  bad.forEach((b, i) => ok(!isPlanUpdate(b), `ตัวที่ ${i} ควรไม่ผ่าน`));
+});
+
+test("planUpdateLine/Items: ยอมรับ/ไม่ยอมรับกี่ข้อ · ข้อที่ระบบติ๊กให้ · รายการงาน · รอบกลับเป็นปิด", () => {
+  eq(planUpdateLine(PU()), "ยอมรับ 3 ข้อ (ระบบติ๊กข้อทะเบียนให้ 1 ข้อ) · ไม่ยอมรับ 1 ข้อ · รายการงานใหม่ 2 ข้อ · รอบกลับเป็นปิด");
+  eq(planUpdateLine(PU({ accepted: [], rejected: [], report: null })), "ยอมรับ 0 ข้อ · ไม่ยอมรับ 0 ข้อ");
+  eq(planUpdateItems(PU()), {
+    accepted: ["สร้างครู ครูใหม่ (ระบบติ๊กให้)", "ม.1/2 ค21102: ครู ก → ครูใหม่", "ม.1/1 CH21204: คาบ 2 → 3"],
+    rejected: ["คาบเสรี “ม.4/6”"],
+  });
 });
 
 if (fails.length) {

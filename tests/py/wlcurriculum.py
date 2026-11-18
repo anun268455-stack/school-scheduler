@@ -1322,13 +1322,13 @@ def test_schema_round_rows_reference_curriculum_lines():
                      _table("wl_term_set_options"))
     assert _cols("wl_curriculum_log") == {"id", "year", "semester", "at", "by_label", "action", "detail"}
     # ไม่มีดัชนี unique ใหม่บนตารางที่มีข้อมูลจริง · ทุกคำสั่งรันซ้ำได้ · ALTER มีได้เฉพาะคอลัมน์ส่งออกของรอบ (ขั้นที่ 3
-    # แบบข้อ 4.7: ADD COLUMN IF NOT EXISTS บน wl_rounds) — ตารางอื่นไม่ถูก ALTER
+    # แบบข้อ 4.7) และ amending_since (ทาง ข. แบบข้อ 4.7): ADD COLUMN IF NOT EXISTS บน wl_rounds — ตารางอื่นไม่ถูก ALTER
     uniq = re.findall(r"CREATE\s+UNIQUE\s+INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s+ON\s+(\w+)", sql, re.I)
     assert {n for n, t in uniq if t in ("wl_codes", "wl_teachers", "wl_subjects")} == {
         "wl_codes_one_admin", "wl_codes_one_per_dept"}
     alters = re.findall(r"ALTER\s+TABLE\s+(\S+)\s+(.*)", sql, re.I)
     assert [(t, rest.split()[:5]) for t, rest in alters] == [
-        ("wl_rounds", ["ADD", "COLUMN", "IF", "NOT", "EXISTS"])] * 4, alters
+        ("wl_rounds", ["ADD", "COLUMN", "IF", "NOT", "EXISTS"])] * 5, alters     # + ทาง ข. amending_since
     for stmt in re.findall(r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+(\S+)", sql, re.I):
         assert stmt.upper() == "IF", stmt
     # ลำดับ: ตารางที่ถูกอ้างต้องสร้างก่อนตารางที่อ้างมัน

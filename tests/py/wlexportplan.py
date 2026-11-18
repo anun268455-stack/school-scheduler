@@ -554,7 +554,8 @@ def _round_source(out, prop, wl_t, wl_s):
     pre = mock_api.wl_prefill(
         prop, [{"line_id": lid, "group_id": g, "sched_subject_id": sched_of.get(ln["subject_id"]), "weekly": ln["weekly"]}
                for lid, g, ln in cells],
-        [{"option_id": oid, "group_ids": st["group_ids"], "sched_subject_id": sched_of.get(o["subject_id"])}
+        [{"option_id": oid, "group_ids": st["group_ids"], "sched_subject_id": sched_of.get(o["subject_id"]),
+          "kind": st["kind"], "name": st["name"]}                 # เหมือน _wl_round_plan: ชุดของตัวเลือกจับ pool ของมันเอง (T3+)
          for oid, st, o in opts], out["subject_ids"])
     rows = []
     for n, (lid, g, ln) in enumerate(cells, 1):
@@ -821,15 +822,79 @@ def test_round_trip_live_shape():
     assert n["curriculum_rows_added"] > 0 and n["check_row_refusals"] == 0, n    # วิชาเสรีเข้าหลักสูตรของห้อง
 
 
-for name, fn in list(globals().items()):
-    if name.startswith("test_") and callable(fn):
-        try:
-            fn()
-        except Exception as e:  # noqa: BLE001
-            fails.append(f"{name}: {type(e).__name__} {e}")
+# ── แถววิชาเสรีบนห้องย่อย/ห้องแม่ของห้องในชุด (ทาง ข. รอบแก้ 1 ข้อ 1 — แก้ที่ต้นเหตุ ใช้กับทาง ก. ด้วย) ─────────────
+def _subgroup_rows():
+    """แถวแผนของวิชาเสรีที่โปรแกรมนับว่าสอนในคาบเสรีแล้วผ่านห้องแม่/ห้องย่อย (_reqs_served_by_elective ใช้ shares):
+    ม.6/9ก (92 ห้องย่อยของ ม.6/9 = 73) วิชาของ pool 8 ซึ่งอยู่บนห้องแม่ 73 · ม.6/9 (73) วิชาของ pool 2 ซึ่งอยู่บนห้องย่อย 92–93
+    (ต้องเรียกใน _scratch) → รหัสแถวที่เพิ่ม"""
+    made = []
+    for pid, gid in ((8, 92), (2, 73)):
+        pool = next(p for p in mock_api.ELECTIVE_POOLS if p["id"] == pid)
+        assert gid not in pool["group_ids"]
+        o = pool["options"][0]
+        made.append(mock_api.create_req({"group_id": gid, "subject_id": o["subject_id"], "teacher_id": o["teacher_id"],
+                                         "weekly_count": pool["weekly"], "parallel_group_key": None})["id"])
+    return made
 
-if fails:
-    for f in fails:
-        print("FAIL:", f)
-    sys.exit(1)
-print("ALL PASS")
+
+def test_round_trip_subgroup_elective_rows():
+    # ขั้นที่ 2 ข้ามแถวเหล่านี้ (สอนในคาบเสรีแล้ว) — เทอมใหม่ต้องเขียนกลับตามรูปของแผนเดิมแบบห้องที่อยู่ในชุดตรง ๆ ไม่งั้นแถวหายเงียบ ๆ
+    # (report.skipped ว่าง) และยอดคาบของครูวิชาเสรีลด
+    with _scratch():
+        made = _subgroup_rows()
+        out, wl_t, wl_s, counters = _outgoing()
+    assert set(made) <= out["served"], (made, out["served"])
+    n = _round_trip(out, wl_t, wl_s, counters, out["pools"], "ห้องแม่/ห้องย่อย")
+    assert n["elective_rows"] == 2 and n["new_rows"] == n["old_rows"] == 1222, n
+
+
+def test_shares_students_matches_program():
+    # กฎ "ห้องสองห้องมีนักเรียนชุดเดียวกันไหม" ของโปรแกรม (_shares_students_fn: ตัวเอง · ห้องแม่/ห้องย่อยทุกชั้น · ไม่ใช่ห้องพี่น้อง)
+    # ที่ term_from_round ใช้ตัดสินว่าชุดคาบเสรีสอนแทนแถวไหน ต้องตรงกับตัวจริงทุกคู่ของห้องตั้งต้น
+    groups = {g["id"]: g for g in mock_api._flat_groups()}
+    program, mine = mock_api._shares_students_fn(), T.shares_students(groups)
+    pairs = [(a, b) for a in groups for b in groups]
+    assert [p for p in pairs if program(*p) != mine(*p)] == []
+    assert mine(92, 73) and mine(73, 92) and not mine(92, 93) and sum(mine(*p) for p in pairs) > len(groups)
+
+
+def test_keep_set_electives_lives_in_term_from_round():
+    # รอบแก้ 1 ข้อ 3 (ทาง ข.): กฎ is_elective ของวิชาในชุดมีที่เดียว — mock_api และ plan_diff เรียกตัวนี้ ไม่มีสำเนา
+    import plan_diff
+    assert not hasattr(mock_api, "_term_keep_set_electives") and not hasattr(plan_diff, "_keep_set_electives")
+
+    def reg():
+        return {"subjects": [{"id": 1, "is_elective": False}, {"id": 2, "is_elective": True}, {"id": 3}],
+                "report": {"subjects_patched": [
+                    {"id": 1, "changes": {"is_elective": [True, False]}},
+                    {"id": 2, "changes": {"is_elective": [False, False], "name": ["ก", "ข"]}},
+                    {"id": 3, "changes": {"is_elective": [None, False]}},
+                    {"id": 4, "changes": {"is_elective": [True, False]}}]}}
+    r = reg()
+    T.keep_set_electives(r, [1, 2, 3])
+    # ในชุด: ธงเป็นใช่ · เดิมใช่ → ไม่เปลี่ยน (ตัดออก — รายการที่ไม่เหลือช่องหายไป) · เดิมไม่ใช่/ว่าง → ไม่ใช่ → ใช่ · นอกชุดตามเว็บ
+    assert r == {"subjects": [{"id": 1, "is_elective": True}, {"id": 2, "is_elective": True}, {"id": 3, "is_elective": True}],
+                 "report": {"subjects_patched": [
+                     {"id": 2, "changes": {"is_elective": [False, True], "name": ["ก", "ข"]}},
+                     {"id": 3, "changes": {"is_elective": [None, True]}},
+                     {"id": 4, "changes": {"is_elective": [True, False]}}]}}, r
+    r = reg()
+    T.keep_set_electives(r, [])
+    assert r == reg()
+
+
+# รันเมื่อเป็นสคริปต์เท่านั้น: tests/py/wlmidtermdiff.py (ทาง ข.) import ตัวช่วยชุด ก/ข และเส้นไปกลับของไฟล์นี้ —
+# ถ้ารันตอน import คำว่า ALL PASS ของไฟล์นี้จะไปอยู่ในผลของไฟล์นั้น แล้ว tests/run.sh นับว่าผ่านแม้ไฟล์นั้นล้ม
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                fails.append(f"{name}: {type(e).__name__} {e}")
+
+    if fails:
+        for f in fails:
+            print("FAIL:", f)
+        sys.exit(1)
+    print("ALL PASS")
