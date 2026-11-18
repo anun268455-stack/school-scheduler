@@ -7,9 +7,9 @@ docs/superpowers/specs/2026-11-18-workload-midterm-update-design.md ข้อ 4.
 
 กติกาของโมดูลนี้ — ห้ามละเมิด:
   - **ห้าม import mock_api และห้ามแตะตัวแปรของโปรแกรม** (แบบ term_from_round) ผู้เรียกส่งสำเนาเข้ามา ได้สถานะใหม่เป็นสำเนากลับไป
-    ผลของ wl_round_proposal (อยู่ใน mock_api) ผู้เรียกเตรียมมาเป็น live_proposal · กฎสองข้อของ mock_api ที่ต้องใช้ตรงตัว
-    (พับคู่สอนร่วม = _fold_coteaching · ค่า is_elective ของวิชาในชุด = _term_keep_set_electives) เขียนซ้ำไว้ที่นี่ แล้ว
-    tests/py/wlmidtermdiff.py เทียบกับตัวจริงให้ (แบบ CO_UNEQUAL_FLAG ของทาง ก.) — ส่งฟังก์ชันเข้ามาเป็นพารามิเตอร์จะเปลี่ยน signature ของแผน
+    ผลของ wl_round_proposal (อยู่ใน mock_api) ผู้เรียกเตรียมมาเป็น live_proposal · กฎพับคู่สอนร่วม (_fold_coteaching) เขียนในรูปที่คืนคู่ด้วย
+    (_fold) แล้ว tests/py/wlmidtermdiff.py เทียบกับตัวจริงบนแผนจริง · กฎ is_elective ของวิชาในชุด (keep_set_electives) และ
+    "ห้องสองห้องมีนักเรียนชุดเดียวกัน" (shares_students) ใช้ตัวใน term_from_round ที่เดียวกับทาง ก. — ส่งฟังก์ชันเข้ามาเป็นพารามิเตอร์จะเปลี่ยน signature ของแผน
   - **ผลของ plan_apply ไม่มีคีย์ slots / parked** — คาบที่ลงไว้แล้วไม่ถูกแตะไม่ว่าติ๊กข้อใด (ข้อห้ามของผู้ใช้: ห้ามมีโค้ดใหม่ที่เขียน SLOTS)
     อ่าน live["slots"] เพื่อนับคาบที่ลงไว้เท่านั้น
   - ไม่แก้สิ่งที่ส่งเข้ามา และผลไม่แชร์ dict กับสิ่งที่ส่งเข้ามา (รวมหน้าเทียบ diff) · ไม่ติ๊กเลย = ผลเท่าของสดทุกตัว
@@ -24,10 +24,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import curriculum as _curriculum        # normalise_rows (ตรรกะล้วน) — กฎหลักสูตรของแถวที่เขียนแบบทาง ก.
-import term_from_round as _tfr          # registry_plan · plan_from_round (ทาง ก.) — "แผนที่รอบต้องการ"
+import term_from_round as _tfr          # registry_plan · plan_from_round (ทาง ก.) — "แผนที่รอบต้องการ" · keep_set_electives · shares_students
 
 PILES = ("registry", "new", "weekly", "teacher", "removed", "sets")
 _PILE_ORDER = {p: i for i, p in enumerate(PILES)}
@@ -37,7 +37,7 @@ _FIELD_TEXT = {"name": "ชื่อ", "code": "รหัส", "department_id": 
                "type": "ประเภท", "duration": "จำนวนคาบต่อครั้ง", "is_activity": "เป็นกิจกรรม", "is_elective": "เป็นวิชาเสรี"}
 
 
-# ── กฎของ mock_api ที่เขียนซ้ำ (ตัวทดสอบเทียบกับตัวจริง) ──────────────────────────────────
+# ── กฎพับคู่สอนร่วมของ mock_api ในรูปที่คืนคู่ (ตัวทดสอบเทียบกับตัวจริง) ───────────────────────────
 def _fold(rows: list[dict[str, Any]]) -> tuple[set[Any], dict[Any, dict[str, Any]]]:
     """กฎเดียวกับ mock_api._fold_coteaching ทุกข้อ (สองแถวของห้อง+วิชาเดียวกันที่แถวหนึ่งชี้ครูของอีกแถว = บทเรียนเดียว
     เก็บแถวแรก · None == None เป็นจริงเหมือนตัวจริง) แต่คืนคู่ของแต่ละแถวที่เหลือด้วย — ตัวจริงคืนแค่จำนวนคาบที่ตกลงกัน
@@ -59,28 +59,6 @@ def _fold(rows: list[dict[str, Any]]) -> tuple[set[Any], dict[Any, dict[str, Any
                     partner[a["id"]] = b
                     break
     return folded, partner
-
-
-def _keep_set_electives(registry: dict[str, Any], elective_subjects: Iterable[Any]) -> None:
-    """กฎเดียวกับ mock_api._term_keep_set_electives (แก้ผลของ registry_plan ในที่ — สำเนาของเราเอง): วิชาในชุดคาบเสรีของรอบ
-    เป็นวิชาเสรีเสมอ · ช่อง is_elective ที่เปลี่ยน เดิมใช่ = ไม่เปลี่ยน (ตัดออก) · เดิมไม่ใช่ = ไม่ใช่ → ใช่
-    ไม่ทำ หน้าเทียบจะเสนอ "เป็นวิชาเสรี: ใช่ → ไม่ใช่" ทุกวิชาที่โปรแกรมติดธงเองหลังดึงทะเบียนไปเว็บ — ข้อเท็จในรอบที่เพิ่งเปิด"""
-    in_set = set(elective_subjects)
-    if not in_set:
-        return
-    for s in registry["subjects"]:
-        if s.get("id") in in_set:
-            s["is_elective"] = True
-    report = registry["report"]
-    for p in report["subjects_patched"]:
-        change = p["changes"].get("is_elective") if p.get("id") in in_set else None
-        if change is None:
-            continue
-        if bool(change[0]):
-            del p["changes"]["is_elective"]
-        else:
-            p["changes"]["is_elective"] = [change[0], True]
-    report["subjects_patched"] = [p for p in report["subjects_patched"] if p["changes"]]
 
 
 # ── ตัวช่วยทั่วไป ──────────────────────────────────────────────────────────
@@ -391,7 +369,8 @@ def _join(*parts: str | None) -> str | None:
 
 
 def _row_items(live: dict[str, Any], desired: dict[str, Any], unknown_cells: dict[tuple, str],
-               created: dict[tuple, str], names: _Names) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+               taught: Callable[[tuple], tuple | None], created: dict[tuple, str],
+               names: _Names) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     groups = _groups_of(live)
     placed_of = _placed_of(live.get("slots") or [])
     live_by = _lessons(list(live.get("requirements") or []))
@@ -403,6 +382,11 @@ def _row_items(live: dict[str, Any], desired: dict[str, Any], unknown_cells: dic
         where = f"{names.g(g)} {names.s(s)}"
         if cell in live_by and cell in unknown_cells:
             unknown.append({"group_id": g, "subject_id": s, "label": f"{where} — {unknown_cells[cell]}"})
+            continue
+        how = taught(cell) if cell in live_by else None
+        if how is not None:
+            if how[0] == "unknown":
+                unknown.append({"group_id": g, "subject_id": s, "label": f"{where} — {how[1]}"})
             continue
         lv, wt = live_by.get(cell, []), want_by.get(cell, [])
         placed = placed_of.get(cell, 0)
@@ -596,14 +580,40 @@ def _match_sets(rounds: list[dict[str, Any]], lives: list[dict[str, Any]]) -> tu
     return pairs, [rounds[i] for i in r_left], [lives[j] for j in l_left], []
 
 
-def _set_items(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[str, Any], desired: dict[str, Any],
-               reg: dict[str, Any], created: dict[tuple, str], names: _Names) -> tuple[list[dict], list[dict]]:
+def _sets_matched(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[str, Any], desired: dict[str, Any],
+                  reg: dict[str, Any]) -> dict[str, Any]:
+    """จับชุดทั้งสองฝั่งครั้งเดียว (ถัง ชนิด+ห้อง → _match_sets) — ข้อชุดและการตัดสินแถวที่ชุดสอนแทน (_set_taught) ใช้ผลเดียวกัน
+    ชุดที่จับได้มี f["match"] = ชุดอีกฝั่ง · จับคู่ไม่ได้มี f["odd"] = True
+    → {"rounds", "lives", "buckets": [(คู่, ใหม่, หาย, จับไม่ได้)] ตามลำดับถัง}"""
+    rounds, lives = _round_sets(source, desired, reg), _live_sets(live, live_proposal, reg)
     buckets: dict[tuple, dict[str, list]] = {}
-    for f in _round_sets(source, desired, reg) + _live_sets(live, live_proposal, reg):
+    for f in rounds + lives:
         b = buckets.setdefault((f["kind"], frozenset(f["group_ids"])), {"round": [], "live": []})
         b[f["side"]].append(f)
+    out = []
+    for _key, b in sorted(buckets.items(), key=lambda kv: (kv[0][0], sorted(map(str, kv[0][1])))):
+        pairs, new, gone, odd = _match_sets(b["round"], b["live"])
+        for r, l in pairs:
+            r["match"], l["match"] = l, r
+        for f in odd:
+            f["odd"] = True
+        out.append((pairs, new, gone, odd))
+    return {"rounds": rounds, "lives": lives, "buckets": out}
+
+
+def _set_items(matched: dict[str, Any], live: dict[str, Any], created: dict[tuple, str],
+               names: _Names) -> tuple[list[dict], list[dict]]:
     items: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
+    known = {s.get("id"): bool(s.get("is_elective")) for s in live.get("subjects") or []}
+
+    def marks(subject_ids: Iterable[Any]) -> list[Any]:
+        # วิชาของตัวเลือกที่ใส่เข้า pool ที่จะถูกติดธงวิชาเสรี (แบบ _mark_elective) — เฉพาะวิชาในโปรแกรมที่ยังไม่ใช่วิชาเสรี
+        # (วิชาที่ข้อทะเบียนจะสร้างได้ธงจาก keep_set_electives อยู่แล้ว) · อยู่ใน apply → token คลุม หน้าเทียบ = สิ่งที่เขียน
+        return sorted({x for x in subject_ids if x in known and not known[x]}, key=str)
+
+    def mark_text(ids: list[Any]) -> str | None:
+        return f"ติดธงวิชาเสรีให้ {', '.join(names.s(x) for x in ids)}" if ids else None
 
     def pair_text(sid: Any, tid: Any) -> str:
         subj = names.s(sid) if not isinstance(sid, tuple) else f"วิชารหัส {sid[1]}"
@@ -640,8 +650,7 @@ def _set_items(source: dict[str, Any], live: dict[str, Any], live_proposal: dict
         return " · ".join(parts)
 
     manual = "ไม่แก้ให้อัตโนมัติ — แก้/ลงคาบเสรีหรือกิจกรรมในหน้าจัดคาบเอง (เข้ารายการงาน)"
-    for (_kind, _g), b in sorted(buckets.items(), key=lambda kv: (kv[0][0], sorted(map(str, kv[0][1])))):
-        pairs, new, gone, odd = _match_sets(b["round"], b["live"])
+    for pairs, new, gone, odd in matched["buckets"]:
         for r, l in pairs:
             if _content(r) == _content(l):
                 continue
@@ -650,11 +659,13 @@ def _set_items(source: dict[str, Any], live: dict[str, Any], live_proposal: dict
             if l["pool"] is not None and not l["placed"] and r["kind"] == "elective":
                 add = [{k: copy.deepcopy(v) for k, v in o.items() if k != "key"} for o in r["pool"]["options"]
                        if (o.get("subject_id"), o.get("teacher_id") or None) not in l["pairs"]]
+                mark = marks(o.get("subject_id") for o in add)
                 items.append(_item(f"sets:edit:{r['set_id']}", "sets", label, before=show(l), after=show(r), placed=0,
-                                   effect="ชุดนี้ยังไม่ลงคาบ — แก้รายการตัวเลือกให้", requires=reqs,
+                                   effect=_join("ชุดนี้ยังไม่ลงคาบ — แก้รายการตัวเลือกให้", mark_text(mark)), requires=reqs,
                                    apply={"op": "pool_edit", "pool_id": l["pool"].get("id"), "weekly": r["weekly"],
                                           "is_double": r["is_double"], "add": add,
-                                          "remove": sorted((list(p) for p in l["pairs"] - r["pairs"]), key=str)}))
+                                          "remove": sorted((list(p) for p in l["pairs"] - r["pairs"]), key=str),
+                                          "mark_elective": mark}))
             else:
                 items.append(_item(f"sets:edit:{r['set_id']}", "sets", label, before=show(l), after=show(r),
                                    placed=l["placed_n"], auto=False,
@@ -665,11 +676,12 @@ def _set_items(source: dict[str, Any], live: dict[str, Any], live_proposal: dict
             if r["kind"] == "elective":
                 pool = {k: copy.deepcopy(v) for k, v in r["pool"].items() if k != "id"}
                 pool["options"] = [{k: v for k, v in o.items() if k != "key"} for o in pool["options"]]
+                mark = marks(o.get("subject_id") for o in pool["options"])
                 items.append(_item(
                     f"sets:new:{r['set_id']}", "sets", label, after=show(r),
-                    effect="สร้างคาบเสรีแบบยังไม่ลงคาบ — ต้องลงคาบเองในหน้าจัดคาบ (เข้ารายการงาน)",
+                    effect=_join("สร้างคาบเสรีแบบยังไม่ลงคาบ — ต้องลงคาบเองในหน้าจัดคาบ (เข้ารายการงาน)", mark_text(mark)),
                     requires=_requires(created, [t for _s, t in r["pairs"]], [s for s, _t in r["pairs"]]),
-                    apply={"op": "pool_add", "pool": pool,
+                    apply={"op": "pool_add", "pool": pool, "mark_elective": mark,
                            "todo": f"ลงคาบเสรี “{r['name']}” ({names.rng(r['group_ids'])}) ในหน้าจัดคาบ — "
                                    "สร้างไว้แล้วแต่ยังไม่ลงคาบ"}))
             else:
@@ -694,6 +706,48 @@ def _set_items(source: dict[str, Any], live: dict[str, Any], live_proposal: dict
     return items, unmatched
 
 
+def _set_taught(live: dict[str, Any], live_proposal: dict[str, Any], reg: dict[str, Any],
+                matched: dict[str, Any]) -> Callable[[tuple], tuple | None]:
+    """ห้อง+วิชาของแผนสดที่คาบเสรี/กิจกรรมสอนแทน (ขั้นที่ 2 ข้ามทั้งก้อน — served ผ่าน shares หรือ block_cells — จึงไม่มีแถวของ
+    ก้อนนั้นใน live_proposal["rows"]) → วิธีเทียบ (รอบแก้ 1 ข้อ 1–2):
+    - ("keep",) = ชุดที่ครอบก้อนนี้ไม่เปลี่ยนทั้งสองฝั่ง → ไม่มีข้อ คงของสด · กฎ "ตามรูปของแผนเดิม" ของทาง ก. เขียนครูของชุดแทนครูในแผน
+      ได้ (ครูในแผนไม่ใช่ครูของชุด) แม้ชุดไม่เปลี่ยน — เทียบตอนนั้นคือข้อเท็จ auto ในรอบที่เพิ่งเปิด
+      "ไม่เปลี่ยน" ตัดสินจากสิ่งที่กฎนั้นอ่านสำหรับก้อนนี้: ชุดที่ครอบ (คู่กันได้ทุกตัวทั้งสองฝั่ง) และครูของวิชานั้นในแต่ละชุด —
+      ตัวเลือกวิชาอื่นของชุดเปลี่ยน ไม่เปลี่ยนแถวนี้ตามกฎนั้น จึงไม่เทียบ
+    - None = ชุดที่ครอบเปลี่ยน (หรือไม่ใช่ก้อนที่ชุดสอนแทน) → เทียบตามปกติด้วยแผนที่รอบต้องการ (กฎทาง ก.)
+    - ("unknown", เหตุ) = หาชุดที่ครอบในโปรแกรมไม่เจอ หรือชุดที่ครอบจับคู่ไม่ได้ → ตัดสินไม่ได้ ไม่เทียบ (ไม่เสนอลบ)
+    ครอบ: คาบเสรี = ชุดเปิดวิชานั้นและห้องในชุดมีนักเรียนชุดเดียวกับห้องนี้ (shares_students — ห้องแม่/ห้องย่อยด้วย) ·
+    กิจกรรม = ชุดเปิดวิชานั้นและห้องนี้อยู่ในชุด"""
+    wl_of = {sched: wl for wl, sched in reg["subject_map"].items()}
+    in_proposal = {(r.get("group_id"), r.get("subject_id")) for r in live_proposal.get("rows") or []}
+    shares = _tfr.shares_students(_groups_of(live))
+
+    def covers(f: dict[str, Any], g: Any, s: Any) -> bool:
+        if not any(x == s for x, _t in f["pairs"]):
+            return False
+        return any(shares(g, h) for h in f["group_ids"]) if f["kind"] == "elective" else g in f["group_ids"]
+
+    def teachers(f: dict[str, Any], s: Any) -> frozenset:
+        return frozenset(t for x, t in f["pairs"] if x == s)
+
+    def state(cell: tuple) -> tuple | None:
+        g, s = cell
+        wl = wl_of.get(s)
+        if wl is None or (g, wl) in in_proposal:
+            return None     # ขั้นที่ 2 แปลงก้อนนี้เป็นแถวของรอบ (หรือแปลงวิชาไม่ได้ — unconverted จับไว้ก่อนแล้ว)
+        lives = [f for f in matched["lives"] if covers(f, g, s)]
+        rounds = [f for f in matched["rounds"] if covers(f, g, s)]
+        if not lives:
+            return ("unknown", "สอนในคาบเสรี/กิจกรรม แต่หาชุดที่ครอบห้อง+วิชานี้ในโปรแกรมไม่เจอ")
+        if any(f.get("odd") for f in lives + rounds):
+            return ("unknown", "ชุดคาบเสรี/กิจกรรมที่ครอบห้อง+วิชานี้จับคู่กับรอบไม่ได้")
+        same = all(f.get("match") is not None and any(f["match"] is r for r in rounds)
+                   and teachers(f, s) == teachers(f["match"], s) for f in lives) and \
+            all(f.get("match") is not None and any(f["match"] is x for x in lives) for f in rounds)
+        return ("keep",) if same else None
+    return state
+
+
 # ── เครื่องเทียบ ────────────────────────────────────────────────────────────
 def plan_diff(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[str, Any],
               counters: dict[str, int]) -> dict[str, Any]:
@@ -703,10 +757,11 @@ def plan_diff(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[
     served sched_subjects groups teachers subjects curricula) · live_proposal = wl_round_proposal ของของสดตอนนี้ (ผู้เรียกเตรียม
     จาก _wl_timetable_source ของสถานะเดียวกับ live) · counters = สำเนาของ _counters
     "แผนที่รอบต้องการ" = registry_plan + plan_from_round ของทาง ก. โดยใช้ของสดเป็นแผนเดิม (แถวที่คาบเสรี/กิจกรรมสอนแทน
-    จึงเทียบผ่านกฎ "ตามรูปของแผนเดิม") · ค่า is_elective ของวิชาในชุดตาม _keep_set_electives
+    จึงเทียบผ่านกฎ "ตามรูปของแผนเดิม" เมื่อชุดที่ครอบเปลี่ยน — ชุดไม่เปลี่ยน = คงของสด ดู _set_taught) · ค่า is_elective ของวิชาในชุดตาม
+    term_from_round.keep_set_electives
     - แถว: ก้อน (ห้อง, วิชา) หลังพับคู่สอนร่วม → บทเรียน (_lessons) จับคู่ด้วย _match แล้ว คาบต่าง → weekly ·
       ครู/ครูสอนร่วม/ห้องปฏิบัติการต่าง → teacher · บทเรียนของรอบที่ไม่มีคู่ → new · บทเรียนสดที่ไม่มีคู่ → removed
-      ก้อนที่รอบไม่รู้จัก (_unknown_cells) ไม่ถูกเทียบ → unknown
+      ก้อนที่รอบไม่รู้จัก (_unknown_cells) และก้อนที่ชุดสอนแทนแต่ตัดสินไม่ได้ (_set_taught) ไม่ถูกเทียบ → unknown
     - ชุด: ชนิด + ห้อง แล้วชื่อ (_match_sets) · pool ยังไม่ลงคาบ → auto · ลงแล้ว/ชุดจากช่องรายห้อง/กิจกรรม → auto=False ·
       ชุดใหม่ของรอบ (คาบเสรี) → pool ยังไม่ลงคาบ + ข้องาน "ลงคาบ" · กิจกรรมใหม่ → auto=False · จับคู่ไม่ได้ → unmatched_sets
     - ทะเบียน: สร้าง/แก้ช่องตัวตน/ผูกด้วยรหัส (กฎทาง ก.) · ข้ออื่นที่อ้างครู/วิชาที่จะสร้าง requires ข้อทะเบียนนั้น
@@ -718,12 +773,13 @@ def plan_diff(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[
     """
     registry = _tfr.registry_plan(source, live, counters)
     desired = _tfr.plan_from_round(source, live, registry, registry["counters"])
-    _keep_set_electives(registry, desired["elective_subjects"])
+    _tfr.keep_set_electives(registry, desired["elective_subjects"])
     names = _Names(_groups_of(live), registry["teachers"], registry["subjects"])
     reg_items, created = _registry_items(registry)
+    matched = _sets_matched(source, live, live_proposal, desired, registry)
     row_items, unknown = _row_items(live, desired, _unknown_cells(source, live, live_proposal, desired, registry),
-                                    created, names)
-    set_items, unmatched = _set_items(source, live, live_proposal, desired, registry, created, names)
+                                    _set_taught(live, live_proposal, registry, matched), created, names)
+    set_items, unmatched = _set_items(matched, live, created, names)
 
     def order(it: dict[str, Any]) -> tuple:
         g = it.get("group_id")
@@ -768,7 +824,7 @@ def plan_apply(diff: dict[str, Any], live: dict[str, Any], accepted: set[str], c
     ข้อที่ requires ไม่ถูกติ๊กครบ → ติ๊กให้อัตโนมัติ (อยู่ใน applied) · ข้อ auto=False → เข้า todos เท่านั้น ไม่แก้ข้อมูล ·
     ข้อที่ไม่มีในหน้าเทียบ → ValueError (หน้าเทียบเก่า — ผู้เรียกตอบ 400/409 ไม่เดา) · ไม่ติ๊กเลย = ทุกตัวเท่าของสด
     รหัสใหม่: แถวแผน/pool/ตัวเลือกจาก counters (ของโปรแกรม ณ ตอนใส่) · ครู/วิชาใช้รหัสที่ registry_plan จองไว้ในหน้าเทียบ
-    (ตัวนับ teacher/subject ขยับถึงรหัสที่ใช้จริง) · วิชาของตัวเลือกที่ใส่เข้า pool ติดธง is_elective (แบบ _mark_elective)
+    (ตัวนับ teacher/subject ขยับถึงรหัสที่ใช้จริง) · วิชาใน apply["mark_elective"] ของข้อชุดติดธง is_elective (แบบ _mark_elective)
     ข้องาน (ไม่มี id/update_id — ผู้เรียกใส่) ของข้อที่ติ๊กและห้อง+วิชามีคาบลงไว้แล้ว: แถวใหม่/คาบเปลี่ยน/ลบแถว → missing หรือ over
     ตามแผนหลังใส่เทียบคาบที่ลง (ก้อนละหนึ่งข้อ · ลงพอดีไม่มีข้อ) · เปลี่ยนครูผู้สอน → teacher (teacher_id = ครูใหม่ในแผน) ·
     ชุด auto=False และชุดคาบเสรีใหม่ → set
@@ -860,12 +916,12 @@ def plan_apply(diff: dict[str, Any], live: dict[str, Any], accepted: set[str], c
         op = it["apply"]
         if it["pile"] != "sets" or not it["auto"]:
             continue
+        marked |= set(op.get("mark_elective") or [])
         if op["op"] == "pool_add":
             p = copy.deepcopy(op["pool"])
             p["id"] = _next_id(counters, "elective_pool")
             p["options"] = [{"key": _next_id(counters, "elective_option"), **o} for o in p["options"]]
             pools.append(p)
-            marked |= {o.get("subject_id") for o in p["options"]}
             continue
         p = next((x for x in pools if x.get("id") == op["pool_id"]), None)
         if p is None:
@@ -878,7 +934,6 @@ def plan_apply(diff: dict[str, Any], live: dict[str, Any], accepted: set[str], c
         p["options"] = [o for o in p.get("options") or [] if (o.get("subject_id"), o.get("teacher_id") or None) not in gone]
         p["options"] += new
         p["weekly"], p["is_double"] = op["weekly"], op["is_double"]
-        marked |= {o.get("subject_id") for o in new}
     for s in subjects:
         if s.get("id") in marked and not s.get("is_elective"):
             s["is_elective"] = True

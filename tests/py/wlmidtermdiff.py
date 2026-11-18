@@ -209,6 +209,87 @@ def test_fresh_round_diff_is_empty_live_shape():
     _report("ชุด ข", diff, out)
 
 
+def test_fresh_round_subgroup_elective_rows():
+    # รอบแก้ 1 ข้อ 1: แถววิชาเสรีที่สอนผ่านคาบเสรีของห้องแม่/ห้องย่อย (ข้อมูลตั้งต้น + แถวแบบ repro ของผู้ตรวจ ทั้งสองทิศ)
+    # เคยขึ้น "ลบแถว" auto — ต้องว่างทุกกอง และแผนที่รอบต้องการมีแถวนั้น (ทาง ก. เขียนกลับตามรูปของแผนเดิมแล้ว)
+    with P._scratch():
+        made = P._subgroup_rows()
+        out, wl_t, wl_s, counters = P._outgoing()
+    prop = mock_api.wl_round_proposal(out)
+    src = P._round_source(out, prop, wl_t, wl_s)
+    diff = D.plan_diff(src, out, prop, counters)
+    assert diff["items"] == [] and diff["unknown"] == [], ([(i["pile"], i["label"]) for i in diff["items"]], diff["unknown"])
+    cells = {(r["group_id"], r["subject_id"]) for r in out["requirements"] if r["id"] in made}
+    assert cells <= {(r["group_id"], r["subject_id"]) for r in diff["desired"]["requirements"]}
+
+
+def _guidance_over_split_plan():
+    """แบบ probe6 ของผู้ตรวจบนข้อมูลตั้งต้น: กิจกรรมทั้งระดับครูคนเดียว (ครู 140) ครอบแนะแนว 6 (วิชา 222) 14 ห้อง ซึ่งแผนแบ่งครู 140×7 / 142×7"""
+    gids = [r["group_id"] for r in mock_api.REQUIREMENTS if r["subject_id"] == 222]
+    with P._scratch():
+        res = mock_api.create_level_activity({"day": 2, "period": 7, "subject_id": 222, "group_ids": gids,
+                                              "teacher_mode": "single", "teacher_id": 140, "label": "แนะแนว ม.3"})
+        assert len(res["created"]) == 14 and not res["warnings"], res
+        out, wl_t, wl_s, counters = P._outgoing()
+    prop = mock_api.wl_round_proposal(out)
+    return out, P._round_source(out, prop, wl_t, wl_s), prop, counters
+
+
+def test_fresh_round_set_taught_rows_keep_live():
+    # รอบแก้ 1 ข้อ 2: แถวที่กิจกรรม/คาบเสรีสอนแทน และชุดที่ครอบไม่เปลี่ยน → ไม่มีข้อ (คงของสด) แม้กฎ "ตามรูปของแผนเดิม" ของทาง ก.
+    # จะเขียนครูต่างจากแผน (ครูในแผนไม่ใช่ครูของชุด) — กฎของทาง ก. ไม่เปลี่ยน
+    out, src, prop, counters = _guidance_over_split_plan()
+    diff = D.plan_diff(src, out, prop, counters)
+    assert diff["items"] == [] and diff["unknown"] == [], [(i["pile"], i["label"]) for i in diff["items"][:3]]
+    live_t = {(r["group_id"], r["subject_id"]): r["teacher_id"] for r in out["requirements"] if r["subject_id"] == 222}
+    want_t = {(r["group_id"], r["subject_id"]): r["teacher_id"] for r in diff["desired"]["requirements"]
+              if r["subject_id"] == 222}
+    assert sum(live_t[c] != want_t[c] for c in live_t) == 7
+    # ชุดเปลี่ยน (ครูที่คุมเป็นครู 141) → ใช้กฎทาง ก. ตามเดิม: ทุกแถวของชุดเป็นครู 141 + ข้อชุดกิจกรรม (ลงคาบแล้ว → todo)
+    _st, [opt] = _option_of(src, next(s["name"] for s in src["sets"] if s["kind"] == "activity"))
+    opt["teachers"] = [{**opt["teachers"][0], "teacher_id": 1141}]
+    diff = D.plan_diff(src, out, prop, counters)
+    assert _piles(diff) == {"teacher": 14, "sets": 1}, _piles(diff)
+    assert {i["after"]["teacher_id"] for i in _by_pile(diff, "teacher")} == {141}
+    assert all(i["placed"] == 1 and "ครูเดิม" in i["effect"] for i in _by_pile(diff, "teacher"))
+    assert _by_pile(diff, "sets")[0]["auto"] is False
+
+
+def test_set_taught_rows_kept_when_their_sets_unchanged():
+    # probe1 ของผู้ตรวจ (S1–S4): แถวที่คาบเสรี/กิจกรรมสอนแทน ครูในแผนไม่ใช่ครูของชุด → รอบที่เพิ่งเปิดต้องว่าง
+    blocks = [_slot(10 + g, g, 20, None, day=0, period=7, is_activity_block=True, activity_teacher_ids=[14]) for g in (1, 2)]
+    worlds = {"S1 ครูในแผนไม่ใช่ครูของตัวเลือก": _world([_req(1, 1, 10, 9), _req(2, 1, 1, 1)], pools=[_pool(1, (1, 2), [(10, 8)])]),
+              "S2 ครูสอนร่วมนอกชุด": _world([_req(1, 1, 10, 8, co_teacher_id=12), _req(2, 1, 1, 1)],
+                                          pools=[_pool(1, (1, 2), [(10, 8)])]),
+              "S3 คู่สอนร่วมสองแถว ครูหนึ่งคนนอกชุด": _world([_req(1, 1, 10, 8, co_teacher_id=12), _req(2, 1, 10, 12, co_teacher_id=8),
+                                                           _req(3, 1, 1, 1)], pools=[_pool(1, (1, 2), [(10, 8)])]),
+              "S4 ครูที่คุมกิจกรรมไม่ใช่ครูในแผน": _world([_req(1, 1, 20, 13, 1), _req(2, 2, 20, 13, 1), _req(3, 1, 1, 1)],
+                                                         slots=blocks)}
+    for label, (live, wl_t, wl_s) in worlds.items():
+        src, prop = _fresh(live, wl_t, wl_s)
+        diff = _diff(live, src, prop)
+        assert diff["items"] == [], (label, [(i["pile"], i["label"]) for i in diff["items"]])
+    # ตัดสินจากครูของวิชานั้นในชุดที่ครอบ (สิ่งเดียวที่กฎของทาง ก. อ่านสำหรับแถวนั้น): ตัวเลือกวิชาอื่นของชุดเปลี่ยน → ข้อชุดอย่างเดียว ·
+    # ตัวเลือกของวิชานั้นเปลี่ยน → เทียบด้วยกฎทาง ก. (ครูในแผน 12 ไม่ใช่ครูของตัวเลือก → ครูของตัวเลือก)
+    live, wl_t, wl_s = _world([_req(1, 1, 10, 12), _req(2, 1, 1, 1)], pools=[_pool(1, (1, 2), [(10, 8), (11, 9)])])
+    src, prop = _fresh(live, wl_t, wl_s)
+    next(o for o in src["options"] if o["subject_id"] == 2011)["teachers"][0]["teacher_id"] = 1013
+    assert [i["pile"] for i in _diff(live, src, prop)["items"]] == ["sets"]
+    next(o for o in src["options"] if o["subject_id"] == 2010)["teachers"][0]["teacher_id"] = 1014
+    diff = _diff(live, src, prop)
+    assert [(i["pile"], i.get("after", {}).get("teacher_id")) for i in diff["items"]] == [("teacher", 14), ("sets", None)], \
+        [(i["pile"], i["label"]) for i in diff["items"]]
+    # ชุดที่ครอบต้องคู่กันได้ทั้งสองฝั่ง: รอบเพิ่มชุดใหม่ที่ครอบห้อง+วิชานี้ด้วย = เปลี่ยน → เทียบด้วยกฎทาง ก. (ครูคนแรกของชุดที่ครอบ)
+    src, prop = _fresh(live, wl_t, wl_s)
+    src["sets"].append({"id": 60, "year": 2569, "semester": 2, "kind": "elective", "name": "เสรีเพิ่ม ม.1/1", "group_ids": [1],
+                        "weekly": 1, "is_double": False})
+    src["options"].append({"id": 600, "set_id": 60, "subject_id": 2010, "code": "S010", "name": "วิชา 10", "department_id": 1,
+                           "teachers": [{"id": 6000, "teacher_id": 1015, "room_id": None}]})
+    diff = _diff(live, src, prop)
+    assert [(i["pile"], i.get("after", {}).get("teacher_id")) for i in diff["items"]] == [("teacher", 8), ("sets", None)], \
+        [(i["pile"], i["label"]) for i in diff["items"]]
+
+
 # ── 3. แก้รอบให้มีครบ 6 กอง ─────────────────────────────────────────────────
 def _plain_rows(src, out, n):
     """แถวของรอบที่เป็นห้อง+วิชาธรรมดา (แถวเดียวทั้งในรอบและในแผนสด ไม่มีครูสอนร่วม ไม่ใช่วิชาเสรี/กิจกรรม)"""
@@ -415,6 +496,13 @@ def test_unplaced_pool_options_updated():
     assert res["counters"]["elective_option"] == 104 and res["todos"] == []
     assert {s["id"] for s in res["subjects"] if s.get("is_elective")} == {10, 11}   # แบบ _mark_elective
     assert res["requirements"] == live["requirements"]
+    # ธงวิชาเสรีที่จะติดอยู่ในข้อ (หน้าเทียบ = สิ่งที่เขียน) และเครื่องใส่อ่านจากข้อ ไม่คำนวณเอง · วิชาที่เป็นวิชาเสรีอยู่แล้วไม่อยู่ในรายการ
+    assert it["apply"]["mark_elective"] == [10, 11] and "วิชาเสรี" in it["effect"]
+    tampered = copy.deepcopy(diff)
+    tampered["items"][0]["apply"]["mark_elective"] = []
+    assert _apply(live, tampered, {it["key"]})["subjects"] == live["subjects"]
+    live["subjects"][10]["is_elective"] = True                       # วิชา 11
+    assert _diff(live, src, prop)["items"][0]["apply"]["mark_elective"] == [10]
 
 
 def test_cell_set_is_todo_only():
@@ -474,6 +562,7 @@ def test_new_set_becomes_unplaced_pool_and_todo():
     elec = next(i for i in diff["items"] if i["key"] == "sets:new:50")
     act = next(i for i in diff["items"] if i["key"] == "sets:new:51")
     assert (elec["auto"], elec["apply"]["op"], elec["requires"]) == (True, "pool_add", ["registry:teacher:1999"])
+    assert elec["apply"]["mark_elective"] == [17]
     assert act["auto"] is False
     res = _apply(live, diff, {elec["key"], act["key"]})
     assert res["applied"] == ["registry:teacher:1999", "sets:new:50", "sets:new:51"]
@@ -489,8 +578,9 @@ def test_new_set_becomes_unplaced_pool_and_todo():
 
 def test_sets_ambiguous_are_unmatched_and_untouched():
     # สองชุดห้องเดียวกันชื่อเดียวกัน แล้วรอบแก้ทั้งคู่ — จับคู่ไม่ได้ → "จับคู่ไม่ได้ — ไม่ทำอะไร" (แบบข้อ 8)
+    # แถววิชาเสรีที่ชุดเหล่านั้นสอนแทน (ห้อง 1 วิชา 10 ครูในแผน 12 ไม่ใช่ครูของตัวเลือก) — ชุดที่ครอบจับคู่ไม่ได้ = ตัดสินไม่ได้ → ไม่อยู่ในรอบ
     pools = [_pool(1, (1, 2), [(10, 8)], name="เสรี"), _pool(2, (1, 2), [(11, 9)], name="เสรี")]
-    live, wl_t, wl_s = _world([_req(1, 1, 1, 1)], pools=pools)
+    live, wl_t, wl_s = _world([_req(1, 1, 1, 1), _req(2, 1, 10, 12)], pools=pools)
     src, prop = _fresh(live, wl_t, wl_s)
     assert _diff(live, src, prop)["items"] == []          # เนื้อหาเหมือนกันทุกอย่าง → จับคู่ได้
     for o in src["options"]:
@@ -498,6 +588,7 @@ def test_sets_ambiguous_are_unmatched_and_untouched():
     diff = _diff(live, src, prop)
     assert diff["items"] == [] and sorted(u["side"] for u in diff["unmatched_sets"]) == ["live", "live", "round", "round"]
     assert all(u["label"] for u in diff["unmatched_sets"])
+    assert [(u["group_id"], u["subject_id"]) for u in diff["unknown"]] == [(1, 10)] and "จับคู่" in diff["unknown"][0]["label"]
     # ตัวคุม: ห้องเดียวกันแต่ชื่อต่างกัน → ชื่อแยกได้ แม้รอบแก้ทั้งคู่ (แบบ pool 1 กับ 12 ของข้อมูลตั้งต้น — ห้อง 80–81 ทั้งคู่)
     pools[1]["name"] = "เสรี ข"
     live, wl_t, wl_s = _world([_req(1, 1, 1, 1)], pools=pools)
@@ -703,21 +794,6 @@ def test_fold_rule_matches_program():
         assert mine == folded and set(partner) == set(agreed), (len(mine ^ folded), set(partner) ^ set(agreed))
         assert all(max(int(a.get("weekly_count") or 0) for a in (r, partner[r["id"]])) == agreed[r["id"]]
                    for r in rows if r["id"] in partner)
-
-
-def test_keep_set_electives_matches_program():
-    def reg():
-        return {"subjects": [{"id": 1, "is_elective": False}, {"id": 2, "is_elective": True}, {"id": 3}],
-                "report": {"subjects_patched": [
-                    {"id": 1, "changes": {"is_elective": [True, False]}},
-                    {"id": 2, "changes": {"is_elective": [False, False], "name": ["ก", "ข"]}},
-                    {"id": 3, "changes": {"is_elective": [None, False]}},
-                    {"id": 4, "changes": {"is_elective": [True, False]}}]}}
-    for subjects in ([1, 2, 3], [2], []):
-        a, b = reg(), reg()
-        mock_api._term_keep_set_electives(a, subjects)
-        D._keep_set_electives(b, subjects)
-        assert a == b, (subjects, a, b)
 
 
 def test_program_globals_untouched():

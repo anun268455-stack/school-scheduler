@@ -368,6 +368,51 @@ def registry_plan(source: dict[str, Any], outgoing: dict[str, Any], counters: di
             "writeback": writeback, "report": report, "reasons": reasons}
 
 
+def keep_set_electives(registry: dict[str, Any], elective_subjects: list[Any]) -> None:
+    """ค่า is_elective สุดท้าย = ค่าของเว็บ **หรือ** วิชานั้นอยู่ในชุดคาบเสรีของรอบนี้ (คำตัดสินของผู้คุม รอบแก้สุดท้ายของขั้นที่ 3) — แก้ผลของ
+    registry_plan ในที่ (registry_plan ทำงานบนสำเนาลึกของทะเบียน การแก้จึงไม่ย้อนถึงของสด)
+    registry_plan แก้ is_elective ตามเว็บ (Ruling T1 C4) แล้วการสร้างเทอมติดธงวิชาของตัวเลือกในชุดกลับเป็นใช่ (_mark_elective) — สรุปจึงเคยบอก
+    "N วิชาจะถูกแก้ · เป็นวิชาเสรี: ใช่ → ไม่ใช่" ทั้งที่ไม่เกิดจริงหลังสร้าง (คำเตือนเท็จทุกภาคเรียน เมื่อทะเบียนของเว็บถูกดึงก่อนโปรแกรมติ๊กเอง) ·
+    วิชาในชุด: ทะเบียนที่จะใส่ = ใช่ · ช่องที่เปลี่ยน: เดิมใช่ = ไม่เปลี่ยน (ตัดออก) · เดิมไม่ใช่ = ไม่ใช่ → ใช่ · รายการที่ไม่เหลือช่องเปลี่ยนตัดออก ·
+    วิชาที่ไม่อยู่ในชุดตามเว็บเหมือนเดิม · ใช้ทั้งการสร้างเทอมจากรอบ (mock_api._term_build) และหน้าเทียบกลางเทอม (plan_diff — ไม่งั้นวิชาที่โปรแกรม
+    ติดธงเองขึ้นเป็นข้อเท็จ "ใช่ → ไม่ใช่" ในรอบที่เพิ่งเปิด) — อยู่ที่นี่ที่เดียว"""
+    in_set = set(elective_subjects)
+    if not in_set:
+        return
+    for s in registry["subjects"]:
+        if s.get("id") in in_set:
+            s["is_elective"] = True
+    report = registry["report"]
+    for p in report["subjects_patched"]:
+        change = p["changes"].get("is_elective") if p.get("id") in in_set else None
+        if change is None:
+            continue
+        if bool(change[0]):
+            del p["changes"]["is_elective"]
+        else:
+            p["changes"]["is_elective"] = [change[0], True]
+    report["subjects_patched"] = [p for p in report["subjects_patched"] if p["changes"]]
+
+
+def shares_students(groups: Any) -> Callable[[Any, Any], bool]:
+    """ห้องสองห้องมีนักเรียนชุดเดียวกันไหม — กฎเดียวกับ mock_api._shares_students_fn (ตัวทดสอบเทียบทุกคู่ของห้องตั้งต้น):
+    ห้องเดียวกัน หรือห้องหนึ่งเป็นห้องแม่ (ทุกชั้น) ของอีกห้อง (ม.6/9 กับ ม.6/9ก) · ห้องพี่น้อง (ม.6/9ก กับ ม.6/9ข) ไม่ใช่
+    groups = {รหัสห้อง: ห้อง} หรือรายการห้อง (อ่าน parent_id) · ไม่แตะตัวแปรของโปรแกรม"""
+    rows = groups.values() if isinstance(groups, dict) else groups
+    parent_of = {g.get("id"): g.get("parent_id") for g in rows}
+
+    def chain(gid: Any) -> set[Any]:
+        out, cur = {gid}, parent_of.get(gid)
+        while cur is not None and cur not in out:
+            out.add(cur)
+            cur = parent_of.get(cur)
+        return out
+
+    def shares(a: Any, b: Any) -> bool:
+        return a == b or b in chain(a) or a in chain(b)
+    return shares
+
+
 # ── แผนการสอน คาบเสรี และหลักสูตรของเทอมใหม่ (แบบข้อ 4.2) ────────────────────────────────────
 # ข้อความเดียวกับ mock_api.WL_CO_UNEQUAL_FLAG ทุกตัวอักษร (import mock_api ไม่ได้ — tests/py/wlexportplan.py เทียบให้)
 # ขั้นที่ 2 ติดธงนี้ให้คู่สอนร่วมในแผนเดิมที่คาบไม่เท่ากัน แล้วเก็บเป็นสองแถวที่ไม่ชี้กัน
@@ -408,7 +453,8 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
     - ชุดคาบเสรี → หนึ่ง pool ยังไม่ลงคาบ · ตัวเลือก = หนึ่งต่อ (ตัวเลือก, ครู) เรียงครูตามรหัสแถวครูของตัวเลือก ·
       ห้องจากครูของตัวเลือก · ตัวเลือกที่ไม่มีครูคงไว้แบบไม่มีครู (โปรแกรมนับเป็น missing_teacher_count) · (วิชา, ครู)
       ที่ซ้ำกับตัวที่มีแล้วในชุดเดียวถูกรวม และบอกใน report.merged_options
-    - แถวแผนของวิชาเสรี "ตามรูปของแผนเดิม": วิชา S ของตัวเลือก × ห้อง g ของชุด ที่แผนเดิมมีแถว (g, S) และรอบไม่มีแถวของ
+    - แถวแผนของวิชาเสรี "ตามรูปของแผนเดิม": วิชา S ของตัวเลือก × ห้อง g ของชุด **หรือห้องแม่/ห้องย่อยของห้องในชุด**
+      (shares_students — กฎเดียวกับ _reqs_served_by_elective ที่ขั้นที่ 2 ใช้ข้ามแถว) ที่แผนเดิมมีแถว (g, S) และรอบไม่มีแถวของ
       (g, S) อยู่แล้ว → หนึ่งแถวต่อแถวเดิม: ครูคนเดิมถ้ายังเป็นครูของตัวเลือกนั้น ไม่งั้นครูของตัวเลือกคนแรก · คาบและ room_id
       เท่าแถวเดิม · ครูสอนร่วมเดิมคงไว้ถ้ายังเป็นครูของตัวเลือกนั้น · ไม่มีแถวเดิม → ชุดอย่างเดียว
       (ขั้นที่ 2 ข้ามแถวเหล่านี้เพราะชุดนับคาบแทน แต่ยอดคาบรายครูของโปรแกรมนับจากแถวแผนเท่านั้น — ทิ้งไปยอดของครูวิชาเสรีหาย
@@ -557,8 +603,14 @@ def plan_from_round(source: dict[str, Any], outgoing: dict[str, Any], maps: dict
     merged: list[dict[str, Any]] = []       # ตัวเลือก (วิชา, ครู) ที่ซ้ำกับตัวที่มีแล้วในชุดเดียว → รวม (บันทึกไว้ ไม่หายเงียบ)
     # (ห้อง, วิชา) ของชุดคาบเสรี/ชุดกิจกรรม → {"kind": ชนิดของชุดแรกที่ครอบ, "teachers": ครูของตัวเลือกวิชานั้นทุกชุดที่ครอบห้องนั้น}
     cell_teachers: dict[tuple, dict[str, Any]] = {}
+    shares = shares_students(group_by_id)
 
     def cover(kind: str, gids: list[Any], sid: int, teachers: list[tuple[int, Any]]) -> None:
+        if kind == "elective":
+            # คาบเสรีของห้องแม่สอนแทนแถวของห้องย่อย (และกลับกัน) — ขั้นที่ 2 ข้ามแถวเหล่านั้นด้วย _reqs_served_by_elective ซึ่งใช้ shares
+            # ถ้าครอบแค่ห้องในชุดตรง ๆ แถวของ ม.6/9ก ที่เรียนวิชาเสรีในคาบเสรีของ ม.6/9 หายจากเทอมใหม่เงียบ ๆ (รอบแก้ 1 ของทาง ข.)
+            # · กิจกรรมทั้งระดับไม่ต้อง: ขั้นที่ 2 ข้ามเฉพาะห้อง+วิชาที่มีช่องกิจกรรมของห้องนั้นเอง (block_cells)
+            gids = list(gids) + [g for g in group_by_id if g not in gids and any(shares(g, h) for h in gids)]
         for gid in gids:
             have = cell_teachers.setdefault((gid, sid), {"kind": kind, "teachers": []})["teachers"]
             have += [t for t, _room in teachers if t not in have]
