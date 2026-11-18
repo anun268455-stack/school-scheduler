@@ -3,7 +3,7 @@ import type { AxiosError } from "axios";
 import { apiErrorText } from "../api";
 import { departmentName, thaiDateTime } from "../curriculum";
 import {
-  amendChip, checkReturnNote, deptProgress, deptStatusLabel, deptStatusTone, exportActivityLines, planUpdateItems,
+  AMEND_FINISH_TEXT, amendChip, checkReturnNote, deptProgress, deptStatusLabel, deptStatusTone, exportActivityLines, planUpdateItems,
   planUpdateLine, reviewActions, reviewGap, ROUND_STATUS_TEXT, roundExportChip, roundStats, roundStatusTone,
   type DeptStatus, type PlanUpdate, type Round, type Unconverted,
 } from "../round";
@@ -142,8 +142,8 @@ export default function RoundOverview(props: {
           {/* ทาง ข.: รอบที่เปิดให้แก้กลางเทอม — บอกทางต่อ (อัปเดตในโปรแกรมจัดตาราง แล้วรอบกลับเป็นปิดเอง) */}
           {round.amending_since && (
             <p className="mt-1 text-sm text-warn" data-testid="round-amending-note">
-              เปิดให้แก้กลางเทอมเมื่อ {when(round.amending_since)} — หัวหน้ากลุ่มสาระแก้เฉพาะที่เปลี่ยนแล้วส่งใหม่ ·
-              ตรวจผ่านครบแล้วไปกด “อัปเดตแผนจากรอบอัตรากำลัง” ในโปรแกรมจัดตารางสอน (เมนู ⚙ จัดการ → 🗓 เทอม) แล้วรอบจะกลับเป็นปิดเอง
+              เปิดให้แก้กลางเทอมเมื่อ {when(round.amending_since)} — หัวหน้ากลุ่มสาระแก้เฉพาะที่เปลี่ยน · {AMEND_FINISH_TEXT}{" "}
+              (อัปเดตแล้วรอบที่ยังเปิดอยู่จะกลับเป็นปิดเอง)
             </p>
           )}
         </div>

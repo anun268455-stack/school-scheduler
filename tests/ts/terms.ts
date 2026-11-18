@@ -679,6 +679,16 @@ eq(termFieldsLocked(false, [ACTIVE]), false, "ไม่มีฐานข้อ�
     { done: false, undo: false }, { done: true, undo: false }, { done: false, undo: true },
     { done: true, undo: false }, { done: false, undo: true }, { done: false, undo: false },
   ], "ปุ่มของแต่ละข้อ: ข้อค้างที่ตรวจเองได้ไม่มีปุ่ม (หายเองเมื่อแก้) · ชนิด set ค้าง = ทำแล้ว · เรียบร้อย = ทำแล้ว (ซ่อน) · ซ่อน = เอากลับมา");
+  // รีวิวทั้งสาขา #36: ข้อความ "แก้ตามเหตุ… แล้วกด ดูใหม่" ต้องมีปุ่มดูใหม่อยู่ในกล่องเหตุเอง (ไม่ใช่แค่ในกล่องข้อผิดพลาด) ·
+  // T5 m9: ช่องติ๊กชิดบรรทัดแรกของข้อยาว — เปลี่ยนหน้าตาอย่างเดียว (DOM) จึงตรึงที่ซอร์สของหน้าต่าง + ภาพจาก Playwright
+  ok((planUpdateError(PR({ usable: false }), new Set(), "") ?? "").includes("ดูใหม่"), "ข้อความชี้ไปปุ่มดูใหม่");
+  const modalSrc = readFileSync(new URL("../../frontend/src/components/terms/PlanUpdateModal.tsx", import.meta.url), "utf8");
+  const reasonsAt = modalSrc.indexOf('data-testid="plan-reasons"');
+  ok(reasonsAt >= 0, "หากล่องเหตุ (plan-reasons) ใน PlanUpdateModal.tsx ไม่เจอ");
+  const reasonsBox = modalSrc.slice(reasonsAt, modalSrc.indexOf("</div>", reasonsAt));
+  ok(/onClick=\{refresh\}/.test(reasonsBox) && reasonsBox.includes("ดูใหม่"), "กล่องเหตุมีปุ่ม ดูใหม่ ที่เรียก refresh");
+  ok(/<label className=\{clsx\("flex items-start gap-2\.5/.test(modalSrc), "ช่องติ๊กของข้อชิดบรรทัดแรก (items-start)");
+
   const kinds = [...diffSrc.matchAll(/"kind": "(\w+)"/g)].map((m) => m[1]);
   for (const k of new Set(kinds)) ok(/[฀-๿]/.test(TODO_KIND_TEXT[k] ?? ""), `ชนิดรายการงาน ${k} ไม่มีป้ายไทย`);
   eq(Object.keys(TODO_KIND_TEXT).sort(), [...new Set(kinds)].sort(), "ป้ายครบทุกชนิดที่ plan_diff สร้าง");

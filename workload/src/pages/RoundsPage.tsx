@@ -4,8 +4,9 @@ import { apiErrorText, listDepartments } from "../api";
 import { guessTerm, thaiDateTime, type CurriculumTerm } from "../curriculum";
 import { listTerms } from "../curriculumApi";
 import {
-  amendAction, amendNotes, checkCloseLabel, checkRoundForm, closedRounds, currentRound, defaultOpenTerm, openBlocker,
-  previewLines, previewWarnings, roundActions, roundLabel, termReadiness, type Round, type RoundPreview, type Term,
+  AMEND_FINISH_TEXT, amendAction, amendBoxAfter, amendNotes, checkCloseLabel, checkRoundForm, closedRounds, currentRound,
+  defaultOpenTerm, openBlocker, previewLines, previewWarnings, roundActions, roundLabel, stillClosed, termReadiness,
+  type Round, type RoundPreview, type Term,
 } from "../round";
 import { amendRound, cancelRound, closeRound, createRound, listRounds, openRound, previewRound } from "../roundApi";
 import { Button, Card, Notice } from "../ui";
@@ -116,6 +117,14 @@ export default function RoundsPage(props: {
   }, [flash]);
   const [closingId, setClosingId] = useState<number | null>(null);
   const [amendingId, setAmendingId] = useState<number | null>(null);
+  // รายการรอบใหม่มาถึง: รอบที่เปิดดู/กำลังยืนยันเปิดให้แก้ไม่ได้ปิดอยู่แล้ว (เช่นเพิ่งเปิดให้แก้ → เป็นรอบปัจจุบัน) → ล้าง
+  // ล้างตรงนี้ ไม่ใช่ตอนกดสำเร็จ: ระหว่างรอรายการ หน้ายังแสดงรอบเดิม ไม่ใช่การ์ดเปิดรอบใหม่แวบหนึ่ง (รีวิว T5 m2)
+  useEffect(() => {
+    const list = rounds.list;
+    if (!list) return;
+    setViewId((v) => stillClosed(list, v));
+    setAmendingId((a) => stillClosed(list, a));
+  }, [rounds.list]);
 
   const list = rounds.list;
   if (list === null) {
@@ -195,12 +204,7 @@ export default function RoundsPage(props: {
             <p className="mb-5 max-w-3xl text-[15px] text-muted" data-testid="amend-blocker">{amend.blocker}</p>
           )}
           {amend.show && !amend.blocker && amendingId === shown.id && (
-            <AmendRoundBox round={shown} working={working} run={run} onCancel={() => setAmendingId(null)}
-              onDone={() => {
-                setAmendingId(null);
-                // รอบกลับเป็นรอบปัจจุบัน (เปิดให้กรอก) — ออกจากโหมดดูรอบเก่า
-                setViewId(null);
-              }} />
+            <AmendRoundBox round={shown} working={working} run={run} onCancel={() => setAmendingId(null)} />
           )}
           {shown.status === "preparing" && (
             <PreparingBar round={shown} working={working} run={run} onOpenCurriculum={props.onOpenCurriculum} tick={tick} />
@@ -304,16 +308,22 @@ function CloseRoundBox(props: { round: Round; working: boolean; run: Run; onCanc
 
 // ---- ทาง ข.: เปิดรอบที่ปิดแล้วให้แก้กลางเทอม (ยืนยันก่อน · 409 ไทยของเซิร์ฟเวอร์ขึ้นบนสุดของหน้าแล้วโหลดรายการรอบใหม่) ----
 
-function AmendRoundBox(props: { round: Round; working: boolean; run: Run; onCancel: () => void; onDone: () => void }) {
+function AmendRoundBox(props: { round: Round; working: boolean; run: Run; onCancel: () => void }) {
   const { round } = props;
   const [error, setError] = useState<string | null>(null);
+  // สำเร็จแล้ว: ปุ่มล็อกจนรายการรอบใหม่มาถึง (รอบเป็นเปิดให้กรอก → กล่องนี้หายเอง · stillClosed ล้างสถานะของหน้า) — ไม่ให้กดซ้ำระหว่างรอ
+  const [sent, setSent] = useState(false);
   const submit = async () => {
+    let inBox = false;
     const ok = await props.run(async () => {
       const r = await amendRound(round.id);
-      return `เปิดรอบ ${r.label} ให้แก้กลางเทอมแล้ว — หัวหน้ากลุ่มสาระแก้ได้อีก · ตรวจผ่านครบแล้วกด “อัปเดตแผนจากรอบอัตรากำลัง” ในโปรแกรมจัดตารางสอน`;
-    }, setError);
-    if (ok) props.onDone();
+      return `เปิดรอบ ${r.label} ให้แก้กลางเทอมแล้ว — หัวหน้ากลุ่มสาระแก้ได้อีก · ${AMEND_FINISH_TEXT}`;
+    }, (message) => { inBox = true; setError(message); });
+    const next = amendBoxAfter(ok, inBox);
+    if (next === "done") setSent(true);
+    else if (next === "close") props.onCancel();   // 409/404: ข้อความไทยของเซิร์ฟเวอร์ขึ้นบนสุดของหน้าแล้ว รายการรอบกำลังโหลดใหม่
   };
+  const locked = props.working || sent;
   return (
     <div role="group" aria-label={`ยืนยันเปิดรอบ ${round.label} ให้แก้กลางเทอม`} data-testid="amend-round"
       className="mb-5 max-w-3xl space-y-3 rounded-card border border-warn bg-surface p-4 sm:p-5">
@@ -323,9 +333,9 @@ function AmendRoundBox(props: { round: Round; working: boolean; run: Run; onCanc
       </ul>
       <div className="flex flex-wrap gap-2">
         {/* โฟกัสเริ่มที่ "ไม่เปิด" — กด Enter ต่อจากปุ่มเดิมโดยไม่ได้อ่านต้องไม่เปิดรอบ */}
-        <Button autoFocus onClick={props.onCancel} disabled={props.working}>ไม่เปิด</Button>
-        <Button variant="primary" onClick={() => void submit()} disabled={props.working} data-testid="amend-confirm">
-          {props.working ? "กำลังเปิดให้แก้..." : "ยืนยันเปิดให้แก้กลางเทอม"}
+        <Button autoFocus onClick={props.onCancel} disabled={locked}>ไม่เปิด</Button>
+        <Button variant="primary" onClick={() => void submit()} disabled={locked} data-testid="amend-confirm">
+          {props.working ? "กำลังเปิดให้แก้..." : sent ? "เปิดให้แก้แล้ว — กำลังโหลดรอบใหม่..." : "ยืนยันเปิดให้แก้กลางเทอม"}
         </Button>
       </div>
       {error && <p role="alert" className="text-[15px] text-bad">{error}</p>}

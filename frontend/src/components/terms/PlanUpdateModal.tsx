@@ -146,7 +146,7 @@ export const PlanUpdateModal: React.FC<Props> = ({ rounds: initialRounds, onClos
     const users = it.pile === "registry" ? requiredBy(selected, items, it.key) : [];
     return (
       <li key={it.key} data-testid={`item-${it.key}`}>
-        <label className={clsx("flex gap-2.5 px-3 py-2", canTick && "cursor-pointer hover:bg-blue-50/40", on && "bg-blue-50/60")}>
+        <label className={clsx("flex items-start gap-2.5 px-3 py-2", canTick && "cursor-pointer hover:bg-blue-50/40", on && "bg-blue-50/60")}>
           <input type="checkbox" className="mt-0.5 shrink-0" checked={on} disabled={!canTick || locked}
             onChange={() => setSelected((s) => toggleWithRequires(s, items, it.key))} />
           <span className="min-w-0 space-y-0.5">
@@ -205,7 +205,14 @@ export const PlanUpdateModal: React.FC<Props> = ({ rounds: initialRounds, onClos
 
         {round && round.reasons.length > 0 && (
           <div className="text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2" data-testid="plan-reasons">
-            <p className="font-semibold">ยังอัปเดตแผนจากรอบนี้ไม่ได้ เพราะ</p>
+            {/* แก้ตามเหตุแล้ว (เช่นตรวจผ่านหรือปิดรอบในเว็บลงอัตรากำลัง) กดดูใหม่ได้ที่นี่เลย — ข้อความใต้ช่องรหัสชี้มาที่ปุ่มนี้ (รีวิวทั้งสาขา #36) */}
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <p className="font-semibold">ยังอัปเดตแผนจากรอบนี้ไม่ได้ เพราะ</p>
+              <button onClick={refresh} disabled={busy}
+                className="shrink-0 px-2 py-1 text-xs bg-white border border-red-300 rounded font-semibold hover:bg-red-100 disabled:opacity-40">
+                ดูใหม่
+              </button>
+            </div>
             <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">
               {round.reasons.map((r, i) => <li key={i} className="break-words">{r}</li>)}
             </ul>

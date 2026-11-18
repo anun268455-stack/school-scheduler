@@ -18,6 +18,7 @@ import {
   termReadiness, changeRow, teacherDraft, retryFields, reviewGap, refreshDue, REFRESH_GAP_MS, bulkConfirmTargets, unsavedDraftsText,
   roundExportChip, exportActivityLines, EXPORT_DONE_TEXT, EXPORT_PARKED_TEXT,
   amendAction, amendChip, amendNotes, AMEND_CHIP_TEXT, AMEND_OTHER_OPEN, isPlanUpdate, planUpdateLine, planUpdateItems,
+  amendBoxAfter, AMEND_FINISH_TEXT, stillClosed,
   type PlanUpdate,
   type DeptStatus, type OptionTeacher, type Round, type RoundOption, type RoundPreview, type RoundRow, type TeacherLoad,
 } from "../../workload/src/round.ts";
@@ -960,6 +961,26 @@ test("amendNotes: กล่องยืนยันบอกสิ่งที�
   ok(!plain.some((l) => l.includes("ส่งซ้ำ")), "รอบที่ไม่เคยส่งไม่พูดเรื่องส่งซ้ำ");
   ok(amendNotes(R({ status: "closed", exported_at: SENT_AT, exported_label: "2/2569" })).some((l) => l.includes("ส่งซ้ำไม่ได้")),
      "รอบที่ส่งแล้ว");
+  // รีวิวทั้งสาขา I1: รอบที่ปิดแล้วใช้อัปเดตได้เลย (เปิดให้แก้เฉพาะเมื่อจะแก้) · เปิดแล้วทุกกลุ่มกลับเป็นกำลังกรอก → จบได้สองทาง
+  ok(plain[0].includes("ไม่ต้องเปิดให้แก้") && plain[0].includes("ใช้ได้เลย"), `บรรทัดแรกกันการเปิดให้แก้โดยไม่จำเป็น — ได้ ${plain[0]}`);
+  ok(plain.some((l) => l.includes("รวมกลุ่มที่ไม่ได้แก้")), "บอกว่าทุกกลุ่มกลับเป็นกำลังกรอก แม้กลุ่มที่ไม่ได้แก้");
+  ok(plain.some((l) => l.includes(AMEND_FINISH_TEXT)), "บอกสองทางที่ทำให้รอบใช้ได้อีก");
+  ok(AMEND_FINISH_TEXT.includes("ส่งใหม่และตรวจผ่าน") && AMEND_FINISH_TEXT.includes("ปิดรอบ")
+     && AMEND_FINISH_TEXT.includes("อัปเดตแผนจากรอบอัตรากำลัง"), `AMEND_FINISH_TEXT — ได้ ${AMEND_FINISH_TEXT}`);
+});
+
+test("stillClosed: หลังโหลดรายการรอบใหม่ รอบที่เปิดดู/กำลังยืนยันยังเป็นรอบที่ปิดแล้วไหม (เปิดให้แก้แล้ว/หายไป = ล้าง · รีวิว T5 m2)", () => {
+  const closed = R({ id: 1, status: "closed" });
+  eq(stillClosed([closed], 1), 1);
+  eq(stillClosed([R({ id: 1, status: "filling", amending_since: AMEND_AT })], 1), null);
+  eq(stillClosed([closed], 2), null);
+  eq(stillClosed([closed], null), null);
+});
+
+test("amendBoxAfter: กล่องยืนยันเปิดให้แก้หลังกด — สำเร็จ = ค้างไว้จนรายการรอบใหม่มาถึง · 409/404 (ข้อความขึ้นบนสุด) = ปิดกล่อง · อื่น = ค้างพร้อมข้อความ (รีวิว T5 m3)", () => {
+  eq(amendBoxAfter(true, false), "done");
+  eq(amendBoxAfter(false, false), "close");
+  eq(amendBoxAfter(false, true), "stay");
 });
 
 // รูปแถวของ wl_plan_updates ที่ GET /rounds/{id}/plan-updates คืน (accepted/rejected = [{key, pile, label(, auto)}] ของ Task 4)
