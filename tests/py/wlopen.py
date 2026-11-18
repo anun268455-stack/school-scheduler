@@ -246,9 +246,9 @@ def _sql_of(db, fn, *a):
 
 
 # ขั้นที่ 3: รอบบอกว่าส่งเข้าโปรแกรมจัดตารางแล้วหรือยัง (exported_*) รายงานผลของการส่ง และข้อความของรอบที่คำนวณตอนอ่าน
-# (exported_text — เทอมของรอบเปิดอยู่หรือถูกปิดไว้ · Task 5 แก้รอบ 2)
+# (exported_text — เทอมของรอบเปิดอยู่หรือถูกปิดไว้ · Task 5 แก้รอบ 2) · ทาง ข.: amending_since (เปิดให้แก้กลางเทอมเมื่อไหร่)
 ROUND_KEYS = {"id", "year", "semester", "label", "status", "opened_at", "closed_at", "counts",
-              "exported_at", "exported_label", "export_report", "exported_text"}
+              "exported_at", "exported_label", "export_report", "exported_text", "amending_since"}
 
 
 def test_preview_writes_nothing_and_requires_curriculum():

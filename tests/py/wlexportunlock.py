@@ -555,6 +555,8 @@ _ROUTE_RE = re.compile(r'@app\.(post|put|delete)\("(/api/workload/[^"]+)"\)\s*\n
 # route เขียนของเว็บลงอัตรากำลังที่ไม่ได้เขียนรอบหรือหลักสูตรของภาคเรียนใด (ทะเบียน · รหัส · ล็อกอิน)
 _NOT_ROUND = {"wl_login", "wl_logout", "wl_setup", "wl_codes_create", "wl_codes_update", "wl_teachers_create",
               "wl_teachers_update", "wl_subjects_create", "wl_subjects_update", "wl_teachers_import", "wl_subjects_import"}
+# ทาง ข.: route ที่ตั้งใจเปิดรอบที่ส่งแล้วให้แก้กลางเทอม (ไม่ใช่ทุกฉากจะ 409 — ดูในตัวทดสอบ)
+_AMEND = {"wl_rounds_amend"}
 
 
 def _route_calls(db, ns):
@@ -612,11 +614,15 @@ def test_exported_round_refuses_every_write_route():
                 mock_api.create_term({"year": 2570, "semester": 1})       # ขึ้นภาคเรียนถัดไปตามปกติ (ปุ่มเดิม)
             calls = _route_calls(db, ns)
             already = {"wl_rounds_create": (ADMIN, lambda: mock_api.wl_rounds_create(REQ, {"year": 2569, "semester": 2}))}
+            if state != "open":
+                # ทาง ข.: เปิดให้แก้กลางเทอม (_AMEND) เปิดรอบที่ปิดแล้วของภาคที่เปิดอยู่โดยตั้งใจ แม้ส่งแล้ว (ฉาก "open" ทดสอบใน
+                # wlmidtermpreview.py) · เทอมของรอบถูกปิดไว้/ปิดภาคแล้ว = ไม่ใช่ภาคที่เปิดอยู่ → 409 ไม่มีอะไรเปลี่ยน
+                already["wl_rounds_amend"] = (ADMIN, lambda: mock_api.wl_rounds_amend(ns.rnd["id"], REQ))
             routes = {fn for _m, _p, fn in _ROUTE_RE.findall(inspect.getsource(mock_api))}
             assert routes, "อ่าน route จากซอร์สไม่ได้"
-            missing = routes - set(calls) - set(already) - _NOT_ROUND
+            missing = routes - set(calls) - set(already) - _NOT_ROUND - _AMEND
             assert not missing, f"route เขียนของเว็บลงอัตรากำลังที่ตัวทดสอบนี้ยังไม่ครอบ: {sorted(missing)}"
-            assert not (set(calls) | set(already) | _NOT_ROUND) - routes, "ชื่อ route ในตารางไม่มีจริง"
+            assert not (set(calls) | set(already) | _NOT_ROUND | _AMEND) - routes, "ชื่อ route ในตารางไม่มีจริง"
             for name, (sess, fn) in {**calls, **already}.items():
                 snap = copy.deepcopy(db.tables)
                 code, detail = _code(lambda: _call(db, sess, fn))

@@ -364,7 +364,8 @@ def test_schema_statements_are_the_whole_schema_one_statement_each():
     stmts = mock_api._WL_SCHEMA_STATEMENTS
     ok(list(stmts) == [x.strip() for x in mock_api._WL_SCHEMA.split(";") if x.strip()], "ครบทุกคำสั่งตามลำดับ")
     ok(all(";" not in x and x.split()[0] in ("CREATE", "ALTER") for x in stmts), "หนึ่งคำสั่งต่อรายการ")
-    ok(sum(x.startswith("ALTER TABLE wl_rounds") for x in stmts) == 4, "ALTER สี่คำสั่ง แยกกัน")
+    # ขั้นที่ 3 สี่คอลัมน์ส่งออก + ทาง ข. amending_since
+    ok(sum(x.startswith("ALTER TABLE wl_rounds") for x in stmts) == 5, "ALTER ห้าคำสั่ง แยกกัน")
     ran = []
 
     class Cur:

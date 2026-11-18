@@ -90,9 +90,10 @@ def test_schema_adds_columns_without_index():
     sql = mock_api._WL_SCHEMA
     alters = re.findall(r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)\s+(\w+)", sql, re.I)
     assert alters == [("wl_rounds", "exported_at", "timestamptz"), ("wl_rounds", "exported_term_id", "bigint"),
-                      ("wl_rounds", "exported_label", "text"), ("wl_rounds", "export_report", "jsonb")], alters
+                      ("wl_rounds", "exported_label", "text"), ("wl_rounds", "export_report", "jsonb"),
+                      ("wl_rounds", "amending_since", "timestamptz")], alters      # ตัวสุดท้าย: ทาง ข. แบบข้อ 4.7
     # ALTER ทุกตัวเป็นแบบ ADD COLUMN IF NOT EXISTS (รันซ้ำได้ทุก process · ฐานเดิมอัปเกรดเอง) และอยู่หลังตารางของมัน
-    assert len(re.findall(r"ALTER\s+TABLE", sql, re.I)) == 4
+    assert len(re.findall(r"ALTER\s+TABLE", sql, re.I)) == 5
     assert sql.index("CREATE TABLE IF NOT EXISTS wl_rounds") < sql.index("ALTER TABLE wl_rounds")
     # ไม่มี index ใหม่ (ดัชนีทั้งหมดเท่าก่อนงานนี้พอดี) และไม่มี NOT NULL/DEFAULT ที่ต้องเขียนทับแถวเดิม
     idx = set(re.findall(r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+(\w+)", sql, re.I))
