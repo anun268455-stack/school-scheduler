@@ -106,10 +106,16 @@ def test_teacher_todo_covers_teacher_co_teacher_and_room():
              _todo(3, "teacher", 1, 1, teacher_id=5, fields=["room_id"]),
              _todo(4, "teacher", 1, 1, teacher_id=5, fields=["teacher_id", "co_teacher_id", "room_id"]),
              _todo(5, "teacher", 1, 1, teacher_id=5)]                 # ข้อเก่าไม่มี fields = ["teacher_id"]
+    # คาบ (5, สอนร่วม 6) ไม่ตรงแถวแผน (5, สอนร่วม 7) ทั้งแถว → ข้อที่ครอบครู/ครูสอนร่วมเปิด (รายงานช่องที่ผิดจริง คือครูสอนร่วม)
+    # ข้อที่ครอบแต่ห้อง: คาบที่จับแถวไม่ได้ข้ามการตรวจห้อง
     got = _st(todos, reqs, slots)
-    assert [got[i][0] for i in (1, 2, 3, 4, 5)] == ["resolved", "open", "open", "open", "resolved"], got
-    assert "ครูสอนร่วม 2 คาบ" in got[2][1] and "ห้องปฏิบัติการ 2 คาบ" in got[3][1], got
-    assert "ครูสอนร่วม" in got[4][1] and "ห้องปฏิบัติการ" in got[4][1] and "ครูผู้สอน" not in got[4][1], got
+    assert [got[i][0] for i in (1, 2, 3, 4, 5)] == ["open", "open", "resolved", "open", "open"], got
+    assert all(got[i][1] == "ยังไม่ตรงแผน: ครูสอนร่วม 2 คาบ" for i in (1, 2, 4, 5)), got
+    # คาบจับแถวได้ (5, สอนร่วม 7) แต่อยู่ห้อง 31 ≠ 30 → เฉพาะข้อที่ครอบห้องเปิด
+    matched = [dict(s, co_teacher_id=7) for s in slots]
+    got = _st(todos, reqs, matched)
+    assert [got[i][0] for i in (1, 2, 3, 4, 5)] == ["resolved", "resolved", "open", "open", "resolved"], got
+    assert "ห้องปฏิบัติการ 2 คาบ" in got[3][1] and got[4][1] == "ยังไม่ตรงแผน: ห้องปฏิบัติการ 2 คาบ", got
     fixed = [dict(s, co_teacher_id=7, room_id=30) for s in slots]
     got = _st(todos, reqs, fixed)
     assert all(v[0] == "resolved" for v in got.values()), got
@@ -117,6 +123,8 @@ def test_teacher_todo_covers_teacher_co_teacher_and_room():
     reqs2 = [_req(1, 1, 1, 5, 3)]
     got = _st(todos, reqs2, slots)
     assert (got[2][0], got[3][0]) == ("open", "resolved"), got
+    got = _st(todos, reqs2, [_slot(1, 1, 1, 5, room_id=31)])
+    assert (got[2][0], got[3][0], got[4][0]) == ("resolved", "resolved", "resolved"), got
     # ไม่มีแถวแผนของ (ห้อง, วิชา) แล้ว → ตรวจครูไม่ได้ ถือเรียบร้อย (ข้อ over ของแถวที่ลบเป็นตัวบอกคาบที่เหลือ)
     assert _st([_todo(1, "teacher", 1, 1, teacher_id=5)], [], slots)[1][0] == "resolved"
 
@@ -163,6 +171,35 @@ def test_room_checked_only_against_the_plan_row_the_slot_belongs_to():
     assert got[1][0] == "resolved", got
     got = _st(todo, pair, [_slot(1, 1, 1, 6, co_teacher_id=5, room_id=12)])
     assert got[1][0] == "open", got
+
+
+def test_single_rows_in_a_cell_are_matched_whole_once_per_slot():
+    # I1 (รอบ 2): ห้อง+วิชามีสองแถวเดี่ยว · คาบต้องตรง "ทั้งแถว" (ครู+ครูสอนร่วม) แถวใดแถวหนึ่ง ไม่ใช่ผ่านทีละช่องกับแถวใดก็ได้
+    reqs = [_req(1, 1, 1, 6, 2, co_teacher_id=9), _req(2, 1, 1, 8, 2, co_teacher_id=7)]
+    for fields in (["co_teacher_id"], ["teacher_id"], ["teacher_id", "co_teacher_id"]):
+        got = _st([_todo(1, "teacher", 1, 1, teacher_id=6, fields=fields)], reqs, [_slot(1, 1, 1, 6, co_teacher_id=7)])
+        assert got[1][0] == "open", (fields, got)
+    # ช่องที่ผิดจริง: ใกล้แถว [8 สอนร่วม 7] หรือ [6 สอนร่วม 9] เท่ากัน → รายงานช่องที่ต่างจากแถวใกล้สุด (หนึ่งช่อง ไม่ใช่ "ครูผู้สอน" เสมอ)
+    got = _st([_todo(1, "teacher", 1, 1, teacher_id=6, fields=["teacher_id"])], reqs, [_slot(1, 1, 1, 6, co_teacher_id=7)])
+    assert got[1][1] in ("ยังไม่ตรงแผน: ครูสอนร่วม 1 คาบ", "ยังไม่ตรงแผน: ครูผู้สอน 1 คาบ"), got
+    # แถวที่ไม่มีครูสอนร่วมจับได้เฉพาะคาบที่ไม่มีครูสอนร่วม: [5 สอนร่วม 7],[8] · คาบ (8, สอนร่วม 7)
+    reqs2 = [_req(1, 1, 1, 5, 2, co_teacher_id=7), _req(2, 1, 1, 8, 2)]
+    got = _st([_todo(1, "teacher", 1, 1, teacher_id=5, fields=["teacher_id"])], reqs2, [_slot(1, 1, 1, 8, co_teacher_id=7)])
+    assert got[1][0] == "open" and got[1][1] in ("ยังไม่ตรงแผน: ครูสอนร่วม 1 คาบ", "ยังไม่ตรงแผน: ครูผู้สอน 1 คาบ"), got
+    # ต้องยังเรียบร้อย: [6 สอนร่วม 9],[8 สอนร่วม 7] กับคาบ (6, 9) และ (8, 7) · คาบฝั่งคู่ (9 สอนร่วม 6) ของแถวคู่เท่านั้นที่สลับข้างได้
+    ok = [_slot(1, 1, 1, 6, co_teacher_id=9), _slot(2, 1, 1, 8, co_teacher_id=7)]
+    got = _st([_todo(1, "teacher", 1, 1, teacher_id=6, fields=["teacher_id", "co_teacher_id", "room_id"])], reqs, ok)
+    assert got[1][0] == "resolved", got
+    pair_plus = [_req(1, 1, 1, 6, 2, co_teacher_id=9), _req(2, 1, 1, 9, 2, co_teacher_id=6), _req(3, 1, 1, 8, 2, co_teacher_id=7)]
+    got = _st([_todo(1, "teacher", 1, 1, teacher_id=6, fields=["teacher_id"])], pair_plus,
+              [_slot(1, 1, 1, 9, co_teacher_id=6), _slot(2, 1, 1, 8, co_teacher_id=7)])
+    assert got[1][0] == "resolved", got
+    # ห้องตามแถวที่จับได้ทั้งแถว (ไม่จับด้วยครูอย่างเดียว): [6 สอนร่วม 9 ห้อง 30],[8 สอนร่วม 7]
+    reqs3 = [_req(1, 1, 1, 6, 2, co_teacher_id=9, room_id=30), _req(2, 1, 1, 8, 2, co_teacher_id=7)]
+    todo = [_todo(1, "teacher", 1, 1, teacher_id=6, fields=["room_id"])]
+    assert _st(todo, reqs3, [_slot(1, 1, 1, 6, co_teacher_id=9, room_id=31)])[1][0] == "open"
+    assert _st(todo, reqs3, [_slot(1, 1, 1, 6, co_teacher_id=9, room_id=30), _slot(2, 1, 1, 8, co_teacher_id=7, room_id=12)])[1][0] == "resolved"
+    assert _st(todo, reqs3, [_slot(1, 1, 1, 6, co_teacher_id=7, room_id=31)])[1][0] == "resolved"      # จับแถวไม่ได้ → ข้ามห้อง
 
 
 def test_plan_apply_makes_teacher_todo_with_fields():

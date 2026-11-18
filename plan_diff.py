@@ -1046,24 +1046,29 @@ def todo_status(todos: list[dict[str, Any]], requirements: list[dict[str, Any]],
             else:
                 tc = [f for f in wanted if f != "room_id"]
 
-                def same(l: dict[str, Any], s: dict[str, Any], f: str) -> bool:
-                    # คู่สอนร่วม (พับสองแถว) เทียบเป็นคู่ไม่เรียงลำดับ: คาบเก็บจากฝั่งคู่ได้ (ครู/ครูสอนร่วมสลับข้าง) แต่ครูกับครูสอนร่วม
-                    # ต้องเป็นของแถวเดียวกัน ห้ามเทียบแยกช่องกับครูทุกคนในแผน (ไม่งั้นครูที่ถูกแทนยังอยู่ในคาบแล้วขึ้นเรียบร้อย)
+                def wrong(l: dict[str, Any], s: dict[str, Any]) -> list[str]:
+                    """ช่อง (ครูผู้สอน/ครูสอนร่วม) ของคาบที่ไม่ตรงแถวแผน l — ว่าง = ตรงทั้งแถว · คู่สอนร่วม (พับสองแถว) เทียบเป็นคู่ไม่เรียงลำดับ
+                    (คาบเก็บจากฝั่งคู่ได้) · แถวเดี่ยวที่ไม่มีครูสอนร่วมจับได้เฉพาะคาบที่ไม่มีครูสอนร่วม"""
+                    t, co = s.get("teacher_id") or None, s.get("co_teacher_id") or None
                     if len(l["rows"]) == 2:
-                        return {s.get("teacher_id") or None, s.get("co_teacher_id") or None} == {l["t"][0], l["t"][1]}
-                    return (s.get(f) or None) == l["t"][0 if f == "teacher_id" else 1]
+                        pair = {l["t"][0], l["t"][1]}
+                        if {t, co} == pair:
+                            return []
+                        return [f for f, v in (("teacher_id", t), ("co_teacher_id", co)) if v not in pair] or ["co_teacher_id"]
+                    return [f for f, v, w in (("teacher_id", t, l["t"][0]), ("co_teacher_id", co, l["t"][1])) if v != w]
                 bad: dict[str, int] = {}
                 for s in by_cell.get(cell, []):
-                    for f in tc:
-                        if not any(same(l, s, f) for l in lv):
-                            bad[f] = bad.get(f, 0) + 1
-                    if "room_id" in wanted:
-                        # ห้อง: เทียบเฉพาะแถวแผนที่คาบนี้เป็นของ (จับคู่ด้วยครู · คู่ = ครูคนใดคนหนึ่งของคู่) · จับคู่ไม่ได้ = ข้าม
-                        # (ช่องครูรายงานแล้ว) · แถวที่จับได้แถวใดไม่กำหนดห้อง = ไม่ตรวจ
-                        mine = [l for l in lv if (s.get("teacher_id") or None) in
-                                ({l["t"][0], l["t"][1]} if len(l["rows"]) == 2 else {l["t"][0]})]
-                        if mine and all(l["t"][2] for l in mine) and (s.get("room_id") or None) not in {l["t"][2] for l in mine}:
-                            bad["room_id"] = bad.get("room_id", 0) + 1
+                    # จับคาบกับแถวแผน "ทั้งแถว" ครั้งเดียวต่อคาบ แล้วค่อยรายงานช่อง — ไม่เทียบทีละช่องกับแถวใดก็ได้
+                    # (คาบ (6, สอนร่วม 7) ไม่ตรงทั้ง [6 สอนร่วม 9] และ [8 สอนร่วม 7] แต่ทีละช่องจะผ่านทั้งคู่)
+                    fits = [(wrong(l, s), l) for l in lv]
+                    hit = next((l for w, l in fits if not w), None)
+                    if hit is None:
+                        if tc:
+                            for f in min((w for w, _l in fits), key=len):
+                                bad[f] = bad.get(f, 0) + 1
+                        continue                # จับแถวไม่ได้ = ข้ามการตรวจห้อง (ช่องครูรายงานแล้ว)
+                    if "room_id" in wanted and hit["t"][2] and (s.get("room_id") or None) != hit["t"][2]:
+                        bad["room_id"] = bad.get("room_id", 0) + 1
                 if bad:
                     detail = "ยังไม่ตรงแผน: " + " · ".join(f"{field_text[f]} {n} คาบ" for f, n in bad.items())
                 else:
