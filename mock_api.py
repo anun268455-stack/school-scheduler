@@ -132,6 +132,14 @@ def term_blocks_write(term: dict[str, Any] | None, method: str, path: str) -> st
     for safe in TERM_WRITE_SAFE_PATHS:
         if path == safe or (safe.endswith("/") and path.startswith(safe)):
             return None
+    return term_closed_message(term)
+
+
+def term_closed_message(term: dict[str, Any] | None) -> str | None:
+    """ข้อความไทยเมื่อเทอมที่เปิดอยู่ปิดแล้ว (ดูและปริ้นได้เท่านั้น) · None เมื่อเขียนได้ — ฟังก์ชันล้วน ผู้เรียกส่ง CURRENT_TERM
+
+    ตัวกันร่วม: มิดเดิลแวร์ (term_blocks_write) และ route เขียนใต้ "/api/terms/" ที่ต้องปฏิเสธเองเมื่อเทอมปิด เพราะ path นั้น
+    มิดเดิลแวร์ปล่อยผ่านเสมอ (รายการงาน "ทำแล้ว" · อัปเดตแผนกลางเทอม — Task 4 addendum ข้อ 4) · ยังไม่เคยสร้างเทอม = ไม่ห้าม"""
     # เขียนแบบปิดไว้ก่อน (fail closed) โดยตั้งใจ: จะอนุญาตเขียนได้ต้องเป็นค่าที่รู้จัก
     # คือ None (ยังไม่เคยสร้างเทอม) หรือ "active" เท่านั้น ค่าแปลกอื่น ๆ เช่น
     # "Closed" · "closed " · สถานะใหม่ที่ใครเพิ่มทีหลัง จะถูกห้าม — ห้ามพลาดแล้วเห็นชัด
@@ -18814,7 +18822,10 @@ _TERM_FROM_ROUND_LISTS = ("TEACHERS", "SUBJECTS", "REQUIREMENTS", "ELECTIVE_POOL
 #   unlock_after_commit = แบบเดียวกันหลัง COMMIT ของการปลดล็อกเทอมที่ปรับทะเบียน (_unlock_term_reconciling — รีวิวทั้งสาขา I1)
 #   wait:<ขั้น> = หน่วง TERM_TEST_WAIT_SECONDS วินาทีที่ขั้นนั้นแทนการล้ม — ให้คำขออื่นแทรกในช่องนั้นได้จริง (เช่น wait:built แล้วแก้ครู
 #   ระหว่างหน่วง → ต้องได้ 409 TERM_PROGRAM_EDITED ไม่ใช่ทับการแก้นั้น)
-# ทางเดิม (ไม่มี round_id · ปลดล็อกเมื่อยังไม่มีรอบที่ส่งแล้ว) ไม่อ่านตัวแปรนี้
+#   ทาง ข. อัปเดตแผนกลางเทอม (_plan_update_transaction — ลำดับในธุรกรรม): plan_built (หลังคำนวณหน้าเทียบใหม่) · plan_apply (กลางการใส่
+#   ในหน่วยความจำ) · plan_writeback (หลังเขียน sched_id กลับ) · plan_history (หลังบันทึกประวัติ) · plan_app_state (หลังเขียนสำเนาสด) ·
+#   plan_round (หลังปิดรอบที่แก้กลางเทอมกลับ) · plan_commit (แทนการ COMMIT) · plan_after_commit = ปิด process ทันทีหลัง COMMIT
+# ทางเดิม (ไม่มี round_id · ปลดล็อกเมื่อยังไม่มีรอบที่ส่งแล้วและไม่เคยอัปเดตกลางเทอม) ไม่อ่านตัวแปรนี้
 TERM_TEST_FAIL_ENV = "SCHED_TEST_FAIL_AT"
 TERM_TEST_WAIT_SECONDS = 3.0
 
@@ -18826,13 +18837,14 @@ def _term_test_fail(step: str) -> None:
         return
     if value != step:
         return
-    if step in ("after_commit", "unlock_after_commit"):
+    if step in ("after_commit", "unlock_after_commit", "plan_after_commit"):
         _os._exit(70)
     raise RuntimeError(f"{TERM_TEST_FAIL_ENV}={step}")
 
 
-def _term_admin_check(raw: str) -> None:
+def _term_admin_check(raw: str, wrong: str = TERM_ADMIN_CODE_WRONG, busy: str = TERM_ADMIN_CODE_BUSY) -> str:
     """รหัสผู้ดูแลระบบของเว็บลงอัตรากำลัง (แบบข้อ 2 เป้าหมาย 3) — ต้องตรงกับรหัส role 'admin' ที่เปิดใช้ (รหัสหัวหน้ากลุ่ม = ผิด)
+    → ชื่อเรียกของรหัสที่ตรง (ใครกด — ประวัติการอัปเดตกลางเทอม) · wrong/busy = ข้อความ 403/429 ของปุ่มที่เรียก (ค่าตั้งต้น = ของการสร้างเทอม)
     ด่านเดียวกับ /api/workload/login: จำกัดการเดาก่อนแฮช นับครั้งผิดร่วมกัน (_WL_FAILS["login"]) และแฮชทีละคำขอในประตูเดียวกัน
     ไม่ถือการเชื่อมต่อระหว่างแฮช · ผิด = 403 ไทย · ผิดเกินเกณฑ์ = 429 ไทย · ต่อฐานไม่ได้ = 503 ไทย (_wl_db)
     คิวรอแฮชเพดานเดียวกับล็อกอิน (_WL_LOGIN_INFLIGHT — รีวิว Task 4 m2): route นี้ไม่ต้องล็อกอิน คำขอที่ยิงพร้อมกันแต่ละตัวถือ
@@ -18841,27 +18853,30 @@ def _term_admin_check(raw: str) -> None:
     _wl_db ตรงนี้ยังเป็นที่รัน DDL ของ wl_* (ถ้า process นี้ยังไม่เคยทำ) ทีละคำสั่งก่อนธุรกรรมของการสร้างเทอม"""
     _wl_fail_guard("login", WL_LOGIN_FAIL_LIMIT, WL_LOGIN_FAIL_WINDOW)
     if not _WL_LOGIN_INFLIGHT.acquire(blocking=False):
-        raise HTTPException(429, TERM_ADMIN_CODE_BUSY)
+        raise HTTPException(429, busy)
     try:
         with _WL_LOGIN_HASH_GATE:
             _wl_fail_guard("login", WL_LOGIN_FAIL_LIMIT, WL_LOGIN_FAIL_WINDOW)
             with _wl_db() as cur:
                 admins = [r for r in _wl_code_rows(cur) if r["role"] == "admin"]
-            if wl_check_code(raw, admins) is None:
+            hit = wl_check_code(raw, admins)
+            if hit is None:
                 _wl_fail_record("login")
-                raise HTTPException(403, TERM_ADMIN_CODE_WRONG)
+                raise HTTPException(403, wrong)
     finally:
         _WL_LOGIN_INFLIGHT.release()
+    return str(hit.get("label") or "ผู้ดูแลระบบ")
 
 
-def _term_refuse_program_edited(rev: int) -> None:
+def _term_refuse_program_edited(rev: int, message: str = TERM_PROGRAM_EDITED) -> None:
     """รีวิว Task 4 m3 (addendum ข้อ 5): สถานะใหม่คำนวณจากสำเนาของโปรแกรมที่อ่านตอนขั้น 3 แต่ใส่จริงทีหลัง — คำขอเขียนอื่น
     ของโปรแกรมที่จบในช่องนั้น (แก้ครู เพิ่มวิชา ฯลฯ ซึ่งไม่ผ่านล็อกทะเบียน) จะถูกทับเงียบ ๆ ทั้งที่ผู้แก้ได้ 200 ไปแล้ว
     ตัวนับรุ่นบวกเมื่อคำขอเขียนของโปรแกรมจบ (มิดเดิลแวร์ หลัง handler คืนค่า · คำขอนี้เองบวกหลังเราจบ จึงไม่ปนกับตัวเอง ·
     route ของเว็บลงอัตรากำลังไม่บวก) → ขยับ = มีคนแก้ระหว่างนั้น → 409 ไทย ผู้เรียกย้อนทั้งหมด (ฐาน: with conn · ตัวแปร: _term_restore)
-    ช่องที่เหลือ: คำขอที่แก้หน่วยความจำแล้วแต่มิดเดิลแวร์ยังไม่บวกตอนเราเทียบ — แคบมาก (ไม่มีล็อกระดับ process ให้ปิดสนิท)"""
+    ช่องที่เหลือ: คำขอที่แก้หน่วยความจำแล้วแต่มิดเดิลแวร์ยังไม่บวกตอนเราเทียบ — แคบมาก (ไม่มีล็อกระดับ process ให้ปิดสนิท)
+    message = ข้อความ 409 ของปุ่มที่เรียก (ทาง ข. อัปเดตแผน: PLAN_UPDATE_EDITED)"""
     if REVISION["n"] != rev:
-        raise HTTPException(409, TERM_PROGRAM_EDITED)
+        raise HTTPException(409, message)
 
 
 def _term_refusal(rnd: dict[str, Any], label: str, reasons: list[str]) -> str:
@@ -19172,10 +19187,10 @@ def terms_todos() -> list[dict[str, Any]]:
 def terms_todo_done(todo_id: int, body: dict[str, Any] | None = None):
     """กด "ทำแล้ว"/รับทราบข้องาน (ซ่อนจากรายการค้าง) — ไม่ต้องใช้รหัส · body {"done": false} = เอากลับมาแสดง
 
-    ใต้ /api/terms/ มิดเดิลแวร์ปล่อยเขียนได้ตลอดแม้เทอมปิด (ไม่งั้นปลดล็อกไม่ได้) จึงต้องปฏิเสธเองที่นี่ด้วยข้อความเดียวกับตัวกัน ·
-    ผ่านตัวนับรุ่นและ snapshot ตามปกติ (ไม่อยู่ใต้ /api/workload/) ข้อที่ผ่านแล้วค่าไม่เปลี่ยน = ไม่บวกรุ่น (_nothing_changed)
-    แตะเฉพาะช่อง done ของข้องานเดียว — ไม่แตะ SLOTS/PARKED/แผน"""
-    blocked = term_blocks_write(CURRENT_TERM, "POST", "/api/slots/")
+    ใต้ /api/terms/ มิดเดิลแวร์ปล่อยเขียนได้ตลอดแม้เทอมปิด (ไม่งั้นปลดล็อกไม่ได้) จึงต้องปฏิเสธเองที่นี่ด้วยตัวกันร่วม
+    (term_closed_message — ข้อความเดียวกับมิดเดิลแวร์) · ผ่านตัวนับรุ่นและ snapshot ตามปกติ (ไม่อยู่ใต้ /api/workload/)
+    ข้อที่ผ่านแล้วค่าไม่เปลี่ยน = ไม่บวกรุ่น (_nothing_changed) · แตะเฉพาะช่อง done ของข้องานเดียว — ไม่แตะคาบ/แผน"""
+    blocked = term_closed_message(CURRENT_TERM)
     if blocked is not None:
         raise HTTPException(409, blocked)
     want = True
@@ -19236,19 +19251,21 @@ def wl_midterm_reasons(source: dict[str, Any], running: dict[str, Any] | None) -
     return reasons + wl_export_reasons(unsent, rnd.get("year"), rnd.get("semester"))
 
 
-def _midterm_build(cur, round_id: int) -> dict[str, Any]:
+def _midterm_build(cur, round_id: int, *, keep_live: bool = False) -> dict[str, Any]:
     """หน้าเทียบของรอบกับแผนสดของภาคที่เปิดอยู่ — หน้าเทียบ (GET) และการอัปเดตจริง (Task 4 ในธุรกรรม) ใช้ตัวนี้ · ไม่เขียนอะไร
 
-    source = _wl_export_source (cursor เดียว · ไม่มีรอบ = 404) · ของสด = _term_outgoing() · live_proposal = wl_round_proposal ของ
+    source = _wl_export_source (cursor เดียว · ไม่มีรอบ = 404) · ของสด = _term_outgoing() + rooms (ชื่อห้องปฏิบัติการในข้อความ —
+    Task 4 addendum ข้อ 5) · live_proposal = wl_round_proposal ของ
     สำเนาส่วนของโปรแกรมชุดเดียวกับของสด (plan_diff ยก ValueError ถ้าคนละสถานะ — คำขออื่นแก้ตัวแปรระหว่างสำเนาสองครั้งได้) ·
     counters = สำเนาของ _counters · reasons = wl_midterm_reasons + เหตุของทะเบียน + รายการที่ plan_from_round ข้าม (แบบทาง ก.)
     คำนวณครบเสมอแม้มีเหตุ (รอบที่ใช้ไม่ได้ยังดูหน้าเทียบได้) · ผู้เรียกห้ามเขียนเมื่อ reasons ไม่ว่าง
-    → {"round": {id, label, year, semester, status, amending_since, exported_label}, "reasons", "diff": ผลของ plan_diff}"""
+    → {"round": {id, label, year, semester, status, amending_since, exported_label}, "reasons", "diff": ผลของ plan_diff}
+    keep_live = เพิ่ม "live" (ของสดชุดที่ใช้เทียบ) — การอัปเดตจริงใส่ลงสำเนาชุดเดียวกับที่หน้าเทียบคำนวณ ไม่ใช่สำเนาใหม่"""
     source = _wl_export_source(cur, round_id)
     rnd = source["round"]
     cur.execute("SELECT amending_since FROM wl_rounds WHERE id = %s", (rnd["id"],))
     hit = cur.fetchone()
-    live = _term_outgoing()
+    live = {**_term_outgoing(), "rooms": _copy.deepcopy(ROOMS)}
     program = {k: live[k] for k in ("requirements", "pools", "slots", "sched_subjects", "groups", "served")}
     proposal = wl_round_proposal(_wl_timetable_source(cur, _copy.deepcopy(program)))
     diff = _PD.plan_diff(source, live, proposal, dict(_counters))
@@ -19257,7 +19274,10 @@ def _midterm_build(cur, round_id: int) -> dict[str, Any]:
     view = {"id": rnd["id"], "label": rnd["label"], "year": rnd["year"], "semester": rnd["semester"],
             "status": rnd["status"], "amending_since": _wl_iso(hit[0]) if hit else None,
             "exported_label": rnd.get("exported_label")}
-    return {"round": view, "reasons": reasons, "diff": diff}
+    out = {"round": view, "reasons": reasons, "diff": diff}
+    if keep_live:
+        out["live"] = live
+    return out
 
 
 @app.get("/api/terms/plan-update/rounds")
@@ -19311,6 +19331,239 @@ def terms_plan_update_preview(round_id: str | None = None) -> dict[str, Any]:
     return {"round": built["round"], "usable": not built["reasons"], "reasons": built["reasons"],
             "items": diff["items"], "unknown": diff["unknown"], "unmatched_sets": diff["unmatched_sets"],
             "token": diff["token"]}
+
+
+# ── ทาง ข.: อัปเดตแผนกลางเทอม — POST /api/terms/plan-update ใส่เฉพาะข้อที่ติ๊กในธุรกรรมเดียว (แบบข้อ 4.3) ──────────────────────
+# แบบเดียวกับการสร้างเทอมจากรอบของทาง ก. (ลำดับล็อก · จุดย้อน · เทียบตัวนับรุ่นสองครั้ง · ฉีดล้ม · app_state ในธุรกรรม · ไม่มี DDL ใน
+# ธุรกรรม) ยกเว้นไม่หมุนเทอม และ **ไม่แตะคาบที่ลงไว้กับถาดพักคาบเลย** (ไม่อยู่ในจุดย้อน ไม่อยู่ในผลของ plan_apply ไม่มีคำสั่งใดเขียน)
+#  1 รูปคำขอ (ไม่ติ๊กเลย = 400 ไม่ตรวจรหัส ไม่เปิดธุรกรรม) → จดเลขการอัปเดตล่าสุด ณ ตอนคำขอมาถึง → รหัส admin (นับผิดร่วมกับล็อกอิน ·
+#    แฮชก่อนเปิดธุรกรรม) → เทอมที่เปิดอยู่ปิดแล้ว = 409 (route ใต้ /api/terms/ มิดเดิลแวร์ไม่กัน — term_closed_message) → ข้อมูลของ
+#    โรงเรียนยังโหลดไม่สำเร็จ = 503 → ล้างคิวเซฟ (สำเนาเก่าที่ค้างคิวต้องไม่ลง app_state ทับหลัง COMMIT)
+#  2 การเชื่อมต่อเดียว: ล็อกทะเบียนเป็นคำสั่งแรก → แถวรอบ FOR UPDATE → มีการอัปเดตอื่น COMMIT ระหว่างรอล็อก = 409 ดูใหม่ (กดซ้ำ/สองหน้า
+#    ที่ติ๊กแต่ข้อที่เข้ารายการงานอย่างเดียว หน้าเทียบหลังอัปเดตเหมือนเดิม token จึงกันไม่ได้)
+#  3 จดตัวนับรุ่นคู่กับสำเนาของโปรแกรม → หน้าเทียบใหม่ในธุรกรรม (ตัวประกอบเดียวกับหน้าเทียบ) → เหตุ = 409 · token ไม่ตรง = 409
+#  4 จุดย้อน → เทียบรุ่น → plan_apply (ฟังก์ชันล้วน ใส่จาก item["apply"] เท่านั้น — หน้าเทียบที่เห็น = สิ่งที่ถูกเขียน) → ใส่แทนในที่
+#  5 เขียน sched_id กลับ → ประวัติ (ได้ update_id) → รายการงานได้รหัส → app_state เป็นสำเนาสดในธุรกรรม (ต้องหลังรายการงาน: สำเนาต้องมี
+#    update_id ของมัน) → รอบที่เปิดให้แก้กลางเทอม → ปิดกลับ
+#  6 เทียบรุ่นอีกครั้ง → COMMIT ครั้งเดียว · ล้มก่อน COMMIT = คืนตัวแปรก่อน ROLLBACK (ROLLBACK ปล่อยล็อกทะเบียน) → 409/500 ไทย
+#  7 หลัง COMMIT: บันทึกประวัติเทอม · ล้างแคช · เซฟ (มิดเดิลแวร์บวกรุ่นให้ — path นี้ไม่อยู่ใต้ /api/workload/)
+PLAN_UPDATE_NONE = "ยังไม่ได้เลือกข้อใด"
+PLAN_UPDATE_STALE = "ข้อมูลเปลี่ยนตั้งแต่เปิดหน้าเทียบ — ดูใหม่อีกครั้ง"
+PLAN_UPDATE_EDITED = ("มีการแก้ข้อมูลในโปรแกรมจัดตารางระหว่างอัปเดตแผน — ยังไม่ได้อัปเดต ข้อมูลเดิมยังอยู่ครบ "
+                      "ดูหน้าเทียบใหม่แล้วลองอีกครั้ง")
+PLAN_UPDATE_FAILED = "อัปเดตแผนไม่สำเร็จ — ยังไม่ได้อัปเดต ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง"
+PLAN_UPDATE_CODE_MISSING = "กรอกรหัสผู้ดูแลระบบของเว็บลงอัตรากำลังเพื่อยืนยันการอัปเดตแผนจากรอบอัตรากำลัง"
+PLAN_UPDATE_CODE_WRONG = "รหัสผู้ดูแลระบบของเว็บลงอัตรากำลังไม่ถูกต้อง — ยังไม่ได้อัปเดตแผน ข้อมูลเดิมยังอยู่ครบ"
+PLAN_UPDATE_CODE_BUSY = ("มีการตรวจรหัสผู้ดูแลระบบพร้อมกันมากเกินไป กรุณารอสักครู่ (ไม่กี่วินาที) แล้วกดใหม่ "
+                         "— ยังไม่ได้อัปเดตแผน ข้อมูลเดิมยังอยู่ครบ")
+# ตัวแปรของโปรแกรมที่การอัปเดตแผนแทนในที่ — จุดย้อนเก็บเฉพาะตัวเหล่านี้ (+ curriculum_id ของห้อง + ตัวนับ) · SLOTS และ PARKED ไม่อยู่ในนี้
+# โดยตั้งใจ: การอัปเดตแผนไม่แตะสองตัวนั้น จึงไม่มีอะไรต้องคืน และ "คืน" ก็คือโค้ดใหม่ที่เขียนทับมัน (ข้อห้ามของผู้ใช้)
+_PLAN_UPDATE_LISTS = ("TEACHERS", "SUBJECTS", "REQUIREMENTS", "ELECTIVE_POOLS", "CURRICULA", "PLAN_TODOS")
+WL_PLAN_UPDATE_LAST_SQL = "SELECT id FROM wl_plan_updates ORDER BY id DESC LIMIT 1"
+WL_PLAN_UPDATE_INSERT = ("INSERT INTO wl_plan_updates (round_id, term_id, year, semester, by, accepted, rejected, report) "
+                         "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb) RETURNING id")
+
+
+def _plan_update_restore_point() -> dict[str, Any]:
+    """ขั้น 4: สำเนาเพื่อย้อนของทุกตัวแปรที่การอัปเดตแผนแทน — ลิสต์เก็บแบบตื้น (แถวตัวเดิม): การใส่แทนด้วยแถวใหม่ที่เป็นสำเนาลึกจาก
+    plan_apply ไม่แก้แถวเดิม และรายการงานต่อท้ายแถวใหม่ · curriculum_id รายห้อง (รวมว่าเคยมีคีย์ไหม) · ตัวนับ · ตัวนับรุ่น"""
+    return {"lists": {name: list(globals()[name]) for name in _PLAN_UPDATE_LISTS},
+            "groups": [(g, "curriculum_id" in g, g.get("curriculum_id")) for g in _flat_groups()],
+            "counters": dict(_counters), "applied": {}, "replaced": False, "revision": REVISION["n"]}
+
+
+def _plan_update_restore(back: dict[str, Any]) -> bool:
+    """คืนจากจุดย้อนแทนในที่ (ลิสต์ตัวเดิม) · idempotent · ผู้เรียกเรียกก่อน ROLLBACK ขณะยังถือล็อกทะเบียน — กฎเดียวกับ _term_restore
+    ของทาง ก. แต่ไม่คืนสิ่งที่การอัปเดตแผนไม่แตะ (เทอม · การตั้งค่า · ผลการจัดล่าสุด · คาบ)
+    ลิสต์และ curriculum_id คืนเฉพาะเมื่อเริ่มใส่แล้ว (ก่อนนั้นยังเป็นของสด คืนแล้วจะลบงานของคำขอที่เพิ่งจบ) · ตัวนับคืนเฉพาะคีย์ที่ขยับ
+    และยังเป็นค่าที่ขยับไว้ (คำขออื่นที่ออกรหัสระหว่างนั้นต้องไม่ได้รหัสซ้ำ) · ตัวนับรุ่นขยับระหว่างนั้น = บวกรุ่นอีกหนึ่ง (หน้าเว็บที่
+    โหลดสถานะที่ยังไม่ COMMIT ไปแล้วต้องโหลดใหม่) + เซฟของที่คืนแล้ว → True = ผู้เรียกเขียนตรงต่อด้วย _term_save_restored (M9)"""
+    if back["replaced"]:
+        for name, rows in back["lists"].items():
+            globals()[name][:] = rows
+        for g, had, cid in back["groups"]:
+            if had:
+                g["curriculum_id"] = cid
+            else:
+                g.pop("curriculum_id", None)
+    for k, v in back["applied"].items():
+        if _counters.get(k) == v:
+            if k in back["counters"]:
+                _counters[k] = back["counters"][k]
+            else:
+                _counters.pop(k, None)
+    if REVISION["n"] != back["revision"]:
+        REVISION["n"] += 1
+        _save_state()
+        return True
+    return False
+
+
+def _plan_update_apply(result: dict[str, Any], marked: set, back: dict[str, Any]) -> None:
+    """ขั้น 4 ต่อ: ใส่ผลของ plan_apply แทนในที่ (`[:] =` — ลิสต์ตัวเดิม อ่านตัวแปรด้วยชื่อตอนเรียก) · ครู/วิชาก่อน → ติดธงวิชาเสรีของวิชา
+    ในชุดที่ติ๊ก (plan_apply ติดในผลแล้ว — คงกฎของโปรแกรมไว้แบบ _term_apply) → แผน คาบเสรี หลักสูตร → curriculum_id ของห้อง (ทาง ข.
+    ไม่ผูกหลักสูตรใหม่: ค่าเดิม) → ตัวนับเดินต่อ ไม่ถอย (บันทึกค่าที่ขยับใน back) · วิชาใส่เสมอแม้ไม่ได้ติ๊กข้อทะเบียน (addendum ข้อ 2)"""
+    back["replaced"] = True
+    TEACHERS[:] = result["teachers"]
+    SUBJECTS[:] = result["subjects"]
+    _mark_elective(*marked)
+    _term_test_fail("plan_apply")
+    REQUIREMENTS[:] = result["requirements"]
+    ELECTIVE_POOLS[:] = result["pools"]
+    CURRICULA[:] = result["curricula"]
+    group_curricula = result["group_curricula"]
+    for g in _flat_groups():
+        cid = group_curricula.get(g.get("id"))
+        if cid is not None or "curriculum_id" in g:
+            g["curriculum_id"] = cid
+    for k, v in result["counters"].items():
+        if v > _counters.get(k, 0):
+            _counters[k] = v
+            back["applied"][k] = v
+
+
+def _plan_update_refusal(rnd: dict[str, Any], reasons: list[str]) -> str:
+    return (f"ยังอัปเดตแผนจากรอบอัตรากำลัง {rnd.get('label') or ''} ไม่ได้ (ไม่มีอะไรถูกเปลี่ยน ข้อมูลเดิมยังอยู่ครบ): "
+            + " | ".join(reasons))
+
+
+def _plan_update_transaction(round_id: int, accept: list[str], token: str, by: str, seen: int) -> dict[str, Any]:
+    """ขั้น 2–7 (ลำดับที่หัวส่วนนี้) — seen = เลขการอัปเดตล่าสุดที่อ่านก่อนรอล็อก (0 = ยังไม่เคย) → คำตอบของ POST"""
+    try:
+        conn = _db_connect()
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง") from None
+    back = None
+    try:
+        with conn:
+            try:
+                with conn.cursor() as cur:
+                    # 2 ── ล็อกทะเบียน (คำสั่งแรก) → แถวรอบ → มีการอัปเดตอื่น COMMIT ระหว่างที่คำขอนี้รอล็อก = หน้าเทียบที่กดอาจเก่า
+                    _wl_registry_lock(cur)
+                    cur.execute("SELECT id FROM wl_rounds WHERE id = %s FOR UPDATE", (round_id,))
+                    if cur.fetchone() is None:
+                        raise HTTPException(404, WL_ROUND_MISSING)
+                    cur.execute(WL_PLAN_UPDATE_LAST_SQL)
+                    last = cur.fetchone()
+                    if (last[0] if last else 0) != seen:
+                        raise HTTPException(409, PLAN_UPDATE_STALE)
+                    # 3 ── รุ่นคู่กับสำเนาของโปรแกรม (เทียบก่อนใส่และก่อน COMMIT) → หน้าเทียบใหม่ในธุรกรรมนี้ → เหตุ · token
+                    rev = REVISION["n"]
+                    built = _midterm_build(cur, round_id, keep_live=True)
+                    running = _term_running_identity()
+                    _term_test_fail("plan_built")
+                    rnd, diff = built["round"], built["diff"]
+                    if built["reasons"] or running is None:    # running ว่าง = เทอมเปลี่ยนระหว่างนี้ (อีกหน้าปลดล็อก/ปิด)
+                        raise HTTPException(409, _plan_update_refusal(rnd, built["reasons"] or [WL_AMEND_MISSING_TERM]))
+                    if diff["token"] != token:
+                        raise HTTPException(409, PLAN_UPDATE_STALE)
+                    # 4 ── จุดย้อน → เทียบรุ่น → เครื่องใส่ (ข้อที่ไม่มีในหน้าเทียบ = 409) → ใส่แทนในที่
+                    back = _plan_update_restore_point()
+                    _term_refuse_program_edited(rev, PLAN_UPDATE_EDITED)
+                    try:
+                        result = _PD.plan_apply(diff, built["live"], set(accept), dict(_counters))
+                    except ValueError as e:
+                        raise HTTPException(409, str(e)) from None
+                    by_key = {it["key"]: it for it in diff["items"]}
+                    marked = {sid for k in result["applied"] if by_key[k]["pile"] == "sets" and by_key[k]["auto"]
+                              for sid in by_key[k]["apply"].get("mark_elective") or []}
+                    _plan_update_apply(result, marked, back)
+                    # 5 ── เขียน sched_id กลับ → ประวัติ → รายการงาน → app_state → ปิดรอบที่แก้กลางเทอมกลับ
+                    done = _term_writeback(cur, result["writeback"])
+                    _term_test_fail("plan_writeback")
+                    closing = rnd["amending_since"] is not None
+                    picked = set(accept)
+                    accepted = [{"key": k, "pile": by_key[k]["pile"], "label": by_key[k]["label"], "auto": k not in picked}
+                                for k in result["applied"]]
+                    rejected = [{"key": k, "pile": by_key[k]["pile"], "label": by_key[k]["label"]} for k in result["skipped"]]
+                    # report.writeback = รูปเดียวกับ export_report ของทาง ก. — การปลดล็อกเทอมปรับทะเบียนตามมันด้วย (wl_writeback_history)
+                    report = {"token": token, "todos": len(result["todos"]), "round_closed": closing, "writeback": done}
+                    cur.execute(WL_PLAN_UPDATE_INSERT,
+                                (round_id, running["term_id"], running["year"], running["semester"], by,
+                                 _json.dumps(accepted, ensure_ascii=False), _json.dumps(rejected, ensure_ascii=False),
+                                 _json.dumps(report, ensure_ascii=False)))
+                    update_id = cur.fetchone()[0]
+                    _term_test_fail("plan_history")
+                    for t in result["todos"]:
+                        PLAN_TODOS.append({"id": _next("todo"), "update_id": update_id, **t})
+                    if result["todos"]:
+                        back["applied"]["todo"] = _counters["todo"]
+                    cur.execute(_DB_UPSERT, (_pack(_snapshot()),))
+                    _term_test_fail("plan_app_state")
+                    if closing:
+                        # แถวรอบถูกล็อกและอ่านในธุรกรรมนี้แล้ว — ไม่โดนหนึ่งแถว = ยกเลิกทั้งก้อน
+                        cur.execute("UPDATE wl_rounds SET status = 'closed', closed_at = now(), amending_since = %s "
+                                    "WHERE id = %s AND amending_since IS NOT NULL", (None, round_id))
+                        if cur.rowcount != 1:
+                            raise RuntimeError("amending round changed while locked")
+                    _term_test_fail("plan_round")
+                    # 6 ── มีคนแก้ข้อมูลในโปรแกรมหลังใส่ → 409 ย้อนทั้งหมด (แทนการทับงานของเขาเงียบ ๆ)
+                    _term_refuse_program_edited(rev, PLAN_UPDATE_EDITED)
+                _term_test_fail("plan_commit")
+                conn.commit()
+            except Exception:
+                # ล้มก่อน COMMIT: คืนตัวแปรก่อน ROLLBACK (ROLLBACK ปล่อยล็อกทะเบียน — ปุ่มดึงครูที่รออยู่อ่าน TEACHERS ทันที) ·
+                # มีคำขอเขียนอื่นจบระหว่างนั้น = เขียนของที่คืนแล้วลง app_state ตรง ๆ ก่อนตอบ (M9) · จากนั้น with conn ย้อนฐาน
+                if back is not None and _plan_update_restore(back):
+                    _term_save_restored(conn)
+                raise
+            _term_test_fail("plan_after_commit")
+    except HTTPException:
+        raise                                      # ตัวแปรคืนแล้วข้างบน (ก่อน ROLLBACK) · ฐานย้อนแล้ว (with conn)
+    except Exception as e:                         # noqa: BLE001
+        _wl_log_server_error(e)                    # ชื่อชนิด + sqlstate + stack เท่านั้น ไม่พิมพ์ข้อความ
+        raise HTTPException(500, PLAN_UPDATE_FAILED) from None
+    # 7 ── หลัง COMMIT
+    n = len(result["todos"])
+    _term_log(running["term_id"], "plan_update",
+              f"อัปเดตแผนกลางเทอม {running['label']} จากรอบอัตรากำลัง {rnd['label']}: ยอมรับ {len(result['applied'])} ข้อ · "
+              f"ไม่ยอมรับ {len(result['skipped'])} ข้อ · รายการงานใหม่ {n} ข้อ" + (" · รอบกลับเป็นปิด" if closing else ""))
+    _lookup_cache_clear()
+    _SUB.invalidate()
+    _save_state()
+    return {"applied": result["applied"], "skipped": result["skipped"], "todos": n, "update_id": update_id}
+
+
+@app.post("/api/terms/plan-update")
+def terms_plan_update(body: Any = Body(None)) -> dict[str, Any]:
+    """อัปเดตแผนกลางเทอมจากรอบอัตรากำลัง (ทาง ข. แบบข้อ 4.3) {round_id, admin_code, accept: [รหัสข้อ], token}
+    → {applied: [รหัสข้อที่ใส่ รวมข้อทะเบียนที่ติ๊กให้], skipped: [ข้อที่ไม่ได้ติ๊ก], todos: จำนวนรายการงานใหม่, update_id}
+    ใส่เฉพาะข้อที่ติ๊กในธุรกรรมเดียว ไม่แตะคาบที่ลงไว้ (ลำดับที่หัวส่วนนี้) · token = ของหน้าเทียบ (GET /api/terms/plan-update/preview)
+    400 รูปคำขอ/ไม่ติ๊กเลย/ไม่มีรหัส · 403 รหัสผิด · 429 ผิดเกินเกณฑ์ · 404 ไม่มีรอบ · 409 เทอมปิด/เหตุของรอบ/หน้าเทียบเก่า/มีคนแก้ระหว่างกด ·
+    500 ล้มกลางทาง (ย้อนหมด) · 503 ไม่ได้ต่อฐาน/ต่อฐานไม่ได้/ข้อมูลของโรงเรียนยังโหลดไม่สำเร็จ — ข้อความไทยทั้งหมด"""
+    # 1 ── รูปคำขอ → เลขการอัปเดตล่าสุด → รหัส admin → เทอมปิด → ข้อมูลของโรงเรียน → คิวเซฟ (ทั้งหมดก่อนเปิดธุรกรรม)
+    if _STORE_KIND != "postgres":
+        raise HTTPException(503, "ยังไม่ได้ต่อฐานข้อมูล จึงอัปเดตแผนจากรอบอัตรากำลังไม่ได้")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "ข้อมูลที่ส่งมาต้องเป็น {round_id, admin_code, accept, token}")
+    round_id, accept, token = body.get("round_id"), body.get("accept"), body.get("token")
+    if type(round_id) is not int or not 1 <= round_id <= _WL_BIGINT_MAX:
+        raise HTTPException(400, "round_id ต้องเป็นรหัสรอบอัตรากำลัง (จำนวนเต็ม)")
+    if not isinstance(accept, (list, tuple)) or not all(isinstance(k, str) and k for k in accept):
+        raise HTTPException(400, "accept ต้องเป็นรายการรหัสข้อที่ติ๊ก (ข้อความ)")
+    if not accept:
+        raise HTTPException(400, PLAN_UPDATE_NONE)
+    if not isinstance(token, str) or not token:
+        raise HTTPException(400, "token ต้องเป็นลายนิ้วมือของหน้าเทียบที่เห็น — ดูหน้าเทียบใหม่อีกครั้ง")
+    raw = body.get("admin_code")
+    if not isinstance(raw, str) or not raw.strip():
+        raise HTTPException(400, PLAN_UPDATE_CODE_MISSING)
+    # เลขการอัปเดตล่าสุด ณ ตอนคำขอมาถึง — อ่านก่อนตรวจรหัส: ประตูแฮชรหัสให้คำขอทีละตัว คำขอที่สองของการกดซ้ำจึงผ่านประตูหลังคำขอแรก
+    # และอาจถึงล็อกทะเบียนหลังคำขอแรก COMMIT ไปแล้ว ถ้าอ่านหลังแฮชจะไม่เห็นว่ามีการอัปเดตแทรก (ข้อที่เข้ารายการงานอย่างเดียว token เท่าเดิม)
+    with _wl_db() as cur:
+        cur.execute(WL_PLAN_UPDATE_LAST_SQL)
+        last = cur.fetchone()
+    by = _term_admin_check(raw, PLAN_UPDATE_CODE_WRONG, PLAN_UPDATE_CODE_BUSY)
+    closed = term_closed_message(CURRENT_TERM)
+    if closed is not None:
+        raise HTTPException(409, f"{closed} — อัปเดตแผนได้เฉพาะภาคเรียนที่เปิดอยู่ (ยังไม่ได้อัปเดต)")
+    if _db_write_blocked():
+        raise HTTPException(503, MIDTERM_BLOCKED)
+    try:
+        _flush_pending(blocking=True)
+    except Exception:                              # noqa: BLE001
+        raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง") from None
+    return _plan_update_transaction(round_id, list(dict.fromkeys(accept)), token, by, last[0] if last else 0)
 
 
 @app.get("/api/terms")
@@ -19489,18 +19742,42 @@ def unlock_check(term: dict[str, Any], typed: str) -> str | None:
 # ไม่ใช่จากว่าเทอมที่ปิด/เปิดคือเทอมของรอบไหน: เทอมหนึ่งสืบมาจากเทอมของรอบได้หลายทาง (ปุ่มเดิม · รอบถัดไป) และปลดล็อกได้ทุกลำดับ
 # (รีวิวซ้ำรอบ 1: ลำดับ "สร้าง C ต่อจาก B → ปลดล็อก B → ปลดล็อก C" ทำให้กฎตามลำดับเทอมย้อนผิด) — รหัสของโปรแกรมไม่เคยถูกใช้ซ้ำ
 # (ตัวนับไม่ถอย) ค่า "new" ของการส่งที่ยังอยู่ในครู/วิชาของเทอมที่เปิด จึงแปลว่าเทอมนี้มีข้อมูลของการส่งนั้นจริง
-# หลังทุกการปลดล็อก (เมื่อมีรอบที่ส่งแล้ว) ในธุรกรรมเดียวกับการสลับเทอม ล็อกทะเบียนเป็นคำสั่งแรก · ไม่แตะแถวรอบ (ส่งแล้ว = ถาวร) ·
-# ไม่ถอดการผูกวิชาของบรรทัด/ตัวเลือก (แถววิชาของเว็บยังอยู่ — ชี้วิชาที่เทอมที่เปิดไม่มีก็เหมือนวิชาของเว็บที่ยังไม่ส่ง) · ไม่มีรอบที่ส่งแล้ว =
-# โค้ดเดิมของ unlock_term ทุกบรรทัด
+# หลังทุกการปลดล็อก (เมื่อมีรอบที่ส่งแล้วหรือเคยอัปเดตแผนกลางเทอม) ในธุรกรรมเดียวกับการสลับเทอม ล็อกทะเบียนเป็นคำสั่งแรก · ไม่แตะแถวรอบ
+# (ส่งแล้ว = ถาวร) · ไม่ถอดการผูกวิชาของบรรทัด/ตัวเลือก (แถววิชาของเว็บยังอยู่ — ชี้วิชาที่เทอมที่เปิดไม่มีก็เหมือนวิชาของเว็บที่ยังไม่ส่ง) ·
+# ทาง ข. (แบบข้อ 4.6): การอัปเดตแผนกลางเทอมก็เขียน sched_id กลับ (wl_plan_updates.report.writeback รูปเดียวกับ export_report) —
+# ประวัติการเขียนกลับ = ทั้งสองแหล่งเรียงตามเวลา (wl_writeback_history) ไม่งั้นครูที่อัปเดตกลางเทอมสร้างชี้ค้างเมื่อปลดล็อกเทอมอื่น และปุ่มดึงครู
+# สร้างแถวซ้ำ · ไม่มีรอบที่ส่งแล้วและไม่เคยอัปเดตกลางเทอม = โค้ดเดิมของ unlock_term ทุกบรรทัด
 _WL_RECONCILE_GROUPS = (("wl_teachers", "teachers", "ครู", ("teachers",)),
                         ("wl_subjects", "subjects", "วิชา", ("subjects", "created_subjects")))
+WL_EXPORT_EXISTS_SQL = "SELECT id FROM wl_rounds WHERE export_report IS NOT NULL LIMIT 1"
+WL_PLAN_UPDATE_EXISTS_SQL = "SELECT id FROM wl_plan_updates LIMIT 1"
+WL_EXPORT_HISTORY_SQL = ("SELECT export_report, exported_at FROM wl_rounds WHERE export_report IS NOT NULL "
+                         "ORDER BY exported_at, id")
+WL_PLAN_UPDATE_HISTORY_SQL = "SELECT report, at FROM wl_plan_updates ORDER BY at, id"
+
+
+def wl_writeback_history(exports: list, updates: list) -> list[dict[str, Any]]:
+    """ประวัติการเขียน sched_id กลับ เรียงตามเวลา (เก่า → ใหม่) — ขาเข้าของ wl_registry_reconcile (ฟังก์ชันล้วน ไม่แก้ขาเข้า)
+
+    exports = [(export_report, exported_at)] ของรอบที่ส่งด้วยทาง ก. (เรียงแบบ WL_EXPORT_HISTORY_SQL) · updates = [(report, at)] ของ
+    wl_plan_updates (เรียงแบบ WL_PLAN_UPDATE_HISTORY_SQL) — ของการส่งคือ export_report ทั้งก้อน ของการอัปเดตคือ report["writeback"]
+    (รูปเดียวกัน) · ไม่มีการอัปเดตกลางเทอม = export_report ตามลำดับเดิมตรงตัว (การปลดล็อกเท่าเดิมทุกอย่าง) · เวลาว่างไปท้ายแบบ
+    ORDER BY ของ Postgres · เวลาเท่ากัน = การส่งก่อน (แต่ละแหล่งคงลำดับของฐาน — sort คงที่)"""
+    if not updates:
+        return [rep or {} for rep, _at in exports]
+    rows = [(at, 0, rep or {}) for rep, at in exports] + \
+           [(at, 1, (rep or {}).get("writeback") or {}) for rep, at in updates]
+    rows.sort(key=lambda x: (x[0] is None, x[0] if x[0] is not None else _dt.datetime.min.replace(tzinfo=_dt.timezone.utc),
+                             x[1]))
+    return [r[2] for r in rows]
 
 
 def wl_registry_reconcile(rounds_reports: list[dict[str, Any]], open_teacher_ids: set, open_subject_ids: set,
                           current: dict[str, Any]) -> dict[str, Any]:
     """ค่า sched_id ที่ทะเบียนของเว็บควรเป็นสำหรับเทอมที่กำลังเปิด (ฟังก์ชันล้วน) → {"set": [{table, id, from, to}], "skipped": [เหตุไทย]}
 
-    rounds_reports = export_report ของทุกรอบที่ส่งแล้ว เรียงตามการส่ง (เก่า → ใหม่) · open_*_ids = รหัสครู/วิชาของเทอมที่เปิด ·
+    rounds_reports = ประวัติการเขียน sched_id กลับ เรียงตามเวลา (เก่า → ใหม่): export_report ของทุกรอบที่ส่งแล้ว + writeback ของการอัปเดต
+    แผนกลางเทอม (wl_writeback_history — ชื่อพารามิเตอร์คงเดิม) · open_*_ids = รหัสครู/วิชาของเทอมที่เปิด ·
     current = {"teachers"/"subjects": {wl_id: (sched_id, ชื่อ)}, "teacher_held"/"subject_held": {sched_id: (wl_id, ชื่อ)}} (_wl_registry_now)
     ทุกครู/วิชาของเว็บที่อยู่ใน writeback ของรอบใด (teachers · subjects · created_subjects): ไล่รอบจากใหม่ไปเก่า รอบแรกที่ค่า "new"
     อยู่ในเทอมที่เปิดชนะ · ไม่มีรอบไหนเลย = ค่า "old" ของรอบที่เก่าสุดถ้าอยู่ในเทอมที่เปิด ไม่งั้นว่าง · ตรงอยู่แล้ว = ไม่อยู่ในรายการ
@@ -19589,12 +19866,16 @@ def _wl_registry_now(cur, reports: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _term_round_exported_to(_term_ids: list[int]) -> bool:
-    """มีรอบที่ส่งเข้าโปรแกรมแล้ว (มีรายงานการส่ง) ไหม — มี = การปลดล็อกต้องปรับเทียบทะเบียน · อ่านอย่างเดียว ไม่ล็อก · ต่อฐานไม่ได้ = 503
+    """มีรอบที่ส่งเข้าโปรแกรมแล้ว (มีรายงานการส่ง) หรือเคยอัปเดตแผนกลางเทอม (มีแถวใน wl_plan_updates) ไหม — มี = การปลดล็อกต้องปรับเทียบ
+    ทะเบียน · ไม่มีทั้งสอง = ทางเดิมของปลดล็อก (ชื่อเดิม: tests/py/terms.py แทนตัวนี้ด้วย False) · อ่านอย่างเดียว ไม่ล็อก · ต่อฐานไม่ได้ = 503
     ไม่กรองตามเทอมที่จะปิด/เปิด (รับไว้เพื่อรูปการเรียกเดิม): ทะเบียนต้องปรับเทียบไม่ว่าสลับเทอมคู่ไหน — ปลดล็อกเทอมเก่าข้ามเทอมของรอบ
-    ก็ทำให้ทะเบียนชี้ครูที่เทอมที่เปิดไม่มีได้ · ไม่มีช่องให้พลาด: รายงานถูกเขียนในธุรกรรมเดียวกับที่สร้างเทอม และไม่เคยถูกลบ"""
+    ก็ทำให้ทะเบียนชี้ครูที่เทอมที่เปิดไม่มีได้ · ไม่มีช่องให้พลาด: รายงานและประวัติถูกเขียนในธุรกรรมเดียวกับการเขียนกลับ และไม่เคยถูกลบ"""
     try:
         with _wl_db() as cur:
-            cur.execute("SELECT id FROM wl_rounds WHERE export_report IS NOT NULL LIMIT 1")
+            cur.execute(WL_EXPORT_EXISTS_SQL)
+            if cur.fetchone() is not None:
+                return True
+            cur.execute(WL_PLAN_UPDATE_EXISTS_SQL)
             return cur.fetchone() is not None
     except HTTPException:
         raise HTTPException(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง") from None
@@ -19602,9 +19883,10 @@ def _term_round_exported_to(_term_ids: list[int]) -> bool:
 
 def _unlock_term_reconciling(term_id: int, row: dict[str, Any], old_id: int, new_data: dict[str, Any],
                              old_label: Any) -> dict[str, Any]:
-    """unlock_term เมื่อมีรอบที่ส่งแล้ว: การเชื่อมต่อเดียว ธุรกรรมเดียว (แบบข้อ 4.8)
+    """unlock_term เมื่อมีรอบที่ส่งแล้วหรือเคยอัปเดตแผนกลางเทอม: การเชื่อมต่อเดียว ธุรกรรมเดียว (แบบข้อ 4.8 · ทาง ข. ข้อ 4.6)
     ล็อกทะเบียนเป็นคำสั่งแรก (ลำดับเดียวกับการสร้างเทอมจากรอบและทุก route ที่เขียนทะเบียน: ปุ่มดึงครูที่กดพร้อมกันรอจน COMMIT แล้วเห็นทั้ง
-    TEACHERS ของเทอมที่เปิดและ sched_id ที่ปรับแล้ว) → อ่านรายงานของทุกรอบที่ส่งแล้ว (ไม่เปลี่ยนหลังส่ง · การส่งที่แข่งกันต่อคิวที่ล็อกทะเบียน) →
+    TEACHERS ของเทอมที่เปิดและ sched_id ที่ปรับแล้ว) → อ่านรายงานของทุกรอบที่ส่งแล้ว + ประวัติการอัปเดตกลางเทอม เรียงตามเวลา
+    (wl_writeback_history · ไม่เปลี่ยนหลังเขียน · การส่ง/อัปเดตที่แข่งกันต่อคิวที่ล็อกทะเบียน) →
     จดค่าคืนของหน่วยความจำ **หลังได้ล็อก** (รีวิว m2) → ตัวแปรของโปรแกรม (โค้ดเดียวกับทางเดิม) → สลับเทอมด้วย cursor เดียวกัน →
     ปรับเทียบทะเบียนกับครู/วิชาของเทอมที่เปิด (wl_registry_reconcile) → app_state เป็นสำเนาสดของเทอมที่เปิด (รีวิวทั้งสาขา I1) →
     COMMIT ครั้งเดียว
@@ -19622,9 +19904,10 @@ def _unlock_term_reconciling(term_id: int, row: dict[str, Any], old_id: int, new
             try:
                 with conn.cursor() as cur:
                     _wl_registry_lock(cur)
-                    cur.execute("SELECT export_report FROM wl_rounds WHERE export_report IS NOT NULL "
-                                "ORDER BY exported_at, id")
-                    reports = [r[0] or {} for r in cur.fetchall()]
+                    cur.execute(WL_EXPORT_HISTORY_SQL)
+                    exports = cur.fetchall()
+                    cur.execute(WL_PLAN_UPDATE_HISTORY_SQL)
+                    reports = wl_writeback_history(exports, cur.fetchall())
                     old = dict(CURRENT_TERM)
                     old_slots = len(SLOTS)
                     saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
@@ -19749,7 +20032,8 @@ def unlock_term(term_id: int, body: dict[str, Any]):
             (row["year"], row["semester"]), existing, "ปลดล็อกเทอม")
     old_label = ((active_row.get("label") or old_id) if has_old
                  else (archive["label"] if archive else None))
-    # ขั้นที่ 3 (แบบข้อ 4.8): มีรอบที่ส่งแล้ว → ทะเบียนของเว็บชี้ตามข้อมูลของเทอมที่เปิด ในธุรกรรมเดียวกับการสลับเทอม
+    # ขั้นที่ 3 (แบบข้อ 4.8): มีรอบที่ส่งแล้วหรือเคยอัปเดตแผนกลางเทอม (ทาง ข.) → ทะเบียนของเว็บชี้ตามข้อมูลของเทอมที่เปิด
+    # ในธุรกรรมเดียวกับการสลับเทอม
     if has_old and _term_round_exported_to([old_id, term_id]):
         return _unlock_term_reconciling(term_id, row, old_id, new_data, old_label)
 

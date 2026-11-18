@@ -753,6 +753,26 @@ def test_coteach_pair_changes():
     assert [(r["teacher_id"], r["co_teacher_id"]) for r in res["requirements"]] == [(5, 7)]
 
 
+def test_room_names_come_from_live_rooms():
+    # Task 4 addendum ข้อ 5: ข้อความของข้อและข้องานใช้ชื่อห้องจริงจากของสด (live["rooms"]) ไม่ใช่ "ห้องรหัส N" · ห้องที่ไม่มีในของสด = รหัส
+    live, wl_t, wl_s = _world([_req(1, 1, 1, 5, 3, room_id=30)], slots=[_slot(1, 1, 1, 5, room_id=30)])
+    live["rooms"] = [{"id": 30, "name": "ห้องดนตรี 1"}, {"id": 31, "name": "ห้องวิทย์ 2"}]
+    src, prop = _fresh(live, wl_t, wl_s)
+    _row(src, 1, 1)["lab_room_id"] = 31
+    diff = _diff(live, src, prop)
+    th, = diff["items"]
+    assert "ห้องปฏิบัติการ ห้องดนตรี 1 → ห้องวิทย์ 2" in th["label"] and "ห้องรหัส" not in th["label"], th["label"]
+    t, = _apply(live, diff, {th["key"]})["todos"]
+    assert "(ห้องดนตรี 1)" in t["text"] and "(ห้องวิทย์ 2)" in t["text"] and "ห้องรหัส" not in t["text"], t["text"]
+    _row(src, 1, 1)["lab_room_id"] = 32
+    th, = _diff(live, src, prop)["items"]
+    assert "ห้องดนตรี 1 → ห้องรหัส 32" in th["label"], th["label"]
+    # ไม่มี rooms ในของสด (ผู้เรียกเดิม) → ข้อความเดิม
+    del live["rooms"]
+    th, = _diff(live, src, prop)["items"]
+    assert "ห้องรหัส 30 → ห้องรหัส 32" in th["label"], th["label"]
+
+
 def test_unequal_coteach_half_changes():
     # สอนร่วมคาบไม่เท่ากัน (3/2 ชี้กัน — รอบเก็บสองแถวที่ติดธง) · รอบแก้คาบของครูคนที่สอง 2 → 3: คาบที่ตกลงกันยัง 3 แต่ยอดของครู 6
     # เปลี่ยน — ต้องเป็นข้อ weekly ที่แก้เฉพาะแถวของครู 6

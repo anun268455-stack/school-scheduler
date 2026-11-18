@@ -279,7 +279,9 @@ def test_unlock_without_export_is_unchanged():
         assert [s for s, _p in log] == TERMS_DDL + [ROTATE_UPDATE, ACTIVATE, "COMMIT"], [s for s, _p in log]
         assert log[2][1][1:] == (0, 16) and log[3][1] == (5,), (log[2][1][1:], log[3][1])
         assert _wl(db) == wl_before
-        assert rec.wl_logs[-1] == [("SELECT id FROM wl_rounds WHERE export_report IS NOT NULL LIMIT 1", ())], rec.wl_logs[-1]
+        # ทาง ข. Task 4: ไม่มีรอบที่ส่งแล้ว → ถามต่อว่าเคยอัปเดตแผนกลางเทอมไหม (อ่านอย่างเดียว) · ไม่เคยทั้งสอง = ทางเดิม
+        assert rec.wl_logs[-1] == [("SELECT id FROM wl_rounds WHERE export_report IS NOT NULL LIMIT 1", ()),
+                                   ("SELECT id FROM wl_plan_updates LIMIT 1", ())], rec.wl_logs[-1]
         assert set(out) == {"closed", "active", "save_error", "save_pending"}, set(out)
         assert out["closed"]["id"] == 16 and out["active"]["id"] == 5 and mock_api.CURRENT_TERM == ACTIVE5
         assert rec.logged == [(16, "close", "ปิดเทอม 2/2569 (0 คาบ)"), (5, "unlock", "ปลดล็อกเทอม 1/2569")], rec.logged
@@ -310,8 +312,10 @@ def test_unlock_reconciles_in_the_swap_transaction():
             stmts = [s for s, _p in log]
             assert len(rec.conns) == n_conns + 1 and conn.commits == 1 and stmts[-1] == "COMMIT", stmts
             assert log[0] == LOCK, log[0]                                # ล็อกทะเบียนเป็นคำสั่งแรก
-            assert log[1] == ("SELECT export_report FROM wl_rounds WHERE export_report IS NOT NULL "
+            # ทาง ข. Task 4: อ่านเวลาส่งด้วย แล้วรวมกับประวัติการอัปเดตกลางเทอมตามเวลา (wl_writeback_history)
+            assert log[1] == ("SELECT export_report, exported_at FROM wl_rounds WHERE export_report IS NOT NULL "
                               "ORDER BY exported_at, id", ()), log[1]
+            assert log[2] == ("SELECT report, at FROM wl_plan_updates ORDER BY at, id", ()), log[2]
             assert not any(s.split()[0].upper() in ("CREATE", "ALTER", "DROP", "LOCK") for s in stmts), stmts
             i_open = stmts.index(ACTIVATE)
             regs = [i for i, s in enumerate(stmts) if s.startswith("UPDATE wl_")]

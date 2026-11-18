@@ -100,14 +100,16 @@ def _placed_of(slots: list[dict[str, Any]]) -> dict[tuple, int]:
 
 
 class _Names:
-    """ชื่อที่ผู้ใช้อ่านในข้อความไทย — ห้องจากของสด · ครู/วิชาจากทะเบียนหลังซิงก์ (รวมรายการที่จะสร้าง)"""
+    """ชื่อที่ผู้ใช้อ่านในข้อความไทย — ห้องเรียนและห้องปฏิบัติการจากของสด · ครู/วิชาจากทะเบียนหลังซิงก์ (รวมรายการที่จะสร้าง)
+    rooms = live["rooms"] (ROOMS ของโปรแกรม — ผู้เรียกใส่ให้) · ไม่มี = ข้อความรหัสแบบเดิม (Task 4 addendum ข้อ 5: ข้อ/ข้องานต้องบอกชื่อห้องจริง)"""
 
     def __init__(self, groups: dict[Any, dict[str, Any]], teachers: list[dict[str, Any]],
-                 subjects: list[dict[str, Any]]) -> None:
+                 subjects: list[dict[str, Any]], rooms: Iterable[dict[str, Any]] | None = None) -> None:
         self.groups = groups
         self.order = {g: i for i, g in enumerate(groups)}
         self.teachers = {t.get("id"): t for t in teachers}
         self.subjects = {s.get("id"): s for s in subjects}
+        self.rooms = {r.get("id"): r for r in rooms or ()}
 
     def g(self, gid: Any) -> str:
         return str((self.groups.get(gid) or {}).get("name") or f"ห้องรหัส {gid}")
@@ -124,7 +126,9 @@ class _Names:
         return str((self.teachers.get(tid) or {}).get("name") or f"ครูรหัส {tid}")
 
     def room(self, rid: Any) -> str:
-        return "ไม่ระบุห้อง" if rid is None else f"ห้องรหัส {rid}"
+        if rid is None:
+            return "ไม่ระบุห้อง"
+        return str((self.rooms.get(rid) or {}).get("name") or f"ห้องรหัส {rid}")
 
     def rng(self, gids: list[Any]) -> str:
         names = [self.g(g) for g in gids]
@@ -769,7 +773,8 @@ def plan_diff(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[
     """เทียบรอบอัตรากำลังกับแผนสดเป็นกอง (แบบข้อ 4.2) — ไม่แก้ข้อมูลขาเข้า
 
     source = ข้อมูลของรอบ (รูป _wl_export_source) · live = ของสดรูป outgoing ของทาง ก. (_term_outgoing: requirements pools slots
-    served sched_subjects groups teachers subjects curricula) · live_proposal = wl_round_proposal ของของสดตอนนี้ (ผู้เรียกเตรียม
+    served sched_subjects groups teachers subjects curricula) + rooms (ห้องของโปรแกรม — ชื่อห้องปฏิบัติการในข้อความ · ไม่มีได้)
+    · live_proposal = wl_round_proposal ของของสดตอนนี้ (ผู้เรียกเตรียม
     จาก _wl_timetable_source ของสถานะเดียวกับ live) · counters = สำเนาของ _counters
     "แผนที่รอบต้องการ" = registry_plan + plan_from_round ของทาง ก. โดยใช้ของสดเป็นแผนเดิม (แถวที่คาบเสรี/กิจกรรมสอนแทน
     จึงเทียบผ่านกฎ "ตามรูปของแผนเดิม" เมื่อชุดที่ครอบเปลี่ยน — ชุดไม่เปลี่ยน = คงของสด ดู _set_taught) · ค่า is_elective ของวิชาในชุดตาม
@@ -789,7 +794,7 @@ def plan_diff(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[
     registry = _tfr.registry_plan(source, live, counters)
     desired = _tfr.plan_from_round(source, live, registry, registry["counters"])
     _tfr.keep_set_electives(registry, desired["elective_subjects"])
-    names = _Names(_groups_of(live), registry["teachers"], registry["subjects"])
+    names = _Names(_groups_of(live), registry["teachers"], registry["subjects"], live.get("rooms"))
     reg_items, created = _registry_items(registry)
     matched = _sets_matched(source, live, live_proposal, desired, registry)
     row_items, unknown = _row_items(live, desired, _unknown_cells(source, live, live_proposal, desired, registry),
@@ -954,7 +959,7 @@ def plan_apply(diff: dict[str, Any], live: dict[str, Any], accepted: set[str], c
             s["is_elective"] = True
 
     # 5) รายการงาน — ตามลำดับข้อ
-    names = _Names(groups, teachers, subjects)
+    names = _Names(groups, teachers, subjects, live.get("rooms"))
     placed_of = _placed_of(live.get("slots") or [])
     final = _lessons(requirements)
     todos: list[dict[str, Any]] = []
