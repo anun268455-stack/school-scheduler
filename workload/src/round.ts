@@ -38,6 +38,9 @@ export type Round = {
   exported_text?: string | null;
   /** รายงานผลการส่ง (ชุดกิจกรรมที่ต้องลงคาบเอง ฯลฯ) — อ่านด้วย exportActivityLines เท่านั้น (รูปมาจากเซิร์ฟเวอร์ ไม่เชื่อรูป) */
   export_report?: Record<string, unknown> | null;
+  /** ทาง ข.: admin เปิดรอบที่ปิดแล้วให้แก้กลางเทอมเมื่อ (ISO) · ไม่ได้แก้อยู่ (ปิดรอบ/อัปเดตในโปรแกรมแล้ว) = null ·
+   *  ไม่มีช่อง = เซิร์ฟเวอร์รุ่นก่อน */
+  amending_since?: string | null;
 };
 /** GET /rounds/{id} · POST /rounds · open · close (admin) — มีตัวรายการที่แปลงไม่ได้ */
 export type RoundDetail = Round & { unconverted: Unconverted[] };
@@ -238,10 +241,107 @@ export function exportActivityLines(report: unknown): string[] {
   });
 }
 
-/** ชิปรอบบนแถบบน: รอบที่ยังไม่ปิด · ไม่มี → null (ไม่แสดงชิป) */
+/** ชิปรอบบนแถบบน: รอบที่ยังไม่ปิด · เปิดให้แก้กลางเทอม = "แก้กลางเทอม" (หัวหน้ากลุ่มเห็นด้วย) · ไม่มี → null (ไม่แสดงชิป) */
 export function roundChip(rounds: readonly Round[]): { tone: Tone; text: string } | null {
   const r = currentRound(rounds);
-  return r ? { tone: roundStatusTone(r.status), text: `ภาคเรียน ${r.label} · ${ROUND_STATUS_TEXT[r.status]}` } : null;
+  if (!r) return null;
+  if (r.amending_since) return { tone: "warn", text: `ภาคเรียน ${r.label} · แก้กลางเทอม` };
+  return { tone: roundStatusTone(r.status), text: `ภาคเรียน ${r.label} · ${ROUND_STATUS_TEXT[r.status]}` };
+}
+
+// ---- ทาง ข.: เปิดรอบที่ปิดแล้วให้แก้กลางเทอม และประวัติการอัปเดตแผนกลางเทอม ----
+// เซิร์ฟเวอร์ตัดสินว่าเปิดให้แก้ได้ไหม (ภาคเรียนที่เปิดอยู่ในโปรแกรมจัดตาราง · รอบอื่นที่ยังไม่ปิด) — ที่นี่ซ่อนปุ่มในกรณีที่รู้แน่ว่าจะได้ 409
+// และบอกเหตุแทน · ป้ายอ่านจาก amending_since ของรอบเท่านั้น (ปิดรอบหรืออัปเดตในโปรแกรมแล้วเซิร์ฟเวอร์ล้างเป็น null)
+
+/** ป้ายของรอบที่เปิดให้แก้กลางเทอม (แบบข้อ 4.5) */
+export const AMEND_CHIP_TEXT = "แก้กลางเทอม — ยังไม่ส่ง";
+
+/** ชิ้นเดียวกับข้อความ 409 ของ wl_rounds_amend เมื่อมีรอบอื่นที่ยังไม่ปิด (ตัวทดสอบเทียบกับ mock_api.py) */
+export const AMEND_OTHER_OPEN = "รอบที่ยังไม่ปิดมีได้ทีละรอบ";
+
+export function amendChip(r: Pick<Round, "amending_since">): { tone: Tone; text: string } | null {
+  return r.amending_since ? { tone: "warn", text: AMEND_CHIP_TEXT } : null;
+}
+
+/**
+ * ปุ่ม "เปิดให้แก้กลางเทอม" ของรอบ: show = รอบที่ปิดแล้ว ยกเว้นรอบที่ส่งแล้วซึ่งเทอมของมันปิดภาคเรียนแล้วหรือถูกปิดไว้
+ * (ไม่ใช่ภาคเรียนที่เปิดอยู่ เซิร์ฟเวอร์ปฏิเสธแน่) · blocker = มีรอบอื่นที่ยังไม่ปิด (บอกเหตุแทนปุ่มที่กดแล้วได้ 409)
+ * รอบที่ไม่เคยส่งของภาคเรียนอื่น เว็บนี้รู้ไม่ได้ว่าภาคไหนเปิดอยู่ในโปรแกรม — เซิร์ฟเวอร์ตอบข้อความไทยบอกเอง
+ */
+export function amendAction(
+  round: Pick<Round, "id" | "status" | "exported_at" | "exported_label" | "exported_text">,
+  rounds: readonly Pick<Round, "id" | "label" | "status">[],
+): { show: boolean; blocker: string | null } {
+  if (round.status !== "closed") return { show: false, blocker: null };
+  const sent = roundExportChip(round);
+  if (sent && sent.state !== "open") return { show: false, blocker: null };
+  const others = rounds.filter((r) => r.id !== round.id && r.status !== "closed").map((r) => r.label);
+  if (others.length === 0) return { show: true, blocker: null };
+  return {
+    show: true,
+    blocker: `มีรอบ ${others.join(", ")} ที่ยังไม่ปิดอยู่ — ${AMEND_OTHER_OPEN} จึงเปิดรอบนี้ให้แก้กลางเทอมไม่ได้จนกว่าจะปิดหรือยกเลิกรอบนั้น `
+      + "(ระหว่างนี้แก้แผนในโปรแกรมจัดตารางด้วยมือได้ตามปกติ)",
+  };
+}
+
+/** กล่องยืนยันเปิดให้แก้กลางเทอม: สิ่งที่จะเกิด และทางต่อ (แบบข้อ 4.1) */
+export function amendNotes(round: Pick<Round, "label" | "exported_at">): string[] {
+  const lines = [
+    `รอบ ${round.label} กลับเป็น "เปิดให้กรอก" และทุกกลุ่มสาระกลับเป็น "กำลังกรอก" — รายการที่ยืนยันแล้วยังยืนยันอยู่ หัวหน้ากลุ่มสาระแก้เฉพาะที่เปลี่ยนแล้วส่งใหม่`,
+    "หลักสูตรของภาคเรียนนี้แก้ได้อีก (เพิ่ม/ลบวิชา เปลี่ยนคาบ)",
+    "ตรวจผ่านครบแล้ว ไปกด “อัปเดตแผนจากรอบอัตรากำลัง” ในโปรแกรมจัดตารางสอน (เมนู ⚙ จัดการ → 🗓 เทอม) แล้วติ๊กรับทีละข้อ — อัปเดตแล้วรอบกลับเป็นปิดเอง",
+    "ใช้ได้เฉพาะรอบของภาคเรียนที่เปิดอยู่ในโปรแกรมจัดตาราง · ตารางสอนยังไม่ถูกแตะจนกว่าจะกดอัปเดตในโปรแกรม",
+  ];
+  if (round.exported_at) lines.push("เครื่องหมาย “ส่งเข้าโปรแกรมแล้ว” ยังอยู่ — สร้างเทอมใหม่จากรอบนี้ซ้ำไม่ได้ (ส่งซ้ำไม่ได้)");
+  return lines;
+}
+
+/** หนึ่งข้อในประวัติ (wl_plan_updates.accepted/rejected) — auto = ข้อทะเบียนที่ระบบติ๊กให้เพราะข้ออื่นต้องใช้ */
+export type PlanUpdateItem = { key: string; pile: string; label: string; auto?: boolean };
+
+/** หนึ่งแถวของ GET /rounds/{id}/plan-updates (ใหม่ก่อน) */
+export type PlanUpdate = {
+  id: number;
+  round_id: number;
+  /** เทอมของโปรแกรมตอนอัปเดต · ยังไม่เคยสร้างเทอม = null */
+  term_id: number | null;
+  year: number;
+  semester: number;
+  at: string;
+  /** ชื่อเรียกของรหัส admin ที่ใช้ยืนยัน */
+  by: string | null;
+  accepted: PlanUpdateItem[];
+  rejected: PlanUpdateItem[];
+  /** {token, todos, round_closed, writeback} — อ่านด้วย planUpdateLine เท่านั้น */
+  report: Record<string, unknown> | null;
+};
+
+const isUpdateItem = (v: unknown): v is PlanUpdateItem =>
+  isObj(v) && isText(v.key) && isText(v.pile) && isText(v.label) && (v.auto === undefined || isBool(v.auto));
+
+export function isPlanUpdate(d: unknown): d is PlanUpdate {
+  if (!isObj(d) || ![d.id, d.round_id, d.year, d.semester].every(isInt) || !isIdOrNull(d.term_id)) return false;
+  if (!isText(d.at) || !isTextOrNull(d.by) || !isReportOrNull(d.report)) return false;
+  return [d.accepted, d.rejected].every((list) => Array.isArray(list) && list.every(isUpdateItem));
+}
+
+/** หนึ่งบรรทัดของประวัติ: ยอมรับ/ไม่ยอมรับกี่ข้อ · ข้อที่ระบบติ๊กให้ · รายการงานใหม่ · รอบกลับเป็นปิด */
+export function planUpdateLine(u: Pick<PlanUpdate, "accepted" | "rejected" | "report">): string {
+  const auto = u.accepted.filter((x) => x.auto).length;
+  const parts = [`ยอมรับ ${fmt(u.accepted.length)} ข้อ${auto > 0 ? ` (ระบบติ๊กข้อทะเบียนให้ ${fmt(auto)} ข้อ)` : ""}`,
+    `ไม่ยอมรับ ${fmt(u.rejected.length)} ข้อ`];
+  const todos = isObj(u.report) && isCount(u.report.todos) ? u.report.todos : 0;
+  if (todos > 0) parts.push(`รายการงานใหม่ ${fmt(todos)} ข้อ`);
+  if (isObj(u.report) && u.report.round_closed === true) parts.push("รอบกลับเป็นปิด");
+  return parts.join(" · ");
+}
+
+/** รายการข้อที่เปิดดูได้ของหนึ่งครั้ง (ข้อที่ระบบติ๊กให้มีวงเล็บบอก) */
+export function planUpdateItems(u: Pick<PlanUpdate, "accepted" | "rejected">): { accepted: string[]; rejected: string[] } {
+  return {
+    accepted: u.accepted.map((x) => (x.auto ? `${x.label} (ระบบติ๊กให้)` : x.label)),
+    rejected: u.rejected.map((x) => x.label),
+  };
 }
 
 // ---- ฟอร์มเปิดรอบ ----
@@ -461,7 +561,7 @@ const isReportOrNull = (v: unknown): boolean => v === null || isObj(v);
 export function isRound(d: unknown): d is Round {
   if (!isObj(d) || !isInt(d.id) || !isInt(d.year) || !isInt(d.semester) || !isText(d.label)) return false;
   if (!ROUND_STATUSES.includes(d.status as string) || !isText(d.opened_at) || !isTextOrNull(d.closed_at)) return false;
-  if (![d.exported_at, d.exported_label, d.exported_text].every(isAbsentOr(isTextOrNull))) return false;
+  if (![d.exported_at, d.exported_label, d.exported_text, d.amending_since].every(isAbsentOr(isTextOrNull))) return false;
   if (!isAbsentOr(isReportOrNull)(d.export_report)) return false;
   const c = d.counts;
   return isObj(c) && isCount(c.rows) && isCount(c.sets) && isCount(c.options) && isCount(c.unconverted);

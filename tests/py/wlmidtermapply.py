@@ -679,6 +679,44 @@ def test_writeback_history_orders_exports_and_updates_by_time():
     assert (same, upd) == keep
 
 
+# ── ประวัติการอัปเดตกลางเทอมของรอบ (Task 5 · คำตัดสิน M1: route อ่านของหน้ารอบในเว็บลงอัตรากำลัง) ──────────────
+HISTORY_KEYS = {"id", "round_id", "term_id", "year", "semester", "at", "by", "accepted", "rejected", "report"}
+
+
+def test_round_plan_updates_route_lists_history_of_the_round_newest_first():
+    with _midworld() as rec:
+        db, ns = _six(rec)
+        assert _call(db, ADMIN, mock_api.wl_round_plan_updates, ns.rid, REQ) == []          # ยังไม่เคยอัปเดต
+        p = _preview(ns.rid)
+        w = _keys(p, "weekly")[0]
+        first = _post(ns.rid, [w], p["token"])
+        q = _preview(ns.rid)
+        t = _keys(q, "teacher")[0]
+        second = _post(ns.rid, [t], q["token"])                     # ข้อเปลี่ยนครูต้องใช้ข้อสร้างครู → ระบบติ๊กให้ (auto)
+        db.add("wl_plan_updates", round_id=ns.rid + 50, year=2569, semester=2, by="ผู้ดูแลระบบ", accepted=[], rejected=[],
+               report={})                                           # การอัปเดตของรอบอื่น ไม่ขึ้นในรอบนี้
+        before = C._db_snapshot(db)
+        got = _call(db, ADMIN, mock_api.wl_round_plan_updates, ns.rid, REQ)
+        assert C._db_snapshot(db) == before                         # อ่านอย่างเดียว
+        assert [g["id"] for g in got] == [second["update_id"], first["update_id"]], got     # ใหม่ก่อน
+        assert all(set(g) == HISTORY_KEYS for g in got), [set(g) for g in got]
+        assert all(g["round_id"] == ns.rid and g["term_id"] == 9 and (g["year"], g["semester"]) == (2569, 2) for g in got)
+        assert all(isinstance(g["at"], str) and g["at"].startswith("2026-") for g in got), [g["at"] for g in got]   # ISO
+        assert all(g["by"] == "ผู้ดูแลระบบ" for g in got)
+        old, new = got[1], got[0]
+        assert old["accepted"] == [{"key": w, "pile": "weekly", "label": next(i["label"] for i in p["items"] if i["key"] == w),
+                                    "auto": False}], old["accepted"]
+        assert len(old["rejected"]) == len(p["items"]) - 1 and all(set(x) == {"key", "pile", "label"} for x in old["rejected"])
+        assert old["report"]["todos"] == first["todos"] and old["report"]["round_closed"] is False, old["report"]
+        assert [(x["key"], x["auto"]) for x in new["accepted"]] == [(k, k != t) for k in second["applied"]], new["accepted"]
+        assert any(x["auto"] for x in new["accepted"]), new["accepted"]
+        # หัวหน้ากลุ่มสาระไม่เห็น (admin เท่านั้น) · ไม่มีรอบ = 404 · ข้อความไทย
+        c, d = _code(lambda: _call(db, HEAD, mock_api.wl_round_plan_updates, ns.rid, REQ))
+        assert c == 403 and _thai(d), (c, d)
+        c, d = _code(lambda: _call(db, ADMIN, mock_api.wl_round_plan_updates, ns.rid + 999, REQ))
+        assert (c, d) == (404, mock_api.WL_ROUND_MISSING), (c, d)
+
+
 # ── ข้อห้ามของผู้ใช้ ───────────────────────────────────────────────────────────
 def test_new_code_never_writes_slots_or_parked():
     for fn in (mock_api.terms_plan_update, mock_api._plan_update_transaction, mock_api._plan_update_restore_point,

@@ -639,6 +639,262 @@ export function roundsLoadNote(e: unknown): string | null {
   return `อ่านรายการรอบอัตรากำลังไม่ได้${why ? ` (${why})` : ""} — สร้างเทอมจากแผนเดิมได้ตามปกติ`;
 }
 
+// ── อัปเดตแผนกลางเทอมจากรอบอัตรากำลัง (ทาง ข. · แบบ docs/superpowers/specs/2026-11-18-workload-midterm-update-design.md) ──
+// เซิร์ฟเวอร์เทียบรอบกับแผนสดเป็นกอง (GET /terms/plan-update/preview) แล้วเขียนเฉพาะข้อที่ติ๊ก (POST /terms/plan-update) — คาบที่ลงไว้
+// ไม่ถูกแตะ สิ่งที่ต้องไปแก้เองเข้ารายการงาน (GET /terms/todos) · ที่นี่ตัดสินแค่การติ๊ก ปุ่ม และข้อความ — ข้อความผลต่อคาบ (effect)
+// มาจากเซิร์ฟเวอร์และตรงกับสิ่งที่จะถูกเขียน หน้าจอแสดงตามนั้นไม่แต่งเอง
+
+/** กองตามลำดับของแบบข้อ 4.2 — ลำดับเดียวกับ PILES ของ plan_diff.py (ตัวทดสอบเทียบ) */
+export const PILES = ["registry", "new", "weekly", "teacher", "removed", "sets"] as const;
+export type Pile = (typeof PILES)[number];
+
+/** ชื่อกองตามตารางของแบบข้อ 4.2 ตรงตัว */
+export const PILE_TEXT: Record<Pile, string> = {
+  registry: "ข้อมูลครู/วิชา",
+  new: "แถวใหม่",
+  weekly: "คาบเปลี่ยน",
+  teacher: "เปลี่ยนครู",
+  removed: "แถวที่หายไป",
+  sets: "คาบเสรี/กิจกรรม",
+};
+
+/** กองนี้หมายถึงอะไร และติ๊กแล้วเกิดอะไร (คอลัมน์ "หมายถึง" กับ "กดยอมรับแล้วเกิดอะไร" ของแบบข้อ 4.2) */
+export const PILE_HINT: Record<Pile, string> = {
+  registry: "ครู/วิชาที่ยังไม่มีในโปรแกรม หรือชื่อ/รหัส/กลุ่มสาระที่ต่างจากทะเบียนของเว็บ — ติ๊กแล้วสร้างหรือแก้ให้ตรง",
+  new: "ห้อง+วิชาที่รอบมีแต่แผนยังไม่มี — ติ๊กแล้วเพิ่มแถวแผน",
+  weekly: "คาบ/สัปดาห์ต่างจากแผน — ติ๊กแล้วแก้จำนวนคาบในแผน",
+  teacher: "ครูผู้สอน ครูสอนร่วม หรือห้องปฏิบัติการต่างจากแผน — ติ๊กแล้วแก้ช่องนั้นในแผน",
+  removed: "ห้อง+วิชาที่แผนมีแต่รอบไม่มีแล้ว — ติ๊กแล้วลบแถวแผน (คาบที่ลงไว้ยังอยู่ ลบเองถ้าไม่สอนแล้ว)",
+  sets: "ชุดคาบเสรี/กิจกรรมที่ต่าง — ชุดที่ยังไม่ลงคาบแก้ให้ · ชุดที่ลงคาบแล้วและกิจกรรมไม่แก้ให้ เข้ารายการงานแทน",
+};
+
+/** หนึ่งข้อของหน้าเทียบ (plan_diff._item) — `apply` คือสิ่งที่จะถูกเขียน หน้าจอไม่ใช้ */
+export interface PlanItem {
+  key: string;
+  pile: string;
+  label: string;
+  group_id?: number | null;
+  subject_id?: number | null;
+  before?: unknown;
+  after?: unknown;
+  /** คาบที่ลงไว้แล้วของห้อง+วิชานี้ */
+  placed: number;
+  /** ผลต่อคาบที่ลงไว้แล้ว (ไทย) — แสดงตามที่ได้มา */
+  effect: string | null;
+  /** ข้อทะเบียนที่ต้องติ๊กด้วย */
+  requires: string[];
+  /** false = ระบบไม่แก้ให้ เข้ารายการงานเท่านั้น */
+  auto: boolean;
+  apply?: unknown;
+}
+
+/** หนึ่งแถวของ GET /terms/plan-update/rounds (รอบของภาคเรียนที่เปิดอยู่ · เทอมที่เปิดอยู่ปิดแล้ว = []) */
+export interface PlanRound {
+  id: number;
+  label: string;
+  status: string;
+  /** เปิดให้แก้กลางเทอมเมื่อ (ISO) · ไม่ได้แก้อยู่ = null */
+  amending_since: string | null;
+  exported_label: string | null;
+  usable: boolean;
+  reasons: string[];
+}
+
+/** GET /terms/plan-update/preview?round_id= */
+export interface PlanPreview {
+  round: { id: number; label: string; year: number; semester: number; status: string; amending_since: string | null;
+    exported_label: string | null };
+  usable: boolean;
+  reasons: string[];
+  items: PlanItem[];
+  /** แถวสดที่รอบไม่รู้จัก — ไม่อยู่ในรอบ ไม่ทำอะไร */
+  unknown: { group_id: number; subject_id: number; label: string }[];
+  /** ชุดคาบเสรี/กิจกรรมที่จับคู่ไม่ได้ — ไม่ทำอะไร */
+  unmatched_sets: { side: string; kind: string; name: string; group_ids: number[]; label: string }[];
+  /** ข้อที่เข้ารายการงานอย่างเดียวและมีในรายการงาน (ยังไม่ทำ) อยู่แล้ว — ติ๊กไม่ได้ */
+  already_todo: { key: string; pile: string; label: string }[];
+  token: string;
+}
+
+/** คำตอบของ POST /terms/plan-update */
+export interface PlanUpdateResult { applied: string[]; skipped: string[]; todos: number; update_id: number }
+
+/** หนึ่งข้อของ GET /terms/todos — state/detail คิดสดจากแผนเทียบคาบตอนอ่าน */
+export interface PlanTodo {
+  id: number;
+  update_id: number;
+  kind: string;
+  group_id: number | null;
+  subject_id: number | null;
+  teacher_id?: number | null;
+  fields?: string[];
+  text: string;
+  /** ผู้ใช้กด "ทำแล้ว" */
+  done: boolean;
+  state: "open" | "resolved";
+  detail: string;
+}
+
+/** ข้อความเดียวกับเซิร์ฟเวอร์ (ตัวทดสอบเทียบกับ mock_api.py) */
+export const PLAN_UPDATE_NONE = "ยังไม่ได้เลือกข้อใด";
+export const PLAN_UPDATE_CODE_MISSING = "กรอกรหัสผู้ดูแลระบบของเว็บลงอัตรากำลังเพื่อยืนยันการอัปเดตแผนจากรอบอัตรากำลัง";
+export const PLAN_UPDATE_STALE = "ข้อมูลเปลี่ยนตั้งแต่เปิดหน้าเทียบ — ดูใหม่อีกครั้ง";
+
+/** ข้อแยกตามกอง: ลำดับของแบบ (ไม่ขึ้นกับลำดับที่ส่งมา) · ในกองคงลำดับของเซิร์ฟเวอร์ · กองว่างไม่ขึ้น · กองที่ไม่รู้จักไปท้ายสุด (ไม่ทิ้ง) */
+export function groupItems(items: PlanItem[]): { pile: string; label: string; items: PlanItem[] }[] {
+  const by = new Map<string, PlanItem[]>();
+  for (const it of items) by.set(it.pile, [...(by.get(it.pile) ?? []), it]);
+  const known: string[] = [...PILES];
+  const order = [...known.filter((p) => by.has(p)), ...[...by.keys()].filter((p) => !known.includes(p))];
+  return order.map((pile) => ({ pile, label: PILE_TEXT[pile as Pile] ?? "อื่น ๆ", items: by.get(pile)! }));
+}
+
+/** ข้อที่ต้องติ๊กด้วยเมื่อติ๊ก keys (ตามสาย requires) — เฉพาะที่อยู่ในหน้าเทียบ */
+function withRequired(keys: Iterable<string>, items: PlanItem[]): Set<string> {
+  const byKey = new Map(items.map((it) => [it.key, it]));
+  const out = new Set<string>();
+  const stack = [...keys].filter((k) => byKey.has(k));
+  while (stack.length) {
+    const k = stack.pop()!;
+    if (out.has(k)) continue;
+    out.add(k);
+    for (const r of byKey.get(k)!.requires ?? []) if (byKey.has(r) && !out.has(r)) stack.push(r);
+  }
+  return out;
+}
+
+/** ข้อที่ต้องเอาออกด้วยเมื่อเอา keys ออก (ข้อที่ requires ข้อเหล่านั้น ตามสาย) */
+function withDependents(keys: Iterable<string>, items: PlanItem[]): Set<string> {
+  const out = new Set(keys);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const it of items) {
+      if (!out.has(it.key) && (it.requires ?? []).some((r) => out.has(r))) { out.add(it.key); grew = true; }
+    }
+  }
+  return out;
+}
+
+/**
+ * ติ๊ก/เอาออกหนึ่งข้อ → ชุดใหม่ (ไม่แก้ชุดเดิม) · ติ๊กข้อที่อ้างครู/วิชาที่ยังไม่มี → ติ๊กข้อทะเบียนที่ต้องใช้ให้ด้วย (แบบข้อ 4.2 "แสดงให้เห็น") ·
+ * เอาข้อทะเบียนออก → ข้อที่พึ่งมันออกด้วย (เซิร์ฟเวอร์ใส่ข้อที่ต้องใช้ให้เองอยู่แล้ว — หน้าจอต้องไม่บอกว่าไม่ได้ติ๊กทั้งที่จะถูกเขียน) ·
+ * เอาข้อที่พึ่งออก ข้อทะเบียนยังติ๊กอยู่ (เอาออกเองได้) · รหัสที่ไม่มีในหน้าเทียบ = ไม่เปลี่ยน
+ */
+export function toggleWithRequires(selected: ReadonlySet<string>, items: PlanItem[], key: string): Set<string> {
+  const next = new Set(selected);
+  if (!items.some((it) => it.key === key)) return next;
+  if (next.has(key)) {
+    for (const k of withDependents([key], items)) next.delete(k);
+  } else {
+    for (const k of withRequired([key], items)) next.add(k);
+  }
+  return next;
+}
+
+/** "เลือกทั้งกอง": on = ติ๊กทุกข้อของกอง + ข้อทะเบียนที่ต้องใช้ · off = เอาทุกข้อของกองออก + ข้อที่พึ่งข้อเหล่านั้น */
+export function togglePile(selected: ReadonlySet<string>, items: PlanItem[], pile: string, on: boolean): Set<string> {
+  const next = new Set(selected);
+  const keys = items.filter((it) => it.pile === pile).map((it) => it.key);
+  if (on) for (const k of withRequired(keys, items)) next.add(k);
+  else for (const k of withDependents(keys, items)) next.delete(k);
+  return next;
+}
+
+/** ข้อที่ติ๊กอยู่ซึ่งต้องใช้ข้อ key (ตามลำดับข้อ) — บอกบนข้อทะเบียนว่าทำไมถูกติ๊ก และอะไรจะหลุดถ้าเอาออก */
+export function requiredBy(selected: ReadonlySet<string>, items: PlanItem[], key: string): string[] {
+  return items.filter((it) => selected.has(it.key) && (it.requires ?? []).includes(key)).map((it) => it.key);
+}
+
+/**
+ * ปุ่ม "ยืนยัน N ข้อ" กดได้ไหม — ข้อความไทยของสิ่งที่ยังขาด หรือ null
+ * ลำดับ: ไม่ได้เลือกรอบ → รอบใช้ไม่ได้ → ไม่ได้ติ๊ก → ไม่ได้กรอกรหัส (ช่องว่างล้วนนับว่าไม่ได้กรอก เหมือนเซิร์ฟเวอร์)
+ */
+export function planUpdateError(
+  round: Pick<PlanRound, "label" | "usable"> | null, selected: ReadonlySet<string>, code: string,
+): string | null {
+  if (round === null) return "เลือกรอบอัตรากำลังก่อน";
+  if (!round.usable) return `รอบ ${round.label} ยังใช้อัปเดตแผนไม่ได้ — แก้ตามเหตุที่บอกไว้ก่อน แล้วกด “ดูใหม่”`;
+  if (selected.size === 0) return PLAN_UPDATE_NONE;
+  if (code.trim() === "") return PLAN_UPDATE_CODE_MISSING;
+  return null;
+}
+
+/** ป้ายในตัวเลือกรอบ: "ภาคเรียน 2/2569 (แก้กลางเทอม) · ใช้ได้" */
+export function planRoundOption(r: PlanRound): string {
+  return `ภาคเรียน ${r.label}${r.amending_since ? " (แก้กลางเทอม)" : ""} · ${r.usable ? "ใช้ได้" : "ยังใช้ไม่ได้"}`;
+}
+
+/**
+ * กดยืนยันแล้วไม่สำเร็จ → ข้อความ และ again = กดใหม่ได้เลยหลังแก้ (เซิร์ฟเวอร์ปฏิเสธก่อนทำอะไร: 400 · 403 รหัสผิด · 429 · 503 ไทย)
+ * ที่เหลือ (409 หน้าเทียบเก่า/มีคนแก้ระหว่างกด/เหตุของรอบ · 404 · 500 · ไม่ได้คำตอบ) ต้องกด "ดูใหม่" ก่อน — token ผูกกับการอัปเดต
+ * ครั้งล่าสุด หน้าเทียบใหม่จึงบอกเองว่าอัปเดตไปแล้วหรือยัง และการกดซ้ำด้วยหน้าเดิมไม่มีทางเขียนซ้ำ
+ */
+export function planUpdateFailure(e: unknown): { text: string; again: boolean } {
+  const status = (e as { response?: { status?: number } })?.response?.status;
+  const thai = serverThai(e);
+  if (status === 400 || status === 403 || status === 429 || (status === 503 && thai !== null)) {
+    return { text: termErrorText(e, "อัปเดตแผนไม่สำเร็จ"), again: true };
+  }
+  if ((status === 409 || status === 404) && thai !== null) return { text: thai, again: false };
+  if (thai !== null) return { text: `${thai} — กด “ดูใหม่” เพื่อดูหน้าเทียบล่าสุดก่อนลองอีกครั้ง`, again: false };
+  return {
+    text: "ไม่ได้รับคำตอบที่แน่ชัดจากเซิร์ฟเวอร์ — กด “ดูใหม่” เพื่อดูว่าอัปเดตไปแล้วหรือยัง ก่อนลองอีกครั้ง",
+    again: false,
+  };
+}
+
+/** ผลหลังอัปเดต — picked = จำนวนข้อที่ติ๊กเอง (ที่เหลือใน applied คือข้อทะเบียนที่ระบบติ๊กให้) · closing = รอบที่แก้กลางเทอมกลับเป็นปิด */
+export function planUpdateOutcome(r: PlanUpdateResult, picked: number, closing: boolean): string {
+  const extra = r.applied.length - picked;
+  return `อัปเดตแผนแล้ว: ยอมรับ ${thaiNum(r.applied.length)} ข้อ`
+    + (extra > 0 ? ` (รวมข้อทะเบียนที่ระบบติ๊กให้ ${thaiNum(extra)} ข้อ)` : "")
+    + ` · ไม่ยอมรับ ${thaiNum(r.skipped.length)} ข้อ`
+    + (r.todos > 0 ? ` · รายการงานใหม่ ${thaiNum(r.todos)} ข้อ` : " · ไม่มีรายการงานใหม่")
+    + " — คาบที่ลงไว้ไม่ถูกแตะ" + (closing ? " · รอบกลับเป็นปิดแล้ว" : "");
+}
+
+/** อ่านรอบสำหรับอัปเดตแผนไม่ได้ → บรรทัดเล็ก · 404 = เซิร์ฟเวอร์รุ่นก่อนไม่มี route นี้ (เงียบ) */
+export function planRoundsNote(e: unknown): string | null {
+  if ((e as { response?: { status?: number } })?.response?.status === 404) return null;
+  const why = termErrorText(e, "");
+  return `อ่านรอบอัตรากำลังสำหรับอัปเดตแผนไม่ได้${why ? ` (${why})` : ""} — กด “โหลดใหม่” เพื่อลองอีกครั้ง`;
+}
+
+/** ป้ายชนิดของข้องาน (kind ที่ plan_diff สร้าง — ตัวทดสอบเทียบ) */
+export const TODO_KIND_TEXT: Record<string, string> = {
+  missing: "ขาดคาบ",
+  over: "เกินแผน",
+  teacher: "ยังเป็นครูเดิม",
+  set: "คาบเสรี/กิจกรรม",
+};
+
+/** นับข้อค้าง/เรียบร้อย (เรียบร้อยรวมข้อที่ซ่อนแล้ว) — ตัวเลขค้างบนแผงเทอม */
+export function todoSummary(todos: Pick<PlanTodo, "state">[]): { open: number; resolved: number } {
+  const open = todos.filter((t) => t.state === "open").length;
+  return { open, resolved: todos.length - open };
+}
+
+/**
+ * แยกแสดง (คำตัดสินผู้คุมข้อ 3): ข้อค้างแสดงเสมอ (รวมข้อที่เคยกด "ทำแล้ว" แต่ปัญหากลับมา) · เรียบร้อยที่ยังไม่ซ่อน · ซ่อน (เรียบร้อยและกด "ทำแล้ว")
+ */
+export function todoView<T extends Pick<PlanTodo, "state" | "done">>(todos: T[]): { open: T[]; resolved: T[]; hidden: T[] } {
+  return {
+    open: todos.filter((t) => t.state === "open"),
+    resolved: todos.filter((t) => t.state === "resolved" && !t.done),
+    hidden: todos.filter((t) => t.state === "resolved" && t.done),
+  };
+}
+
+/**
+ * ปุ่มของหนึ่งข้อ: done = "ทำแล้ว" (ข้อที่เรียบร้อยแล้ว → ซ่อน · ชนิด set ซึ่งไม่มีเงื่อนไขอัตโนมัติ → ทำให้เรียบร้อย) ·
+ * undo = "เอากลับมา" (ข้อที่ซ่อนอยู่) · ข้อค้างชนิดอื่นไม่มีปุ่ม — หายเองเมื่อแก้ในหน้าจัดคาบ ซ่อนไว้ไม่ได้
+ */
+export function todoActions(t: Pick<PlanTodo, "state" | "done" | "kind">): { done: boolean; undo: boolean } {
+  if (t.state === "resolved") return { done: !t.done, undo: t.done };
+  return { done: t.kind === "set" && !t.done, undo: false };
+}
+
 /** ชื่อไฟล์ดาวน์โหลดของเทอม — "/" ใช้ในชื่อไฟล์ไม่ได้ */
 export function termDownloadName(t: Pick<TermMeta, "label">): string {
   return `ตารางเรียน-เทอม-${t.label.replace(/[\\/:*?"<>|]/g, "-")}.json`;

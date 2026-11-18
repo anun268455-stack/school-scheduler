@@ -19,6 +19,11 @@ import {
   roundPreviewRows, roundSelectable, roundsLoadNote, runningTerm, type RoundPreview, type RoundReport, type TermRound,
 } from "../../frontend/src/utils/terms.ts";
 import {
+  groupItems, PILE_HINT, PILE_TEXT, PILES, PLAN_UPDATE_CODE_MISSING, PLAN_UPDATE_NONE, PLAN_UPDATE_STALE, planRoundOption,
+  planRoundsNote, planUpdateError, planUpdateFailure, planUpdateOutcome, requiredBy, TODO_KIND_TEXT, todoActions, todoSummary,
+  todoView, togglePile, toggleWithRequires, type PlanItem, type PlanRound, type PlanTodo,
+} from "../../frontend/src/utils/terms.ts";
+import {
   blockedReason, gateRequest, setWriteBlock, WriteBlocked,
 } from "../../frontend/src/api/writeGate.ts";
 import { readFileSync } from "node:fs";
@@ -542,6 +547,141 @@ eq(termFieldsLocked(false, [ACTIVE]), false, "ไม่มีฐานข้อ�
                           "ปลดล็อก");
   ok(w.text.startsWith("ปลดล็อกเทอม 1/2569 แล้ว") && w.text.includes("ครู 1 คน · วิชา 1 วิชา"), "ต่อท้ายข้อความ workload");
   eq(createOutcome({ ...base, workload: [] }, "ปลดล็อก").text, createOutcome(base, "ปลดล็อก").text, "ว่าง = เหมือนเดิม");
+}
+
+// ── ทาง ข.: อัปเดตแผนกลางเทอมจากรอบอัตรากำลัง (หน้าต่างอัปเดต · รายการงาน) ─────────────────────
+{
+  const src = readFileSync(new URL("../../mock_api.py", import.meta.url), "utf8");
+  const spec = readFileSync(new URL("../../docs/superpowers/specs/2026-11-18-workload-midterm-update-design.md", import.meta.url), "utf8");
+  const diffSrc = readFileSync(new URL("../../plan_diff.py", import.meta.url), "utf8");
+
+  // ชื่อกองเป็นของแบบข้อ 4.2 ตรงตัว · ลำดับเดียวกับ PILES ของ plan_diff.py (ลำดับที่เซิร์ฟเวอร์เรียงข้อ)
+  eq(PILE_TEXT, { registry: "ข้อมูลครู/วิชา", new: "แถวใหม่", weekly: "คาบเปลี่ยน", teacher: "เปลี่ยนครู", removed: "แถวที่หายไป",
+                  sets: "คาบเสรี/กิจกรรม" }, "ชื่อกองตามแบบข้อ 4.2");
+  for (const t of Object.values(PILE_TEXT)) ok(spec.includes(`| **${t}** |`), `ชื่อกอง ${t} ไม่อยู่ในตารางของแบบข้อ 4.2`);
+  const piles = /^PILES = \(([^)]*)\)/m.exec(diffSrc);
+  ok(piles !== null, "หา PILES ใน plan_diff.py ไม่เจอ");
+  eq([...PILES], [...piles![1].matchAll(/"(\w+)"/g)].map((m) => m[1]), "ลำดับกองเดียวกับ plan_diff.PILES");
+  eq(Object.keys(PILE_TEXT), [...PILES], "PILE_TEXT เรียงตามกอง");
+  ok(PILES.every((p) => /[฀-๿]/.test(PILE_HINT[p])), "ทุกกองมีคำอธิบายไทย");
+
+  // ข้อความเดียวกับเซิร์ฟเวอร์ (ตัวทดสอบเทียบกับ mock_api.py)
+  const constant = (name: string): string => {
+    const m = new RegExp(`^${name} = "([^"]+)"`, "m").exec(src);
+    ok(m !== null, `หา ${name} ใน mock_api.py ไม่เจอ`);
+    return m![1];
+  };
+  eq(PLAN_UPDATE_NONE, constant("PLAN_UPDATE_NONE"), "ไม่ติ๊กเลย");
+  eq(PLAN_UPDATE_CODE_MISSING, constant("PLAN_UPDATE_CODE_MISSING"), "ไม่ได้กรอกรหัส");
+  eq(PLAN_UPDATE_STALE, constant("PLAN_UPDATE_STALE"), "หน้าเทียบเก่า");
+
+  const it = (key: string, pile: string, requires: string[] = [], p: Partial<PlanItem> = {}): PlanItem => ({
+    key, pile, label: `ข้อ ${key}`, placed: 0, effect: null, requires, auto: true, ...p,
+  });
+  const R1 = "registry:teacher:144", R2 = "registry:subject:9", T = "teacher:2:20:197", N = "new:5:184:144",
+    W = "weekly:1:184:1056", S = "sets:edit:1";
+  const ITEMS = [it(W, "weekly"), it(S, "sets", [], { auto: false }), it(R1, "registry"), it(T, "teacher", [R1]),
+                 it(N, "new", [R1, R2]), it(R2, "registry")];
+
+  // แยกกองตามลำดับของแบบ (ไม่ขึ้นกับลำดับที่ส่งมา) · ในกองคงลำดับเดิม · กองว่างไม่ขึ้น · กองที่ไม่รู้จักไปท้ายสุด
+  const groups = groupItems(ITEMS);
+  eq(groups.map((g) => [g.pile, g.label, g.items.map((x) => x.key)]),
+     [["registry", "ข้อมูลครู/วิชา", [R1, R2]], ["new", "แถวใหม่", [N]], ["weekly", "คาบเปลี่ยน", [W]],
+      ["teacher", "เปลี่ยนครู", [T]], ["sets", "คาบเสรี/กิจกรรม", [S]]], "แยกกอง");
+  eq(groupItems([]), [], "ไม่มีข้อ = ไม่มีกอง (หน้าเทียบว่าง)");
+  eq(groupItems([it("x:1", "odd"), it(W, "weekly")]).map((g) => [g.pile, g.label]), [["weekly", "คาบเปลี่ยน"], ["odd", "อื่น ๆ"]],
+     "กองที่ไม่รู้จักไปท้ายสุด ไม่หาย");
+
+  // ติ๊กข้อที่ต้องใช้ข้อทะเบียน → ติ๊กข้อทะเบียนให้ด้วย · เอาข้อทะเบียนออก → ข้อที่พึ่งมันออกด้วย · ไม่แก้ชุดที่ส่งเข้ามา
+  const none = new Set<string>();
+  const s1 = toggleWithRequires(none, ITEMS, T);
+  eq([...s1].sort(), [R1, T].sort(), "ติ๊กเปลี่ยนครู → ติ๊กสร้างครูให้");
+  eq(none.size, 0, "ไม่แก้ชุดเดิม");
+  const s2 = toggleWithRequires(s1, ITEMS, N);
+  eq([...s2].sort(), [R1, R2, T, N].sort(), "ติ๊กแถวใหม่ → ติ๊กครูและวิชาที่ต้องสร้าง");
+  eq([...toggleWithRequires(s2, ITEMS, R1)].sort(), [R2], "เอาสร้างครูออก → เปลี่ยนครูและแถวใหม่ที่ใช้ครูนั้นออกด้วย");
+  eq([...toggleWithRequires(s1, ITEMS, T)], [R1], "เอาข้อที่พึ่งออก ข้อทะเบียนยังติ๊กอยู่ (เอาออกเองได้)");
+  eq([...toggleWithRequires(none, ITEMS, W)], [W], "ข้อที่ไม่ต้องใช้อะไร");
+  eq([...toggleWithRequires(none, ITEMS, "ไม่มีข้อนี้")], [], "รหัสที่ไม่มีในหน้าเทียบ = ไม่เปลี่ยน");
+  eq([...toggleWithRequires(none, [it(T, "teacher", [R1])], T)], [T], "ข้อทะเบียนที่ไม่อยู่ในหน้าเทียบไม่ถูกเติม");
+  eq(requiredBy(s2, ITEMS, R1), [T, N], "ข้อที่เลือกซึ่งต้องใช้ข้อทะเบียนนี้ (ตามลำดับข้อ)");
+  eq(requiredBy(s2, ITEMS, W), [], "ไม่มีใครต้องใช้");
+
+  // เลือกทั้งกอง: ติ๊กทุกข้อของกอง + ข้อทะเบียนที่ต้องใช้ · เอาออกทั้งกอง: ข้อที่พึ่งข้อในกองนั้นออกด้วย
+  eq([...togglePile(none, ITEMS, "teacher", true)].sort(), [R1, T].sort(), "ทั้งกองเปลี่ยนครู");
+  eq([...togglePile(none, ITEMS, "registry", true)].sort(), [R1, R2].sort(), "ทั้งกองทะเบียน");
+  eq([...togglePile(s2, ITEMS, "registry", false)], [], "เอากองทะเบียนออก → ข้อที่พึ่งออกหมด");
+  eq([...togglePile(new Set([W, S]), ITEMS, "sets", false)], [W], "เอาออกทั้งกองเฉพาะกองนั้น");
+  eq([...togglePile(none, ITEMS, "removed", true)], [], "กองที่ไม่มีข้อ");
+
+  // ปุ่มยืนยันกดได้ไหม: เลือกรอบ → รอบใช้ได้ → ติ๊กอย่างน้อยหนึ่งข้อ → กรอกรหัส (ช่องว่างล้วน = ไม่ได้กรอก เหมือนเซิร์ฟเวอร์)
+  const PR = (p: Partial<PlanRound> = {}): PlanRound => ({ id: 1, label: "2/2569", status: "closed", amending_since: null,
+    exported_label: null, usable: true, reasons: [], ...p });
+  eq(planUpdateError(null, new Set([W]), "รหัส"), "เลือกรอบอัตรากำลังก่อน", "ไม่ได้เลือกรอบ");
+  ok((planUpdateError(PR({ usable: false }), new Set([W]), "รหัส") ?? "").includes("ยังใช้อัปเดตแผนไม่ได้"), "รอบใช้ไม่ได้");
+  eq(planUpdateError(PR({ usable: false }), new Set(), ""), planUpdateError(PR({ usable: false }), new Set([W]), "รหัส"),
+     "รอบใช้ไม่ได้บอกก่อนเรื่องอื่น");
+  eq(planUpdateError(PR(), new Set(), "รหัส"), PLAN_UPDATE_NONE, "ไม่ติ๊กเลย");
+  eq(planUpdateError(PR(), new Set([W]), "   "), PLAN_UPDATE_CODE_MISSING, "ไม่ได้กรอกรหัส");
+  eq(planUpdateError(PR(), new Set([W]), " รหัส "), null, "พร้อมกด");
+
+  // ป้ายในตัวเลือกรอบ
+  eq(planRoundOption(PR()), "ภาคเรียน 2/2569 · ใช้ได้", "ใช้ได้");
+  eq(planRoundOption(PR({ usable: false })), "ภาคเรียน 2/2569 · ยังใช้ไม่ได้", "ใช้ไม่ได้");
+  eq(planRoundOption(PR({ status: "filling", amending_since: "2026-11-18T06:39:37+00:00" })),
+     "ภาคเรียน 2/2569 (แก้กลางเทอม) · ใช้ได้", "รอบที่เปิดให้แก้กลางเทอม");
+
+  // กดแล้วไม่สำเร็จ: แก้แล้วกดใหม่ได้ (400 403 429 503 ไทย — ปฏิเสธก่อนทำอะไร) · ที่เหลือต้อง "ดูใหม่" ก่อน (หน้าเทียบเก่า ·
+  // มีคนแก้ระหว่างกด · ล้มกลางทาง · ไม่ได้คำตอบ — token ผูกกับการอัปเดตครั้งล่าสุด ดูใหม่แล้วจะเห็นว่าอัปเดตไปหรือยัง)
+  const err = (status: number, detail?: unknown) => ({ response: { status, data: { detail } } });
+  eq(planUpdateFailure(err(403, "รหัสผู้ดูแลระบบของเว็บลงอัตรากำลังไม่ถูกต้อง")),
+     { text: "รหัสผู้ดูแลระบบของเว็บลงอัตรากำลังไม่ถูกต้อง", again: true }, "รหัสผิด กดใหม่ได้");
+  eq(planUpdateFailure(err(429, "ลองผิดหลายครั้ง รอสักครู่")).again, true, "ผิดเกินเกณฑ์");
+  eq(planUpdateFailure(err(400, PLAN_UPDATE_NONE)), { text: PLAN_UPDATE_NONE, again: true }, "400");
+  eq(planUpdateFailure(err(503, "ติดต่อฐานข้อมูลไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง")).again, true, "503 ไทย");
+  eq(planUpdateFailure(err(503, "Service Unavailable")).again, false, "503 ของตัวกลาง");
+  eq(planUpdateFailure(err(409, PLAN_UPDATE_STALE)), { text: PLAN_UPDATE_STALE, again: false }, "หน้าเทียบเก่า → ดูใหม่");
+  eq(planUpdateFailure(err(409, "มีการแก้ข้อมูลในโปรแกรมจัดตาราง…")).again, false, "409 อื่น → ดูใหม่");
+  eq(planUpdateFailure(err(404, "ไม่พบรอบ")).again, false, "404 → ดูใหม่");
+  const f500 = planUpdateFailure(err(500, "อัปเดตแผนไม่สำเร็จ — ยังไม่ได้อัปเดต ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง"));
+  ok(f500.text.startsWith("อัปเดตแผนไม่สำเร็จ") && f500.text.includes("ดูใหม่") && !f500.again, `500 — ได้ ${f500.text}`);
+  const fNet = planUpdateFailure(new Error("Network Error"));
+  ok(!fNet.again && fNet.text.includes("ไม่ได้รับคำตอบ") && fNet.text.includes("ดูใหม่") && !/Network/.test(fNet.text),
+     `ไม่ได้คำตอบ — ได้ ${fNet.text}`);
+  ok(!/undefined|null/.test(planUpdateFailure(err(502, "<html>")).text), "ตัวกลางตอบแทน");
+
+  // ผลหลังอัปเดต: นับข้อที่ระบบติ๊กให้ (ข้อทะเบียนที่จำเป็น) · รายการงานใหม่ · บอกว่าคาบที่ลงไว้ไม่ถูกแตะ · รอบที่แก้กลางเทอมกลับเป็นปิด
+  const done = planUpdateOutcome({ applied: [R1, T, W], skipped: [S], todos: 2, update_id: 5 }, 2, false);
+  eq(done, "อัปเดตแผนแล้ว: ยอมรับ 3 ข้อ (รวมข้อทะเบียนที่ระบบติ๊กให้ 1 ข้อ) · ไม่ยอมรับ 1 ข้อ · รายการงานใหม่ 2 ข้อ "
+     + "— คาบที่ลงไว้ไม่ถูกแตะ", "ข้อความผล");
+  eq(planUpdateOutcome({ applied: [W], skipped: [], todos: 0, update_id: 6 }, 1, true),
+     "อัปเดตแผนแล้ว: ยอมรับ 1 ข้อ · ไม่ยอมรับ 0 ข้อ · ไม่มีรายการงานใหม่ — คาบที่ลงไว้ไม่ถูกแตะ · รอบกลับเป็นปิดแล้ว",
+     "ไม่มีข้อที่ระบบติ๊กให้ · รอบที่แก้กลางเทอมกลับเป็นปิด");
+
+  // อ่านรอบไม่ได้: บรรทัดเล็ก (เซิร์ฟเวอร์รุ่นก่อน 404 = เงียบ)
+  eq(planRoundsNote(err(404, "Not Found")), null, "เซิร์ฟเวอร์รุ่นก่อน");
+  ok((planRoundsNote(err(503, "ต่อฐานข้อมูลไม่ได้ในตอนนี้")) ?? "").includes("ต่อฐานข้อมูลไม่ได้ในตอนนี้"), "503 บอกเหตุ");
+  ok(!(planRoundsNote(new Error("Network Error")) ?? "x").includes("Network"), "ไม่ส่งข้อความอังกฤษ");
+
+  // รายการงาน (คำตัดสินผู้คุมข้อ 3): ข้อค้างแสดงเสมอ · "ทำแล้ว" = ซ่อนข้อที่เรียบร้อย (ชนิด set: ทำให้เรียบร้อย) · ข้อที่ซ่อนเอากลับมาได้
+  const td = (id: number, kind: string, state: "open" | "resolved", isDone: boolean): PlanTodo => ({
+    id, update_id: 1, kind, group_id: 1, subject_id: kind === "set" ? null : 20, text: `ข้อ ${id}`, done: isDone, state,
+    detail: state === "open" ? "ยังขาด 1 คาบ" : "เรียบร้อย",
+  });
+  const TODOS = [td(1, "missing", "open", false), td(2, "teacher", "resolved", false), td(3, "over", "resolved", true),
+                 td(4, "set", "open", false), td(5, "set", "resolved", true), td(6, "missing", "open", true)];
+  eq(todoSummary(TODOS), { open: 3, resolved: 3 }, "นับค้าง/เรียบร้อย");
+  eq(todoSummary([]), { open: 0, resolved: 0 }, "ไม่มีรายการงาน");
+  const view = todoView(TODOS);
+  eq([view.open.map((t) => t.id), view.resolved.map((t) => t.id), view.hidden.map((t) => t.id)], [[1, 4, 6], [2], [3, 5]],
+     "ค้าง (รวมข้อที่เคยกดทำแล้วแต่ปัญหากลับมา) · เรียบร้อยที่ยังไม่ซ่อน · ซ่อน");
+  eq(TODOS.map((t) => todoActions(t)), [
+    { done: false, undo: false }, { done: true, undo: false }, { done: false, undo: true },
+    { done: true, undo: false }, { done: false, undo: true }, { done: false, undo: false },
+  ], "ปุ่มของแต่ละข้อ: ข้อค้างที่ตรวจเองได้ไม่มีปุ่ม (หายเองเมื่อแก้) · ชนิด set ค้าง = ทำแล้ว · เรียบร้อย = ทำแล้ว (ซ่อน) · ซ่อน = เอากลับมา");
+  const kinds = [...diffSrc.matchAll(/"kind": "(\w+)"/g)].map((m) => m[1]);
+  for (const k of new Set(kinds)) ok(/[฀-๿]/.test(TODO_KIND_TEXT[k] ?? ""), `ชนิดรายการงาน ${k} ไม่มีป้ายไทย`);
+  eq(Object.keys(TODO_KIND_TEXT).sort(), [...new Set(kinds)].sort(), "ป้ายครบทุกชนิดที่ plan_diff สร้าง");
 }
 
 console.log(`ALL PASS (${n})`);

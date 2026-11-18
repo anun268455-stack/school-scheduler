@@ -7,6 +7,10 @@
  *
  * เรื่องที่ต้องไม่พลาดคือ “ปลดล็อก”: แก้ได้ทีละหนึ่งเทอม ปลดล็อกเทอมเก่าจึงปิดเทอมที่ใช้
  * อยู่ไปด้วย หน้าต่างยืนยันบอกชื่อและจำนวนคาบของเทอมนั้นก่อนให้พิมพ์ชื่อเทอมยืนยัน
+ *
+ * ทาง ข. (อัปเดตแผนกลางเทอม): ปุ่ม “อัปเดตแผนจากรอบอัตรากำลัง” ขึ้นเมื่อมีรอบของภาคเรียนที่เปิดอยู่ (เซิร์ฟเวอร์ตอบ [] เมื่อไม่มี
+ * หรือเทอมที่เปิดอยู่ปิดแล้ว — ไม่มีปุ่มที่กดแล้วได้ 409 เฉย ๆ) และไม่ได้กำลังเปิดดูเทอมที่ปิด · รายการงานที่ต้องไปแก้เองอยู่ท้ายแผง
+ * พร้อมตัวเลขค้างข้างปุ่ม — อ่านและกด “ทำแล้ว” ได้อย่างเดียว ไม่แตะหน้าจัดคาบ
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
@@ -14,10 +18,12 @@ import { useTimetableStore } from "../../store/timetableStore";
 import * as api from "../../api/client";
 import { ModalShell } from "../common/ModalShell";
 import { NewTermModal } from "./NewTermModal";
+import { PlanTodoPanel } from "./PlanTodoPanel";
+import { PlanUpdateModal } from "./PlanUpdateModal";
 import {
-  activeTerm, createLatch, createOutcome, formatBytes, lastEditText, sortTerms,
-  TERM_PRINT_EVENT, termDownloadName, termErrorText, termStatusText, TERMS_UNAVAILABLE,
-  unlockConfirmed, unlockNotice, type TermMeta,
+  activeTerm, createLatch, createOutcome, formatBytes, lastEditText, planRoundsNote, sortTerms,
+  TERM_PRINT_EVENT, termDownloadName, termErrorText, termStatusText, TERMS_UNAVAILABLE, todoSummary,
+  unlockConfirmed, unlockNotice, type PlanRound, type PlanTodo, type TermMeta,
 } from "../../utils/terms";
 
 /** หัวข้อของหน้า — รูปเดียวกับ Section ใน pages/Dashboard (ไฟล์นั้นนำเข้าไฟล์นี้ จึงเขียนซ้ำ ไม่นำเข้ากลับ) */
@@ -142,6 +148,17 @@ export const TermsPanel: React.FC<Props> = ({ onNav }) => {
   const [note, setNote] = useState<{ text: string; tone: "info" | "warn" | "error" } | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  // ── ทาง ข.: รอบสำหรับอัปเดตแผน และรายการงาน — โหลดเมื่อเปิดแผง กด “โหลดใหม่” หลังอัปเดต และเมื่อเทอมเปลี่ยน (สร้าง/ปลดล็อก) ──
+  const loadAll = useTimetableStore((s) => s.loadAll);
+  const [planTick, setPlanTick] = useState(0);
+  const [planRounds, setPlanRounds] = useState<PlanRound[] | null>(null);
+  const [planNote, setPlanNote] = useState<string | null>(null);
+  const [planOpen, setPlanOpen] = useState(false);
+  const [todos, setTodos] = useState<PlanTodo[] | null>(null);
+  const [todoState, setTodoState] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
+  const todosRef = useRef<HTMLDivElement>(null);
+  const [focusTodos, setFocusTodos] = useState(false);
+
   const reload = useCallback(async () => {
     setBusy("load");
     try { await loadTerms(); } finally { setBusy(null); }
@@ -150,6 +167,43 @@ export const TermsPanel: React.FC<Props> = ({ onNav }) => {
   useEffect(() => { void reload(); }, [reload]);
 
   const rows = sortTerms(terms);
+  // เทอมที่เปิดอยู่เปลี่ยน (สร้างเทอมใหม่ · ปลดล็อก) = รอบของภาคเรียนที่เปิดอยู่และรายการงานเปลี่ยนตาม ·
+  // รอให้รายการเทอมโหลดเสร็จก่อน (กด “โหลดใหม่” = โหลดรอบและรายการงานใหม่ด้วย) — หน้าเทียบของทุกรอบคำนวณที่เซิร์ฟเวอร์ ไม่ยิงซ้ำ
+  const termKey = rows.map((t) => `${t.id}:${t.status}`).join(",");
+  const loadingTerms = busy === "load";
+
+  const loadTodos = useCallback(async () => {
+    setTodoState((s) => ({ ...s, loading: true }));
+    try {
+      const list = await api.fetchPlanTodos();
+      setTodos(Array.isArray(list) ? list : []);
+      setTodoState({ loading: false, error: null });
+    } catch (e) {
+      // เซิร์ฟเวอร์รุ่นก่อน (404) = ไม่มีรายการงาน · อื่น ๆ คงรายการเดิมไว้พร้อมข้อความ
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      setTodoState({ loading: false, error: status === 404 ? null : termErrorText(e, "อ่านรายการงานไม่สำเร็จ") });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!available || loadingTerms) return;
+    let alive = true;
+    api.fetchPlanRounds()
+      .then((list) => { if (alive) { setPlanRounds(Array.isArray(list) ? list : []); setPlanNote(null); } })
+      .catch((e) => { if (alive) { setPlanRounds(null); setPlanNote(planRoundsNote(e)); } });
+    void loadTodos();
+    return () => { alive = false; };
+  }, [available, loadingTerms, termKey, planTick, loadTodos]);
+
+  useEffect(() => {
+    if (focusTodos && todosRef.current) {
+      todosRef.current.scrollIntoView?.({ block: "start", behavior: "smooth" });
+      setFocusTodos(false);
+    }
+  }, [focusTodos, todos]);
+
+  const openTodos = todos ? todoSummary(todos).open : 0;
+  const canPlan = !viewing && planRounds !== null && planRounds.length > 0;
 
   const open = async (t: TermMeta, thenPrint: boolean) => {
     setBusy(t.id); setErr(null); setNote(null);
@@ -204,10 +258,24 @@ export const TermsPanel: React.FC<Props> = ({ onNav }) => {
     <TermsSection
       title="เทอม 🗓"
       action={
-        <button onClick={() => setCreating(true)}
-          className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 font-medium">
-          ＋ สร้างเทอมใหม่
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {openTodos > 0 && (
+            <button onClick={() => setFocusTodos(true)} data-testid="todo-badge"
+              className="px-2.5 py-1.5 text-xs rounded border border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 font-medium">
+              รายการงาน · ค้าง {openTodos.toLocaleString("th-TH")}
+            </button>
+          )}
+          {canPlan && (
+            <button onClick={() => { setPlanOpen(true); setNote(null); setErr(null); }}
+              className="px-3 py-1.5 border border-blue-300 text-blue-700 bg-white text-sm rounded hover:bg-blue-50 font-medium">
+              อัปเดตแผนจากรอบอัตรากำลัง
+            </button>
+          )}
+          <button onClick={() => setCreating(true)}
+            className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 font-medium">
+            ＋ สร้างเทอมใหม่
+          </button>
+        </div>
       }
     >
       <div className="space-y-2">
@@ -312,8 +380,36 @@ export const TermsPanel: React.FC<Props> = ({ onNav }) => {
           </p>
         )}
         {err && <p className="text-xs text-red-600">{err}</p>}
+        {planNote && <p className="text-[11px] text-gray-400" data-testid="plan-rounds-note">{planNote}</p>}
+        {todos === null && todoState.error && (
+          <p className="text-[11px] text-gray-400">อ่านรายการงานที่ต้องไปแก้เองไม่ได้ ({todoState.error}) — กด “โหลดใหม่” เพื่อลองอีกครั้ง</p>
+        )}
+
+        {todos !== null && todos.length > 0 && (
+          <PlanTodoPanel
+            ref={todosRef}
+            todos={todos}
+            loading={todoState.loading}
+            error={todoState.error}
+            onReload={() => void loadTodos()}
+            onChanged={(t) => setTodos((list) => list?.map((x) => (x.id === t.id ? t : x)) ?? null)}
+          />
+        )}
       </div>
 
+      {/* ไม่ผูกกับ planRounds: โหลดรอบใหม่หลังอัปเดตแล้วอ่านไม่ได้ หน้าต่างต้องไม่หายไปพร้อมผล (หน้าต่างถือรายการรอบของตัวเอง) */}
+      {planOpen && (
+        <PlanUpdateModal
+          rounds={planRounds ?? []}
+          onClose={() => setPlanOpen(false)}
+          onUpdated={() => {
+            setPlanTick((n) => n + 1);
+            // แผน ครู วิชา คาบเสรีเปลี่ยนที่เซิร์ฟเวอร์ — โหลดของสดลงร้าน (คาบไม่เปลี่ยน แต่โหลดพร้อมกันตามทางเดิมของร้าน)
+            if (!useTimetableStore.getState().viewingTerm) void loadAll();
+          }}
+          onShowTodos={() => { setPlanOpen(false); setFocusTodos(true); }}
+        />
+      )}
       {unlocking && (
         <UnlockDialog
           target={unlocking}

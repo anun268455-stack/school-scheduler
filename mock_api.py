@@ -17008,6 +17008,28 @@ def wl_rounds_amend(round_id: int, request: Request) -> dict[str, Any]:
         return _wl_round_detail(cur, row)
 
 
+_WL_PLAN_UPDATE_COLS = ("id", "round_id", "term_id", "year", "semester", "at", "by", "accepted", "rejected", "report")
+WL_PLAN_UPDATES_OF_ROUND_SQL = (f"SELECT {', '.join(_WL_PLAN_UPDATE_COLS)} FROM wl_plan_updates WHERE round_id = %s "
+                                "ORDER BY at DESC, id DESC")
+
+
+@app.get("/api/workload/rounds/{round_id}/plan-updates")
+def wl_round_plan_updates(round_id: int, request: Request) -> list[dict[str, Any]]:
+    """ประวัติการอัปเดตแผนกลางเทอมของรอบ (ทาง ข. แบบข้อ 4.5 — หน้ารอบของเว็บบอกเมื่อไหร่ · ใคร · ยอมรับ/ไม่ยอมรับกี่ข้อ) — admin ·
+    อ่านอย่างเดียว ใหม่ก่อน · [{id, round_id, term_id (ว่าง = ตอนนั้นยังไม่เคยสร้างเทอม), year, semester, at (ISO), by,
+    accepted [{key, pile, label, auto}], rejected [{key, pile, label}], report {token, todos, round_closed, writeback}}] ตามที่
+    POST /api/terms/plan-update บันทึก · ไม่เคยอัปเดต = [] · ไม่มีรอบ = 404"""
+    with _wl_db() as cur:
+        wl_require_admin(request, cur)
+        _wl_get(cur, "wl_rounds", _WL_ROUND_COLS, round_id, WL_ROUND_MISSING)
+        cur.execute(WL_PLAN_UPDATES_OF_ROUND_SQL, (round_id,))
+        out = []
+        for values in cur.fetchall():
+            row = dict(zip(_WL_PLAN_UPDATE_COLS, values))
+            out.append({**row, "at": _wl_iso(row["at"]), "accepted": row["accepted"] or [], "rejected": row["rejected"] or []})
+        return out
+
+
 # ── ขั้นที่ 2: หัวหน้ากลุ่มสาระใส่ครู · ส่ง-ตรวจผ่าน-ตีกลับ · ยอดคาบรายครู (สเปกขั้นที่ 2 ข้อ 4.4 ข. ค. และ 4.5) ──────────
 # หัวหน้ากลุ่มสาระแก้ได้แค่ช่องของตัวเอง (ครูผู้สอน ครูสอนร่วม ห้องปฏิบัติการ คาบคู่ หมายเหตุ ยืนยัน) ของแถว/ตัวเลือกที่บรรทัด
 # หรือตัวเลือกอยู่ในกลุ่มตัวเอง — วิชา คาบ ห้องเรียน แก้ที่หลักสูตรโดย admin · สิทธิ์ตัดสินที่ wl_can_edit ที่เดียว

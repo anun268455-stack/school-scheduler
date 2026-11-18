@@ -4,10 +4,10 @@ import { apiErrorText, listDepartments } from "../api";
 import { guessTerm, thaiDateTime, type CurriculumTerm } from "../curriculum";
 import { listTerms } from "../curriculumApi";
 import {
-  checkCloseLabel, checkRoundForm, closedRounds, currentRound, defaultOpenTerm, openBlocker, previewLines, previewWarnings,
-  roundActions, roundLabel, termReadiness, type Round, type RoundPreview, type Term,
+  amendAction, amendNotes, checkCloseLabel, checkRoundForm, closedRounds, currentRound, defaultOpenTerm, openBlocker,
+  previewLines, previewWarnings, roundActions, roundLabel, termReadiness, type Round, type RoundPreview, type Term,
 } from "../round";
-import { cancelRound, closeRound, createRound, listRounds, openRound, previewRound } from "../roundApi";
+import { amendRound, cancelRound, closeRound, createRound, listRounds, openRound, previewRound } from "../roundApi";
 import { Button, Card, Notice } from "../ui";
 import { useRegistryList } from "../useRegistryList";
 import { Field, inputClass } from "./registryParts";
@@ -115,6 +115,7 @@ export default function RoundsPage(props: {
     if (flash) flashRef.current?.scrollIntoView?.({ block: "nearest" });
   }, [flash]);
   const [closingId, setClosingId] = useState<number | null>(null);
+  const [amendingId, setAmendingId] = useState<number | null>(null);
 
   const list = rounds.list;
   if (list === null) {
@@ -133,6 +134,8 @@ export default function RoundsPage(props: {
   const old = closedRounds(list);
   const viewing = viewId !== null ? (old.find((r) => r.id === viewId) ?? null) : null;
   const shown = viewing ?? current;
+  // ทาง ข.: รอบที่ปิดแล้วเปิดให้แก้กลางเทอมได้ (ยืนยันก่อน) · มีรอบอื่นที่ยังไม่ปิด = บอกเหตุแทนปุ่ม
+  const amend = shown ? amendAction(shown, list) : { show: false, blocker: null };
 
   return (
     <div>
@@ -180,9 +183,25 @@ export default function RoundsPage(props: {
               {roundActions(shown.status).close && closingId !== shown.id && (
                 <Button onClick={() => setClosingId(shown.id)} disabled={working}>ปิดรอบ</Button>
               )}
+              {amend.show && !amend.blocker && amendingId !== shown.id && (
+                <Button onClick={() => setAmendingId(shown.id)} disabled={working} data-testid="amend-open">
+                  เปิดให้แก้กลางเทอม
+                </Button>
+              )}
             </>
           }
         >
+          {amend.show && amend.blocker && (
+            <p className="mb-5 max-w-3xl text-[15px] text-muted" data-testid="amend-blocker">{amend.blocker}</p>
+          )}
+          {amend.show && !amend.blocker && amendingId === shown.id && (
+            <AmendRoundBox round={shown} working={working} run={run} onCancel={() => setAmendingId(null)}
+              onDone={() => {
+                setAmendingId(null);
+                // รอบกลับเป็นรอบปัจจุบัน (เปิดให้กรอก) — ออกจากโหมดดูรอบเก่า
+                setViewId(null);
+              }} />
+          )}
           {shown.status === "preparing" && (
             <PreparingBar round={shown} working={working} run={run} onOpenCurriculum={props.onOpenCurriculum} tick={tick} />
           )}
@@ -280,6 +299,37 @@ function CloseRoundBox(props: { round: Round; working: boolean; run: Run; onCanc
         <Button onClick={props.onCancel} disabled={props.working}>ยกเลิก</Button>
       </div>
     </form>
+  );
+}
+
+// ---- ทาง ข.: เปิดรอบที่ปิดแล้วให้แก้กลางเทอม (ยืนยันก่อน · 409 ไทยของเซิร์ฟเวอร์ขึ้นบนสุดของหน้าแล้วโหลดรายการรอบใหม่) ----
+
+function AmendRoundBox(props: { round: Round; working: boolean; run: Run; onCancel: () => void; onDone: () => void }) {
+  const { round } = props;
+  const [error, setError] = useState<string | null>(null);
+  const submit = async () => {
+    const ok = await props.run(async () => {
+      const r = await amendRound(round.id);
+      return `เปิดรอบ ${r.label} ให้แก้กลางเทอมแล้ว — หัวหน้ากลุ่มสาระแก้ได้อีก · ตรวจผ่านครบแล้วกด “อัปเดตแผนจากรอบอัตรากำลัง” ในโปรแกรมจัดตารางสอน`;
+    }, setError);
+    if (ok) props.onDone();
+  };
+  return (
+    <div role="group" aria-label={`ยืนยันเปิดรอบ ${round.label} ให้แก้กลางเทอม`} data-testid="amend-round"
+      className="mb-5 max-w-3xl space-y-3 rounded-card border border-warn bg-surface p-4 sm:p-5">
+      <p className="font-semibold">เปิดรอบ {round.label} ให้แก้กลางเทอม?</p>
+      <ul className="list-disc space-y-1 pl-5 text-[15px] text-muted">
+        {amendNotes(round).map((line) => <li key={line}>{line}</li>)}
+      </ul>
+      <div className="flex flex-wrap gap-2">
+        {/* โฟกัสเริ่มที่ "ไม่เปิด" — กด Enter ต่อจากปุ่มเดิมโดยไม่ได้อ่านต้องไม่เปิดรอบ */}
+        <Button autoFocus onClick={props.onCancel} disabled={props.working}>ไม่เปิด</Button>
+        <Button variant="primary" onClick={() => void submit()} disabled={props.working} data-testid="amend-confirm">
+          {props.working ? "กำลังเปิดให้แก้..." : "ยืนยันเปิดให้แก้กลางเทอม"}
+        </Button>
+      </div>
+      {error && <p role="alert" className="text-[15px] text-bad">{error}</p>}
+    </div>
   );
 }
 
