@@ -379,6 +379,7 @@ def test_each_pile_detected():
     pool2 = next(p for p in out["pools"] if p["name"] == "วิชาเสรี ม.6/9กข")
     assert [pid for pid, _o in changed] == [pool2["id"]], changed
     assert res["writeback"]["teachers"] == [{"id": 1999, "old": None, "new": counters["teacher"] + 1}]
+    assert _todo_text_matches(out, diff) == len(diff["items"]) == 6
 
 
 # ── 4. แถวที่รอบไม่รู้จักไม่ถูกเสนอให้ลบ ───────────────────────────────────────
@@ -408,6 +409,16 @@ def test_unknown_rows_never_removed():
 # ── 5–8. เครื่องใส่ ─────────────────────────────────────────────────────────
 def _apply(live, diff, accepted, counters=None):
     return D.plan_apply(diff, live, set(accepted), counters or _counters(live))
+
+
+def _todo_text_matches(live, diff):
+    """คำตัดสินรอบแก้ 1 (I2): หน้าเทียบบอกตรงกับที่จะเขียน — ติ๊กข้อเดียว: เกิดข้องาน ⇔ ผลต่อคาบบอกว่า "รายการงาน" """
+    for it in diff["items"]:
+        res = _apply(live, diff, {it["key"]})
+        said = "รายการงาน" in (it["effect"] or "")
+        assert bool(res["todos"]) == said, (it["key"], it["pile"], it["placed"], it["effect"], res["todos"])
+    return len(diff["items"])
+
 
 
 def test_apply_only_accepted():
@@ -675,6 +686,10 @@ def test_todos_for_placed_rows():
     diff2 = _diff(live2, src2, prop2)
     wk, = _by_pile(diff2, "weekly")
     assert _apply(live2, diff2, {wk["key"]})["todos"] == [] and "ครบ" in wk["effect"]
+    # ข้อความผลต่อคาบ ⇔ ข้องาน ทุกข้อ ทั้งที่ลงคาบแล้วและยังไม่ลง
+    assert _todo_text_matches(live, diff) == 5 and _todo_text_matches(live2, diff2) == 5
+    live3, src3, prop3 = _rows_world()
+    assert _todo_text_matches(live3, _diff(live3, src3, prop3)) == 5
 
 
 # ── สอนร่วม · หลักสูตร ───────────────────────────────────────────────────────
@@ -708,6 +723,20 @@ def test_coteach_pair_changes():
     res = _apply(live, diff, {th["key"]})
     t, = res["todos"]
     assert (t["kind"], t["teacher_id"], t["fields"]) == ("teacher", 5, ["co_teacher_id"]), t
+    assert "จะเข้ารายการงาน" in th["effect"] and "ถ้าจำเป็น" not in th["effect"], th["effect"]
+    # ห้องปฏิบัติการอย่างเดียว ลงคาบแล้ว → เข้ารายการงานเช่นกัน · ยังไม่ลงคาบ → ไม่เข้า และไม่บอกว่าเข้า
+    live_r, wl_t, wl_s = _world([_req(1, 1, 1, 5, 3, room_id=30)], slots=[_slot(1, 1, 1, 5, room_id=30)])
+    src_r, prop_r = _fresh(live_r, wl_t, wl_s)
+    _row(src_r, 1, 1)["lab_room_id"] = 31
+    diff_r = _diff(live_r, src_r, prop_r)
+    th_r, = diff_r["items"]
+    assert th_r["pile"] == "teacher" and "จะเข้ารายการงาน" in th_r["effect"], th_r
+    assert _todo_text_matches(live_r, diff_r) == 1
+    live_n, wl_t, wl_s = _world([_req(1, 1, 1, 5, 3, room_id=30)])
+    src_n, prop_n = _fresh(live_n, wl_t, wl_s)
+    _row(src_n, 1, 1)["lab_room_id"] = 31
+    diff_n = _diff(live_n, src_n, prop_n)
+    assert _todo_text_matches(live_n, diff_n) == 1 and "รายการงาน" not in (diff_n["items"][0]["effect"] or "")
     assert [(r["teacher_id"], r["co_teacher_id"]) for r in res["requirements"]] == [(5, 7)]
 
 

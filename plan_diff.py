@@ -443,7 +443,7 @@ def _row_items(live: dict[str, Any], desired: dict[str, Any], unknown_cells: dic
                 if placed and l["t"][0] != d["t"][0]:
                     eff = f"ลงไว้แล้ว {placed} คาบ ยังเป็นครูเดิม ({names.t(l['t'][0])}) — จะเข้ารายการงาน"
                 elif placed:
-                    eff = f"ลงไว้แล้ว {placed} คาบ — คาบที่ลงไว้ยังเป็นครูสอนร่วม/ห้องเดิม แก้ในหน้าจัดคาบเองถ้าจำเป็น"
+                    eff = f"ลงไว้แล้ว {placed} คาบ — คาบที่ลงไว้ยังเป็นครูสอนร่วม/ห้องเดิม — จะเข้ารายการงานที่ต้องแก้เอง"
                 else:
                     eff = None
                 items.append(_item(
@@ -1044,20 +1044,26 @@ def todo_status(todos: list[dict[str, Any]], requirements: list[dict[str, Any]],
             if not lv:
                 state, detail = "resolved", "ไม่มีแถวแผนของห้องและวิชานี้แล้ว"
             else:
-                rows = [r for l in lv for r in l["rows"]]
-                ok_vals = {
-                    # แถวคู่สอนร่วมที่พับแล้วเป็นของครูสองคนสลับกันได้ จึงรับทั้งครูของแถวและครูสอนร่วมของแถว
-                    "teacher_id": {r.get("teacher_id") or None for r in rows},
-                    "co_teacher_id": {r.get("co_teacher_id") or None for r in rows} | {l["t"][1] for l in lv},
-                    "room_id": {r.get("room_id") or None for r in rows if r.get("room_id")},
-                }
+                tc = [f for f in wanted if f != "room_id"]
+
+                def same(l: dict[str, Any], s: dict[str, Any], f: str) -> bool:
+                    # คู่สอนร่วม (พับสองแถว) เทียบเป็นคู่ไม่เรียงลำดับ: คาบเก็บจากฝั่งคู่ได้ (ครู/ครูสอนร่วมสลับข้าง) แต่ครูกับครูสอนร่วม
+                    # ต้องเป็นของแถวเดียวกัน ห้ามเทียบแยกช่องกับครูทุกคนในแผน (ไม่งั้นครูที่ถูกแทนยังอยู่ในคาบแล้วขึ้นเรียบร้อย)
+                    if len(l["rows"]) == 2:
+                        return {s.get("teacher_id") or None, s.get("co_teacher_id") or None} == {l["t"][0], l["t"][1]}
+                    return (s.get(f) or None) == l["t"][0 if f == "teacher_id" else 1]
                 bad: dict[str, int] = {}
                 for s in by_cell.get(cell, []):
-                    for f in wanted:
-                        if f == "room_id" and not ok_vals["room_id"]:
-                            continue            # แผนไม่กำหนดห้อง — ไม่ตรวจ
-                        if (s.get(f) or None) not in ok_vals[f]:
+                    for f in tc:
+                        if not any(same(l, s, f) for l in lv):
                             bad[f] = bad.get(f, 0) + 1
+                    if "room_id" in wanted:
+                        # ห้อง: เทียบเฉพาะแถวแผนที่คาบนี้เป็นของ (จับคู่ด้วยครู · คู่ = ครูคนใดคนหนึ่งของคู่) · จับคู่ไม่ได้ = ข้าม
+                        # (ช่องครูรายงานแล้ว) · แถวที่จับได้แถวใดไม่กำหนดห้อง = ไม่ตรวจ
+                        mine = [l for l in lv if (s.get("teacher_id") or None) in
+                                ({l["t"][0], l["t"][1]} if len(l["rows"]) == 2 else {l["t"][0]})]
+                        if mine and all(l["t"][2] for l in mine) and (s.get("room_id") or None) not in {l["t"][2] for l in mine}:
+                            bad["room_id"] = bad.get("room_id", 0) + 1
                 if bad:
                     detail = "ยังไม่ตรงแผน: " + " · ".join(f"{field_text[f]} {n} คาบ" for f, n in bad.items())
                 else:

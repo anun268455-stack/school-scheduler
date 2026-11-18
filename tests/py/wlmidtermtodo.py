@@ -121,6 +121,50 @@ def test_teacher_todo_covers_teacher_co_teacher_and_room():
     assert _st([_todo(1, "teacher", 1, 1, teacher_id=5)], [], slots)[1][0] == "resolved"
 
 
+def test_coteach_pair_teacher_todo_matches_the_pair_not_each_seat():
+    # I1: แผนหลังเปลี่ยน [8 สอนร่วม 6],[6 สอนร่วม 8] (ครู 5 ถูกแทนด้วย 8) · คาบเก็บได้ทั้งฝั่งแถวแรกและฝั่งคู่
+    pair = [_req(1, 1, 1, 8, 3, co_teacher_id=6), _req(2, 1, 1, 6, 3, co_teacher_id=8)]
+    t_todo, co_todo = _todo(1, "teacher", 1, 1, teacher_id=8, fields=["teacher_id"]), \
+        _todo(2, "teacher", 1, 1, teacher_id=8, fields=["co_teacher_id"])
+    for slot, want in ((_slot(1, 1, 1, 6, co_teacher_id=5), "open"),      # ครู 5 ยังอยู่ในคาบ (ฝั่งคู่)
+                       (_slot(1, 1, 1, 5, co_teacher_id=6), "open"),      # ฝั่งแถวแรก
+                       (_slot(1, 1, 1, 8, co_teacher_id=6), "resolved"),
+                       (_slot(1, 1, 1, 6, co_teacher_id=8), "resolved"),  # ฝั่งคู่ ตรงแผน (สลับข้างได้)
+                       (_slot(1, 1, 1, 8), "open")):                      # ขาดครูสอนร่วมของคู่
+        got = _st([t_todo, co_todo], pair, [slot])
+        assert (got[1][0], got[2][0]) == (want, want), (slot, got)
+    # ครูสอนร่วมเปลี่ยน: แผน [5 สอนร่วม 8],[8 สอนร่วม 5] · คาบ (6, สอนร่วม 5) ยังมีครู 6 ที่ถูกแทน
+    pair2 = [_req(1, 1, 1, 5, 3, co_teacher_id=8), _req(2, 1, 1, 8, 3, co_teacher_id=5)]
+    got = _st([_todo(1, "teacher", 1, 1, teacher_id=5, fields=["co_teacher_id"])], pair2, [_slot(1, 1, 1, 6, co_teacher_id=5)])
+    assert got[1][0] == "open", got
+    got = _st([_todo(1, "teacher", 1, 1, teacher_id=5, fields=["co_teacher_id"])], pair2, [_slot(1, 1, 1, 8, co_teacher_id=5)])
+    assert got[1][0] == "resolved", got
+    # ครูกับครูสอนร่วมของแถวเดียวกันเท่านั้น: แถวเดี่ยว (5 สอนร่วม 7) คาบ (7, สอนร่วม 5) ไม่ตรงทั้งสองช่อง
+    one = [_req(1, 1, 1, 5, 3, co_teacher_id=7)]
+    got = _st([_todo(1, "teacher", 1, 1, teacher_id=5, fields=["teacher_id", "co_teacher_id"])], one,
+              [_slot(1, 1, 1, 7, co_teacher_id=5)])
+    assert got[1][0] == "open" and "ครูผู้สอน 1 คาบ" in got[1][1] and "ครูสอนร่วม 1 คาบ" in got[1][1], got
+
+
+def test_room_checked_only_against_the_plan_row_the_slot_belongs_to():
+    # m1: สองบทเรียนในห้อง+วิชาเดียว: ครู 5 มีห้องปฏิบัติการ 30 · ครู 7 ไม่กำหนดห้อง
+    reqs = [_req(1, 1, 1, 5, 2, room_id=30), _req(2, 1, 1, 7, 2)]
+    todo = [_todo(1, "teacher", 1, 1, teacher_id=5, fields=["room_id"])]
+    got = _st(todo, reqs, [_slot(1, 1, 1, 5, room_id=30), _slot(2, 1, 1, 7, room_id=12)])
+    assert got[1][0] == "resolved", got                              # คาบของครู 7 อยู่ห้องอะไรก็ได้ (แถวของมันไม่กำหนดห้อง)
+    got = _st(todo, reqs, [_slot(1, 1, 1, 5, room_id=31), _slot(2, 1, 1, 7, room_id=12)])
+    assert got[1][0] == "open" and "ห้องปฏิบัติการ 1 คาบ" in got[1][1], got
+    # คาบที่จับคู่กับแถวแผนไม่ได้ (ครู 9) ข้ามการตรวจห้อง — ช่องครูเป็นตัวรายงาน
+    got = _st(todo + [_todo(2, "teacher", 1, 1, teacher_id=5, fields=["teacher_id"])], reqs, [_slot(1, 1, 1, 9, room_id=12)])
+    assert (got[1][0], got[2][0]) == ("resolved", "open"), got
+    # คู่สอนร่วมที่มีห้อง: คาบทั้งสองฝั่งต้องอยู่ห้องของคู่
+    pair = [_req(1, 1, 1, 5, 2, co_teacher_id=6, room_id=30), _req(2, 1, 1, 6, 2, co_teacher_id=5)]
+    got = _st(todo, pair, [_slot(1, 1, 1, 5, co_teacher_id=6, room_id=30), _slot(2, 1, 1, 6, co_teacher_id=5, room_id=30)])
+    assert got[1][0] == "resolved", got
+    got = _st(todo, pair, [_slot(1, 1, 1, 6, co_teacher_id=5, room_id=12)])
+    assert got[1][0] == "open", got
+
+
 def test_plan_apply_makes_teacher_todo_with_fields():
     live = {"teachers": [{"id": 5, "name": "ครู ก"}, {"id": 6, "name": "ครู ข"}, {"id": 7, "name": "ครู ค"}],
             "subjects": [{"id": 1, "code": "ค1", "name": "คณิต"}], "groups": {1: {"id": 1, "name": "ม.1/1"}},
