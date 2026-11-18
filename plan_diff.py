@@ -290,6 +290,20 @@ def _row_out(r: dict[str, Any]) -> dict[str, Any]:
     return {k: copy.deepcopy(v) for k, v in r.items() if k != "id"}
 
 
+def _round_cell(r: dict[str, Any], lines: dict[Any, dict[str, Any]], reg: dict[str, Any]) -> tuple | None:
+    """(ห้อง, วิชาของโปรแกรม) ของแถวของรอบ — แบบเดียวกับที่ plan_from_round คิด round_cells: วิชาของแถว ไม่มีก็ของบรรทัด
+    ผ่าน subject_map · บรรทัดที่พิมพ์รหัสเองผ่าน typed_map · หาวิชาไม่ได้ → None"""
+    line = lines.get(r.get("line_id")) or {}
+    wl_sid = r.get("subject_id") if r.get("subject_id") is not None else line.get("subject_id")
+    code = line.get("code") if line else r.get("code")
+    sid = reg["subject_map"].get(wl_sid) if wl_sid is not None else reg["typed_map"].get(str(code or "").strip())
+    return (r.get("group_id"), sid) if sid is not None else None
+
+
+def _round_lines(source: dict[str, Any]) -> dict[Any, dict[str, Any]]:
+    return {ln.get("id"): ln for c in source.get("curricula") or [] for ln in c.get("lines") or []}
+
+
 def _unknown_cells(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[str, Any],
                    desired: dict[str, Any], reg: dict[str, Any]) -> dict[tuple, str]:
     """ห้อง+วิชาของแผนสดที่รอบไม่รู้จัก → เหตุ (แบบข้อ 4.2 "แถวที่รอบรู้จัก"):
@@ -313,17 +327,12 @@ def _unknown_cells(source: dict[str, Any], live: dict[str, Any], live_proposal: 
         elif cell[0] not in in_round:
             out[cell] = "ห้องนี้ไม่อยู่ในหลักสูตรของภาคเรียนในรอบ"
     rows_by_id = {r.get("id"): r for r in source.get("rows") or []}
-    lines = {ln.get("id"): ln for c in source.get("curricula") or [] for ln in c.get("lines") or []}
+    lines = _round_lines(source)
     live_by_id = {r.get("id"): r for r in live.get("requirements") or []}
     for s in desired["report"]["skipped"]:
         cell = None
         if s.get("source") == "row" and s.get("ref") in rows_by_id:
-            r = rows_by_id[s["ref"]]
-            line = lines.get(r.get("line_id")) or {}
-            wl_sid = r.get("subject_id") if r.get("subject_id") is not None else line.get("subject_id")
-            sid = reg["subject_map"].get(wl_sid) if wl_sid is not None else \
-                reg["typed_map"].get(str(line.get("code") or r.get("code") or "").strip())
-            cell = (r.get("group_id"), sid) if sid is not None else None
+            cell = _round_cell(rows_by_id[s["ref"]], lines, reg)
         elif s.get("source") in ("elective_row", "activity_row") and s.get("ref") in live_by_id:
             r = live_by_id[s["ref"]]
             cell = (r.get("group_id"), r.get("subject_id"))
@@ -706,7 +715,7 @@ def _set_items(matched: dict[str, Any], live: dict[str, Any], created: dict[tupl
     return items, unmatched
 
 
-def _set_taught(live: dict[str, Any], live_proposal: dict[str, Any], reg: dict[str, Any],
+def _set_taught(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[str, Any], reg: dict[str, Any],
                 matched: dict[str, Any]) -> Callable[[tuple], tuple | None]:
     """ห้อง+วิชาของแผนสดที่คาบเสรี/กิจกรรมสอนแทน (ขั้นที่ 2 ข้ามทั้งก้อน — served ผ่าน shares หรือ block_cells — จึงไม่มีแถวของ
     ก้อนนั้นใน live_proposal["rows"]) → วิธีเทียบ (รอบแก้ 1 ข้อ 1–2):
@@ -714,12 +723,15 @@ def _set_taught(live: dict[str, Any], live_proposal: dict[str, Any], reg: dict[s
       ได้ (ครูในแผนไม่ใช่ครูของชุด) แม้ชุดไม่เปลี่ยน — เทียบตอนนั้นคือข้อเท็จ auto ในรอบที่เพิ่งเปิด
       "ไม่เปลี่ยน" ตัดสินจากสิ่งที่กฎนั้นอ่านสำหรับก้อนนี้: ชุดที่ครอบ (คู่กันได้ทุกตัวทั้งสองฝั่ง) และครูของวิชานั้นในแต่ละชุด —
       ตัวเลือกวิชาอื่นของชุดเปลี่ยน ไม่เปลี่ยนแถวนี้ตามกฎนั้น จึงไม่เทียบ
-    - None = ชุดที่ครอบเปลี่ยน (หรือไม่ใช่ก้อนที่ชุดสอนแทน) → เทียบตามปกติด้วยแผนที่รอบต้องการ (กฎทาง ก.)
+    - None = ชุดที่ครอบเปลี่ยน หรือ**รอบมีแถวของตัวเองสำหรับก้อนนี้** (หัวหน้าเพิ่ม/แก้ในรอบ — ทาง ก. เขียนแถวนั้นแทนกฎตามรูปของแผนเดิม
+      จึงต้องเห็นในหน้าเทียบ ไม่งั้นงานในรอบหายเงียบ — รอบแก้ 2) หรือไม่ใช่ก้อนที่ชุดสอนแทน → เทียบตามปกติด้วยแผนที่รอบต้องการ (กฎทาง ก.)
     - ("unknown", เหตุ) = หาชุดที่ครอบในโปรแกรมไม่เจอ หรือชุดที่ครอบจับคู่ไม่ได้ → ตัดสินไม่ได้ ไม่เทียบ (ไม่เสนอลบ)
     ครอบ: คาบเสรี = ชุดเปิดวิชานั้นและห้องในชุดมีนักเรียนชุดเดียวกับห้องนี้ (shares_students — ห้องแม่/ห้องย่อยด้วย) ·
     กิจกรรม = ชุดเปิดวิชานั้นและห้องนี้อยู่ในชุด"""
     wl_of = {sched: wl for wl, sched in reg["subject_map"].items()}
     in_proposal = {(r.get("group_id"), r.get("subject_id")) for r in live_proposal.get("rows") or []}
+    lines = _round_lines(source)
+    in_round = {c for c in (_round_cell(r, lines, reg) for r in source.get("rows") or []) if c is not None}
     shares = _tfr.shares_students(_groups_of(live))
 
     def covers(f: dict[str, Any], g: Any, s: Any) -> bool:
@@ -735,6 +747,8 @@ def _set_taught(live: dict[str, Any], live_proposal: dict[str, Any], reg: dict[s
         wl = wl_of.get(s)
         if wl is None or (g, wl) in in_proposal:
             return None     # ขั้นที่ 2 แปลงก้อนนี้เป็นแถวของรอบ (หรือแปลงวิชาไม่ได้ — unconverted จับไว้ก่อนแล้ว)
+        if cell in in_round:
+            return None     # รอบมีแถวของตัวเอง → plan_from_round เขียนแถวนั้น (ไม่ใช้กฎตามรูปของแผนเดิม) → เทียบตามปกติ
         lives = [f for f in matched["lives"] if covers(f, g, s)]
         rounds = [f for f in matched["rounds"] if covers(f, g, s)]
         if not lives:
@@ -778,7 +792,7 @@ def plan_diff(source: dict[str, Any], live: dict[str, Any], live_proposal: dict[
     reg_items, created = _registry_items(registry)
     matched = _sets_matched(source, live, live_proposal, desired, registry)
     row_items, unknown = _row_items(live, desired, _unknown_cells(source, live, live_proposal, desired, registry),
-                                    _set_taught(live, live_proposal, registry, matched), created, names)
+                                    _set_taught(source, live, live_proposal, registry, matched), created, names)
     set_items, unmatched = _set_items(matched, live, created, names)
 
     def order(it: dict[str, Any]) -> tuple:

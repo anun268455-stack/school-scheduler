@@ -290,6 +290,29 @@ def test_set_taught_rows_kept_when_their_sets_unchanged():
         [(i["pile"], i["label"]) for i in diff["items"]]
 
 
+def test_round_row_in_set_taught_cell_is_compared():
+    # รอบแก้ 2: ห้อง+วิชาที่คาบเสรีสอนแทน (ห้อง 1 วิชา 10 ครู 8) แต่รอบมีแถวของตัวเองสำหรับก้อนนั้น (หัวหน้าเพิ่ม/แก้ในรอบ) —
+    # ทาง ก. เขียนแถวของรอบ หน้าเทียบจึงต้องเทียบตามปกติ ไม่ใช่ "คงของสด" แม้ชุดที่ครอบไม่เปลี่ยน (probe_round_row ของผู้ตรวจรอบ 2)
+    live, wl_t, wl_s = _world([_req(1, 1, 10, 8), _req(2, 1, 1, 1), _req(3, 2, 1, 1)], pools=[_pool(1, (1, 2), [(10, 8)])])
+    assert live["served"] == {1}
+    src, prop = _fresh(live, wl_t, wl_s)
+    assert _diff(live, src, prop)["items"] == []
+    teacher = copy.deepcopy(src)
+    _add_round_row(teacher, 1, 10, 1009)
+    diff = _diff(live, teacher, prop)
+    assert [(i["pile"], i["before"]["teacher_id"], i["after"]["teacher_id"]) for i in diff["items"]] == [("teacher", 8, 9)], \
+        [(i["pile"], i["label"]) for i in diff["items"]]
+    res = _apply(live, diff, {diff["items"][0]["key"]})
+    assert [(r["id"], r["teacher_id"]) for r in res["requirements"]] == [(1, 9), (2, 1), (3, 1)]
+    weekly = copy.deepcopy(src)
+    _add_round_row(weekly, 1, 10, 1008, weekly=4)
+    diff = _diff(live, weekly, prop)
+    assert [(i["pile"], i["before"], i["after"]) for i in diff["items"]] == [("weekly", 2, 4)], \
+        [(i["pile"], i["label"]) for i in diff["items"]]
+    res = _apply(live, diff, {diff["items"][0]["key"]})
+    assert [(r["id"], r["weekly_count"]) for r in res["requirements"]] == [(1, 4), (2, 2), (3, 2)]
+
+
 # ── 3. แก้รอบให้มีครบ 6 กอง ─────────────────────────────────────────────────
 def _plain_rows(src, out, n):
     """แถวของรอบที่เป็นห้อง+วิชาธรรมดา (แถวเดียวทั้งในรอบและในแผนสด ไม่มีครูสอนร่วม ไม่ใช่วิชาเสรี/กิจกรรม)"""
