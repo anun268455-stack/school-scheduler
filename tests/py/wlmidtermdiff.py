@@ -667,7 +667,7 @@ def test_todos_for_placed_rows():
     got = [(t["kind"], t["group_id"], t["subject_id"], t.get("teacher_id")) for t in res["todos"]]
     # คาบ 3→4 ลงแล้ว 3 → ขาด · เปลี่ยนครูที่ลงแล้ว → ครู (ครูใหม่ในแผน) · ลบแถวที่ลงแล้ว → เกินแผน · แถวใหม่ยังไม่ลง → ไม่มีข้องาน
     assert got == [("missing", 1, 1, None), ("teacher", 1, 2, 4), ("over", 2, 3, None)], res["todos"]
-    assert all(set(t) <= {"kind", "group_id", "subject_id", "teacher_id", "text", "done"} and t["done"] is False
+    assert all(set(t) <= {"kind", "group_id", "subject_id", "teacher_id", "fields", "text", "done"} and t["done"] is False
                and t["text"] for t in res["todos"])
     assert "ขาด 1 คาบ" in res["todos"][0]["text"] and "เกินแผน 2 คาบ" in res["todos"][2]["text"]
     # คาบที่ลงพอดีกับแผนหลังเปลี่ยน → ไม่มีข้องาน
@@ -697,7 +697,7 @@ def test_coteach_pair_changes():
     assert (th["pile"], th["before"]["co_teacher_id"], th["after"]["co_teacher_id"]) == ("teacher", 6, None), th
     res = _apply(live, diff, {th["key"]})
     assert [(r["id"], r["teacher_id"], r["co_teacher_id"]) for r in res["requirements"]] == [(1, 5, None)]
-    # ลงคาบไว้แล้ว และเปลี่ยนแค่ครูสอนร่วม → บอกในผลต่อคาบ แต่ไม่มีข้องาน "ครู" (todo_status ตรวจครูผู้สอนเท่านั้น จะขึ้นเรียบร้อยทันที)
+    # ลงคาบไว้แล้ว และเปลี่ยนแค่ครูสอนร่วม → บอกในผลต่อคาบ และเข้ารายการงานชนิด teacher ที่ครอบเฉพาะช่องครูสอนร่วม (Task 2 addendum ข้อ 1, 3)
     live, wl_t, wl_s = _world([_req(1, 1, 1, 5, 3, co_teacher_id=6), _req(2, 1, 1, 6, 3, co_teacher_id=5)],
                               slots=[_slot(1, 1, 1, 5, co_teacher_id=6), _slot(2, 1, 1, 5, period=2, co_teacher_id=6)])
     src, prop = _fresh(live, wl_t, wl_s)
@@ -706,7 +706,9 @@ def test_coteach_pair_changes():
     th, = diff["items"]
     assert th["placed"] == 2 and "ครูสอนร่วม" in th["effect"] and th["after"]["co_teacher_id"] == 7
     res = _apply(live, diff, {th["key"]})
-    assert res["todos"] == [] and [(r["teacher_id"], r["co_teacher_id"]) for r in res["requirements"]] == [(5, 7)]
+    t, = res["todos"]
+    assert (t["kind"], t["teacher_id"], t["fields"]) == ("teacher", 5, ["co_teacher_id"]), t
+    assert [(r["teacher_id"], r["co_teacher_id"]) for r in res["requirements"]] == [(5, 7)]
 
 
 def test_unequal_coteach_half_changes():

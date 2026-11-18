@@ -29,6 +29,7 @@ from typing import Any, Callable, Iterable
 import curriculum as _curriculum        # normalise_rows (ตรรกะล้วน) — กฎหลักสูตรของแถวที่เขียนแบบทาง ก.
 import term_from_round as _tfr          # registry_plan · plan_from_round (ทาง ก.) — "แผนที่รอบต้องการ" · keep_set_electives · shares_students
 
+TEACHER_FIELDS = ("teacher_id", "co_teacher_id", "room_id")   # ช่องที่ข้อ "เปลี่ยนครู" และข้องานชนิด teacher ครอบ
 PILES = ("registry", "new", "weekly", "teacher", "removed", "sets")
 _PILE_ORDER = {p: i for i, p in enumerate(PILES)}
 _WRITEBACK_KEYS = ("teachers", "subjects", "new_wl_subjects", "bind_wl_subjects")
@@ -840,7 +841,7 @@ def plan_apply(diff: dict[str, Any], live: dict[str, Any], accepted: set[str], c
     รหัสใหม่: แถวแผน/pool/ตัวเลือกจาก counters (ของโปรแกรม ณ ตอนใส่) · ครู/วิชาใช้รหัสที่ registry_plan จองไว้ในหน้าเทียบ
     (ตัวนับ teacher/subject ขยับถึงรหัสที่ใช้จริง) · วิชาใน apply["mark_elective"] ของข้อชุดติดธง is_elective (แบบ _mark_elective)
     ข้องาน (ไม่มี id/update_id — ผู้เรียกใส่) ของข้อที่ติ๊กและห้อง+วิชามีคาบลงไว้แล้ว: แถวใหม่/คาบเปลี่ยน/ลบแถว → missing หรือ over
-    ตามแผนหลังใส่เทียบคาบที่ลง (ก้อนละหนึ่งข้อ · ลงพอดีไม่มีข้อ) · เปลี่ยนครูผู้สอน → teacher (teacher_id = ครูใหม่ในแผน) ·
+    ตามแผนหลังใส่เทียบคาบที่ลง (ก้อนละหนึ่งข้อ · ลงพอดีไม่มีข้อ) · เปลี่ยนครูผู้สอน/ครูสอนร่วม/ห้องปฏิบัติการ → teacher (teacher_id = ครูใหม่ในแผน · fields = ช่องที่เปลี่ยน) ·
     ชุด auto=False และชุดคาบเสรีใหม่ → set
     → {"teachers", "subjects", "requirements", "pools", "curricula" (ทั้งชุดใหม่), "group_curricula" ({ห้อง: curriculum_id เดิม}),
        "counters", "writeback" (รูป registry_plan สำหรับ _term_writeback), "todos", "applied", "skipped"} — **ไม่มี slots / parked**
@@ -979,12 +980,22 @@ def plan_apply(diff: dict[str, Any], live: dict[str, Any], accepted: set[str], c
                                       "— คาบยังอยู่ ลบเองในหน้าจัดคาบถ้าไม่สอนแล้ว"})
         elif pile == "teacher":
             before, after = it["before"], it["after"]
-            if it["placed"] and before["teacher_id"] != after["teacher_id"]:
+            # ช่องที่เปลี่ยน (ครูผู้สอน · ครูสอนร่วม · ห้องปฏิบัติการ) — todo_status ตรวจเฉพาะช่องเหล่านี้กับคาบที่ลงไว้
+            changed = [f for f in TEACHER_FIELDS if before.get(f) != after.get(f)]
+            if it["placed"] and changed:
+                parts = []
+                if "teacher_id" in changed:
+                    parts.append(f"ครู {names.t(before['teacher_id'])} — แผนเปลี่ยนเป็นครู {names.t(after['teacher_id'])}")
+                if "co_teacher_id" in changed:
+                    parts.append(f"ครูสอนร่วม {names.t(before['co_teacher_id']) if before['co_teacher_id'] else 'ไม่มี'}"
+                                 f" — แผนเปลี่ยนเป็น {names.t(after['co_teacher_id']) if after['co_teacher_id'] else 'ไม่มี'}")
+                if "room_id" in changed:
+                    parts.append(f"ห้องปฏิบัติการ ({names.room(before['room_id'])}) — "
+                                 f"แผนเปลี่ยนเป็น ({names.room(after['room_id'])})")
                 todos.append({"kind": "teacher", "group_id": it["group_id"], "subject_id": it["subject_id"],
-                              "teacher_id": after["teacher_id"], "done": False,
-                              "text": f"{names.g(it['group_id'])} {names.s(it['subject_id'])}: คาบที่ลงไว้ยังเป็นครู "
-                                      f"{names.t(before['teacher_id'])} — แผนเปลี่ยนเป็นครู {names.t(after['teacher_id'])} "
-                                      "แก้ครูของคาบในหน้าจัดคาบ"})
+                              "teacher_id": after["teacher_id"], "fields": changed, "done": False,
+                              "text": f"{names.g(it['group_id'])} {names.s(it['subject_id'])}: คาบที่ลงไว้ยังเป็น "
+                                      + " · ".join(parts) + " แก้ในหน้าจัดคาบ"})
         elif pile == "sets" and op.get("todo"):
             gids = (it.get("after") or it.get("before") or {}).get("group_ids") or [None]
             todos.append({"kind": "set", "group_id": gids[0], "subject_id": None, "done": False, "text": op["todo"]})
@@ -993,3 +1004,67 @@ def plan_apply(diff: dict[str, Any], live: dict[str, Any], accepted: set[str], c
             "curricula": curricula, "group_curricula": {gid: g.get("curriculum_id") for gid, g in groups.items()},
             "counters": counters, "writeback": writeback, "todos": todos,
             "applied": [it["key"] for it in applied], "skipped": [it["key"] for it in items if it["key"] not in chosen]}
+
+
+# ── สถานะสดของรายการงานที่ต้องไปแก้เอง (แบบข้อ 4.4) ───────────────────────────────────────────
+def todo_status(todos: list[dict[str, Any]], requirements: list[dict[str, Any]],
+                slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """เพิ่ม state ("open"|"resolved") และ detail (ไทย) ให้แต่ละข้อ — คิดสดจากแผน (requirements) เทียบคาบที่ลงจริง (slots) · ฟังก์ชันล้วน
+
+    missing = คาบในแผนของ (ห้อง, วิชา) มากกว่าคาบที่ลง · over = คาบที่ลงมากกว่าแผน (ไม่มีแถวแผนแล้ว = แผนเป็น 0) ·
+    teacher = มีคาบของ (ห้อง, วิชา) ที่ช่องใน fields (ไม่มี = ["teacher_id"]) ไม่ตรงแถวแผน (ห้อง: เฉพาะเมื่อแผนกำหนดห้อง) ·
+    set = ไม่มีเงื่อนไขอัตโนมัติ เปิดจน done · ชนิดอื่นนอกจากนี้ = เปิดจน done
+    done ไม่บังคับ resolved ของ missing/teacher/over (คำตัดสินผู้คุม): done = ผู้ใช้กดรับทราบ/ซ่อน ถ้าเงื่อนไขกลับมา (มีคนย้ายคาบ)
+    ต้องคืน open ตามจริง · ไม่แก้ที่ส่งเข้ามา · แต่ละข้อได้ dict ใหม่ (คีย์เดิมครบ)
+    """
+    placed_of = _placed_of(slots)
+    lessons = _lessons(list(requirements))
+    by_cell: dict[tuple, list[dict[str, Any]]] = {}
+    for s in slots:
+        if s.get("subject_id") is not None and not s.get("is_overflow"):
+            by_cell.setdefault((s.get("group_id"), s.get("subject_id")), []).append(s)
+    field_text = {"teacher_id": "ครูผู้สอน", "co_teacher_id": "ครูสอนร่วม", "room_id": "ห้องปฏิบัติการ"}
+    out: list[dict[str, Any]] = []
+    for todo in todos:
+        cell = (todo.get("group_id"), todo.get("subject_id"))
+        kind = todo.get("kind")
+        state, detail = "open", ""
+        if kind in ("missing", "over"):
+            plan = sum(max(x["w"]) for x in lessons.get(cell, []))
+            placed = placed_of.get(cell, 0)
+            if kind == "missing" and plan > placed:
+                detail = f"ยังขาด {plan - placed} คาบ (แผน {plan} คาบ · ลงไว้ {placed} คาบ)"
+            elif kind == "over" and placed > plan:
+                detail = f"ยังเกินแผน {placed - plan} คาบ (แผน {plan} คาบ · ลงไว้ {placed} คาบ)"
+            else:
+                state, detail = "resolved", f"เรียบร้อย — แผน {plan} คาบ · ลงไว้ {placed} คาบ"
+        elif kind == "teacher":
+            wanted = [f for f in (todo.get("fields") or ["teacher_id"]) if f in TEACHER_FIELDS]
+            lv = lessons.get(cell, [])
+            if not lv:
+                state, detail = "resolved", "ไม่มีแถวแผนของห้องและวิชานี้แล้ว"
+            else:
+                rows = [r for l in lv for r in l["rows"]]
+                ok_vals = {
+                    # แถวคู่สอนร่วมที่พับแล้วเป็นของครูสองคนสลับกันได้ จึงรับทั้งครูของแถวและครูสอนร่วมของแถว
+                    "teacher_id": {r.get("teacher_id") or None for r in rows},
+                    "co_teacher_id": {r.get("co_teacher_id") or None for r in rows} | {l["t"][1] for l in lv},
+                    "room_id": {r.get("room_id") or None for r in rows if r.get("room_id")},
+                }
+                bad: dict[str, int] = {}
+                for s in by_cell.get(cell, []):
+                    for f in wanted:
+                        if f == "room_id" and not ok_vals["room_id"]:
+                            continue            # แผนไม่กำหนดห้อง — ไม่ตรวจ
+                        if (s.get(f) or None) not in ok_vals[f]:
+                            bad[f] = bad.get(f, 0) + 1
+                if bad:
+                    detail = "ยังไม่ตรงแผน: " + " · ".join(f"{field_text[f]} {n} คาบ" for f, n in bad.items())
+                else:
+                    state, detail = "resolved", "เรียบร้อย — คาบที่ลงไว้ตรงแผนแล้ว"
+        elif todo.get("done"):
+            state, detail = "resolved", "ทำแล้ว"
+        else:
+            detail = "ต้องไปแก้เอง แล้วกด “ทำแล้ว”"
+        out.append({**todo, "state": state, "detail": detail})
+    return out

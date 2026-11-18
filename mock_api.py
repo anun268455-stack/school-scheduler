@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 from contextvars import ContextVar
 import substitution as _SUB
 import curriculum as _CUR
+import plan_diff as _PD         # ทาง ข.: สถานะสดของรายการงานที่ต้องไปแก้เอง (ฟังก์ชันล้วน ไม่ import โมดูลนี้)
 import term_from_round as _TFR    # สร้างเทอมใหม่จากรอบอัตรากำลัง — ตรรกะแปลงล้วน (ไม่ import โมดูลนี้)
 
 app = FastAPI(title="School Scheduler Mock API v3")
@@ -1317,6 +1318,10 @@ CURRICULA: list[dict[str, Any]] = []
 # restore's clear() + extend()), like CURRICULA. The order the school prefers
 # its ลาน in lives in SCHOOL_CONFIG["yard_order"], not here.
 YARD_PICKS: list[dict[str, Any]] = []
+
+# รายการงานที่ต้องไปแก้เอง (ทาง ข. อัปเดตแผนกลางเทอม) — ของภาคเรียนนั้น ติดไปกับ snapshot (คีย์ plan_todos) จึงอยู่ในไฟล์เทอมและสำรอง
+# แต่ละข้อ {id, update_id, kind, group_id, subject_id, text, done, ...} · สถานะ open/resolved คิดสดตอนอ่าน (plan_diff.todo_status) ไม่เก็บ
+PLAN_TODOS: list[dict[str, Any]] = []
 
 # ── Real school data (อัตรากำลัง) ─────────────────────────────────────────────
 # school_data.json holds the school's actual departments, classes, teachers,
@@ -13457,6 +13462,8 @@ def _snapshot() -> dict[str, Any]:
         # การรีสตาร์ตครั้งเดียวจะทำให้มันหายไปเงียบ ๆ ทั้งที่คนจัดยังรออยู่
         "parked": [{**e, "rows": [dict(r) for r in e.get("rows") or []]}
                    for e in PARKED],
+        # รายการงานของภาคนี้ — คัดลอกเหตุผลเดียวกับหลักสูตรข้างบน
+        "plan_todos": [dict(t) for t in PLAN_TODOS],
         "counters": _counters,
         "current_term": dict(CURRENT_TERM),
     }
@@ -13485,6 +13492,9 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
             rows = [dict(r) for r in rows]
             target.clear()
             target.extend(rows)
+
+    # รายการงานเป็นของภาคนั้น: ไม่มีคีย์ (ไฟล์เก่าก่อนทาง ข.) = ว่าง ไม่ใช่คงของภาคก่อนที่ค้างในหน่วยความจำ
+    PLAN_TODOS[:] = [dict(t) for t in (data.get("plan_todos") or []) if isinstance(t, dict)]
 
     rows = data.get("groups")
     if rows is not None:
@@ -13537,7 +13547,7 @@ def _apply_snapshot(data: dict[str, Any]) -> None:
                       ("elective_pool", ELECTIVE_POOLS),
                       ("absence", ABSENCES), ("substitution", SUBSTITUTIONS),
                       ("repayment", REPAYMENTS), ("curriculum", CURRICULA),
-                      ("yard_pick", YARD_PICKS)):
+                      ("yard_pick", YARD_PICKS), ("todo", PLAN_TODOS)):
         _counters[key] = max(_counters.get(key, 0), _max_id(rows))
     _SUB.invalidate()
     _counters["group"] = max(_counters.get("group", 0), _max_id(_flat_groups()))
@@ -18574,6 +18584,7 @@ def create_term(body: dict[str, Any]):
     # In-place, never `SLOTS = []`: curriculum.py holds a live alias to this list.
     saved_slots = list(SLOTS)
     saved_parked = list(PARKED)
+    saved_todos = list(PLAN_TODOS)
     saved_cfg = {k: SCHOOL_CONFIG.get(k) for k in ("term", "year")}
     try:
         # The file being stored is a closed term, so it must say so: the status
@@ -18590,6 +18601,7 @@ def create_term(body: dict[str, Any]):
         old_blob = _pack(_snapshot())
         SLOTS.clear()
         PARKED.clear()      # lifted-out lessons point at last term's plan
+        PLAN_TODOS.clear()  # รายการงานเป็นของภาคนั้น (ไฟล์เทอมเก่าเก็บของเดิมไว้แล้วข้างบน)
         CURRENT_TERM.update({"id": None, "year": year, "semester": semester,
                              "label": label, "status": "active"})
         SCHOOL_CONFIG["term"], SCHOOL_CONFIG["year"] = str(semester), str(year)
@@ -18605,6 +18617,7 @@ def create_term(body: dict[str, Any]):
         # idempotent whichever step failed).
         SLOTS[:] = saved_slots
         PARKED[:] = saved_parked
+        PLAN_TODOS[:] = saved_todos
         CURRENT_TERM.update(old)
         SCHOOL_CONFIG.update(saved_cfg)
         raise HTTPException(500, "สร้างเทอมใหม่ไม่สำเร็จ ข้อมูลเดิมยังอยู่ครบ ลองใหม่อีกครั้ง")
@@ -18677,7 +18690,7 @@ TERM_ACTIVE_MOVED = ("เทอมที่เปิดอยู่เปลี�
                      "— เปิดหน้านี้ใหม่แล้วลองอีกครั้ง")
 TERM_PROGRAM_EDITED = "มีการแก้ข้อมูลในโปรแกรมจัดตารางระหว่างสร้างเทอม — ลองกดใหม่อีกครั้ง"
 LAST_RUN_EMPTY: dict[str, Any] = {"unplaced_requirement_ids": [], "skipped_requirement_ids": []}
-_TERM_FROM_ROUND_LISTS = ("TEACHERS", "SUBJECTS", "REQUIREMENTS", "ELECTIVE_POOLS", "CURRICULA", "SLOTS", "PARKED")
+_TERM_FROM_ROUND_LISTS = ("TEACHERS", "SUBJECTS", "REQUIREMENTS", "ELECTIVE_POOLS", "CURRICULA", "SLOTS", "PARKED", "PLAN_TODOS")
 
 # ตัวแปรสภาพแวดล้อมสำหรับทดสอบเท่านั้น (Ruling P2) — เซิร์ฟเวอร์ของโรงเรียนไม่ตั้ง · ไม่ตั้ง = ไม่มีผล · อ่านตอนเรียกทุกครั้ง
 # SCHED_TEST_FAIL_AT=<ขั้น> ทำให้การสร้างเทอมจากรอบล้มที่ขั้นนั้น เพื่อพิสูจน์ "ทั้งหมดหรือไม่มีเลย" กับ Postgres จริง:
@@ -18764,7 +18777,7 @@ def _term_restore(back: dict[str, Any]) -> bool:
     ทะเบียน แผน หลักสูตร และ curriculum_id ของห้องคืนเฉพาะเมื่อ _term_apply เริ่มแทนแล้ว (back["replaced"]): ย้อนก่อนนั้น (เช่น 409
     เพราะมีคนแก้ระหว่างนี้) ลิสต์พวกนี้ยังเป็นของสด — คืนจากจุดย้อนจะลบงานของคำขอที่เพิ่งจบ (เช่นครูที่เพิ่งเพิ่ม) ทิ้ง"""
     for name, rows in back["lists"].items():
-        if back["replaced"] or name in ("SLOTS", "PARKED"):
+        if back["replaced"] or name in ("SLOTS", "PARKED", "PLAN_TODOS"):
             globals()[name][:] = rows
     for g, had, cid in back["groups"] if back["replaced"] else ():
         if had:
@@ -18966,6 +18979,7 @@ def _create_term_from_round(body: dict[str, Any]):
                     old_blob = _pack(_snapshot())
                     SLOTS.clear()
                     PARKED.clear()      # lifted-out lessons point at last term's plan
+                    PLAN_TODOS.clear()  # รายการงานเป็นของภาคนั้น (จุดย้อนเก็บของเดิมไว้ · ไฟล์เทอมเก่าเก็บไว้แล้วข้างบน)
                     CURRENT_TERM.update({"id": None, "year": year, "semester": semester,
                                          "label": label, "status": "active"})
                     SCHOOL_CONFIG["term"], SCHOOL_CONFIG["year"] = str(semester), str(year)
@@ -19029,6 +19043,38 @@ def _create_term_from_round(body: dict[str, Any]):
             "save_error": save_error,
             "save_pending": save_pending,
             "report": export_report}
+
+
+@app.get("/api/terms/todos")
+def terms_todos() -> list[dict[str, Any]]:
+    """รายการงานที่ต้องไปแก้เองของภาคที่เปิดอยู่ (ทาง ข. แบบข้อ 4.4) พร้อม state ("open"|"resolved") และ detail ที่คิดสดจากแผนเทียบคาบตอนนี้
+    อ่านอย่างเดียว ไม่ผ่านตัวนับรุ่น · เทอมปิดอยู่ก็อ่านได้ (ได้รายการของเทอมนั้น) · ไม่มีรายการ = []"""
+    return _PD.todo_status(_copy.deepcopy(PLAN_TODOS), REQUIREMENTS, SLOTS)
+
+
+@app.post("/api/terms/todos/{todo_id}/done")
+def terms_todo_done(todo_id: int, body: dict[str, Any] | None = None):
+    """กด "ทำแล้ว"/รับทราบข้องาน (ซ่อนจากรายการค้าง) — ไม่ต้องใช้รหัส · body {"done": false} = เอากลับมาแสดง
+
+    ใต้ /api/terms/ มิดเดิลแวร์ปล่อยเขียนได้ตลอดแม้เทอมปิด (ไม่งั้นปลดล็อกไม่ได้) จึงต้องปฏิเสธเองที่นี่ด้วยข้อความเดียวกับตัวกัน ·
+    ผ่านตัวนับรุ่นและ snapshot ตามปกติ (ไม่อยู่ใต้ /api/workload/) ข้อที่ผ่านแล้วค่าไม่เปลี่ยน = ไม่บวกรุ่น (_nothing_changed)
+    แตะเฉพาะช่อง done ของข้องานเดียว — ไม่แตะ SLOTS/PARKED/แผน"""
+    blocked = term_blocks_write(CURRENT_TERM, "POST", "/api/slots/")
+    if blocked is not None:
+        raise HTTPException(409, blocked)
+    want = True
+    if isinstance(body, dict) and "done" in body:
+        if type(body["done"]) is not bool:
+            raise HTTPException(400, "ค่า done ต้องเป็น true หรือ false")
+        want = body["done"]
+    todo = next((t for t in PLAN_TODOS if t.get("id") == todo_id), None)
+    if todo is None:
+        raise HTTPException(404, "ไม่พบรายการงานนี้")
+    if bool(todo.get("done")) == want:
+        _nothing_changed()
+    else:
+        todo["done"] = want
+    return next(t for t in _PD.todo_status([dict(todo)], REQUIREMENTS, SLOTS))
 
 
 @app.get("/api/terms")
