@@ -821,15 +821,18 @@ def test_round_trip_live_shape():
     assert n["curriculum_rows_added"] > 0 and n["check_row_refusals"] == 0, n    # วิชาเสรีเข้าหลักสูตรของห้อง
 
 
-for name, fn in list(globals().items()):
-    if name.startswith("test_") and callable(fn):
-        try:
-            fn()
-        except Exception as e:  # noqa: BLE001
-            fails.append(f"{name}: {type(e).__name__} {e}")
+# รันเมื่อเป็นสคริปต์เท่านั้น: tests/py/wlmidtermdiff.py (ทาง ข.) import ตัวช่วยชุด ก/ข และเส้นไปกลับของไฟล์นี้ —
+# ถ้ารันตอน import คำว่า ALL PASS ของไฟล์นี้จะไปอยู่ในผลของไฟล์นั้น แล้ว tests/run.sh นับว่าผ่านแม้ไฟล์นั้นล้ม
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                fails.append(f"{name}: {type(e).__name__} {e}")
 
-if fails:
-    for f in fails:
-        print("FAIL:", f)
-    sys.exit(1)
-print("ALL PASS")
+    if fails:
+        for f in fails:
+            print("FAIL:", f)
+        sys.exit(1)
+    print("ALL PASS")
